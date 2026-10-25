@@ -350,19 +350,63 @@
   elements.nativeSettingsButton.addEventListener('click', () => post('openNativeSettings'));
 
   const navButtons = [...document.querySelectorAll('nav [data-target]')];
+  const settingsScroller = document.querySelector('.settings-main');
+  const settingsToolbar = document.querySelector('.settings-toolbar');
+  const sections = [...document.querySelectorAll('.settings-section')];
+  let lockedTarget = '';
+  let unlockTimer;
+
+  function setActiveSection(id) {
+    navButtons.forEach((button) => {
+      const active = button.dataset.target === id;
+      button.classList.toggle('active', active);
+      if (active) button.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }
+
+  function sectionScrollTop(section) {
+    if (!settingsScroller) return section.offsetTop;
+    const scrollerRect = settingsScroller.getBoundingClientRect();
+    return Math.max(0, section.getBoundingClientRect().top - scrollerRect.top + settingsScroller.scrollTop - (settingsToolbar?.getBoundingClientRect().height || 64) - 8);
+  }
+
+  function updateActiveSection() {
+    if (!settingsScroller || lockedTarget) return;
+    if (settingsScroller.scrollHeight - settingsScroller.scrollTop - settingsScroller.clientHeight <= 2) {
+      setActiveSection(sections.at(-1)?.id || '');
+      return;
+    }
+    const marker = settingsScroller.getBoundingClientRect().top + (settingsToolbar?.getBoundingClientRect().height || 64) + 10;
+    let current = sections[0];
+    for (const section of sections) {
+      if (section.getBoundingClientRect().top <= marker) current = section;
+      else break;
+    }
+    if (current) setActiveSection(current.id);
+  }
+
   navButtons.forEach((button) => {
     button.addEventListener('click', () => {
-      document.getElementById(button.dataset.target).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const target = document.getElementById(button.dataset.target);
+      if (!target || !settingsScroller) return;
+      lockedTarget = target.id;
+      setActiveSection(lockedTarget);
+      settingsScroller.scrollTo({ top: sectionScrollTop(target), behavior: 'smooth' });
+      clearTimeout(unlockTimer);
+      unlockTimer = setTimeout(() => { lockedTarget = ''; updateActiveSection(); }, 1_500);
     });
   });
-  const observer = new IntersectionObserver((entries) => {
-    const visible = entries
-      .filter((entry) => entry.isIntersecting)
-      .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
-    if (!visible) return;
-    navButtons.forEach((button) => button.classList.toggle('active', button.dataset.target === visible.target.id));
-  }, { rootMargin: '-20% 0px -65% 0px', threshold: [0, .25, .5] });
-  document.querySelectorAll('.settings-section').forEach((section) => observer.observe(section));
+  settingsScroller?.addEventListener('scrollend', () => {
+    if (!lockedTarget) return;
+    lockedTarget = '';
+    clearTimeout(unlockTimer);
+    updateActiveSection();
+  });
+  settingsScroller?.addEventListener('scroll', () => {
+    if (!lockedTarget) updateActiveSection();
+  }, { passive: true });
+  window.addEventListener('resize', updateActiveSection);
+  requestAnimationFrame(updateActiveSection);
 
   window.addEventListener('keydown', (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {

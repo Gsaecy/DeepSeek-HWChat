@@ -27,6 +27,11 @@ export interface ListModelsOptions {
   apiKey?: string;
 }
 
+export interface DiscoveredModel {
+  id: string;
+  name: string;
+}
+
 interface OpenAIChunk {
   choices?: Array<{
     delta?: {
@@ -153,7 +158,7 @@ export class DeepSeekClient {
     }
   }
 
-  async listModels(settings: ChatSettings, options: ListModelsOptions = {}): Promise<string[]> {
+  async listModels(settings: ChatSettings, options: ListModelsOptions = {}): Promise<DiscoveredModel[]> {
     const apiKey = options.apiKey?.trim() || await this.getApiKey(settings.activeApiProfileId);
     if (!apiKey?.trim()) {
       throw new Error('尚未配置 API Key，无法获取模型列表。');
@@ -184,7 +189,7 @@ export class DeepSeekClient {
         throw new Error(`获取模型列表失败（${response.status}）：${await readError(response, apiKey)}`);
       }
       const payload = await response.json() as unknown;
-      const models = parseModelIds(payload);
+      const models = parseModels(payload);
       if (!models.length) {
         throw new Error('接口返回成功，但没有发现可用模型。');
       }
@@ -240,27 +245,46 @@ function assertSecureUrl(url: URL): void {
   }
 }
 
-function parseModelIds(payload: unknown): string[] {
-  const object = payload && typeof payload === 'object' && !Array.isArray(payload)
-    ? payload as Record<string, unknown>
-    : undefined;
-  const candidates = Array.isArray(payload)
-    ? payload
-    : Array.isArray(object?.data)
-      ? object.data
-      : Array.isArray(object?.models)
-        ? object.models
-        : [];
-  const ids = candidates
+function parseModels(payload: unknown): DiscoveredModel[] {
+  const candidates = modelCandidates(payload);
+  const models = candidates
     .map((candidate) => {
-      if (typeof candidate === 'string') return candidate;
-      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return '';
+      if (typeof candidate === 'string') return { id: candidate, name: candidate };
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
       const item = candidate as Record<string, unknown>;
-      return [item.id, item.name, item.model].find((value): value is string => typeof value === 'string') ?? '';
+      const id = [item.id, item.model, item.model_id, item.modelId, item.slug, item.name]
+        .find((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+        ?.trim() ?? '';
+      if (!id) return undefined;
+      const name = [item.display_name, item.displayName, item.label, item.title, item.name]
+        .find((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+        ?.trim() ?? id;
+      return { id, name };
     })
-    .map((value) => value.trim())
-    .filter(Boolean);
-  return [...new Set(ids)].sort((left, right) => left.localeCompare(right)).slice(0, 500);
+    .filter((value): value is DiscoveredModel => Boolean(value));
+  const unique = new Map<string, DiscoveredModel>();
+  for (const model of models) {
+    const existing = unique.get(model.id);
+    if (!existing || existing.name === existing.id) unique.set(model.id, model);
+  }
+  return [...unique.values()]
+    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+    .slice(0, 500);
+}
+
+function modelCandidates(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  const object = payload as Record<string, unknown>;
+  for (const key of ['data', 'models', 'items']) {
+    if (Array.isArray(object[key])) return object[key] as unknown[];
+  }
+  const data = object.data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const models = (data as Record<string, unknown>).models;
+    if (Array.isArray(models)) return models;
+  }
+  return [];
 }
 
 function sanitizeHeaders(headers: Record<string, string>): Record<string, string> {

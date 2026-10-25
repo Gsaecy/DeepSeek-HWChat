@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3
+
+- Changed model discovery to query each configured API's `/models` endpoint directly, preserving provider display names without depending on Copilot or models registered by other VS Code extensions.
+- Updated the official DeepSeek fallback catalog to `deepseek-flash` and `deepseek-v4-pro`; when the API directory no longer contains the selected model, HWChat now switches the UI and active conversation to the first available model together.
+- Kept the chat mode, Skill count, and settings controls visible on one responsive toolbar row, with profile and model selectors sharing the available width below it.
+- Added persisted thumbnails for pasted images and included them in scheduled completed-task cache compaction.
+- Fixed the unregistered `hwchat.reasoningEffort` upgrade-window error with a local fallback, and fixed active-section tracking in the settings navigation.
+- Made the settings navigation fixed while content scrolls, removed gradient styling, and improved foreground/background contrast in light and dark VS Code themes.
+- Tightened the composer action controls and hid the textarea scrollbar while preserving keyboard, wheel, and touch scrolling.
+
 ## 0.1.2
 
 - Added runtime task trees: messages sent while Agent is running are classified as related guidance or queued branches. Related guidance triggers replanning at the next tool boundary, while independent work continues after the active branch finishes.

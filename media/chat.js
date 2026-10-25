@@ -18,6 +18,7 @@
     hasMore: false, sendOnEnter: true, streaming: false, streamingConversationId: null,
     search: '', pendingAttachments: [], skills: [], selectedSkillIds: [], mode: 'agent',
     apiProfiles: [], activeApiProfileId: '', permissionPreset: 'review', agentMaxSteps: 0, reasoningEffort: 'default',
+    modelOptionsByProfile: {},
     permissionPresetPending: false, modelLoadingProfileId: null,
     workspaceTrusted: false, agentAvailable: false, availableToolCount: 0, showArchived: false, renderTimer: null,
     taskTree: null, autoFollow: true, renderingMessages: false, voiceRecognition: null, voiceActive: false,
@@ -134,9 +135,11 @@
     const profileId = state.conversation?.apiProfileId || state.activeApiProfileId || state.apiProfiles[0]?.id || '';
     replaceSelectOptions(elements.profileInput, state.apiProfiles.map((profile) => ({ value: profile.id, label: profile.name })), profileId);
     const profile = state.apiProfiles.find((item) => item.id === profileId) || state.apiProfiles[0];
-    const model = state.conversation?.model || elements.modelInput.value || profile?.models?.[0] || 'deepseek-chat';
-    const models = [...new Set([...(profile?.models || []), model].filter(Boolean))];
-    replaceSelectOptions(elements.modelInput, models.map((value) => ({ value, label: value })), model);
+    const model = state.conversation?.model || elements.modelInput.value || profile?.models?.[0] || 'deepseek-flash';
+    const discovered = state.modelOptionsByProfile[profileId] || [];
+    const labels = new Map(discovered.map((option) => [option.id, option.name || option.id]));
+    const models = [...new Set([...(profile?.models || []), ...discovered.map((option) => option.id), model].filter(Boolean))];
+    replaceSelectOptions(elements.modelInput, models.map((value) => ({ value, label: labels.get(value) || value })), model);
   }
 
   function replaceSelectOptions(select, options, selected) {
@@ -298,7 +301,15 @@
 
   function renderMessageAttachments(attachments) {
     const row = document.createElement('div'); row.className = 'message-attachments';
-    for (const attachment of attachments) { const chip = textElement('span', '', attachment.label); chip.title = attachment.path || attachment.label; row.append(chip); }
+    for (const attachment of attachments) {
+      if (attachment.kind === 'image' && attachment.thumbnailDataUrl) {
+        const figure = document.createElement('figure'); figure.className = 'message-image-attachment'; figure.title = attachment.path || attachment.label;
+        const image = document.createElement('img'); image.src = attachment.thumbnailDataUrl; image.alt = attachment.label;
+        figure.append(image, textElement('figcaption', '', attachment.label)); row.append(figure);
+      } else {
+        const chip = textElement('span', 'message-file-attachment', attachment.label); chip.title = attachment.path || attachment.label; row.append(chip);
+      }
+    }
     return row;
   }
 
@@ -393,7 +404,11 @@
   function renderAttachments() {
     elements.attachmentList.replaceChildren(); let fileIndex = 0;
     for (const attachment of state.pendingAttachments) {
-      const chip = document.createElement('div'); chip.className = 'attachment-chip';
+      const chip = document.createElement('div'); chip.className = `attachment-chip${attachment.kind === 'image' && attachment.thumbnailDataUrl ? ' attachment-chip-image' : ''}`;
+      if (attachment.kind === 'image' && attachment.thumbnailDataUrl) {
+        const image = document.createElement('img'); image.src = attachment.thumbnailDataUrl; image.alt = '';
+        chip.append(image);
+      }
       const label = textElement('span', '', attachment.label); label.title = attachment.path || attachment.label;
       const size = textElement('small', '', attachment.kind === 'selection' ? '代码选区' : formatBytes(attachment.bytes || 0));
       const remove = textElement('button', '', '×'); remove.type = 'button'; remove.title = '移除';
@@ -584,7 +599,8 @@
     for (const file of files.slice(0, 20)) {
       try {
         const buffer = await file.arrayBuffer();
-        encoded.push({ name: file.name || (file.type.startsWith('image/') ? '粘贴的图片' : '粘贴的文件'), mimeType: file.type, size: buffer.byteLength, dataBase64: arrayBufferToBase64(buffer) });
+        const thumbnailDataUrl = file.type.startsWith('image/') ? await imageThumbnailDataUrl(file) : undefined;
+        encoded.push({ name: file.name || (file.type.startsWith('image/') ? '粘贴的图片' : '粘贴的文件'), mimeType: file.type, size: buffer.byteLength, dataBase64: arrayBufferToBase64(buffer), thumbnailDataUrl });
       } catch (error) {
         showToast(`读取剪贴板附件失败：${error?.message || error}`, 'warning');
       }
@@ -597,6 +613,26 @@
     const chunk = 0x8000;
     for (let index = 0; index < bytes.length; index += chunk) binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
     return btoa(binary);
+  }
+
+  async function imageThumbnailDataUrl(file) {
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, 160 / bitmap.width, 120 / bitmap.height);
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!context) return undefined;
+      context.fillStyle = '#ffffff'; context.fillRect(0, 0, width, height); context.drawImage(bitmap, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL('image/jpeg', .78);
+      return dataUrl.length <= 120_000 ? dataUrl : undefined;
+    } catch {
+      return undefined;
+    } finally {
+      bitmap?.close?.();
+    }
   }
 
   function startVoiceRecognition() {
@@ -640,12 +676,12 @@
         const incoming = message.state; state.conversations = incoming.conversations || []; state.archivedConversations = incoming.archivedConversations || [];
         state.conversation = incoming.conversation; state.messages = incoming.messages || []; state.hasMore = Boolean(incoming.hasMore);
         state.sendOnEnter = incoming.settings?.sendOnEnter !== false; state.pendingAttachments = incoming.pendingAttachments || [];
-        state.apiProfiles = incoming.settings?.apiProfiles || []; state.activeApiProfileId = incoming.settings?.activeApiProfileId || '';
+        state.apiProfiles = incoming.settings?.apiProfiles || []; state.activeApiProfileId = incoming.settings?.activeApiProfileId || ''; state.modelOptionsByProfile = incoming.modelOptionsByProfile || {};
         state.permissionPreset = incoming.settings?.permissionPreset || 'review'; state.agentMaxSteps = Math.max(0, Math.floor(Number(incoming.settings?.agentMaxSteps) || 0)); state.reasoningEffort = incoming.settings?.reasoningEffort || 'default';
         state.permissionPresetPending = false;
         state.skills = incoming.skills || []; state.selectedSkillIds = incoming.selectedSkillIds || []; state.mode = incoming.mode || 'agent';
         state.workspaceTrusted = Boolean(incoming.workspaceTrusted); state.agentAvailable = Boolean(incoming.agentAvailable); state.availableToolCount = Number(incoming.availableToolCount) || 0; state.showArchived = Boolean(incoming.showArchived); state.taskTree = incoming.taskTree || (message.streamingConversationId ? state.taskTree : null);
-        elements.modelInput.value = incoming.settings?.model || 'deepseek-chat'; if (previousConversationId !== incoming.conversation?.id) state.autoFollow = true; setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
+        elements.modelInput.value = incoming.settings?.model || 'deepseek-flash'; if (previousConversationId !== incoming.conversation?.id) state.autoFollow = true; setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
       }
       case 'draft': elements.promptInput.value = message.text || ''; state.pendingAttachments = message.attachments || []; renderAttachments(); autoResize(); elements.promptInput.focus(); break;
       case 'attachments': state.pendingAttachments = message.attachments || []; renderAttachments(); break;
@@ -661,7 +697,18 @@
       case 'modelChanged': elements.modelInput.value = message.model; showToast(`已切换到 ${message.model}`); break;
       case 'profileChanged': state.activeApiProfileId = message.profileId; elements.modelInput.value = message.model; showToast('API 配置已切换'); break;
       case 'modelsLoading': state.modelLoadingProfileId = message.active ? message.profileId : state.modelLoadingProfileId === message.profileId ? null : state.modelLoadingProfileId; renderHeader(); updateComposerState(); break;
-      case 'modelsChanged': { const profile = state.apiProfiles.find((item) => item.id === message.profileId); if (profile) profile.models = message.models || profile.models; syncConnectionSelectors(); break; }
+      case 'modelsChanged': {
+        const profile = state.apiProfiles.find((item) => item.id === message.profileId);
+        if (profile) profile.models = message.models || profile.models;
+        state.modelOptionsByProfile[message.profileId] = message.options || [];
+        const activeProfileId = state.conversation?.apiProfileId || state.activeApiProfileId;
+        if (activeProfileId === message.profileId && message.model) {
+          if (state.conversation) state.conversation.model = message.model;
+          elements.modelInput.value = message.model;
+        }
+        syncConnectionSelectors();
+        break;
+      }
       case 'modeChanged': state.mode = message.mode; renderHeader(); break;
       case 'skillsChanged': state.selectedSkillIds = message.skillIds || []; renderSkills(); renderHeader(); break;
       case 'permissionPresetPending': state.permissionPresetPending = Boolean(message.active); updateComposerState(); break;

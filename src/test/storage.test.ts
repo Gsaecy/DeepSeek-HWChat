@@ -217,7 +217,7 @@ test('compacts tool and attachment details but retains execution summaries', asy
       context: { label: 'selection', kind: 'selection', content: 'selected code', dataBase64: 'unused-context-data' },
       attachments: [
         { label: 'src/a.ts', path: 'src/a.ts', kind: 'file', content: 'large file content' },
-        { label: 'screenshot.png', kind: 'image', mimeType: 'image/png', dataBase64: 'aGVhdnktaW1hZ2UtZGF0YQ==' },
+        { label: 'screenshot.png', kind: 'image', mimeType: 'image/png', dataBase64: 'aGVhdnktaW1hZ2UtZGF0YQ==', thumbnailDataUrl: 'data:image/jpeg;base64,dGh1bWI=' },
       ],
       toolExecutions: [{
         callId: 'call-1', name: 'replace_in_file', summary: '修改 src/a.ts：替换 1 处文本',
@@ -232,6 +232,7 @@ test('compacts tool and attachment details but retains execution summaries', asy
     assert.equal(compacted?.attachments?.[0]?.content, undefined);
     assert.equal(compacted?.attachments?.[1]?.label, 'screenshot.png');
     assert.equal(compacted?.attachments?.[1]?.dataBase64, undefined);
+    assert.equal(compacted?.attachments?.[1]?.thumbnailDataUrl, undefined);
     assert.equal(compacted?.context?.content, undefined);
     assert.equal(compacted?.context?.dataBase64, undefined);
     assert.equal(compacted?.toolExecutions?.[0]?.summary, '修改 src/a.ts：替换 1 处文本');

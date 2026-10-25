@@ -6,7 +6,7 @@ import { SkillRegistry } from './agent/skillRegistry';
 import { ToolExecutor } from './agent/toolExecutor';
 import { CleanupScheduler } from './core/cleanupScheduler';
 import { getApiKey, storeApiKey } from './core/apiKeys';
-import { profileFor, readSettings } from './core/settings';
+import { initializeSettingsStorage, profileFor, readSettings } from './core/settings';
 import { ConversationStorage } from './core/storage';
 import { DeepSeekClient } from './providers/deepseekClient';
 import { ChatPanel } from './views/chatPanel';
@@ -15,6 +15,7 @@ import { SettingsPanel } from './views/settingsPanel';
 let activeStorage: ConversationStorage | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  initializeSettingsStorage(context.globalState);
   const output = vscode.window.createOutputChannel('HWChat', { log: true });
   const storage = new ConversationStorage(join(context.globalStorageUri.fsPath, 'history-v1'));
   activeStorage = storage;

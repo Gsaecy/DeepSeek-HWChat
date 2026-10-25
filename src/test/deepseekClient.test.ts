@@ -78,6 +78,30 @@ test('rejects plaintext remote endpoints but permits localhost development', () 
   assert.equal(buildEndpoint('http://localhost:11434/v1'), 'http://localhost:11434/v1/chat/completions');
 });
 
+test('discovers model ids while preserving provider display names', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    data: {
+      models: [
+        { id: 'deepseek-flash', display_name: 'DeepSeek V4.1 Flash' },
+        { model: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+        { id: 'deepseek-flash', name: 'duplicate fallback' },
+      ],
+    },
+  }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+
+  try {
+    const client = new DeepSeekClient(async () => 'test-key');
+    const models = await client.listModels(settings);
+    assert.deepEqual(models, [
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+      { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash' },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('derives total token usage when a compatible API omits total_tokens', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => {

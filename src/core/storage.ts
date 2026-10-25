@@ -424,10 +424,12 @@ export class ConversationStorage {
               attachments: message.attachments?.map((attachment) => ({
                 content: attachment.content,
                 dataBase64: attachment.dataBase64,
+                thumbnailDataUrl: attachment.thumbnailDataUrl,
               })),
               selection: {
                 content: message.context?.content,
                 dataBase64: message.context?.dataBase64,
+                thumbnailDataUrl: message.context?.thumbnailDataUrl,
               },
             }));
             if (
@@ -435,9 +437,10 @@ export class ConversationStorage {
               || message.usage?.promptTokens !== undefined
               || message.usage?.completionTokens !== undefined
               || message.toolExecutions?.some((tool) => tool.input !== undefined || tool.output !== undefined)
-              || message.attachments?.some((attachment) => attachment.content !== undefined || attachment.dataBase64 !== undefined)
+              || message.attachments?.some((attachment) => attachment.content !== undefined || attachment.dataBase64 !== undefined || attachment.thumbnailDataUrl !== undefined)
               || message.context?.content !== undefined
               || message.context?.dataBase64 !== undefined
+              || message.context?.thumbnailDataUrl !== undefined
             ) {
               delete message.reasoning;
               message.usage = message.usage?.totalTokens
@@ -453,11 +456,13 @@ export class ConversationStorage {
                 for (const attachment of message.attachments) {
                   delete attachment.content;
                   delete attachment.dataBase64;
+                  delete attachment.thumbnailDataUrl;
                 }
               }
               if (message.context) {
                 delete message.context.content;
                 delete message.context.dataBase64;
+                delete message.context.thumbnailDataUrl;
               }
               message.updatedAt = now;
               await writeJsonAtomic(path, message);

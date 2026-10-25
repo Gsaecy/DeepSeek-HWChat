@@ -13,6 +13,11 @@ export interface ApiProfile {
   requestHeaders: Record<string, string>;
 }
 
+export interface ModelOption {
+  id: string;
+  name: string;
+}
+
 export interface UsageInfo {
   promptTokens?: number;
   completionTokens?: number;
@@ -28,6 +33,7 @@ export interface MessageContext {
   bytes?: number;
   language?: string;
   mimeType?: string;
+  thumbnailDataUrl?: string;
 }
 
 export type AgentTaskStatus = 'routing' | 'active' | 'merged' | 'queued' | 'complete' | 'cancelled' | 'error';
@@ -227,7 +233,8 @@ export interface WebviewConversationState {
   conversations: ConversationSummary[];
   settings: Pick<ChatSettings, 'apiProfiles' | 'activeApiProfileId' | 'model' | 'sendOnEnter' | 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort'>;
   apiKeyConfigured: boolean;
-  pendingAttachments: Array<Pick<MessageContext, 'label' | 'path' | 'kind' | 'bytes' | 'mimeType'>>;
+  pendingAttachments: Array<Pick<MessageContext, 'label' | 'path' | 'kind' | 'bytes' | 'mimeType' | 'thumbnailDataUrl'>>;
+  modelOptionsByProfile: Record<string, ModelOption[]>;
   archivedConversations: ConversationSummary[];
   skills: SkillSummary[];
   selectedSkillIds: string[];

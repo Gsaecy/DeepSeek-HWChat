@@ -3,10 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script>document.documentElement.dataset.theme = new URLSearchParams(location.search).get('theme') === 'light' ? 'light' : 'dark';</script>
   <link rel="stylesheet" href="../media/chat.css">
   <title>HWChat Preview</title>
   <style>
-    :root {
+    :root[data-theme="dark"] {
       --vscode-editor-background: #171717;
       --vscode-foreground: #f2f2f2;
       --vscode-sideBar-background: #121212;
@@ -20,6 +21,30 @@
       --vscode-textCodeBlock-background: #202020;
       --vscode-notifications-background: #242424;
       --vscode-errorForeground: #ff6961;
+    }
+    :root[data-theme="light"] {
+      --vscode-editor-background: #f5f5f7;
+      --vscode-foreground: #1d1d1f;
+      --vscode-descriptionForeground: #626269;
+      --vscode-sideBar-background: #ececf0;
+      --vscode-input-background: #fff;
+      --vscode-input-foreground: #1d1d1f;
+      --vscode-input-placeholderForeground: #74747c;
+      --vscode-dropdown-background: #fff;
+      --vscode-dropdown-foreground: #1d1d1f;
+      --vscode-list-hoverBackground: #dedee3;
+      --vscode-list-hoverForeground: #111113;
+      --vscode-button-background: #087af5;
+      --vscode-button-foreground: #fff;
+      --vscode-focusBorder: #0a84ff;
+      --vscode-textLink-foreground: #0969da;
+      --vscode-textCodeBlock-background: #ececf0;
+      --vscode-notifications-background: #fff;
+      --vscode-notifications-foreground: #1d1d1f;
+      --vscode-panel-border: #d1d1d6;
+      --vscode-errorForeground: #d70015;
+      --vscode-testing-iconPassed: #188038;
+      --vscode-editorWarning-foreground: #9a6700;
     }
   </style>
 </head>
@@ -90,14 +115,14 @@
   <script>
     const now = Date.now();
     const previewState = {
-      conversation: { id: 'c1', title: '完成登录模块重构', createdAt: now - 500000, updatedAt: now, messageCount: 5, preview: '正在按新要求继续验证', pinned: true, totalTokens: 312462, model: 'deepseek-reasoner', apiProfileId: 'deepseek', mode: 'agent', skillIds: ['s1', 's2'], skillSelectionInitialized: true, archived: false },
+      conversation: { id: 'c1', title: '完成登录模块重构', createdAt: now - 500000, updatedAt: now, messageCount: 5, preview: '正在按新要求继续验证', pinned: true, totalTokens: 312462, model: 'deepseek-flash', apiProfileId: 'deepseek', mode: 'agent', skillIds: ['s1', 's2'], skillSelectionInitialized: true, archived: false },
       conversations: [
         { id: 'c1', title: '完成登录模块重构', updatedAt: now, messageCount: 5, preview: '正在按新要求继续验证', pinned: true, totalTokens: 312462, model: 'deepseek-reasoner', mode: 'agent' },
         { id: 'c2', title: '排查 Android 构建', updatedAt: now - 7200000, messageCount: 8, preview: 'Gradle 版本需要对齐', pinned: false, totalTokens: 18921 },
       ],
       archivedConversations: [{ id: 'c3', title: '旧版上传模块方案', updatedAt: now - 604800000, messageCount: 12, preview: '已归档', pinned: false, totalTokens: 82001, archived: true }],
       messages: [
-        { id: 'm1', role: 'user', content: '重构登录逻辑，修复并发刷新问题并运行测试。', createdAt: now - 90000, updatedAt: now - 90000, status: 'complete', attachments: [{ label: 'src/AuthManager.ts', path: 'src/AuthManager.ts', kind: 'file', bytes: 8421 }] },
+        { id: 'm1', role: 'user', content: '重构登录逻辑，修复并发刷新问题并运行测试。', createdAt: now - 90000, updatedAt: now - 90000, status: 'complete', attachments: [{ label: 'failure-screenshot.png', kind: 'image', mimeType: 'image/png', bytes: 5620, thumbnailDataUrl: '../resources/logo.png' }, { label: 'src/AuthManager.ts', path: 'src/AuthManager.ts', kind: 'file', bytes: 8421 }] },
         { id: 'm2', role: 'assistant', content: '已把刷新过程改为共享任务，并补充失败重试与并发测试。\n\n需要手动复查时可运行：\n\n```zsh\nnpm run check\nnpm test\n```', reasoning: '先检查认证状态的共享写入，再确认测试覆盖。', createdAt: now - 80000, updatedAt: now - 20000, status: 'streaming', usage: { totalTokens: 312462 }, usedSkills: [{ id: 's1', name: 'TypeScript 质量规范', source: 'workspace', relativePath: '.agents/skills/typescript/SKILL.md' }, { id: 's2', name: '项目文档同步', source: 'copilot', relativePath: '~/.copilot/skills/project-doc-sync/SKILL.md' }], toolExecutions: [
           { callId: 't1', name: 'read_file', summary: '读取 src/AuthManager.ts（8.2 KB）', status: 'success', approval: 'not-required', risk: 'read', startedAt: now - 79000, finishedAt: now - 78500, input: '{"path":"src/AuthManager.ts"}', output: '读取 214 行代码。' },
           { callId: 't2', name: 'replace_in_file', summary: '修改 src/AuthManager.ts：替换 1 处文本', status: 'success', approval: 'approved', risk: 'write', startedAt: now - 70000, finishedAt: now - 68000, changedFiles: ['src/AuthManager.ts'], input: '共享 refreshTask 并在 finally 中清理', output: '文件更新为 228 行（+14）。' },
@@ -106,9 +131,10 @@
         { id: 'm3', role: 'user', content: '不要改公共接口，再补一个刷新失败后的恢复测试。', createdAt: now - 3000, updatedAt: now - 3000, status: 'complete' },
       ],
       hasMore: true,
-      settings: { apiProfiles: [{ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', models: ['deepseek-chat', 'deepseek-reasoner'], requestHeaders: {} }, { id: 'local', name: '本地模型', baseUrl: 'http://localhost:11434/v1', models: ['qwen3-coder'], requestHeaders: {} }], activeApiProfileId: 'deepseek', model: 'deepseek-reasoner', sendOnEnter: true, permissionPreset: 'autopilot', agentMaxSteps: 0, reasoningEffort: 'high' },
+      settings: { apiProfiles: [{ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', models: ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-v4-pro'], requestHeaders: {} }, { id: 'local', name: '本地模型', baseUrl: 'http://localhost:11434/v1', models: ['qwen3-coder'], requestHeaders: {} }], activeApiProfileId: 'deepseek', model: 'deepseek-flash', sendOnEnter: true, permissionPreset: 'autopilot', agentMaxSteps: 0, reasoningEffort: 'high' },
+      modelOptionsByProfile: { deepseek: [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }, { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision Exp' }, { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' }, { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash' }], local: [{ id: 'qwen3-coder', name: 'Qwen3 Coder' }] },
       apiKeyConfigured: true,
-      pendingAttachments: [{ label: 'failure-screenshot.png', kind: 'image', mimeType: 'image/png', bytes: 5620 }],
+      pendingAttachments: [{ label: 'failure-screenshot.png', kind: 'image', mimeType: 'image/png', bytes: 5620, thumbnailDataUrl: '../resources/logo.png' }],
       skills: [{ id: 's1', name: 'TypeScript 质量规范', description: '严格类型、最小改动与测试要求', source: 'workspace', relativePath: '.agents/skills/typescript/SKILL.md' }, { id: 's2', name: '项目文档同步', description: '代码改动后同步 README 与技术文档', source: 'copilot', relativePath: '~/.copilot/skills/project-doc-sync/SKILL.md', defaultEnabled: true, lastUsedAt: now - 20000 }],
       selectedSkillIds: ['s1', 's2'], mode: 'agent', workspaceTrusted: true, agentAvailable: true, availableToolCount: 27, showArchived: false,
       taskTree: { active: true, currentNodeId: 'root', nodes: [{ id: 'root', title: '重构登录逻辑并运行测试', status: 'active', relation: 'root' }, { id: 'update', parentId: 'root', title: '保留公共接口并补恢复测试', status: 'merged', relation: 'related' }, { id: 'queued', parentId: 'root', title: '更新 README 使用说明', status: 'queued', relation: 'queued' }] },
@@ -135,9 +161,9 @@
       document.documentElement.dataset.layoutMetrics = JSON.stringify({
         viewport: { width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth },
         body: { width: document.body.clientWidth, scrollWidth: document.body.scrollWidth },
-        toolbar: rect('modelInput'), composer: rect('composer'), permissions: rect('permissionPresetInput'),
+        toolbar: rect('modelInput'), profile: rect('profileInput'), mode: rect('modeInput'), skills: rect('skillsButton'), settings: rect('settingsButton'), composer: rect('composer'), permissions: rect('permissionPresetInput'),
         steps: rect('agentMaxStepsInput'), reasoning: rect('reasoningEffortInput'), voice: rect('voiceButton'),
-        taskTree: rect('taskTree'), commandCopy: [...document.querySelectorAll('.terminal-command button')].map((node) => {
+        taskTree: rect('taskTree'), pendingImageCount: document.querySelectorAll('.attachment-chip-image img').length, messageImageCount: document.querySelectorAll('.message-image-attachment img').length, selectedModelLabel: document.querySelector('#modelInput option:checked')?.textContent, commandCopy: [...document.querySelectorAll('.terminal-command button')].map((node) => {
           const box = node.getBoundingClientRect(); return { left: box.left, right: box.right, width: box.width };
         }),
       });
@@ -150,6 +176,11 @@
       const prompt = document.getElementById('promptInput');
       prompt.focus();
       prompt.dispatchEvent(new ClipboardEvent('paste', { clipboardData: pasteData, bubbles: true, cancelable: true }));
+      if (new URLSearchParams(location.search).get('composer') === 'long') {
+        prompt.value = Array.from({ length: 14 }, (_, index) => `第 ${index + 1} 行：继续完善输入框布局与运行中任务说明。`).join('\n');
+        prompt.dispatchEvent(new Event('input', { bubbles: true }));
+        prompt.scrollTop = prompt.scrollHeight;
+      }
       const firstMessage = document.querySelector('.message-content p');
       const selection = window.getSelection();
       const range = document.createRange();

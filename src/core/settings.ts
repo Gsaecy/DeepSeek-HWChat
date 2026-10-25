@@ -2,17 +2,27 @@ import * as vscode from 'vscode';
 import { ApiProfile, ChatSettings, PermissionPreset, ReasoningEffort } from './types';
 
 const SECTION = 'hwchat';
+const REASONING_FALLBACK_KEY = 'settings.reasoningEffort';
+
+// A VS Code window can keep the previous contribution registry alive for a
+// short time after an extension upgrade. Keep the composer controls usable in
+// that window while still mirroring the value to the normal configuration.
+let fallbackState: vscode.Memento | undefined;
+
+export function initializeSettingsStorage(state: vscode.Memento): void {
+  fallbackState = state;
+}
 
 export function readSettings(): ChatSettings {
   const configuration = vscode.workspace.getConfiguration(SECTION);
   const legacyBaseUrl = configuration.get<string>('baseUrl', 'https://api.deepseek.com');
-  const legacyModel = configuration.get<string>('model', 'deepseek-chat');
+  const legacyModel = configuration.get<string>('model', 'deepseek-flash');
   const legacyHeaders = configuration.get<Record<string, string>>('requestHeaders', {});
   const apiProfiles = normalizeProfiles(configuration.get<unknown>('apiProfiles'), {
     id: 'default',
     name: 'DeepSeek',
     baseUrl: legacyBaseUrl,
-    models: uniqueStrings([legacyModel, 'deepseek-chat', 'deepseek-reasoner']),
+    models: uniqueStrings([legacyModel, 'deepseek-flash', 'deepseek-v4-pro']),
     requestHeaders: legacyHeaders,
   });
   const configuredProfileId = configuration.get<string>('activeApiProfileId', apiProfiles[0]!.id);
@@ -29,7 +39,7 @@ export function readSettings(): ChatSettings {
     apiProfiles,
     activeApiProfileId: activeProfile.id,
     baseUrl: activeProfile.baseUrl,
-    model: legacyModel || activeProfile.models[0] || 'deepseek-chat',
+    model: legacyModel || activeProfile.models[0] || 'deepseek-flash',
     temperature: clamp(configuration.get<number>('temperature', 1), 0, 2),
     maxTokens: Math.max(0, configuration.get<number>('maxTokens', 0)),
     systemPrompt: configuration.get<string>('systemPrompt', ''),
@@ -43,7 +53,7 @@ export function readSettings(): ChatSettings {
     requestTimeoutSeconds: clamp(configuration.get<number>('requestTimeoutSeconds', 120), 10, 900),
     defaultMode: configuration.get<ChatSettings['defaultMode']>('defaultMode', 'agent'),
     agentMaxSteps: normalizeAgentMaxSteps(configuration.get<number>('agentMaxSteps', 0)),
-    reasoningEffort: normalizeReasoningEffort(configuration.get<string>('reasoningEffort', 'default')),
+    reasoningEffort: readReasoningEffort(configuration),
     permissionPreset,
     ...permission,
     maxReadBytes: clamp(configuration.get<number>('maxReadBytes', 512_000), 16_384, 5_242_880),
@@ -87,9 +97,35 @@ export async function updateSettings(values: Partial<ChatSettings>): Promise<voi
   ];
   for (const [key, value] of entries) {
     if (value !== undefined) {
+      if (key === 'reasoningEffort') {
+        const normalized = normalizeReasoningEffort(value);
+        await fallbackState?.update(REASONING_FALLBACK_KEY, normalized);
+        try {
+          await configuration.update(key, normalized, vscode.ConfigurationTarget.Global);
+        } catch (error) {
+          if (!isUnregisteredConfigurationError(error)) {
+            throw error;
+          }
+        }
+        continue;
+      }
       await configuration.update(key, value, vscode.ConfigurationTarget.Global);
     }
   }
+}
+
+function readReasoningEffort(configuration: vscode.WorkspaceConfiguration): ReasoningEffort {
+  const inspection = configuration.inspect<string>('reasoningEffort');
+  const explicitValue = inspection?.workspaceFolderValue
+    ?? inspection?.workspaceValue
+    ?? inspection?.globalValue;
+  const fallbackValue = fallbackState?.get<string>(REASONING_FALLBACK_KEY);
+  return normalizeReasoningEffort(explicitValue ?? fallbackValue ?? inspection?.defaultValue ?? 'default');
+}
+
+function isUnregisteredConfigurationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not a registered configuration|没有注册配置|未注册配置|configuration.*registered/i.test(message);
 }
 
 export function profileFor(settings: ChatSettings, profileId?: string): ApiProfile {

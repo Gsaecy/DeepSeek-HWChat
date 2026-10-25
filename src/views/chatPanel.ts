@@ -23,6 +23,7 @@ import {
   ChatSettings,
   ConversationMode,
   MessageContext,
+  ModelOption,
   PermissionPreset,
   ReasoningEffort,
   SkillUsage,
@@ -46,6 +47,7 @@ interface ClipboardFile {
   mimeType: string;
   size: number;
   dataBase64: string;
+  thumbnailDataUrl?: string;
 }
 
 type IncomingMessage =
@@ -99,6 +101,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private readonly vscodeTools: VscodeToolBridge;
   private readonly modelDiscoveryAttempts = new Set<string>();
   private readonly modelDiscoveryInFlight = new Set<string>();
+  private readonly discoveredModelOptions = new Map<string, ModelOption[]>();
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -439,7 +442,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         if (currentBytes + data.byteLength > maxTotalBytes) throw new Error('附件总量超过本轮容量上限。');
         const label = cleanAttachmentName(file.name, isImage ? '粘贴的图片' : '粘贴的文件');
         const attachment: MessageContext = isImage
-          ? { label, kind: 'image', bytes: data.byteLength, mimeType, dataBase64: data.toString('base64') }
+          ? {
+            label,
+            kind: 'image',
+            bytes: data.byteLength,
+            mimeType,
+            dataBase64: data.toString('base64'),
+            thumbnailDataUrl: normalizeThumbnailDataUrl(file.thumbnailDataUrl),
+          }
           : { label, kind: 'file', bytes: data.byteLength, mimeType, content: decodeClipboardText(data) };
         this.pendingAttachments.push(attachment);
       } catch (error) {
@@ -525,7 +535,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       const profile = profileFor(configuredSettings, existingConversation?.apiProfileId);
       const selectedModel = existingConversation?.model
         || (profile.models.includes(configuredSettings.model) ? configuredSettings.model : profile.models[0])
-        || configuredSettings.model;
+        || configuredSettings.model
+        || 'deepseek-flash';
       const settings = {
         ...configuredSettings,
         activeApiProfileId: profile.id,
@@ -818,6 +829,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       ? conversation.skillSelectionInitialized ? conversation.skillIds ?? [] : this.skills.defaultEnabledIds()
       : this.activeSkillIds;
     const apiKeyConfigured = await hasApiKey(this.secrets, activeProfile.id, activeProfile.id === 'default');
+    const modelOptionsByProfile = Object.fromEntries(settings.apiProfiles.map((profile) => [
+      profile.id,
+      this.modelOptionsForProfile(profile),
+    ]));
     const state: WebviewConversationState = {
       conversation,
       messages: page.messages.map((message) => this.forWebview(message)),
@@ -834,6 +849,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       },
       apiKeyConfigured,
       pendingAttachments: this.pendingAttachmentsForWebview(),
+      modelOptionsByProfile,
       archivedConversations,
       skills: this.skills.list(),
       selectedSkillIds,
@@ -918,26 +934,44 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     this.modelDiscoveryInFlight.add(discoveryKey);
     await this.post({ type: 'modelsLoading', profileId: profile.id, active: true });
     try {
-      const models = await this.client.listModels({
+      const apiModels = await this.client.listModels({
         ...settings,
         activeApiProfileId: profile.id,
         baseUrl: profile.baseUrl,
         requestHeaders: profile.requestHeaders,
       });
-      const currentModel = this.activeConversationId
-        ? (await this.storage.getConversation(this.activeConversationId))?.model
-        : settings.model;
-      const nextModels = [...new Set([
-        ...(currentModel && !models.includes(currentModel) ? [currentModel] : []),
-        ...models,
-      ])];
+      const activeConversation = this.activeConversationId
+        ? await this.storage.getConversation(this.activeConversationId)
+        : undefined;
+      const activeConversationUsesProfile = Boolean(
+        activeConversation && profileFor(settings, activeConversation.apiProfileId).id === profile.id,
+      );
+      const currentModel = activeConversation && activeConversationUsesProfile
+        ? activeConversation.model
+        : settings.activeApiProfileId === profile.id
+          ? settings.model
+          : undefined;
+      const options = mergeModelOptions(apiModels.map(withKnownModelName));
+      this.discoveredModelOptions.set(profile.id, options);
+      const nextModels = options.map((model) => model.id);
+      const selectedModel = currentModel && nextModels.includes(currentModel) ? currentModel : nextModels[0]!;
       const apiProfiles = settings.apiProfiles.map((item) => item.id === profile.id
         ? { ...item, models: nextModels }
         : item);
-      await updateSettings({ apiProfiles });
-      await this.post({ type: 'modelsChanged', profileId: profile.id, models: nextModels });
+      await updateSettings({
+        apiProfiles,
+        model: settings.activeApiProfileId === profile.id ? selectedModel : undefined,
+      });
+      if (activeConversation && activeConversationUsesProfile && activeConversation.model !== selectedModel) {
+        await this.storage.updateConversation(activeConversation.id, { model: selectedModel });
+        this.callbacks.onHistoryChanged();
+      }
+      await this.post({ type: 'modelsChanged', profileId: profile.id, models: nextModels, options, model: selectedModel });
       if (showFeedback) {
-        await this.post({ type: 'toast', tone: 'neutral', text: `已从“${profile.name}”获取 ${models.length} 个模型。` });
+        const switched = currentModel && currentModel !== selectedModel
+          ? ` 当前模型“${currentModel}”不在接口目录中，已切换到“${selectedModel}”。`
+          : '';
+        await this.post({ type: 'toast', tone: switched ? 'warning' : 'neutral', text: `已从“${profile.name}”获取 ${options.length} 个 API 模型。${switched}` });
       }
     } catch (error) {
       if (showFeedback) {
@@ -1048,6 +1082,27 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     return `${profileId}\u0000${baseUrl}`;
   }
 
+  private modelOptionsForProfile(profile: ChatSettings['apiProfiles'][number]): ModelOption[] {
+    const discovered = this.discoveredModelOptions.get(profile.id);
+    if (discovered?.length) return discovered;
+    return mergeModelOptions(
+      this.officialModelOptions(profile),
+      profile.models.map(modelOptionForId),
+    );
+  }
+
+  private officialModelOptions(profile: ChatSettings['apiProfiles'][number]): ModelOption[] {
+    return this.isOfficialDeepSeekProfile(profile) ? OFFICIAL_DEEPSEEK_MODELS : [];
+  }
+
+  private isOfficialDeepSeekProfile(profile: ChatSettings['apiProfiles'][number]): boolean {
+    try {
+      return new URL(profile.baseUrl).hostname.toLocaleLowerCase() === 'api.deepseek.com';
+    } catch {
+      return false;
+    }
+  }
+
   private async toggleArchive(id: string, archived: boolean): Promise<void> {
     if (id === this.streamingConversationId) {
       await this.post({ type: 'toast', tone: 'warning', text: '请先停止当前任务，再归档对话。' });
@@ -1113,6 +1168,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       bytes: context.bytes,
       language: context.language,
       mimeType: context.mimeType,
+      thumbnailDataUrl: context.thumbnailDataUrl,
     };
   }
 
@@ -1257,6 +1313,40 @@ function isConversationMode(value: unknown): value is ConversationMode {
   return value === 'chat' || value === 'agent' || value === 'plan';
 }
 
+const OFFICIAL_DEEPSEEK_MODELS: ModelOption[] = [
+  { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash' },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
+];
+
+const DEEPSEEK_MODEL_NAMES = new Map<string, string>([
+  ...OFFICIAL_DEEPSEEK_MODELS.map((model) => [model.id, model.name] as const),
+  ['deepseek-v4-flash', 'DeepSeek-V4-Flash（兼容路由）'],
+  ['deepseek-v4-flash-vision-exp', 'DeepSeek-V4-Flash-Vision-Exp（兼容路由）'],
+  ['deepseek-chat', 'DeepSeek Chat（旧接口名）'],
+  ['deepseek-reasoner', 'DeepSeek Reasoner（旧接口名）'],
+]);
+
+function modelOptionForId(id: string): ModelOption {
+  return { id, name: DEEPSEEK_MODEL_NAMES.get(id) ?? id };
+}
+
+function withKnownModelName(model: ModelOption): ModelOption {
+  const knownName = DEEPSEEK_MODEL_NAMES.get(model.id);
+  return model.name === model.id && knownName ? { ...model, name: knownName } : model;
+}
+
+function mergeModelOptions(...groups: ModelOption[][]): ModelOption[] {
+  const merged = new Map<string, ModelOption>();
+  for (const model of groups.flat()) {
+    const id = String(model.id ?? '').trim();
+    if (!id) continue;
+    const name = String(model.name ?? '').trim() || id;
+    const existing = merged.get(id);
+    if (!existing || existing.name === existing.id) merged.set(id, { id, name });
+  }
+  return [...merged.values()].slice(0, 500);
+}
+
 function isRiskyPermissionPreset(value: PermissionPreset): boolean {
   return value === 'autopilot' || value === 'full' || value === 'custom';
 }
@@ -1278,6 +1368,12 @@ function decodeBase64File(value: string): Buffer {
   const data = Buffer.from(normalized, 'base64');
   if (!data.byteLength) throw new Error('剪贴板附件为空。');
   return data;
+}
+
+function normalizeThumbnailDataUrl(value: string | undefined): string | undefined {
+  const thumbnail = String(value ?? '').trim();
+  if (!thumbnail || thumbnail.length > 120_000) return undefined;
+  return /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/i.test(thumbnail) ? thumbnail : undefined;
 }
 
 function normalizeAttachmentMime(value: string, name: string): string {

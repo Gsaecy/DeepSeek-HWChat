@@ -1,6 +1,6 @@
 # HWChat
 
-当前版本：**0.1.2**
+当前版本：**0.1.3**
 
 HWChat 是面向 VS Code 的本地优先编码 Agent 扩展。项目仓库：<https://github.com/Gsaecy/DeepSeek-HWChat>
 
@@ -14,11 +14,12 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 - 每个执行步骤默认折叠，只显示结果摘要；展开后可查看工具输入、输出、审批状态、耗时和涉及文件。
 - 可从聊天输入区添加多个文件，也可在资源管理器右键选择“HWChat: 添加文件到对话”。文件内容不会发送给 Webview，只在扩展宿主中按需加入 API 请求。
 - 支持多个 OpenAI 兼容 API 配置档，每个配置档可独立保存地址、API Key、模型列表和请求头，并在对话顶部即时切换。
+- 模型选择不依赖 Copilot 或其它扩展注册的模型。HWChat 会直接调用当前 API 的 `/models` 接口读取可用细分模型和展示名称；DeepSeek 官网接口在首次刷新前以 `deepseek-flash` 和 `deepseek-v4-pro` 作为离线兜底。
 - 每条完成的助手回复显示本轮 Token 消耗，统一换算为百万 Token（`M tokens`）；左侧对话记录显示该对话所有轮次的累计消耗。
 - 对话输入框下方直接提供权限预设、执行步骤和思考层级。执行步骤默认不限；切换到 Autopilot、完全访问或自定义权限前会显示风险说明，确认后对下一次发送立即生效。
 - Agent 运行时输入框仍可编辑和发送。相关补充会合并到当前任务并在下一个工具边界重新规划，尚未执行的冲突步骤会跳过；无关任务进入可见任务树队列，前一分支完成后自动继续。
 - Agent 运行时可以自由向上查看历史；只有用户停留在底部时才自动跟随流式输出。
-- 支持从输入框粘贴图片、截图和文件。图片会以兼容 OpenAI 的多模态内容发送；任务缓存到期后会移除附件正文和图片 Base64，只保留名称、类型和大小摘要。
+- 支持从输入框粘贴图片、截图和文件，粘贴后会先显示本地缩略图。图片会以兼容 OpenAI 的多模态内容发送；任务缓存到期后会移除附件正文、图片 Base64 和缩略图，只保留名称、类型和大小摘要。
 - 支持语音输入。HWChat 仅接收识别后的文字，不把音频写入对话缓存；识别文字仍需点击发送才会提交给当前 API。
 - 模型回复中的终端命令会显示为独立的“终端命令”代码块，并提供经 VS Code 剪贴板确认的一键复制；Agent 执行步骤中的输入、结果和实际命令也可直接复制，消息正文支持选择后用 `⌘/Ctrl+C` 复制。
 - 输入框支持 `⌘/Ctrl+V` 粘贴文字、图片、截图和文件；剪贴板同时包含文字和附件时会一起保留，并在 Webview 原生粘贴失效时自动使用 VS Code 剪贴板兜底。
@@ -67,7 +68,7 @@ HWChat 与“本地skill快捷调用”共享 `~/.copilot/.skill-quick-launch.js
 安装已构建的 VSIX：
 
 ```bash
-code --install-extension hwchat-0.1.2.vsix
+code --install-extension hwchat-0.1.3.vsix
 ```
 
 在 VS Code 中打开命令面板，执行 `HWChat: 打开对话面板`。首次使用时进入设置，创建一个 API 配置档并保存 API Key；密钥只会进入 VS Code SecretStorage，不会写入 `settings.json`、项目文件或 VSIX。
@@ -81,7 +82,7 @@ npm test
 npm run package
 ```
 
-构建结果为项目根目录下的 `hwchat-0.1.2.vsix`。同一扩展已发布过的版本不能覆盖上传 Marketplace，发布新构建时必须递增版本号。
+构建结果为项目根目录下的 `hwchat-0.1.3.vsix`。同一扩展已发布过的版本不能覆盖上传 Marketplace，发布新构建时必须递增版本号。
 
 扩展图标使用 `resources/logo.png`。在 VS Code 中按 `F5` 启动扩展开发主机。
 

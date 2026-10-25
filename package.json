@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek, local skills, durable history and approval-controlled workspace tools.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -212,7 +212,7 @@
         },
         "hwchat.model": {
           "type": "string",
-          "default": "deepseek-chat",
+          "default": "deepseek-flash",
           "description": "默认模型。可在对话面板顶部即时切换。"
         },
         "hwchat.requestHeaders": {
