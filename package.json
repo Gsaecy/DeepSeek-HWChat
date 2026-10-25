@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek, local skills, durable history and approval-controlled workspace tools.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -293,10 +293,16 @@
         },
         "hwchat.agentMaxSteps": {
           "type": "number",
-          "default": 12,
-          "minimum": 1,
-          "maximum": 40,
-          "description": "单轮 Agent 请求最多执行的工具循环次数。"
+          "default": 0,
+          "minimum": 0,
+          "description": "单轮 Agent 请求最多执行的工具循环次数，0 表示不限制。"
+        },
+        "hwchat.reasoningEffort": {
+          "type": "string",
+          "enum": ["default", "none", "low", "high", "max"],
+          "enumDescriptions": ["跟随模型默认值", "关闭思考", "低思考强度", "高思考强度", "最大思考强度"],
+          "default": "default",
+          "description": "对话请求的思考层级。对 DeepSeek 使用 none/low/high/max；其他 OpenAI 兼容接口会把 max 映射为 high。"
         },
         "hwchat.permissionPreset": {
           "type": "string",

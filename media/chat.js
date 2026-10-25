@@ -4,10 +4,12 @@
     'app', 'historyPane', 'historyButton', 'closeHistoryButton', 'newChatButton',
     'historySearch', 'archiveViewButton', 'conversationList', 'settingsButton',
     'settingsButtonSide', 'exportButton', 'archiveButton', 'conversationTitle',
-    'connectionState', 'profileInput', 'modelInput', 'modeInput', 'skillsButton', 'skillsCount',
+    'connectionState', 'profileInput', 'modelInput', 'modeInput', 'refreshModelsButton', 'skillsButton', 'skillsCount',
     'skillsPanel', 'skillsList', 'workspaceTrustBadge', 'messageViewport',
     'messageList', 'emptyState', 'loadOlderButton', 'attachmentList', 'contextChip',
     'contextLabel', 'removeContextButton', 'composer', 'promptInput', 'composerHint',
+    'permissionPresetInput', 'agentMaxStepsInput', 'reasoningEffortInput', 'voiceButton',
+    'agentRunState', 'agentRunLabel', 'agentRunMeta', 'taskTree', 'taskTreeSummary', 'taskTreeList',
     'attachButton', 'sendButton', 'stopButton', 'toast',
   ].map((id) => [id, document.getElementById(id)]));
 
@@ -15,14 +17,52 @@
     conversations: [], archivedConversations: [], conversation: null, messages: [],
     hasMore: false, sendOnEnter: true, streaming: false, streamingConversationId: null,
     search: '', pendingAttachments: [], skills: [], selectedSkillIds: [], mode: 'agent',
-    apiProfiles: [], activeApiProfileId: '',
-    workspaceTrusted: false, agentAvailable: false, showArchived: false, renderTimer: null,
+    apiProfiles: [], activeApiProfileId: '', permissionPreset: 'review', agentMaxSteps: 0, reasoningEffort: 'default',
+    permissionPresetPending: false, modelLoadingProfileId: null,
+    workspaceTrusted: false, agentAvailable: false, availableToolCount: 0, showArchived: false, renderTimer: null,
+    taskTree: null, autoFollow: true, renderingMessages: false, voiceRecognition: null, voiceActive: false,
   };
+
+  const clipboardWrites = new Map();
+  let clipboardSequence = 0;
+  let pasteSequence = 0;
+  let pasteFallbackTimer = null;
+  let pendingPaste = null;
+  let deferredMessageRenderMode = null;
+  let selectingMessageText = false;
 
   function post(type, payload = {}) { vscode.postMessage({ type, ...payload }); }
 
+  function requestClipboardWrite(text, button, idleLabel = '复制') {
+    if (!text) {
+      showToast('没有可复制的内容。', 'warning');
+      return;
+    }
+    const requestId = `copy-${Date.now()}-${++clipboardSequence}`;
+    if (button) {
+      button.disabled = true;
+      button.textContent = '复制中…';
+    }
+    const timer = setTimeout(() => finishClipboardWrite(requestId, false, '写入剪贴板超时。'), 3_000);
+    clipboardWrites.set(requestId, { button, idleLabel, timer });
+    post('copyText', { text, requestId });
+  }
+
+  function finishClipboardWrite(requestId, ok, error) {
+    const pending = clipboardWrites.get(requestId);
+    if (!pending) return;
+    clipboardWrites.delete(requestId);
+    clearTimeout(pending.timer);
+    if (pending.button) {
+      pending.button.disabled = false;
+      pending.button.textContent = ok ? '已复制' : pending.idleLabel;
+      if (ok) setTimeout(() => { if (pending.button.isConnected) pending.button.textContent = pending.idleLabel; }, 1_200);
+    }
+    if (!ok) showToast(`复制失败：${error || '无法访问系统剪贴板'}`, 'warning');
+  }
+
   function renderAll() {
-    renderHistory(); renderHeader(); renderSkills(); renderMessages(false); renderAttachments(); updateComposerState();
+    renderHistory(); renderHeader(); renderSkills(); renderMessages('replace'); renderAttachments(); renderTaskTree(); updateComposerState();
   }
 
   function renderHistory() {
@@ -75,11 +115,19 @@
     elements.modeInput.value = state.mode; elements.exportButton.disabled = !state.conversation;
     elements.archiveButton.disabled = !state.conversation || state.streaming;
     elements.archiveButton.title = archived ? '恢复对话' : '归档';
-    elements.connectionState.textContent = state.streaming ? 'Agent 正在执行' : archived ? '已归档 · 只读' : state.mode !== 'chat' && !state.workspaceTrusted ? '未信任 · 写入与命令受限' : '准备就绪';
+    elements.connectionState.textContent = state.streaming ? 'Agent 正在执行' : archived ? '已归档 · 只读' : state.mode !== 'chat' && !state.workspaceTrusted ? '未信任 · 写入与命令受限' : `准备就绪${state.availableToolCount ? ` · ${state.availableToolCount} 个工具` : ''}`;
     elements.connectionState.classList.toggle('live', state.streaming);
     elements.connectionState.classList.toggle('restricted', !state.workspaceTrusted && state.mode !== 'chat');
     elements.skillsCount.textContent = String(state.selectedSkillIds.length);
     elements.skillsButton.classList.toggle('active', state.selectedSkillIds.length > 0);
+    elements.permissionPresetInput.value = state.permissionPreset;
+    ensureStepOption(state.agentMaxSteps);
+    elements.agentMaxStepsInput.value = String(state.agentMaxSteps);
+    elements.reasoningEffortInput.value = state.reasoningEffort;
+    const activeProfileId = state.conversation?.apiProfileId || state.activeApiProfileId;
+    const modelsLoading = state.modelLoadingProfileId === activeProfileId;
+    elements.refreshModelsButton.classList.toggle('loading', modelsLoading);
+    elements.refreshModelsButton.title = modelsLoading ? '正在刷新模型列表' : '刷新模型列表';
   }
 
   function syncConnectionSelectors() {
@@ -100,6 +148,13 @@
       select.dataset.options = signature;
     }
     select.value = selected;
+  }
+
+  function ensureStepOption(value) {
+    const normalized = Math.max(0, Math.floor(Number(value) || 0));
+    if ([...elements.agentMaxStepsInput.options].some((option) => Number(option.value) === normalized)) return;
+    const option = document.createElement('option'); option.value = String(normalized); option.textContent = `${normalized} 步`;
+    elements.agentMaxStepsInput.append(option);
   }
 
   function renderSkills() {
@@ -127,18 +182,83 @@
     }
   }
 
-  function renderMessages(preserveScroll) {
-    const viewport = elements.messageViewport; const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop;
+  function isNearBottom() {
+    const viewport = elements.messageViewport;
+    return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 72;
+  }
+
+  function hasMessageSelection() {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.toString()) return false;
+    return Boolean(
+      (selection.anchorNode && elements.messageViewport.contains(selection.anchorNode))
+      || (selection.focusNode && elements.messageViewport.contains(selection.focusNode)),
+    );
+  }
+
+  function clearPendingPaste() {
+    clearTimeout(pasteFallbackTimer);
+    pasteFallbackTimer = null;
+    pendingPaste = null;
+  }
+
+  function deferMessageRender(mode) {
+    const priority = { keep: 0, replace: 1, prepend: 2, bottom: 3 };
+    if (!deferredMessageRenderMode || priority[mode] > priority[deferredMessageRenderMode]) deferredMessageRenderMode = mode;
+  }
+
+  function renderMessages(mode = 'keep') {
+    if (selectingMessageText || hasMessageSelection()) {
+      deferMessageRender(mode);
+      return;
+    }
+    deferredMessageRenderMode = null;
+    const viewport = elements.messageViewport;
+    const previousTop = viewport.scrollTop;
+    const previousHeight = viewport.scrollHeight;
+    const shouldFollow = mode === 'bottom' || state.autoFollow;
+    state.renderingMessages = true;
     elements.messageList.replaceChildren(); elements.emptyState.hidden = state.messages.length > 0;
     elements.loadOlderButton.hidden = !state.hasMore || !state.messages.length;
     for (const message of state.messages) elements.messageList.append(renderMessage(message));
-    requestAnimationFrame(() => { viewport.scrollTop = preserveScroll ? viewport.scrollHeight - distanceFromBottom : viewport.scrollHeight; });
+    requestAnimationFrame(() => {
+      if (shouldFollow) viewport.scrollTop = viewport.scrollHeight;
+      else if (mode === 'prepend') viewport.scrollTop = previousTop + Math.max(0, viewport.scrollHeight - previousHeight);
+      else viewport.scrollTop = previousTop;
+      state.renderingMessages = false;
+    });
   }
 
   function scheduleMessageRender() {
     if (state.renderTimer) return;
-    state.renderTimer = setTimeout(() => { state.renderTimer = null; renderMessages(false); }, 70);
+    state.renderTimer = setTimeout(() => { state.renderTimer = null; renderMessages('keep'); }, 70);
   }
+
+  function renderTaskTree() {
+    const tree = state.taskTree;
+    const nodes = tree?.nodes || [];
+    elements.agentRunState.hidden = !state.streaming;
+    elements.taskTree.hidden = !nodes.length;
+    if (!nodes.length) return;
+    const routing = nodes.filter((node) => node.status === 'routing').length;
+    const queued = nodes.filter((node) => node.status === 'queued').length;
+    const current = nodes.find((node) => node.id === tree.currentNodeId);
+    elements.agentRunLabel.textContent = current?.title ? `Agent 正在执行：${current.title}` : 'Agent 正在执行';
+    elements.agentRunMeta.textContent = [routing ? `${routing} 条判断中` : '', queued ? `${queued} 条排队` : ''].filter(Boolean).join(' · ');
+    elements.taskTreeSummary.textContent = `${nodes.length} 个节点${queued ? ` · ${queued} 个排队` : ''}`;
+    elements.taskTreeList.replaceChildren();
+    const rootId = nodes[0]?.id;
+    for (const node of nodes) {
+      const row = document.createElement('div');
+      row.className = `task-node status-${node.status}${node.id === tree.currentNodeId ? ' current' : ''}`;
+      if (node.parentId && node.parentId !== rootId) row.classList.add('nested');
+      row.append(textElement('span', 'task-node-status', taskStatusSymbol(node.status)), textElement('span', 'task-node-title', node.title), textElement('small', '', taskStatusLabel(node.status)));
+      elements.taskTreeList.append(row);
+    }
+  }
+
+  function taskStatusSymbol(status) { return status === 'complete' ? '✓' : status === 'active' ? '●' : status === 'routing' ? '…' : status === 'merged' ? '↳' : status === 'queued' ? '○' : '−'; }
+  function taskStatusLabel(status) { return ({ active: '执行中', routing: '判断关联性', merged: '已合并', queued: '排队', complete: '完成', cancelled: '已取消', error: '失败' })[status] || status; }
 
   function renderMessage(message) {
     const article = document.createElement('article');
@@ -146,6 +266,11 @@
     const meta = document.createElement('div'); meta.className = 'message-meta';
     const author = textElement('span', '', message.role === 'user' ? '你' : 'HWChat');
     const time = textElement('time', '', formatTime(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); meta.append(author, time);
+    if (message.content) {
+      const copy = textElement('button', 'message-copy-button', '复制'); copy.type = 'button'; copy.title = '复制这条消息';
+      copy.addEventListener('click', () => requestClipboardWrite(message.content, copy));
+      meta.append(copy);
+    }
     const body = document.createElement('div'); body.className = 'message-body';
     const attached = [message.context, ...(message.attachments || [])].filter(Boolean);
     if (attached.length) body.append(renderMessageAttachments(attached));
@@ -188,7 +313,7 @@
       summary.append(textElement('span', 'tool-status', statusSymbol(tool.status)), textElement('span', 'tool-summary', tool.summary || tool.name), textElement('small', '', toolMeta(tool)));
       const detail = document.createElement('div'); detail.className = 'tool-detail';
       if (tool.changedFiles?.length) detail.append(textElement('div', 'tool-files', `文件：${tool.changedFiles.join('、')}`));
-      if (tool.input) detail.append(detailBlock('输入', tool.input));
+      if (tool.input) detail.append(detailBlock('输入', tool.input, tool.risk === 'command' ? commandText(tool.input) : undefined));
       if (tool.output) detail.append(detailBlock('结果', tool.output));
       if (!tool.input && !tool.output) detail.append(textElement('p', 'tool-cleaned', tool.finishedAt ? '详细缓存已按保留策略清理，摘要仍保留。' : '等待执行结果。'));
       details.append(summary, detail); section.append(details);
@@ -196,10 +321,24 @@
     return section;
   }
 
-  function detailBlock(label, value) {
+  function detailBlock(label, value, preferredCopyText) {
     const block = document.createElement('div'); block.className = 'tool-detail-block';
+    const heading = document.createElement('div'); heading.className = 'tool-detail-heading';
+    const idleLabel = preferredCopyText ? '复制命令' : '复制';
+    const copy = textElement('button', '', idleLabel); copy.type = 'button'; copy.title = preferredCopyText ? '复制实际终端命令' : `复制${label}`;
+    copy.addEventListener('click', () => requestClipboardWrite(preferredCopyText || value, copy, idleLabel));
     const pre = document.createElement('pre'); const code = document.createElement('code'); code.textContent = value; pre.append(code);
-    block.append(textElement('strong', '', label), pre); return block;
+    heading.append(textElement('strong', '', label), copy); block.append(heading, pre); return block;
+  }
+
+  function commandText(value) {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed.command === 'string' && parsed.command.trim()) return parsed.command;
+    } catch {
+      // Non-JSON command input is already directly copyable.
+    }
+    return value;
   }
 
   function statusSymbol(status) { return status === 'success' ? '✓' : status === 'denied' ? '−' : status === 'error' ? '!' : '…'; }
@@ -219,10 +358,13 @@
     const lines = String(text || '').replace(/\r\n/g, '\n').split('\n'); let paragraph = []; let code = []; let language = ''; let inCode = false;
     const flushParagraph = () => { if (!paragraph.length) return; const value = paragraph.join('\n').trimEnd(); if (value) { const node = document.createElement('p'); appendInline(node, value); container.append(node); } paragraph = []; };
     const flushCode = () => {
-      const wrapper = document.createElement('div'); wrapper.className = 'code-block'; const header = document.createElement('div'); header.className = 'code-header';
-      const copy = textElement('button', '', '复制'); copy.type = 'button'; copy.addEventListener('click', async () => { await navigator.clipboard.writeText(code.join('\n')); copy.textContent = '已复制'; setTimeout(() => { copy.textContent = '复制'; }, 1200); });
-      const pre = document.createElement('pre'); const codeNode = document.createElement('code'); codeNode.textContent = code.join('\n'); pre.append(codeNode);
-      header.append(textElement('span', '', language || 'code'), copy); wrapper.append(header, pre); container.append(wrapper); code = []; language = '';
+      const codeText = code.join('\n');
+      const shellLanguage = /^(bash|zsh|sh|shell|powershell|pwsh|cmd|bat|terminal|console)$/i.test(language) || (!language && looksLikeShell(codeText));
+      const wrapper = document.createElement('div'); wrapper.className = `code-block${shellLanguage ? ' terminal-command' : ''}`; const header = document.createElement('div'); header.className = 'code-header';
+      const idleLabel = shellLanguage ? '复制命令' : '复制';
+      const copy = textElement('button', '', idleLabel); copy.type = 'button'; copy.title = shellLanguage ? '复制终端命令' : '复制代码'; copy.addEventListener('click', () => requestClipboardWrite(codeText, copy, idleLabel));
+      const pre = document.createElement('pre'); const codeNode = document.createElement('code'); codeNode.textContent = codeText; pre.append(codeNode);
+      header.append(textElement('span', '', shellLanguage ? `终端命令 · ${language || 'shell'}` : language || 'code'), copy); wrapper.append(header, pre); container.append(wrapper); code = []; language = '';
     };
     for (const line of lines) {
       const fence = line.match(/^```\s*([^\s`]*)/);
@@ -230,6 +372,10 @@
       if (inCode) code.push(line); else if (!line.trim()) flushParagraph(); else paragraph.push(line);
     }
     if (inCode) flushCode(); flushParagraph();
+  }
+
+  function looksLikeShell(value) {
+    return /^(?:\$\s*)?(?:npm|pnpm|yarn|git|cd|ls|mkdir|rm|cp|mv|curl|wget|python3?|node|npx|docker|kubectl|gradle|\.\/|swift|go|cargo|chmod|chown|brew|apt|pip3?|export|setx|powershell)\b/im.test(value.trim());
   }
 
   function appendInline(parent, value) {
@@ -260,16 +406,27 @@
 
   function updateComposerState() {
     const hasText = elements.promptInput.value.trim().length > 0 || state.pendingAttachments.length > 0; const archived = Boolean(state.conversation?.archived);
-    elements.sendButton.disabled = !hasText || state.streaming || archived; elements.sendButton.hidden = state.streaming; elements.stopButton.hidden = !state.streaming;
-    elements.promptInput.disabled = state.streaming || archived; elements.attachButton.disabled = state.streaming || archived;
+    elements.sendButton.disabled = !hasText || archived || state.permissionPresetPending; elements.sendButton.hidden = false; elements.stopButton.hidden = !state.streaming;
+    elements.promptInput.disabled = archived; elements.attachButton.disabled = archived;
     elements.profileInput.disabled = state.streaming || archived; elements.modelInput.disabled = state.streaming || archived; elements.modeInput.disabled = state.streaming || archived; elements.skillsButton.disabled = state.streaming || archived;
-    elements.promptInput.placeholder = archived ? '该对话已归档，恢复后可继续' : '询问代码、调试问题或直接交给 Agent 实现…';
-    elements.composerHint.textContent = archived ? '归档对话为只读' : state.sendOnEnter ? 'Enter 发送 · Shift+Enter 换行' : '⌘/Ctrl+Enter 发送';
+    elements.refreshModelsButton.disabled = state.streaming || archived || Boolean(state.modelLoadingProfileId);
+    elements.permissionPresetInput.disabled = state.streaming || archived || state.permissionPresetPending;
+    elements.agentMaxStepsInput.disabled = state.streaming || archived;
+    elements.reasoningEffortInput.disabled = state.streaming || archived;
+    elements.voiceButton.disabled = archived;
+    elements.promptInput.placeholder = archived ? '该对话已归档，恢复后可继续' : state.streaming ? 'Agent 正在执行；新消息会自动合并到当前任务或加入队列…' : '询问代码、调试问题或直接交给 Agent 实现…';
+    elements.composerHint.textContent = archived ? '归档对话为只读' : state.streaming ? '发送后自动判断任务关系' : state.sendOnEnter ? 'Enter 发送 · Shift+Enter 换行' : '⌘/Ctrl+Enter 发送';
   }
 
   function autoResize() { elements.promptInput.style.height = 'auto'; elements.promptInput.style.height = `${Math.min(elements.promptInput.scrollHeight, 180)}px`; updateComposerState(); }
-  function submit() { const text = elements.promptInput.value.trim(); if ((!text && !state.pendingAttachments.length) || state.streaming || state.conversation?.archived) return; elements.promptInput.value = ''; autoResize(); post('send', { text, mode: state.mode, skillIds: state.selectedSkillIds }); }
-  function setStreaming(value, conversationId = null) { state.streaming = value; state.streamingConversationId = value ? conversationId : null; renderHeader(); updateComposerState(); }
+  function submit() {
+    const text = elements.promptInput.value.trim();
+    if ((!text && !state.pendingAttachments.length) || state.conversation?.archived || state.permissionPresetPending) return;
+    elements.promptInput.value = ''; state.autoFollow = true; autoResize();
+    if (state.streaming) post('sendWhileRunning', { text });
+    else post('send', { text, mode: state.mode, skillIds: state.selectedSkillIds, permissionPreset: state.permissionPreset, agentMaxSteps: state.agentMaxSteps, reasoningEffort: state.reasoningEffort });
+  }
+  function setStreaming(value, conversationId = null) { state.streaming = value; state.streamingConversationId = value ? conversationId : null; renderHeader(); renderTaskTree(); updateComposerState(); }
   function showToast(text, tone = 'neutral') { elements.toast.textContent = text; elements.toast.dataset.tone = tone; elements.toast.hidden = false; clearTimeout(showToast.timer); showToast.timer = setTimeout(() => { elements.toast.hidden = true; }, 4200); }
   function closeMobileHistory() { elements.app.classList.remove('history-open'); }
   function textElement(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; node.textContent = text; return node; }
@@ -286,39 +443,245 @@
   elements.historySearch.addEventListener('input', (event) => { state.search = event.target.value; renderHistory(); });
   elements.modelInput.addEventListener('change', (event) => post('setModel', { model: event.target.value }));
   elements.profileInput.addEventListener('change', (event) => post('setProfile', { profileId: event.target.value }));
+  elements.refreshModelsButton.addEventListener('click', () => post('refreshModels', { profileId: elements.profileInput.value }));
   elements.modeInput.addEventListener('change', (event) => { state.mode = event.target.value; post('setMode', { mode: state.mode }); renderHeader(); updateComposerState(); });
-  elements.composer.addEventListener('submit', (event) => { event.preventDefault(); submit(); }); elements.promptInput.addEventListener('input', autoResize);
-  elements.promptInput.addEventListener('keydown', (event) => { const commandEnter = (event.metaKey || event.ctrlKey) && event.key === 'Enter'; const regularEnter = state.sendOnEnter && event.key === 'Enter' && !event.shiftKey && !event.isComposing; if (commandEnter || regularEnter) { event.preventDefault(); submit(); } });
+  elements.permissionPresetInput.addEventListener('change', (event) => {
+    const permissionPreset = event.target.value;
+    if (permissionPreset === state.permissionPreset) return;
+    state.permissionPresetPending = true;
+    updateComposerState();
+    post('setPermissionPreset', { permissionPreset });
+  });
+  elements.agentMaxStepsInput.addEventListener('change', (event) => {
+    state.agentMaxSteps = Math.max(0, Math.floor(Number(event.target.value) || 0));
+    post('setAgentMaxSteps', { agentMaxSteps: state.agentMaxSteps });
+    renderHeader();
+  });
+  elements.reasoningEffortInput.addEventListener('change', (event) => {
+    state.reasoningEffort = event.target.value || 'default';
+    post('setReasoningEffort', { reasoningEffort: state.reasoningEffort });
+    renderHeader();
+  });
+  elements.voiceButton.addEventListener('click', () => post('requestVoiceInput'));
+  elements.composer.addEventListener('submit', (event) => { event.preventDefault(); submit(); });
+  elements.promptInput.addEventListener('input', () => {
+    if (pendingPaste && elements.promptInput.value !== pendingPaste.value) clearPendingPaste();
+    autoResize();
+  });
+  elements.promptInput.addEventListener('keydown', (event) => {
+    const pasteShortcut = (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLocaleLowerCase() === 'v';
+    if (pasteShortcut) {
+      clearTimeout(pasteFallbackTimer);
+      const requestId = `paste-${Date.now()}-${++pasteSequence}`;
+      pendingPaste = {
+        requestId,
+        value: elements.promptInput.value,
+        selectionStart: elements.promptInput.selectionStart ?? elements.promptInput.value.length,
+        selectionEnd: elements.promptInput.selectionEnd ?? elements.promptInput.value.length,
+      };
+      pasteFallbackTimer = setTimeout(() => {
+        if (pendingPaste?.requestId === requestId) post('readClipboardText', { requestId });
+      }, 150);
+      return;
+    }
+    const commandEnter = (event.metaKey || event.ctrlKey) && event.key === 'Enter';
+    const regularEnter = state.sendOnEnter && event.key === 'Enter' && !event.shiftKey && !event.isComposing;
+    if (commandEnter || regularEnter) { event.preventDefault(); submit(); }
+  });
   elements.loadOlderButton.addEventListener('click', () => { const first = state.messages[0]; if (first) post('loadOlder', { before: first.id }); });
+  elements.messageViewport.addEventListener('scroll', () => {
+    if (!state.renderingMessages) state.autoFollow = isNearBottom();
+  }, { passive: true });
+  elements.promptInput.addEventListener('paste', (event) => {
+    const files = clipboardFiles(event.clipboardData);
+    const text = clipboardPlainText(event.clipboardData);
+    if (!files.length && !text) return;
+    clearPendingPaste();
+    event.preventDefault();
+    if (text) insertPromptText(text);
+    void readClipboardFiles(files);
+  });
   for (const button of document.querySelectorAll('[data-prompt]')) button.addEventListener('click', () => { elements.promptInput.value = button.dataset.prompt || ''; autoResize(); elements.promptInput.focus(); });
   document.addEventListener('click', (event) => { if (!elements.skillsPanel.hidden && !elements.skillsPanel.contains(event.target) && !elements.skillsButton.contains(event.target)) elements.skillsPanel.hidden = true; });
+  elements.messageViewport.addEventListener('pointerdown', (event) => {
+    if (event.button === 0 && event.target instanceof Element && event.target.closest('.message-body')) selectingMessageText = true;
+  });
+  document.addEventListener('pointerup', () => {
+    if (!selectingMessageText) return;
+    selectingMessageText = false;
+    if (!hasMessageSelection() && deferredMessageRenderMode) {
+      const mode = deferredMessageRenderMode;
+      deferredMessageRenderMode = null;
+      renderMessages(mode);
+    }
+  });
+  document.addEventListener('selectionchange', () => {
+    if (!selectingMessageText && !hasMessageSelection() && deferredMessageRenderMode) {
+      const mode = deferredMessageRenderMode;
+      deferredMessageRenderMode = null;
+      renderMessages(mode);
+    }
+  });
+  document.addEventListener('copy', (event) => {
+    const text = selectedTextForCopy(event.target);
+    if (!text) return;
+    try {
+      if (event.clipboardData) {
+        event.clipboardData.setData('text/plain', text);
+        event.preventDefault();
+        return;
+      }
+    } catch {
+      // Fall through to the VS Code clipboard bridge.
+    }
+    post('copyText', { text });
+  });
+  document.addEventListener('keydown', (event) => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.key.toLocaleLowerCase() !== 'c') return;
+    const text = selectedTextForCopy(document.activeElement);
+    if (text) post('copyText', { text });
+  }, true);
+
+  function selectedTextForCopy(target) {
+    if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+      const start = target.selectionStart ?? 0;
+      const end = target.selectionEnd ?? start;
+      return end > start ? target.value.slice(start, end) : '';
+    }
+    return window.getSelection()?.toString() || '';
+  }
+
+  function clipboardFiles(data) {
+    if (!data) return [];
+    const itemFiles = [...(data.items || [])]
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    return itemFiles.length ? itemFiles : [...(data.files || [])];
+  }
+
+  function clipboardPlainText(data) {
+    if (!data) return '';
+    const plain = data.getData('text/plain');
+    if (plain) return plain;
+    const html = data.getData('text/html');
+    if (!html) return '';
+    return new DOMParser().parseFromString(html, 'text/html').body.textContent || '';
+  }
+
+  function insertPromptText(text) {
+    if (!text || elements.promptInput.disabled) return;
+    const input = elements.promptInput;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    input.setRangeText(text, start, end, 'end');
+    autoResize();
+    input.focus();
+  }
+
+  async function readClipboardFiles(files) {
+    const encoded = [];
+    for (const file of files.slice(0, 20)) {
+      try {
+        const buffer = await file.arrayBuffer();
+        encoded.push({ name: file.name || (file.type.startsWith('image/') ? '粘贴的图片' : '粘贴的文件'), mimeType: file.type, size: buffer.byteLength, dataBase64: arrayBufferToBase64(buffer) });
+      } catch (error) {
+        showToast(`读取剪贴板附件失败：${error?.message || error}`, 'warning');
+      }
+    }
+    if (encoded.length) post('attachClipboardFiles', { files: encoded });
+  }
+
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer); let binary = '';
+    const chunk = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunk) binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+    return btoa(binary);
+  }
+
+  function startVoiceRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      showToast('当前 VS Code/Webview 不提供语音识别。请启用系统听写或使用支持语音识别的 VS Code 版本。', 'warning');
+      return;
+    }
+    if (state.voiceRecognition) {
+      state.voiceRecognition.stop();
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    state.voiceRecognition = recognition; state.voiceActive = true;
+    recognition.lang = navigator.language || 'zh-CN'; recognition.interimResults = true; recognition.continuous = false;
+    const original = elements.promptInput.value;
+    recognition.onresult = (event) => {
+      let finalTranscript = '';
+      let interimTranscript = '';
+      for (let index = 0; index < event.results.length; index += 1) {
+        const value = event.results[index][0]?.transcript || '';
+        if (event.results[index].isFinal) finalTranscript += value;
+        else interimTranscript += value;
+      }
+      const transcript = `${finalTranscript}${interimTranscript}`;
+      elements.promptInput.value = `${original}${original && transcript ? ' ' : ''}${transcript}`;
+      autoResize();
+    };
+    recognition.onerror = (event) => showToast(`语音输入失败：${event.error || '未知错误'}`, 'warning');
+    recognition.onend = () => { state.voiceRecognition = null; state.voiceActive = false; elements.voiceButton.classList.remove('active'); updateComposerState(); };
+    elements.voiceButton.classList.add('active');
+    try { recognition.start(); } catch (error) { recognition.onend(); showToast(`无法开始语音输入：${error?.message || error}`, 'warning'); }
+    updateComposerState();
+  }
 
   window.addEventListener('message', (event) => {
     const message = event.data;
     switch (message.type) {
       case 'state': {
+        const previousConversationId = state.conversation?.id;
         const incoming = message.state; state.conversations = incoming.conversations || []; state.archivedConversations = incoming.archivedConversations || [];
         state.conversation = incoming.conversation; state.messages = incoming.messages || []; state.hasMore = Boolean(incoming.hasMore);
         state.sendOnEnter = incoming.settings?.sendOnEnter !== false; state.pendingAttachments = incoming.pendingAttachments || [];
         state.apiProfiles = incoming.settings?.apiProfiles || []; state.activeApiProfileId = incoming.settings?.activeApiProfileId || '';
+        state.permissionPreset = incoming.settings?.permissionPreset || 'review'; state.agentMaxSteps = Math.max(0, Math.floor(Number(incoming.settings?.agentMaxSteps) || 0)); state.reasoningEffort = incoming.settings?.reasoningEffort || 'default';
+        state.permissionPresetPending = false;
         state.skills = incoming.skills || []; state.selectedSkillIds = incoming.selectedSkillIds || []; state.mode = incoming.mode || 'agent';
-        state.workspaceTrusted = Boolean(incoming.workspaceTrusted); state.agentAvailable = Boolean(incoming.agentAvailable); state.showArchived = Boolean(incoming.showArchived);
-        elements.modelInput.value = incoming.settings?.model || 'deepseek-chat'; setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
+        state.workspaceTrusted = Boolean(incoming.workspaceTrusted); state.agentAvailable = Boolean(incoming.agentAvailable); state.availableToolCount = Number(incoming.availableToolCount) || 0; state.showArchived = Boolean(incoming.showArchived); state.taskTree = incoming.taskTree || (message.streamingConversationId ? state.taskTree : null);
+        elements.modelInput.value = incoming.settings?.model || 'deepseek-chat'; if (previousConversationId !== incoming.conversation?.id) state.autoFollow = true; setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
       }
       case 'draft': elements.promptInput.value = message.text || ''; state.pendingAttachments = message.attachments || []; renderAttachments(); autoResize(); elements.promptInput.focus(); break;
       case 'attachments': state.pendingAttachments = message.attachments || []; renderAttachments(); break;
       case 'context': state.pendingAttachments = state.pendingAttachments.filter((item) => item.kind !== 'selection'); renderAttachments(); break;
-      case 'messageStart': state.conversation = state.conversation || { id: message.conversationId, title: message.userMessage.content, mode: state.mode }; state.messages.push(message.userMessage, message.assistant); state.pendingAttachments = []; setStreaming(true, message.conversationId); renderMessages(false); renderAttachments(); break;
+      case 'messageStart': state.conversation = state.conversation || { id: message.conversationId, title: message.userMessage.content, mode: state.mode }; state.messages.push(message.userMessage, message.assistant); state.pendingAttachments = []; state.autoFollow = true; setStreaming(true, message.conversationId); renderMessages('bottom'); renderAttachments(); break;
+      case 'messageAdded': if (message.conversationId === state.conversation?.id) { state.messages.push(message.message); state.pendingAttachments = []; state.autoFollow = true; renderMessages('bottom'); renderAttachments(); } break;
       case 'streamDelta': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.content = `${target.content || ''}${message.content || ''}`; target.reasoning = `${target.reasoning || ''}${message.reasoning || ''}`; scheduleMessageRender(); } break; }
       case 'toolExecutions': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.toolExecutions = message.tools || []; scheduleMessageRender(); } break; }
       case 'skillUsage': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.usedSkills = message.skills || []; scheduleMessageRender(); } break; }
-      case 'messageComplete': { if (message.conversationId !== state.conversation?.id) break; if (state.renderTimer) { clearTimeout(state.renderTimer); state.renderTimer = null; } const index = state.messages.findIndex((item) => item.id === message.message.id); if (index >= 0) state.messages[index] = message.message; else state.messages.push(message.message); renderMessages(false); break; }
-      case 'streamIdle': setStreaming(false); elements.promptInput.focus(); break;
-      case 'olderMessages': state.messages = [...message.messages, ...state.messages]; state.hasMore = Boolean(message.hasMore); renderMessages(true); break;
+      case 'messageComplete': { if (message.conversationId !== state.conversation?.id) break; if (state.renderTimer) { clearTimeout(state.renderTimer); state.renderTimer = null; } const index = state.messages.findIndex((item) => item.id === message.message.id); if (index >= 0) state.messages[index] = message.message; else state.messages.push(message.message); renderMessages('keep'); break; }
+      case 'streamIdle': setStreaming(false); renderTaskTree(); elements.promptInput.focus(); break;
+      case 'olderMessages': state.messages = [...message.messages, ...state.messages]; state.hasMore = Boolean(message.hasMore); renderMessages('prepend'); break;
       case 'modelChanged': elements.modelInput.value = message.model; showToast(`已切换到 ${message.model}`); break;
       case 'profileChanged': state.activeApiProfileId = message.profileId; elements.modelInput.value = message.model; showToast('API 配置已切换'); break;
+      case 'modelsLoading': state.modelLoadingProfileId = message.active ? message.profileId : state.modelLoadingProfileId === message.profileId ? null : state.modelLoadingProfileId; renderHeader(); updateComposerState(); break;
+      case 'modelsChanged': { const profile = state.apiProfiles.find((item) => item.id === message.profileId); if (profile) profile.models = message.models || profile.models; syncConnectionSelectors(); break; }
       case 'modeChanged': state.mode = message.mode; renderHeader(); break;
       case 'skillsChanged': state.selectedSkillIds = message.skillIds || []; renderSkills(); renderHeader(); break;
+      case 'permissionPresetPending': state.permissionPresetPending = Boolean(message.active); updateComposerState(); break;
+      case 'permissionPresetChanged': state.permissionPreset = message.permissionPreset || 'review'; elements.permissionPresetInput.value = state.permissionPreset; break;
+      case 'agentMaxStepsChanged': state.agentMaxSteps = Math.max(0, Math.floor(Number(message.agentMaxSteps) || 0)); ensureStepOption(state.agentMaxSteps); elements.agentMaxStepsInput.value = String(state.agentMaxSteps); break;
+      case 'reasoningEffortChanged': state.reasoningEffort = message.reasoningEffort || 'default'; elements.reasoningEffortInput.value = state.reasoningEffort; break;
+      case 'taskTreeChanged': state.taskTree = message.taskTree || null; renderTaskTree(); updateComposerState(); break;
+      case 'voiceInputAllowed': startVoiceRecognition(); break;
+      case 'clipboardWriteResult': finishClipboardWrite(message.requestId, Boolean(message.ok), message.error); break;
+      case 'clipboardText':
+        if (message.requestId === pendingPaste?.requestId) {
+          const snapshot = pendingPaste;
+          clearPendingPaste();
+          if (elements.promptInput.value === snapshot.value) {
+            elements.promptInput.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+            insertPromptText(message.text || '');
+          }
+          if (message.truncated) showToast('剪贴板文字过长，已粘贴前 200 万个字符。', 'warning');
+        }
+        break;
       case 'toast': showToast(message.text, message.tone); break;
     }
   });

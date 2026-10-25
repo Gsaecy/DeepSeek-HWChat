@@ -3,6 +3,7 @@ export type MessageStatus = 'streaming' | 'complete' | 'error';
 export type ConversationMode = 'chat' | 'agent' | 'plan';
 export type PermissionPolicy = 'allow' | 'ask' | 'deny';
 export type PermissionPreset = 'askAll' | 'review' | 'autopilot' | 'full' | 'custom';
+export type ReasoningEffort = 'default' | 'none' | 'low' | 'high' | 'max';
 
 export interface ApiProfile {
   id: string;
@@ -21,11 +22,34 @@ export interface UsageInfo {
 export interface MessageContext {
   label: string;
   content?: string;
+  dataBase64?: string;
   path?: string;
-  kind?: 'selection' | 'file';
+  kind?: 'selection' | 'file' | 'image';
   bytes?: number;
   language?: string;
+  mimeType?: string;
 }
+
+export type AgentTaskStatus = 'routing' | 'active' | 'merged' | 'queued' | 'complete' | 'cancelled' | 'error';
+
+export interface AgentTaskNode {
+  id: string;
+  parentId?: string;
+  title: string;
+  status: AgentTaskStatus;
+  relation: 'root' | 'pending' | 'related' | 'queued';
+}
+
+export interface AgentTaskTreeState {
+  active: boolean;
+  currentNodeId?: string;
+  nodes: AgentTaskNode[];
+  usage?: UsageInfo;
+}
+
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } };
 
 export interface ChatMessage {
   id: string;
@@ -43,6 +67,7 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
   toolCallId?: string;
   usedSkills?: SkillUsage[];
+  consumedByAssistantId?: string;
 }
 
 export interface ConversationSummary {
@@ -91,7 +116,7 @@ export interface CleanupResult extends StorageStats {
 
 export interface ChatRequestMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  content: string | ChatContentPart[];
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   name?: string;
@@ -123,6 +148,7 @@ export interface ChatSettings {
   requestTimeoutSeconds: number;
   defaultMode: ConversationMode;
   agentMaxSteps: number;
+  reasoningEffort: ReasoningEffort;
   permissionPreset: PermissionPreset;
   fileReadPolicy: PermissionPolicy;
   fileWritePolicy: PermissionPolicy;
@@ -199,14 +225,16 @@ export interface WebviewConversationState {
   messages: ChatMessage[];
   hasMore: boolean;
   conversations: ConversationSummary[];
-  settings: Pick<ChatSettings, 'apiProfiles' | 'activeApiProfileId' | 'model' | 'sendOnEnter'>;
+  settings: Pick<ChatSettings, 'apiProfiles' | 'activeApiProfileId' | 'model' | 'sendOnEnter' | 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort'>;
   apiKeyConfigured: boolean;
-  pendingAttachments: Array<Pick<MessageContext, 'label' | 'path' | 'kind' | 'bytes'>>;
+  pendingAttachments: Array<Pick<MessageContext, 'label' | 'path' | 'kind' | 'bytes' | 'mimeType'>>;
   archivedConversations: ConversationSummary[];
   skills: SkillSummary[];
   selectedSkillIds: string[];
   mode: ConversationMode;
   workspaceTrusted: boolean;
   agentAvailable: boolean;
+  availableToolCount: number;
+  taskTree?: AgentTaskTreeState;
   showArchived: boolean;
 }

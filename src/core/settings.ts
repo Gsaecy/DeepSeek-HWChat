@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ApiProfile, ChatSettings, PermissionPreset } from './types';
+import { ApiProfile, ChatSettings, PermissionPreset, ReasoningEffort } from './types';
 
 const SECTION = 'hwchat';
 
@@ -42,7 +42,8 @@ export function readSettings(): ChatSettings {
     requestHeaders: activeProfile.requestHeaders,
     requestTimeoutSeconds: clamp(configuration.get<number>('requestTimeoutSeconds', 120), 10, 900),
     defaultMode: configuration.get<ChatSettings['defaultMode']>('defaultMode', 'agent'),
-    agentMaxSteps: clamp(configuration.get<number>('agentMaxSteps', 12), 1, 40),
+    agentMaxSteps: normalizeAgentMaxSteps(configuration.get<number>('agentMaxSteps', 0)),
+    reasoningEffort: normalizeReasoningEffort(configuration.get<string>('reasoningEffort', 'default')),
     permissionPreset,
     ...permission,
     maxReadBytes: clamp(configuration.get<number>('maxReadBytes', 512_000), 16_384, 5_242_880),
@@ -72,6 +73,7 @@ export async function updateSettings(values: Partial<ChatSettings>): Promise<voi
     ['requestTimeoutSeconds', values.requestTimeoutSeconds],
     ['defaultMode', values.defaultMode],
     ['agentMaxSteps', values.agentMaxSteps],
+    ['reasoningEffort', values.reasoningEffort],
     ['permissionPreset', values.permissionPreset],
     ['fileReadPolicy', values.fileReadPolicy],
     ['fileWritePolicy', values.fileWritePolicy],
@@ -111,17 +113,36 @@ function normalizeProfiles(value: unknown, fallback: ApiProfile): ApiProfile[] {
       id,
       name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 60) : id,
       baseUrl,
-      models: uniqueStrings(Array.isArray(raw.models) ? raw.models : []).slice(0, 50),
+      models: uniqueStrings(Array.isArray(raw.models) ? raw.models : []).slice(0, 500),
       requestHeaders: stringRecord(raw.requestHeaders),
     });
   }
   return profiles.length ? profiles : [fallback];
 }
 
-function normalizePermissionPreset(value: string): PermissionPreset {
-  return ['askAll', 'review', 'autopilot', 'full', 'custom'].includes(value)
-    ? value as PermissionPreset
-    : 'review';
+export function isPermissionPreset(value: unknown): value is PermissionPreset {
+  return value === 'askAll' || value === 'review' || value === 'autopilot' || value === 'full' || value === 'custom';
+}
+
+export function normalizePermissionPreset(value: unknown): PermissionPreset {
+  return isPermissionPreset(value) ? value : 'review';
+}
+
+export function applyRuntimeControls(
+  settings: ChatSettings,
+  permissionPreset?: unknown,
+  agentMaxSteps?: unknown,
+): ChatSettings {
+  const nextPreset = permissionPreset === undefined
+    ? settings.permissionPreset
+    : normalizePermissionPreset(permissionPreset);
+  const permission = resolvePermissionPreset(nextPreset, settings);
+  return {
+    ...settings,
+    agentMaxSteps: agentMaxSteps === undefined ? settings.agentMaxSteps : normalizeAgentMaxSteps(agentMaxSteps),
+    permissionPreset: nextPreset,
+    ...permission,
+  };
 }
 
 function resolvePermissionPreset(
@@ -141,6 +162,18 @@ function resolvePermissionPreset(
     return { fileReadPolicy: 'allow', fileWritePolicy: 'allow', commandPolicy: 'allow', allowSensitiveFiles: true, allowDangerousCommands: true };
   }
   return custom;
+}
+
+export function normalizeAgentMaxSteps(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.floor(numeric);
+}
+
+export function normalizeReasoningEffort(value: unknown): ReasoningEffort {
+  return value === 'none' || value === 'low' || value === 'high' || value === 'max'
+    ? value
+    : 'default';
 }
 
 function cleanId(value: unknown): string {

@@ -214,7 +214,11 @@ test('compacts tool and attachment details but retains execution summaries', asy
       role: 'assistant',
       content: '任务完成',
       status: 'complete',
-      attachments: [{ label: 'src/a.ts', path: 'src/a.ts', kind: 'file', content: 'large file content' }],
+      context: { label: 'selection', kind: 'selection', content: 'selected code', dataBase64: 'unused-context-data' },
+      attachments: [
+        { label: 'src/a.ts', path: 'src/a.ts', kind: 'file', content: 'large file content' },
+        { label: 'screenshot.png', kind: 'image', mimeType: 'image/png', dataBase64: 'aGVhdnktaW1hZ2UtZGF0YQ==' },
+      ],
       toolExecutions: [{
         callId: 'call-1', name: 'replace_in_file', summary: '修改 src/a.ts：替换 1 处文本',
         input: '{"oldText":"a","newText":"b"}', output: 'done', status: 'success',
@@ -226,6 +230,10 @@ test('compacts tool and attachment details but retains execution summaries', asy
     const compacted = (await storage.getAllMessages(conversation.id)).find((item) => item.id === message.id);
     assert.equal(compacted?.attachments?.[0]?.label, 'src/a.ts');
     assert.equal(compacted?.attachments?.[0]?.content, undefined);
+    assert.equal(compacted?.attachments?.[1]?.label, 'screenshot.png');
+    assert.equal(compacted?.attachments?.[1]?.dataBase64, undefined);
+    assert.equal(compacted?.context?.content, undefined);
+    assert.equal(compacted?.context?.dataBase64, undefined);
     assert.equal(compacted?.toolExecutions?.[0]?.summary, '修改 src/a.ts：替换 1 处文本');
     assert.equal(compacted?.toolExecutions?.[0]?.input, undefined);
     assert.equal(compacted?.toolExecutions?.[0]?.output, undefined);

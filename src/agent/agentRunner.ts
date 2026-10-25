@@ -42,6 +42,7 @@ export class AgentRunner {
     callbacks: AgentRunCallbacks;
     extraTools?: ToolDefinition[];
     executeExtraTool?: (call: import('../core/types').ToolCall) => Promise<{ result: ToolExecutionResult; skill?: SkillUsage } | undefined>;
+    takeTaskUpdate?: (phase: 'replan' | 'complete') => Promise<ChatRequestMessage[]> | ChatRequestMessage[];
   }): Promise<AgentRunResult> {
     const requestMessages = [...options.messages];
     const executions: ToolExecution[] = [];
@@ -49,9 +50,11 @@ export class AgentRunner {
     let reasoning = '';
     let usage: UsageInfo | undefined;
     const definitions = options.mode === 'chat' ? [] : [...this.tools.definitions(options.mode), ...(options.extraTools ?? [])];
-    const maxSteps = options.mode === 'chat' ? 1 : options.settings.agentMaxSteps;
-
-    for (let step = 0; step < maxSteps; step += 1) {
+    let step = 0;
+    while (options.settings.agentMaxSteps === 0 || step < options.settings.agentMaxSteps) {
+      step += 1;
+      const beforeRound = await options.takeTaskUpdate?.('replan') ?? [];
+      requestMessages.push(...beforeRound);
       const round = await this.client.streamChat(options.settings, requestMessages, {
         signal: options.signal,
         tools: definitions,
@@ -68,6 +71,16 @@ export class AgentRunner {
       usage = addUsage(usage, round.usage);
 
       if (!round.toolCalls.length || options.mode === 'chat') {
+        const guidance = await options.takeTaskUpdate?.('complete') ?? [];
+        if (guidance.length) {
+          requestMessages.push({
+            role: 'assistant',
+            content: round.content,
+            reasoning_content: round.reasoning || undefined,
+          });
+          requestMessages.push(...guidance);
+          continue;
+        }
         return { content, reasoning, usage, tools: executions, stoppedByStepLimit: false };
       }
 
@@ -78,7 +91,8 @@ export class AgentRunner {
         tool_calls: round.toolCalls,
       });
 
-      for (const call of round.toolCalls) {
+      for (let callIndex = 0; callIndex < round.toolCalls.length; callIndex += 1) {
+        const call = round.toolCalls[callIndex]!;
         const execution: ToolExecution = {
           callId: call.id,
           name: call.function.name || 'unknown_tool',
@@ -126,13 +140,49 @@ export class AgentRunner {
             changedFiles: result.changedFiles,
           }),
         });
+
+        const guidance = await options.takeTaskUpdate?.('replan') ?? [];
+        if (guidance.length) {
+          for (const skippedCall of round.toolCalls.slice(callIndex + 1)) {
+            const skipped: ToolExecution = {
+              callId: skippedCall.id,
+              name: skippedCall.function.name || 'unknown_tool',
+              summary: '收到相关新消息，已跳过尚未执行的旧步骤',
+              input: toolInputForHistory(skippedCall.function.name, skippedCall.function.arguments),
+              output: '任务树已合并用户的新指导，Agent 将先重新规划。',
+              status: 'denied',
+              approval: 'not-required',
+              startedAt: Date.now(),
+              finishedAt: Date.now(),
+              risk: toolRisk(skippedCall.function.name),
+            };
+            executions.push(skipped);
+            requestMessages.push({
+              role: 'tool',
+              tool_call_id: skippedCall.id,
+              name: skippedCall.function.name,
+              content: JSON.stringify({
+                status: 'denied',
+                summary: skipped.summary,
+                result: skipped.output,
+              }),
+            });
+          }
+          await options.callbacks.onToolsChanged(cloneExecutions(executions));
+          requestMessages.push(...guidance);
+          break;
+        }
       }
     }
 
-    const notice = `\n\nAgent 已达到 ${maxSteps} 步执行上限，已停止继续调用工具。`;
-    content += notice;
-    await options.callbacks.onDelta({ content: notice });
-    return { content, reasoning, usage, tools: executions, stoppedByStepLimit: true };
+    const maxSteps = options.settings.agentMaxSteps;
+    if (maxSteps > 0) {
+      const notice = `\n\nAgent 已达到 ${maxSteps} 步执行上限，已停止继续调用工具。`;
+      content += notice;
+      await options.callbacks.onDelta({ content: notice });
+      return { content, reasoning, usage, tools: executions, stoppedByStepLimit: true };
+    }
+    return { content, reasoning, usage, tools: executions, stoppedByStepLimit: false };
   }
 }
 

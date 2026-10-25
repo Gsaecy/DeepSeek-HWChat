@@ -132,6 +132,7 @@ export class ConversationStorage {
       toolCalls: input.toolCalls,
       toolCallId: input.toolCallId,
       usedSkills: input.usedSkills,
+      consumedByAssistantId: input.consumedByAssistantId,
     };
     await this.enqueueWrite(async () => {
       await writeJsonAtomic(this.messagePath(conversationId, message.id), message);
@@ -156,7 +157,7 @@ export class ConversationStorage {
   async updateMessage(
     conversationId: string,
     messageId: string,
-    patch: Partial<Pick<ChatMessage, 'content' | 'reasoning' | 'usage' | 'status' | 'model' | 'toolExecutions' | 'toolCalls' | 'usedSkills'>>,
+    patch: Partial<Pick<ChatMessage, 'content' | 'reasoning' | 'usage' | 'status' | 'model' | 'toolExecutions' | 'toolCalls' | 'usedSkills' | 'consumedByAssistantId'>>,
   ): Promise<ChatMessage> {
     await this.initialize();
     const summary = this.requireSummary(conversationId);
@@ -420,16 +421,23 @@ export class ConversationStorage {
               usage: message.usage,
               toolInputs: message.toolExecutions?.map((tool) => tool.input),
               toolOutputs: message.toolExecutions?.map((tool) => tool.output),
-              attachments: message.attachments?.map((attachment) => attachment.content),
-              selection: message.context?.content,
+              attachments: message.attachments?.map((attachment) => ({
+                content: attachment.content,
+                dataBase64: attachment.dataBase64,
+              })),
+              selection: {
+                content: message.context?.content,
+                dataBase64: message.context?.dataBase64,
+              },
             }));
             if (
               message.reasoning !== undefined
               || message.usage?.promptTokens !== undefined
               || message.usage?.completionTokens !== undefined
               || message.toolExecutions?.some((tool) => tool.input !== undefined || tool.output !== undefined)
-              || message.attachments?.some((attachment) => attachment.content !== undefined)
+              || message.attachments?.some((attachment) => attachment.content !== undefined || attachment.dataBase64 !== undefined)
               || message.context?.content !== undefined
+              || message.context?.dataBase64 !== undefined
             ) {
               delete message.reasoning;
               message.usage = message.usage?.totalTokens
@@ -444,10 +452,12 @@ export class ConversationStorage {
               if (message.attachments) {
                 for (const attachment of message.attachments) {
                   delete attachment.content;
+                  delete attachment.dataBase64;
                 }
               }
               if (message.context) {
                 delete message.context.content;
+                delete message.context.dataBase64;
               }
               message.updatedAt = now;
               await writeJsonAtomic(path, message);

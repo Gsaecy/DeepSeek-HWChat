@@ -2,8 +2,8 @@
   color-scheme: light dark;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
   --mono: "SFMono-Regular", Consolas, monospace;
-  --surface: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-foreground) 8%);
-  --surface-hover: color-mix(in srgb, var(--vscode-editor-background) 84%, var(--vscode-foreground) 16%);
+  --surface: var(--vscode-input-background, var(--vscode-editor-background));
+  --surface-hover: var(--vscode-list-hoverBackground, var(--vscode-input-background));
   --border: color-mix(in srgb, var(--vscode-foreground) 15%, transparent);
   --muted: color-mix(in srgb, var(--vscode-foreground) 58%, transparent);
   --accent: var(--vscode-button-background, #0a84ff);
@@ -20,7 +20,7 @@ button { cursor: pointer; }
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
 
 .settings-shell { display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: 100vh; }
-.settings-sidebar { position: sticky; top: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 26px; height: 100vh; padding: 20px 14px 14px; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--vscode-sideBar-background) 94%, transparent); }
+.settings-sidebar { position: sticky; top: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 26px; height: 100vh; padding: 20px 14px 14px; border-right: 1px solid var(--border); background: var(--vscode-sideBar-background, var(--vscode-editor-background)); }
 .settings-brand { display: flex; align-items: center; gap: 10px; padding: 0 7px; font-size: 14px; }
 .settings-brand img { width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 7px; object-fit: cover; background: #fff; box-shadow: 0 5px 15px rgba(0,103,214,.18); }
 nav { display: grid; align-content: start; gap: 3px; }
@@ -29,7 +29,7 @@ nav button:hover, nav button.active, .native-settings:hover { color: inherit; ba
 .native-settings { border-top: 1px solid var(--border); border-radius: 0; }
 
 .settings-main { min-width: 0; }
-.settings-toolbar { position: sticky; top: 0; z-index: 3; display: flex; justify-content: space-between; align-items: center; gap: 20px; height: 64px; padding: 0 28px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--vscode-editor-background) 88%, transparent); backdrop-filter: blur(18px); }
+.settings-toolbar { position: sticky; top: 0; z-index: 3; display: flex; justify-content: space-between; align-items: center; gap: 20px; height: 64px; padding: 0 28px; border-bottom: 1px solid var(--border); background: var(--vscode-editor-background); }
 .settings-toolbar > * { min-width: 0; }
 .settings-toolbar h1 { margin: 0; font-size: 17px; line-height: 1.2; }
 .settings-toolbar > div:first-child { display: grid; gap: 3px; }

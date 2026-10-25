@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SkillRegistry } from '../agent/skillRegistry';
 import { deleteApiKey, hasApiKey, storeApiKey } from '../core/apiKeys';
-import { profileFor, readSettings, updateSettings } from '../core/settings';
+import { isPermissionPreset, profileFor, readSettings, updateSettings } from '../core/settings';
 import { ConversationStorage } from '../core/storage';
 import { ChatSettings } from '../core/types';
 import { DeepSeekClient } from '../providers/deepseekClient';
@@ -128,7 +128,25 @@ export class SettingsPanel implements vscode.Disposable {
 
   private async save(message: Extract<IncomingMessage, { type: 'save' }>): Promise<void> {
     const previous = readSettings();
-    const settings = validateSettings(message.settings);
+    let settings = validateSettings(message.settings);
+    let permissionChangeCancelled = false;
+    if (
+      isPermissionPreset(settings.permissionPreset)
+      && settings.permissionPreset !== previous.permissionPreset
+      && isRiskyPermissionPreset(settings.permissionPreset)
+      && !await this.confirmPermissionPreset(settings.permissionPreset)
+    ) {
+      permissionChangeCancelled = true;
+      settings = {
+        ...settings,
+        permissionPreset: previous.permissionPreset,
+        fileReadPolicy: previous.fileReadPolicy,
+        fileWritePolicy: previous.fileWritePolicy,
+        commandPolicy: previous.commandPolicy,
+        allowSensitiveFiles: previous.allowSensitiveFiles,
+        allowDangerousCommands: previous.allowDangerousCommands,
+      };
+    }
     await updateSettings(settings);
     const next = readSettings();
     const nextIds = new Set(next.apiProfiles.map((profile) => profile.id));
@@ -142,8 +160,30 @@ export class SettingsPanel implements vscode.Disposable {
       if (nextIds.has(profileId) && apiKey.trim()) await storeApiKey(this.secrets, profileId, apiKey.trim());
     }
     this.callbacks.onChanged();
-    await this.post({ type: 'toast', tone: 'success', text: '设置已保存。' });
+    await this.post({
+      type: 'toast',
+      tone: permissionChangeCancelled ? 'neutral' : 'success',
+      text: permissionChangeCancelled ? '其它设置已保存；权限预设更改已取消。' : '设置已保存。',
+    });
     await this.sendState();
+  }
+
+  private async confirmPermissionPreset(permissionPreset: ChatSettings['permissionPreset']): Promise<boolean> {
+    const risk = permissionPreset === 'full'
+      ? 'Agent 将可在受信任工作区内自动读写、移动和删除文件、运行常规命令，并允许读取 .env、密钥、证书等敏感文件。高风险命令仍会逐次确认，工作区外路径仍被禁止。'
+      : permissionPreset === 'autopilot'
+        ? 'Agent 将可在受信任工作区内无需逐次确认地读写、移动和删除文件，并运行常规命令。敏感文件和高风险命令仍受硬性保护。'
+        : 'Agent 将使用自定义读取、写入和命令策略，其中可能包含自动执行或敏感文件访问权限。';
+    const answer = await vscode.window.showWarningMessage(
+      '确认更改 Agent 权限预设？',
+      {
+        modal: true,
+        detail: `${risk}\n\n点击“确认并承担风险”表示你已了解可能造成文件损坏、数据丢失、命令执行或敏感信息暴露，并自行承担相关风险。`,
+      },
+      '确认并承担风险',
+      '取消',
+    );
+    return answer === '确认并承担风险';
   }
 
   private async test(values: Partial<ChatSettings>, apiKey?: string): Promise<void> {
@@ -303,7 +343,7 @@ export class SettingsPanel implements vscode.Disposable {
           <div class="section-heading"><h2>Agent</h2><span id="trustState" class="status-pill">工作区状态</span></div>
           <div class="settings-group">
             <label class="setting-row"><span><strong>默认模式</strong><small>Agent 可执行工具，Plan 仅分析，Chat 仅对话</small></span><select id="defaultMode" class="control"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
-            <label class="setting-row"><span><strong>最大执行步骤</strong><small>限制单轮工具循环，防止失控和费用增长</small></span><span class="stepper"><input id="agentMaxSteps" type="number" min="1" max="40"><span>步</span></span></label>
+            <label class="setting-row"><span><strong>最大执行步骤</strong><small>0 表示不限制；也可在对话输入框下方即时调整</small></span><span class="stepper"><input id="agentMaxSteps" type="number" min="0"><span>步</span></span></label>
             <label class="setting-row"><span><strong>命令超时</strong></span><span class="stepper"><input id="maxCommandSeconds" type="number" min="5" max="900"><span>秒</span></span></label>
             <label class="setting-row"><span><strong>单文件读取上限</strong></span><span class="stepper"><input id="maxReadBytes" type="number" min="16384" max="5242880"><span>bytes</span></span></label>
             <label class="setting-row"><span><strong>工具输出上限</strong></span><span class="stepper"><input id="maxToolOutputBytes" type="number" min="16384" max="2097152"><span>bytes</span></span></label>
@@ -367,7 +407,7 @@ function validateSettings(values: Partial<ChatSettings>): Partial<ChatSettings> 
         id,
         name,
         baseUrl: url,
-        models: [...new Set((profile.models ?? []).map((model) => String(model).trim()).filter(Boolean))].slice(0, 50),
+        models: [...new Set((profile.models ?? []).map((model) => String(model).trim()).filter(Boolean))].slice(0, 500),
         requestHeaders: Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
       };
     });
@@ -384,6 +424,12 @@ function validateSettings(values: Partial<ChatSettings>): Partial<ChatSettings> 
   }
   if (values.defaultMode !== undefined && !['chat', 'agent', 'plan'].includes(values.defaultMode)) {
     throw new Error('默认模式无效。');
+  }
+  if (values.agentMaxSteps !== undefined && (!Number.isFinite(values.agentMaxSteps) || values.agentMaxSteps < 0)) {
+    throw new Error('最大执行步骤必须是 0 或正数。');
+  }
+  if (values.reasoningEffort !== undefined && !['default', 'none', 'low', 'high', 'max'].includes(values.reasoningEffort)) {
+    throw new Error('思考层级无效。');
   }
   if (values.permissionPreset !== undefined && !['askAll', 'review', 'autopilot', 'full', 'custom'].includes(values.permissionPreset)) {
     throw new Error('权限预设无效。');
@@ -404,4 +450,8 @@ function validateEndpoint(value: string): string {
     throw new Error('远程模型接口必须使用 HTTPS；本机 localhost 可使用 HTTP。');
   }
   return url.toString().replace(/\/$/, '');
+}
+
+function isRiskyPermissionPreset(value: ChatSettings['permissionPreset']): boolean {
+  return value === 'autopilot' || value === 'full' || value === 'custom';
 }

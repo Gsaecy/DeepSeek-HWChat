@@ -21,8 +21,10 @@ export function icon(name: IconName): string {
     skills: '<path d="M12 2 9.5 7 4 7.8l4 4-1 5.7 5-2.7 5 2.7-1-5.7 4-4L14.5 7 12 2Z"/>',
     restore: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
     shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/>',
+    refresh: '<path d="M20 11a8 8 0 1 0 2 5"/><path d="M20 4v7h-7"/>',
+    mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8"/>',
   };
   return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
 }
 
-type IconName = 'history' | 'plus' | 'settings' | 'send' | 'stop' | 'attach' | 'archive' | 'skills' | 'restore' | 'shield';
+type IconName = 'history' | 'plus' | 'settings' | 'send' | 'stop' | 'attach' | 'archive' | 'skills' | 'restore' | 'shield' | 'refresh' | 'mic';

@@ -21,6 +21,7 @@ const settings: ChatSettings = {
   requestTimeoutSeconds: 30,
   defaultMode: 'agent',
   agentMaxSteps: 12,
+  reasoningEffort: 'default',
   permissionPreset: 'review',
   fileReadPolicy: 'allow',
   fileWritePolicy: 'ask',
@@ -94,6 +95,46 @@ test('derives total token usage when a compatible API omits total_tokens', async
     const client = new DeepSeekClient(async () => 'test-key');
     const result = await client.streamChat(settings, [{ role: 'user', content: 'hello' }], { onDelta: () => undefined });
     assert.deepEqual(result.usage, { promptTokens: 7, completionTokens: 3, totalTokens: 10 });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('retries without an unsupported reasoning control', async () => {
+  const originalFetch = globalThis.fetch;
+  const requestBodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    requestBodies.push(body);
+    if (requestBodies.length === 1) {
+      return new Response(JSON.stringify({ error: { message: 'Unknown parameter: reasoning_effort' } }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }) as typeof fetch;
+
+  try {
+    const client = new DeepSeekClient(async () => 'test-key');
+    const result = await client.streamChat({
+      ...settings,
+      baseUrl: 'https://api.deepseek.com',
+      reasoningEffort: 'high',
+    }, [{ role: 'user', content: 'hello' }], { onDelta: () => undefined });
+    assert.equal(result.content, 'ok');
+    assert.equal(requestBodies.length, 2);
+    assert.deepEqual(requestBodies[0]?.thinking, { type: 'enabled' });
+    assert.equal(requestBodies[0]?.reasoning_effort, 'high');
+    assert.deepEqual(requestBodies[1]?.thinking, { type: 'enabled' });
+    assert.equal('reasoning_effort' in requestBodies[1]!, false);
   } finally {
     globalThis.fetch = originalFetch;
   }

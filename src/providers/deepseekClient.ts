@@ -22,6 +22,11 @@ export interface StreamChatResult {
   finishReason?: string;
 }
 
+export interface ListModelsOptions {
+  signal?: AbortSignal;
+  apiKey?: string;
+}
+
 interface OpenAIChunk {
   choices?: Array<{
     delta?: {
@@ -79,6 +84,15 @@ export class DeepSeekClient {
     if (settings.maxTokens > 0) {
       body.max_tokens = settings.maxTokens;
     }
+    if (settings.reasoningEffort !== 'default') {
+      const isDeepSeek = new URL(endpoint).hostname === 'api.deepseek.com';
+      if (isDeepSeek) {
+        body.thinking = { type: settings.reasoningEffort === 'none' ? 'disabled' : 'enabled' };
+        if (settings.reasoningEffort !== 'none') body.reasoning_effort = settings.reasoningEffort;
+      } else {
+        body.reasoning_effort = settings.reasoningEffort === 'max' ? 'high' : settings.reasoningEffort;
+      }
+    }
     if (options.tools?.length) {
       body.tools = options.tools;
       body.tool_choice = 'auto';
@@ -95,26 +109,27 @@ export class DeepSeekClient {
     const signal = mergeAbortSignals(options.signal, timeout.signal);
 
     let response: Response;
-    try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal,
-      });
-    } catch (error) {
-      clearTimeout(timer);
-      if (isAbortError(error) && options.signal?.aborted) {
-        throw new RequestCancelledError();
+    while (true) {
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal,
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        if (isAbortError(error) && options.signal?.aborted) {
+          throw new RequestCancelledError();
+        }
+        if (isAbortError(error)) {
+          throw new Error(`请求超时（${settings.requestTimeoutSeconds} 秒）。`);
+        }
+        throw new Error(`无法连接到接口：${error instanceof Error ? error.message : String(error)}`);
       }
-      if (isAbortError(error)) {
-        throw new Error(`请求超时（${settings.requestTimeoutSeconds} 秒）。`);
-      }
-      throw new Error(`无法连接到接口：${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    if (!response.ok) {
+      if (response.ok) break;
       const detail = await readError(response, apiKey);
+      if (response.status === 400 && removeRejectedReasoningControl(body, detail)) continue;
       clearTimeout(timer);
       throw new Error(`接口请求失败（${response.status}）：${detail}`);
     }
@@ -133,6 +148,47 @@ export class DeepSeekClient {
         throw new Error(`请求超时（${settings.requestTimeoutSeconds} 秒）。`);
       }
       throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async listModels(settings: ChatSettings, options: ListModelsOptions = {}): Promise<string[]> {
+    const apiKey = options.apiKey?.trim() || await this.getApiKey(settings.activeApiProfileId);
+    if (!apiKey?.trim()) {
+      throw new Error('尚未配置 API Key，无法获取模型列表。');
+    }
+    const endpoint = buildModelsEndpoint(settings.baseUrl);
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(), settings.requestTimeoutSeconds * 1000);
+    const signal = mergeAbortSignals(options.signal, timeout.signal);
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'GET',
+        headers: new Headers({
+          Accept: 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+          ...sanitizeHeaders(settings.requestHeaders),
+        }),
+        signal,
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      if (isAbortError(error) && options.signal?.aborted) throw new RequestCancelledError();
+      if (isAbortError(error)) throw new Error(`获取模型列表超时（${settings.requestTimeoutSeconds} 秒）。`);
+      throw new Error(`无法获取模型列表：${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      if (!response.ok) {
+        throw new Error(`获取模型列表失败（${response.status}）：${await readError(response, apiKey)}`);
+      }
+      const payload = await response.json() as unknown;
+      const models = parseModelIds(payload);
+      if (!models.length) {
+        throw new Error('接口返回成功，但没有发现可用模型。');
+      }
+      return models;
     } finally {
       clearTimeout(timer);
     }
@@ -158,6 +214,53 @@ export function buildEndpoint(baseUrl: string): string {
     throw new Error('为保护 API Key，远程模型接口必须使用 HTTPS；本机 localhost 可使用 HTTP。');
   }
   return endpoint;
+}
+
+export function buildModelsEndpoint(baseUrl: string): string {
+  const normalized = baseUrl.trim().replace(/\/+$/, '') || 'https://api.deepseek.com';
+  const url = new URL(normalized);
+  assertSecureUrl(url);
+  const path = url.pathname.replace(/\/+$/, '');
+  if (path.endsWith('/chat/completions')) {
+    url.pathname = `${path.slice(0, -'/chat/completions'.length)}/models`;
+  } else if (path.endsWith('/responses')) {
+    url.pathname = `${path.slice(0, -'/responses'.length)}/models`;
+  } else {
+    url.pathname = `${path}/models`;
+  }
+  url.search = '';
+  url.hash = '';
+  return url.toString().replace(/\/$/, '');
+}
+
+function assertSecureUrl(url: URL): void {
+  const local = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) {
+    throw new Error('为保护 API Key，远程模型接口必须使用 HTTPS；本机 localhost 可使用 HTTP。');
+  }
+}
+
+function parseModelIds(payload: unknown): string[] {
+  const object = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : undefined;
+  const candidates = Array.isArray(payload)
+    ? payload
+    : Array.isArray(object?.data)
+      ? object.data
+      : Array.isArray(object?.models)
+        ? object.models
+        : [];
+  const ids = candidates
+    .map((candidate) => {
+      if (typeof candidate === 'string') return candidate;
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return '';
+      const item = candidate as Record<string, unknown>;
+      return [item.id, item.name, item.model].find((value): value is string => typeof value === 'string') ?? '';
+    })
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return [...new Set(ids)].sort((left, right) => left.localeCompare(right)).slice(0, 500);
 }
 
 function sanitizeHeaders(headers: Record<string, string>): Record<string, string> {
@@ -189,6 +292,21 @@ function redactSecret(value: string, secret: string): string {
   return redacted
     .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, 'Bearer [REDACTED]')
     .replace(/\b(?:sk|key|token)-[A-Za-z0-9._-]{8,}\b/gi, '[REDACTED]');
+}
+
+function removeRejectedReasoningControl(body: Record<string, unknown>, detail: string): boolean {
+  const normalized = detail.toLocaleLowerCase();
+  const mentionsThinking = normalized.includes('thinking');
+  const mentionsEffort = normalized.includes('reasoning_effort') || normalized.includes('reasoning effort');
+  if ('reasoning_effort' in body && (mentionsEffort || !mentionsThinking)) {
+    delete body.reasoning_effort;
+    return true;
+  }
+  if ('thinking' in body && (mentionsThinking || !('reasoning_effort' in body))) {
+    delete body.thinking;
+    return true;
+  }
+  return false;
 }
 
 async function parseSse(

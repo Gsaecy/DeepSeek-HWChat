@@ -1,14 +1,36 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="../media/chat.css"><title>HWChat Preview</title>
-  <style>:root{--vscode-editor-background:#f5f5f7;--vscode-foreground:#1d1d1f;--vscode-sideBar-background:#ececf0;--vscode-button-background:#087af5;--vscode-button-foreground:#fff;--vscode-button-hoverBackground:#006bd6;--vscode-focusBorder:#0a84ff;--vscode-textLink-foreground:#0069c7;--vscode-textCodeBlock-background:#ececf0;--vscode-notifications-background:#fff;--vscode-errorForeground:#d70015}</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../media/chat.css">
+  <title>HWChat Preview</title>
+  <style>
+    :root {
+      --vscode-editor-background: #171717;
+      --vscode-foreground: #f2f2f2;
+      --vscode-sideBar-background: #121212;
+      --vscode-input-background: #242424;
+      --vscode-dropdown-background: #242424;
+      --vscode-list-hoverBackground: #292929;
+      --vscode-button-background: #0a78e8;
+      --vscode-button-foreground: #fff;
+      --vscode-focusBorder: #0a84ff;
+      --vscode-textLink-foreground: #64a8ff;
+      --vscode-textCodeBlock-background: #202020;
+      --vscode-notifications-background: #242424;
+      --vscode-errorForeground: #ff6961;
+    }
+  </style>
 </head>
 <body>
   <div id="app" class="app-shell">
-    <aside id="historyPane" class="history-pane">
-      <div class="brand-row"><img class="brand-mark" src="../resources/logo.png" alt=""><div class="brand-copy"><strong>HWChat</strong><span>DeepSeek workspace</span></div><button id="closeHistoryButton" class="icon-button mobile-only" type="button">☰</button></div>
+    <aside id="historyPane" class="history-pane" aria-label="对话记录">
+      <div class="brand-row">
+        <img class="brand-mark" src="../resources/logo.png" alt="">
+        <div class="brand-copy"><strong>HWChat</strong><span>DeepSeek workspace</span></div>
+        <button id="closeHistoryButton" class="icon-button mobile-only" type="button">←</button>
+      </div>
       <button id="newChatButton" class="primary-command" type="button"><span>＋</span><span>新建对话</span></button>
       <label class="search-field"><span class="sr-only">搜索</span><input id="historySearch" type="search" placeholder="搜索对话"></label>
       <button id="archiveViewButton" class="sidebar-command archive-toggle" type="button"><span>□</span><span>显示归档</span></button>
@@ -17,42 +39,141 @@
     </aside>
     <main class="chat-pane">
       <header class="chat-toolbar">
-        <button id="historyButton" class="icon-button" type="button">☰</button>
-        <div class="conversation-heading"><strong id="conversationTitle">新对话</strong><span id="connectionState">准备就绪</span></div>
-        <label class="mode-field"><select id="modeInput"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
-        <label class="profile-field"><select id="profileInput"></select></label>
-        <label class="model-field"><select id="modelInput"></select></label>
-        <button id="skillsButton" class="control-button" type="button"><span>✦</span><span id="skillsCount">0</span></button>
-        <button id="archiveButton" class="icon-button" type="button">□</button><button id="exportButton" class="icon-button" type="button">⇧</button><button id="settingsButton" class="icon-button" type="button">⚙</button>
+        <div class="toolbar-main">
+          <button id="historyButton" class="icon-button" type="button">☰</button>
+          <div class="conversation-heading"><strong id="conversationTitle">新对话</strong><span id="connectionState">准备就绪</span></div>
+          <label class="mode-field"><select id="modeInput"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
+          <button id="skillsButton" class="control-button" type="button"><span>✦</span><span id="skillsCount">0</span></button>
+          <button id="archiveButton" class="icon-button" type="button">□</button>
+          <button id="exportButton" class="icon-button" type="button">⇧</button>
+          <button id="settingsButton" class="icon-button" type="button">⚙</button>
+        </div>
+        <div class="toolbar-connection">
+          <label class="profile-field"><select id="profileInput"></select></label>
+          <label class="model-field"><select id="modelInput"></select></label>
+          <button id="refreshModelsButton" class="icon-button" type="button">↻</button>
+        </div>
       </header>
-      <section id="skillsPanel" class="skills-panel"><div class="skills-panel-heading"><strong>本次对话使用的 Skill</strong><span id="workspaceTrustBadge">工作区状态</span></div><div id="skillsList" class="skills-list"></div><div class="skills-panel-note">默认启用来自快捷调用；回复会显示本轮实际加载的 Skill。</div></section>
+      <section id="skillsPanel" class="skills-panel" hidden>
+        <div class="skills-panel-heading"><strong>本次对话使用的 Skill</strong><span id="workspaceTrustBadge">工作区状态</span></div>
+        <div id="skillsList" class="skills-list"></div>
+        <div class="skills-panel-note">默认启用来自本地skill快捷调用；回复只显示本轮实际加载的 Skill。</div>
+      </section>
       <section id="messageViewport" class="message-viewport">
         <button id="loadOlderButton" class="load-older" type="button" hidden>加载更早消息</button>
-        <div id="emptyState" class="empty-state"><img class="empty-mark" src="../resources/logo.png" alt=""><h1>今天想一起解决什么？</h1><div class="suggestions"><button type="button" data-prompt="解释当前代码">解释代码</button><button type="button" data-prompt="设计实现方案">设计方案</button><button type="button" data-prompt="执行代码审查">代码审查</button></div></div>
+        <div id="emptyState" class="empty-state">
+          <img class="empty-mark" src="../resources/logo.png" alt="">
+          <h1>今天想一起解决什么？</h1>
+          <div class="suggestions"><button type="button" data-prompt="解释当前代码">解释代码</button><button type="button" data-prompt="设计实现方案">设计方案</button><button type="button" data-prompt="执行代码审查">代码审查</button></div>
+        </div>
         <div id="messageList" class="message-list"></div>
       </section>
       <footer class="composer-wrap">
-        <div id="attachmentList" class="attachment-list"></div><div id="contextChip" class="context-chip" hidden><span id="contextLabel"></span><button id="removeContextButton" type="button">×</button></div>
-        <form id="composer" class="composer"><textarea id="promptInput" rows="1"></textarea><div class="composer-actions"><span id="composerHint">Enter 发送</span><button id="attachButton" class="icon-button" type="button">⌕</button><button id="sendButton" class="send-button" type="submit">↑</button><button id="stopButton" class="stop-button" type="button" hidden>■</button></div></form>
+        <div id="attachmentList" class="attachment-list"></div>
+        <div id="contextChip" class="context-chip" hidden><span id="contextLabel"></span><button id="removeContextButton" type="button">×</button></div>
+        <div id="agentRunState" class="agent-run-state" hidden><span class="run-indicator"></span><strong id="agentRunLabel">Agent 正在执行</strong><span id="agentRunMeta"></span></div>
+        <details id="taskTree" class="task-tree" hidden open><summary><span>任务树</span><small id="taskTreeSummary"></small></summary><div id="taskTreeList" class="task-tree-list"></div></details>
+        <form id="composer" class="composer">
+          <textarea id="promptInput" rows="1" placeholder="询问代码、调试问题或直接交给 Agent 实现…"></textarea>
+          <div class="composer-actions"><span id="composerHint">Enter 发送</span><button id="attachButton" class="icon-button" type="button">⌕</button><button id="sendButton" class="send-button" type="submit">↑</button><button id="stopButton" class="stop-button" type="button" hidden>■</button></div>
+        </form>
+        <div class="composer-runtime-controls">
+          <label class="runtime-field permission-field"><span>权限</span><select id="permissionPresetInput"><option value="askAll">每次询问</option><option value="review">风险操作询问</option><option value="autopilot">Autopilot</option><option value="full">完全访问</option><option value="custom">自定义</option></select></label>
+          <label class="runtime-field steps-field"><span>步骤</span><select id="agentMaxStepsInput"><option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option></select></label>
+          <label class="runtime-field reasoning-field"><span>思考</span><select id="reasoningEffortInput"><option value="default">默认</option><option value="none">无</option><option value="low">低</option><option value="high">高</option><option value="max">最大值</option></select></label>
+          <button id="voiceButton" class="runtime-icon-button" type="button" title="语音输入">◉</button>
+        </div>
       </footer>
     </main>
-  </div><div id="toast" class="toast" hidden></div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
   <script>
-    const now=Date.now();
-    const previewState={
-      conversation:{id:'c1',title:'完成登录模块重构',createdAt:now-500000,updatedAt:now,messageCount:4,preview:'已修改 2 个文件并通过测试',pinned:true,totalTokens:2462,model:'deepseek-reasoner',apiProfileId:'deepseek',mode:'agent',skillIds:['s1','s2'],skillSelectionInitialized:true,archived:false},
-      conversations:[{id:'c1',title:'完成登录模块重构',updatedAt:now,messageCount:4,preview:'已修改 2 个文件并通过测试',pinned:true,totalTokens:2462,model:'deepseek-reasoner',mode:'agent'},{id:'c2',title:'排查 Android 构建',updatedAt:now-7200000,messageCount:8,preview:'Gradle 版本需要对齐',pinned:false,totalTokens:18921}],
-      archivedConversations:[{id:'c3',title:'旧版上传模块方案',updatedAt:now-604800000,messageCount:12,preview:'已归档',pinned:false,totalTokens:82001,archived:true}],
-      messages:[
-        {id:'m1',role:'user',content:'重构登录逻辑，修复并发刷新问题并运行测试。',createdAt:now-90000,updatedAt:now-90000,status:'complete',attachments:[{label:'src/AuthManager.ts',path:'src/AuthManager.ts',kind:'file',bytes:8421}]},
-        {id:'m2',role:'assistant',content:'已把刷新过程改为共享任务，并补充失败重试与并发测试。现有测试全部通过。',reasoning:'先检查认证状态的共享写入，再确认测试覆盖。',createdAt:now-80000,updatedAt:now-20000,status:'complete',usage:{totalTokens:2462},usedSkills:[{id:'s1',name:'TypeScript 质量规范',source:'workspace',relativePath:'.agents/skills/typescript/SKILL.md'},{id:'s2',name:'项目文档同步',source:'copilot',relativePath:'~/.copilot/skills/project-doc-sync/SKILL.md'}],toolExecutions:[
-          {callId:'t1',name:'read_file',summary:'读取 src/AuthManager.ts（8.2 KB）',status:'success',approval:'not-required',risk:'read',startedAt:now-79000,finishedAt:now-78500,input:'{"path":"src/AuthManager.ts"}',output:'读取 214 行代码。'},
-          {callId:'t2',name:'replace_in_file',summary:'修改 src/AuthManager.ts：替换 1 处文本',status:'success',approval:'approved',risk:'write',startedAt:now-70000,finishedAt:now-68000,changedFiles:['src/AuthManager.ts'],input:'共享 refreshTask 并在 finally 中清理',output:'文件更新为 228 行（+14）。'},
-          {callId:'t3',name:'run_command',summary:'命令退出码 0',status:'success',approval:'approved',risk:'command',startedAt:now-40000,finishedAt:now-22000,input:'npm test',output:'18 tests passed'}
-        ]}
+    const now = Date.now();
+    const previewState = {
+      conversation: { id: 'c1', title: '完成登录模块重构', createdAt: now - 500000, updatedAt: now, messageCount: 5, preview: '正在按新要求继续验证', pinned: true, totalTokens: 312462, model: 'deepseek-reasoner', apiProfileId: 'deepseek', mode: 'agent', skillIds: ['s1', 's2'], skillSelectionInitialized: true, archived: false },
+      conversations: [
+        { id: 'c1', title: '完成登录模块重构', updatedAt: now, messageCount: 5, preview: '正在按新要求继续验证', pinned: true, totalTokens: 312462, model: 'deepseek-reasoner', mode: 'agent' },
+        { id: 'c2', title: '排查 Android 构建', updatedAt: now - 7200000, messageCount: 8, preview: 'Gradle 版本需要对齐', pinned: false, totalTokens: 18921 },
       ],
-      hasMore:true,settings:{apiProfiles:[{id:'deepseek',name:'DeepSeek',baseUrl:'https://api.deepseek.com',models:['deepseek-chat','deepseek-reasoner'],requestHeaders:{}},{id:'local',name:'本地模型',baseUrl:'http://localhost:11434/v1',models:['qwen3-coder'],requestHeaders:{}}],activeApiProfileId:'deepseek',model:'deepseek-reasoner',sendOnEnter:true},apiKeyConfigured:true,pendingAttachments:[{label:'src/session.test.ts',path:'src/session.test.ts',kind:'file',bytes:5620}],skills:[{id:'s1',name:'TypeScript 质量规范',description:'严格类型、最小改动与测试要求',source:'workspace',relativePath:'.agents/skills/typescript/SKILL.md'},{id:'s2',name:'项目文档同步',description:'代码改动后同步 README 与技术文档',source:'copilot',relativePath:'~/.copilot/skills/project-doc-sync/SKILL.md',defaultEnabled:true,lastUsedAt:now-20000},{id:'s3',name:'安全审查',description:'检查凭据、权限和输入边界',source:'workspace',relativePath:'.hwchat/skills/security.md'}],selectedSkillIds:['s1','s2'],mode:'agent',workspaceTrusted:true,agentAvailable:true,showArchived:false
+      archivedConversations: [{ id: 'c3', title: '旧版上传模块方案', updatedAt: now - 604800000, messageCount: 12, preview: '已归档', pinned: false, totalTokens: 82001, archived: true }],
+      messages: [
+        { id: 'm1', role: 'user', content: '重构登录逻辑，修复并发刷新问题并运行测试。', createdAt: now - 90000, updatedAt: now - 90000, status: 'complete', attachments: [{ label: 'src/AuthManager.ts', path: 'src/AuthManager.ts', kind: 'file', bytes: 8421 }] },
+        { id: 'm2', role: 'assistant', content: '已把刷新过程改为共享任务，并补充失败重试与并发测试。\n\n需要手动复查时可运行：\n\n```zsh\nnpm run check\nnpm test\n```', reasoning: '先检查认证状态的共享写入，再确认测试覆盖。', createdAt: now - 80000, updatedAt: now - 20000, status: 'streaming', usage: { totalTokens: 312462 }, usedSkills: [{ id: 's1', name: 'TypeScript 质量规范', source: 'workspace', relativePath: '.agents/skills/typescript/SKILL.md' }, { id: 's2', name: '项目文档同步', source: 'copilot', relativePath: '~/.copilot/skills/project-doc-sync/SKILL.md' }], toolExecutions: [
+          { callId: 't1', name: 'read_file', summary: '读取 src/AuthManager.ts（8.2 KB）', status: 'success', approval: 'not-required', risk: 'read', startedAt: now - 79000, finishedAt: now - 78500, input: '{"path":"src/AuthManager.ts"}', output: '读取 214 行代码。' },
+          { callId: 't2', name: 'replace_in_file', summary: '修改 src/AuthManager.ts：替换 1 处文本', status: 'success', approval: 'approved', risk: 'write', startedAt: now - 70000, finishedAt: now - 68000, changedFiles: ['src/AuthManager.ts'], input: '共享 refreshTask 并在 finally 中清理', output: '文件更新为 228 行（+14）。' },
+          { callId: 't3', name: 'run_command', summary: '正在运行测试', status: 'pending', approval: 'approved', risk: 'command', startedAt: now - 4000, input: '{"command":"npm test","cwd":"/workspace"}' },
+        ] },
+        { id: 'm3', role: 'user', content: '不要改公共接口，再补一个刷新失败后的恢复测试。', createdAt: now - 3000, updatedAt: now - 3000, status: 'complete' },
+      ],
+      hasMore: true,
+      settings: { apiProfiles: [{ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', models: ['deepseek-chat', 'deepseek-reasoner'], requestHeaders: {} }, { id: 'local', name: '本地模型', baseUrl: 'http://localhost:11434/v1', models: ['qwen3-coder'], requestHeaders: {} }], activeApiProfileId: 'deepseek', model: 'deepseek-reasoner', sendOnEnter: true, permissionPreset: 'autopilot', agentMaxSteps: 0, reasoningEffort: 'high' },
+      apiKeyConfigured: true,
+      pendingAttachments: [{ label: 'failure-screenshot.png', kind: 'image', mimeType: 'image/png', bytes: 5620 }],
+      skills: [{ id: 's1', name: 'TypeScript 质量规范', description: '严格类型、最小改动与测试要求', source: 'workspace', relativePath: '.agents/skills/typescript/SKILL.md' }, { id: 's2', name: '项目文档同步', description: '代码改动后同步 README 与技术文档', source: 'copilot', relativePath: '~/.copilot/skills/project-doc-sync/SKILL.md', defaultEnabled: true, lastUsedAt: now - 20000 }],
+      selectedSkillIds: ['s1', 's2'], mode: 'agent', workspaceTrusted: true, agentAvailable: true, availableToolCount: 27, showArchived: false,
+      taskTree: { active: true, currentNodeId: 'root', nodes: [{ id: 'root', title: '重构登录逻辑并运行测试', status: 'active', relation: 'root' }, { id: 'update', parentId: 'root', title: '保留公共接口并补恢复测试', status: 'merged', relation: 'related' }, { id: 'queued', parentId: 'root', title: '更新 README 使用说明', status: 'queued', relation: 'queued' }] },
     };
-    window.acquireVsCodeApi=()=>({postMessage(message){if(message.type==='ready')setTimeout(()=>window.dispatchEvent(new MessageEvent('message',{data:{type:'state',state:previewState,streamingConversationId:null}})),0);}});
-  </script><script src="../media/chat.js"></script>
-</body></html>
+    window.__hwchatMessages = [];
+    window.acquireVsCodeApi = () => ({
+      postMessage(message) {
+        window.__hwchatMessages.push(message);
+        if (message.type === 'ready') setTimeout(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'state', state: previewState, streamingConversationId: 'c1' } })), 0);
+        if (message.type === 'copyText' && message.requestId) setTimeout(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'clipboardWriteResult', requestId: message.requestId, ok: true } })), 0);
+        if (message.type === 'readClipboardText') setTimeout(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'clipboardText', requestId: message.requestId, text: '宿主剪贴板文字', truncated: false } })), 0);
+      },
+    });
+  </script>
+  <script src="../media/chat.js"></script>
+  <script>
+    setTimeout(() => {
+      const rect = (id) => {
+        const node = document.getElementById(id);
+        if (!node) return null;
+        const box = node.getBoundingClientRect();
+        return { left: box.left, right: box.right, width: box.width, visible: box.width > 0 && box.height > 0 };
+      };
+      document.documentElement.dataset.layoutMetrics = JSON.stringify({
+        viewport: { width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth },
+        body: { width: document.body.clientWidth, scrollWidth: document.body.scrollWidth },
+        toolbar: rect('modelInput'), composer: rect('composer'), permissions: rect('permissionPresetInput'),
+        steps: rect('agentMaxStepsInput'), reasoning: rect('reasoningEffortInput'), voice: rect('voiceButton'),
+        taskTree: rect('taskTree'), commandCopy: [...document.querySelectorAll('.terminal-command button')].map((node) => {
+          const box = node.getBoundingClientRect(); return { left: box.left, right: box.right, width: box.width };
+        }),
+      });
+      const copyButton = document.querySelector('.terminal-command button');
+      if (copyButton) copyButton.click();
+      const toolCopyButton = document.querySelector('.tool-execution.status-pending .tool-detail-heading button');
+      if (toolCopyButton) toolCopyButton.click();
+      const pasteData = new DataTransfer();
+      pasteData.setData('text/plain', '混合剪贴板文字');
+      const prompt = document.getElementById('promptInput');
+      prompt.focus();
+      prompt.dispatchEvent(new ClipboardEvent('paste', { clipboardData: pasteData, bubbles: true, cancelable: true }));
+      const firstMessage = document.querySelector('.message-content p');
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(firstMessage);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const copiedSelection = new DataTransfer();
+      document.dispatchEvent(new ClipboardEvent('copy', { clipboardData: copiedSelection, bubbles: true, cancelable: true }));
+      selection.removeAllRanges();
+      prompt.focus();
+      prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+      prompt.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', metaKey: true, bubbles: true, cancelable: true }));
+      setTimeout(() => {
+        const copyMessages = window.__hwchatMessages.filter((message) => message.type === 'copyText' && message.requestId);
+        document.documentElement.dataset.clipboardMetrics = JSON.stringify({
+          copiedText: copyMessages[0]?.text || '',
+          toolCommandText: copyMessages[1]?.text || '',
+          copyButtonText: copyButton?.textContent || '',
+          toolCopyButtonText: toolCopyButton?.textContent || '',
+          pastedText: prompt.value,
+          shortcutCopiedText: copiedSelection.getData('text/plain'),
+        });
+      }, 240);
+    }, 100);
+  </script>
+</body>
+</html>

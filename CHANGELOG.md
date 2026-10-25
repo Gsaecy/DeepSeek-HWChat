@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2
+
+- Added runtime task trees: messages sent while Agent is running are classified as related guidance or queued branches. Related guidance triggers replanning at the next tool boundary, while independent work continues after the active branch finishes.
+- Kept the composer editable during Agent runs, added explicit running state, and stopped forcing the message viewport to the bottom after the user scrolls upward.
+- Added permission, unlimited-step, reasoning-effort, and voice controls directly below the composer. Risky permission presets require an explicit risk acknowledgement and persist immediately.
+- Added pasted image, screenshot, and file attachments with multimodal request support and scheduled removal of cached attachment bodies and image Base64 data.
+- Added automatic model discovery, reasoning-parameter compatibility retries, built-in editor previews, and invocation of tools exposed by other VS Code extensions through the Language Model Tool API.
+- Added dedicated terminal command blocks with one-click copying through the VS Code clipboard.
+- Fixed intermittent chat copy/paste failures by preserving text selections during streaming, acknowledging clipboard writes, and supporting text plus file/image clipboard payloads together.
+- Added regression coverage for unlimited Agent rounds, runtime replanning, queued tasks, reasoning fallback, and image-cache compaction.
+
 ## 0.1.1
 
 - Moved the complete chat and history experience into the VS Code Secondary Sidebar so selecting or creating a conversation no longer opens an editor tab.

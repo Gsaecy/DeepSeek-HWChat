@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import * as vscode from 'vscode';
 import { readSettings } from '../core/settings';
@@ -174,14 +174,83 @@ export class ToolExecutor implements vscode.Disposable {
     return result;
   }
 
-  async readAttachment(uri: vscode.Uri, settings = readSettings()): Promise<MessageContext & { content: string }> {
+  async executeExternal(
+    call: ToolCall,
+    mode: ConversationMode,
+    settings: ChatSettings,
+    risk: ToolApprovalRequest['risk'],
+    requestApproval: RequestApproval,
+    summary: string,
+    detail: string,
+    invoke: () => Promise<ToolExecutionResult>,
+    conversationId?: string,
+    forceApproval = false,
+  ): Promise<ToolExecutionResult> {
+    const policy = policyFor(risk, settings);
+    if (policy === 'deny') {
+      const result = deniedResult(`当前权限策略禁止该${risk === 'read' ? '读取' : risk === 'write' ? '写入' : '命令'}工具。`);
+      await this.auditResult(call, result, conversationId);
+      return result;
+    }
+    if (mode === 'plan' && risk !== 'read') {
+      const result = deniedResult('规划模式只允许只读工具。');
+      await this.auditResult(call, result, conversationId);
+      return result;
+    }
+    if (risk !== 'read' && !this.isWorkspaceTrusted()) {
+      const result = deniedResult('当前工作区未受信任，已阻止可能修改文件或执行命令的工具。');
+      await this.auditResult(call, result, conversationId);
+      return result;
+    }
+    const approvalRequired = policy === 'ask' || forceApproval;
+    if (approvalRequired && !await requestApproval({
+      callId: call.id,
+      name: call.function.name,
+      summary,
+      detail,
+      risk,
+    })) {
+      const result = deniedResult('用户拒绝了这次工具调用。');
+      await this.auditResult(call, result, conversationId);
+      return result;
+    }
+    let result: ToolExecutionResult;
+    try {
+      result = await invoke();
+      result.content = truncate(redact(result.content), settings.maxToolOutputBytes);
+      result.approval = approvalRequired ? 'approved' : 'not-required';
+    } catch (error) {
+      result = {
+        status: 'error',
+        summary: `${summary}失败`,
+        content: truncate(redact(error instanceof Error ? error.message : String(error)), settings.maxToolOutputBytes),
+        approval: approvalRequired ? 'approved' : 'not-required',
+      };
+    }
+    await this.auditResult(call, result, conversationId);
+    return result;
+  }
+
+  async readAttachment(uri: vscode.Uri, settings = readSettings()): Promise<MessageContext> {
     const resolved = await this.resolvePath(uri.fsPath);
     this.assertReadable(resolved, settings);
     const stat = await vscode.workspace.fs.stat(resolved.uri);
-    if (stat.size > settings.maxReadBytes) {
-      throw new Error(`文件过大（${formatBytes(stat.size)}），上限为 ${formatBytes(settings.maxReadBytes)}。`);
+    const mimeType = imageMimeType(resolved.fsPath);
+    const maxBytes = mimeType ? Math.min(6 * 1024 * 1024, settings.maxReadBytes * 12) : settings.maxReadBytes;
+    if (stat.size > maxBytes) {
+      throw new Error(`文件过大（${formatBytes(stat.size)}），上限为 ${formatBytes(maxBytes)}。`);
     }
     const bytes = await vscode.workspace.fs.readFile(resolved.uri);
+    if (mimeType) {
+      return {
+        label: resolved.relativePath,
+        path: resolved.relativePath,
+        kind: 'image',
+        bytes: bytes.byteLength,
+        mimeType,
+        dataBase64: Buffer.from(bytes).toString('base64'),
+      };
+    }
     const content = decodeText(bytes);
     return {
       label: resolved.relativePath,
@@ -442,6 +511,17 @@ export class ToolExecutor implements vscode.Disposable {
   private definition(name: string, description: string, parameters: Record<string, unknown>): ToolDefinition {
     return { type: 'function', function: { name, description, parameters } };
   }
+}
+
+function imageMimeType(path: string): string | undefined {
+  const extension = extname(path).toLocaleLowerCase();
+  return ({
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+  } as Record<string, string>)[extension];
 }
 
 function riskFor(name: string): ToolApprovalRequest['risk'] {

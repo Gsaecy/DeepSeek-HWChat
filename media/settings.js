@@ -95,7 +95,7 @@
       cacheBudgetMB: numberValue(fields.cacheBudgetMB, 100),
       cleanupIntervalMinutes: numberValue(fields.cleanupIntervalMinutes, 10),
       defaultMode: fields.defaultMode.value,
-      agentMaxSteps: numberValue(fields.agentMaxSteps, 12),
+      agentMaxSteps: numberValue(fields.agentMaxSteps, 0),
       fileReadPolicy: fields.fileReadPolicy.value,
       fileWritePolicy: fields.fileWritePolicy.value,
       commandPolicy: fields.commandPolicy.value,
