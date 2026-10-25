@@ -1,0 +1,388 @@
+{
+  "name": "hwchat",
+  "displayName": "HWChat",
+  "description": "A secure coding agent for VS Code with DeepSeek, local skills, durable history and approval-controlled workspace tools.",
+  "version": "0.1.1",
+  "publisher": "honor-world",
+  "license": "MIT",
+  "icon": "resources/logo.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Gsaecy/DeepSeek-HWChat"
+  },
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Chat remains available. Agent file writes and command execution require a trusted workspace.",
+      "restrictedConfigurations": [
+        "hwchat.fileWritePolicy",
+        "hwchat.commandPolicy",
+        "hwchat.allowDangerousCommands"
+      ]
+    }
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "keywords": [
+    "deepseek",
+    "chat",
+    "ai",
+    "llm",
+    "reasoner",
+    "assistant"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:hwchat.chatView"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "hwchat.openChat",
+        "title": "HWChat: 打开对话面板",
+        "category": "HWChat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "hwchat.newChat",
+        "title": "HWChat: 新建对话",
+        "category": "HWChat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "hwchat.openSettings",
+        "title": "HWChat: 打开设置",
+        "category": "HWChat",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "hwchat.askSelection",
+        "title": "HWChat: 询问选中的代码",
+        "category": "HWChat"
+      },
+      {
+        "command": "hwchat.explainSelection",
+        "title": "HWChat: 解释选中的代码",
+        "category": "HWChat"
+      },
+      {
+        "command": "hwchat.cleanupNow",
+        "title": "HWChat: 立即清理缓存",
+        "category": "HWChat",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "hwchat.setApiKey",
+        "title": "HWChat: 设置 API Key",
+        "category": "HWChat"
+      },
+      {
+        "command": "hwchat.exportHistory",
+        "title": "HWChat: 导出对话记录",
+        "category": "HWChat",
+        "icon": "$(export)"
+      },
+      {
+        "command": "hwchat.attachFiles",
+        "title": "HWChat: 添加文件到对话",
+        "category": "HWChat",
+        "icon": "$(attach)"
+      },
+      {
+        "command": "hwchat.archiveConversation",
+        "title": "HWChat: 归档当前对话",
+        "category": "HWChat",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "hwchat.rescanSkills",
+        "title": "HWChat: 重新扫描 Skills",
+        "category": "HWChat",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "hwchat",
+          "title": "HWChat",
+          "icon": "resources/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "hwchat": [
+        {
+          "type": "webview",
+          "id": "hwchat.chatView",
+          "name": "HWChat",
+          "initialSize": 420
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "hwchat.chatView",
+        "contents": "还没有对话。\n[新建对话](command:hwchat.newChat)\n[配置 API](command:hwchat.openSettings)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "hwchat.openChat",
+        "key": "cmd+shift+l",
+        "mac": "cmd+shift+l",
+        "win": "ctrl+shift+l",
+        "linux": "ctrl+shift+l"
+      },
+      {
+        "command": "hwchat.askSelection",
+        "key": "cmd+alt+.",
+        "mac": "cmd+alt+.",
+        "win": "ctrl+alt+.",
+        "linux": "ctrl+alt+."
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "hwchat.askSelection",
+          "when": "editorHasSelection",
+          "group": "hwchat@1"
+        },
+        {
+          "command": "hwchat.explainSelection",
+          "when": "editorHasSelection",
+          "group": "hwchat@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "hwchat.attachFiles",
+          "when": "resourceScheme == file",
+          "group": "hwchat@1"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "hwchat.newChat",
+          "when": "view == hwchat.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "hwchat.openSettings",
+          "when": "view == hwchat.chatView",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "HWChat",
+      "properties": {
+        "hwchat.apiProfiles": {
+          "type": "array",
+          "default": [],
+          "description": "API 配置档列表。密钥不会写入这里，而是按配置档分别保存在 VS Code SecretStorage。",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "baseUrl", "models"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "baseUrl": { "type": "string" },
+              "models": { "type": "array", "items": { "type": "string" } },
+              "requestHeaders": { "type": "object", "additionalProperties": { "type": "string" } }
+            }
+          }
+        },
+        "hwchat.activeApiProfileId": {
+          "type": "string",
+          "default": "default",
+          "description": "当前默认 API 配置档。"
+        },
+        "hwchat.baseUrl": {
+          "type": "string",
+          "default": "https://api.deepseek.com",
+          "markdownDescription": "兼容 OpenAI 协议的接口地址，例如 `https://api.deepseek.com`、`https://api.moonshot.cn/v1`。"
+        },
+        "hwchat.model": {
+          "type": "string",
+          "default": "deepseek-chat",
+          "description": "默认模型。可在对话面板顶部即时切换。"
+        },
+        "hwchat.requestHeaders": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "发送给兼容接口的额外请求头。Authorization 由 API Key 自动设置。"
+        },
+        "hwchat.requestTimeoutSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 10,
+          "maximum": 900,
+          "description": "单次请求超时秒数。"
+        },
+        "hwchat.temperature": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "生成的随机性。"
+        },
+        "hwchat.maxTokens": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "单次回复的 token 上限，0 表示由服务端决定。"
+        },
+        "hwchat.systemPrompt": {
+          "type": "string",
+          "editPresentation": "multilineText",
+          "default": "",
+          "description": "每次对话前追加的系统提示词。留空则不发送。"
+        },
+        "hwchat.sendOnEnter": {
+          "type": "boolean",
+          "default": true,
+          "description": "回车发送，Shift+回车换行。"
+        },
+        "hwchat.historyRetentionDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "未固定的对话保留天数，0 表示永不按时间清理。"
+        },
+        "hwchat.taskCacheRetentionHours": {
+          "type": "number",
+          "default": 24,
+          "minimum": 0,
+          "description": "已完成任务的重内容（思考、用量、工具详情、附件正文）保留小时数；超时后保留回复与执行摘要。0 表示立即瘦身。"
+        },
+        "hwchat.cacheBudgetMB": {
+          "type": "number",
+          "default": 100,
+          "minimum": 5,
+          "description": "历史记录总体积上限。超出后从最久未使用的未固定对话开始淘汰。"
+        },
+        "hwchat.cleanupIntervalMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "description": "后台清理任务的执行间隔（分钟）。"
+        },
+        "hwchat.maxMessagesInContext": {
+          "type": "number",
+          "default": 20,
+          "minimum": 0,
+          "description": "发送给模型的历史消息条数上限，避免上下文无限膨胀。0 表示不限制。"
+        },
+        "hwchat.defaultMode": {
+          "type": "string",
+          "enum": ["chat", "agent", "plan"],
+          "enumDescriptions": ["仅对话，不调用工作区工具", "可按权限读取、修改文件并运行命令", "只读分析和规划，不修改工作区"],
+          "default": "agent",
+          "description": "新对话的默认工作模式。"
+        },
+        "hwchat.agentMaxSteps": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 40,
+          "description": "单轮 Agent 请求最多执行的工具循环次数。"
+        },
+        "hwchat.permissionPreset": {
+          "type": "string",
+          "enum": ["askAll", "review", "autopilot", "full", "custom"],
+          "enumDescriptions": [
+            "所有读取、写入和命令都询问",
+            "自动读取，写入和命令询问",
+            "工作区内自动读取、写入和运行常规命令；敏感文件和危险命令仍阻止",
+            "工作区内自动执行并允许敏感文件；危险命令仍强制逐次确认",
+            "使用下方各项自定义策略"
+          ],
+          "default": "review",
+          "description": "Agent 权限预设。工作区信任、路径隔离和危险命令确认等硬边界不会被关闭。"
+        },
+        "hwchat.fileReadPolicy": {
+          "type": "string",
+          "enum": ["allow", "ask", "deny"],
+          "default": "allow",
+          "description": "Agent 读取工作区文件前的权限策略。"
+        },
+        "hwchat.fileWritePolicy": {
+          "type": "string",
+          "enum": ["allow", "ask", "deny"],
+          "default": "ask",
+          "description": "Agent 修改工作区文件前的权限策略。未受信任工作区始终禁止。"
+        },
+        "hwchat.commandPolicy": {
+          "type": "string",
+          "enum": ["allow", "ask", "deny"],
+          "default": "ask",
+          "description": "Agent 运行终端命令前的权限策略。未受信任工作区始终禁止。"
+        },
+        "hwchat.allowSensitiveFiles": {
+          "type": "boolean",
+          "default": false,
+          "description": "允许读取 .env、密钥、证书及常见凭据路径。默认关闭。"
+        },
+        "hwchat.allowDangerousCommands": {
+          "type": "boolean",
+          "default": false,
+          "description": "允许 sudo、破坏性 git/rm 等高风险命令。即使开启仍会逐次确认。"
+        },
+        "hwchat.maxReadBytes": {
+          "type": "number",
+          "default": 512000,
+          "minimum": 16384,
+          "maximum": 5242880,
+          "description": "单个文件允许加入上下文或读取的最大字节数。"
+        },
+        "hwchat.maxToolOutputBytes": {
+          "type": "number",
+          "default": 200000,
+          "minimum": 16384,
+          "maximum": 2097152,
+          "description": "单次工具结果发送给模型的最大字节数。"
+        },
+        "hwchat.maxCommandSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 5,
+          "maximum": 900,
+          "description": "Agent 命令的最长运行时间。"
+        },
+        "hwchat.auditRetentionDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "maximum": 365,
+          "description": "本地 Agent 审计记录保留天数，0 表示仅保留当前会话。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "tsc -p ./ --noEmit",
+    "compile": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "test": "npm run compile && node --test out/test/*.test.js",
+    "package": "npm run compile && npx @vscode/vsce package --no-dependencies",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.106.0",
+    "@vscode/vsce": "4.0.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.7.0"
+  }
+}

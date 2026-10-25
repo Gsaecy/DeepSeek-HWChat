@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../media/chat.css"><title>HWChat Preview</title>
+  <style>:root{--vscode-editor-background:#f5f5f7;--vscode-foreground:#1d1d1f;--vscode-sideBar-background:#ececf0;--vscode-button-background:#087af5;--vscode-button-foreground:#fff;--vscode-button-hoverBackground:#006bd6;--vscode-focusBorder:#0a84ff;--vscode-textLink-foreground:#0069c7;--vscode-textCodeBlock-background:#ececf0;--vscode-notifications-background:#fff;--vscode-errorForeground:#d70015}</style>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside id="historyPane" class="history-pane">
+      <div class="brand-row"><img class="brand-mark" src="../resources/logo.png" alt=""><div class="brand-copy"><strong>HWChat</strong><span>DeepSeek workspace</span></div><button id="closeHistoryButton" class="icon-button mobile-only" type="button">☰</button></div>
+      <button id="newChatButton" class="primary-command" type="button"><span>＋</span><span>新建对话</span></button>
+      <label class="search-field"><span class="sr-only">搜索</span><input id="historySearch" type="search" placeholder="搜索对话"></label>
+      <button id="archiveViewButton" class="sidebar-command archive-toggle" type="button"><span>□</span><span>显示归档</span></button>
+      <div id="conversationList" class="conversation-list"></div>
+      <button id="settingsButtonSide" class="sidebar-command" type="button"><span>⚙</span><span>设置</span></button>
+    </aside>
+    <main class="chat-pane">
+      <header class="chat-toolbar">
+        <button id="historyButton" class="icon-button" type="button">☰</button>
+        <div class="conversation-heading"><strong id="conversationTitle">新对话</strong><span id="connectionState">准备就绪</span></div>
+        <label class="mode-field"><select id="modeInput"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
+        <label class="profile-field"><select id="profileInput"></select></label>
+        <label class="model-field"><select id="modelInput"></select></label>
+        <button id="skillsButton" class="control-button" type="button"><span>✦</span><span id="skillsCount">0</span></button>
+        <button id="archiveButton" class="icon-button" type="button">□</button><button id="exportButton" class="icon-button" type="button">⇧</button><button id="settingsButton" class="icon-button" type="button">⚙</button>
+      </header>
+      <section id="skillsPanel" class="skills-panel"><div class="skills-panel-heading"><strong>本次对话使用的 Skill</strong><span id="workspaceTrustBadge">工作区状态</span></div><div id="skillsList" class="skills-list"></div><div class="skills-panel-note">默认启用来自快捷调用；回复会显示本轮实际加载的 Skill。</div></section>
+      <section id="messageViewport" class="message-viewport">
+        <button id="loadOlderButton" class="load-older" type="button" hidden>加载更早消息</button>
+        <div id="emptyState" class="empty-state"><img class="empty-mark" src="../resources/logo.png" alt=""><h1>今天想一起解决什么？</h1><div class="suggestions"><button type="button" data-prompt="解释当前代码">解释代码</button><button type="button" data-prompt="设计实现方案">设计方案</button><button type="button" data-prompt="执行代码审查">代码审查</button></div></div>
+        <div id="messageList" class="message-list"></div>
+      </section>
+      <footer class="composer-wrap">
+        <div id="attachmentList" class="attachment-list"></div><div id="contextChip" class="context-chip" hidden><span id="contextLabel"></span><button id="removeContextButton" type="button">×</button></div>
+        <form id="composer" class="composer"><textarea id="promptInput" rows="1"></textarea><div class="composer-actions"><span id="composerHint">Enter 发送</span><button id="attachButton" class="icon-button" type="button">⌕</button><button id="sendButton" class="send-button" type="submit">↑</button><button id="stopButton" class="stop-button" type="button" hidden>■</button></div></form>
+      </footer>
+    </main>
+  </div><div id="toast" class="toast" hidden></div>
+  <script>
+    const now=Date.now();
+    const previewState={
+      conversation:{id:'c1',title:'完成登录模块重构',createdAt:now-500000,updatedAt:now,messageCount:4,preview:'已修改 2 个文件并通过测试',pinned:true,totalTokens:2462,model:'deepseek-reasoner',apiProfileId:'deepseek',mode:'agent',skillIds:['s1','s2'],skillSelectionInitialized:true,archived:false},
+      conversations:[{id:'c1',title:'完成登录模块重构',updatedAt:now,messageCount:4,preview:'已修改 2 个文件并通过测试',pinned:true,totalTokens:2462,model:'deepseek-reasoner',mode:'agent'},{id:'c2',title:'排查 Android 构建',updatedAt:now-7200000,messageCount:8,preview:'Gradle 版本需要对齐',pinned:false,totalTokens:18921}],
+      archivedConversations:[{id:'c3',title:'旧版上传模块方案',updatedAt:now-604800000,messageCount:12,preview:'已归档',pinned:false,totalTokens:82001,archived:true}],
+      messages:[
+        {id:'m1',role:'user',content:'重构登录逻辑，修复并发刷新问题并运行测试。',createdAt:now-90000,updatedAt:now-90000,status:'complete',attachments:[{label:'src/AuthManager.ts',path:'src/AuthManager.ts',kind:'file',bytes:8421}]},
+        {id:'m2',role:'assistant',content:'已把刷新过程改为共享任务，并补充失败重试与并发测试。现有测试全部通过。',reasoning:'先检查认证状态的共享写入，再确认测试覆盖。',createdAt:now-80000,updatedAt:now-20000,status:'complete',usage:{totalTokens:2462},usedSkills:[{id:'s1',name:'TypeScript 质量规范',source:'workspace',relativePath:'.agents/skills/typescript/SKILL.md'},{id:'s2',name:'项目文档同步',source:'copilot',relativePath:'~/.copilot/skills/project-doc-sync/SKILL.md'}],toolExecutions:[
+          {callId:'t1',name:'read_file',summary:'读取 src/AuthManager.ts（8.2 KB）',status:'success',approval:'not-required',risk:'read',startedAt:now-79000,finishedAt:now-78500,input:'{"path":"src/AuthManager.ts"}',output:'读取 214 行代码。'},
+          {callId:'t2',name:'replace_in_file',summary:'修改 src/AuthManager.ts：替换 1 处文本',status:'success',approval:'approved',risk:'write',startedAt:now-70000,finishedAt:now-68000,changedFiles:['src/AuthManager.ts'],input:'共享 refreshTask 并在 finally 中清理',output:'文件更新为 228 行（+14）。'},
+          {callId:'t3',name:'run_command',summary:'命令退出码 0',status:'success',approval:'approved',risk:'command',startedAt:now-40000,finishedAt:now-22000,input:'npm test',output:'18 tests passed'}
+        ]}
+      ],
+      hasMore:true,settings:{apiProfiles:[{id:'deepseek',name:'DeepSeek',baseUrl:'https://api.deepseek.com',models:['deepseek-chat','deepseek-reasoner'],requestHeaders:{}},{id:'local',name:'本地模型',baseUrl:'http://localhost:11434/v1',models:['qwen3-coder'],requestHeaders:{}}],activeApiProfileId:'deepseek',model:'deepseek-reasoner',sendOnEnter:true},apiKeyConfigured:true,pendingAttachments:[{label:'src/session.test.ts',path:'src/session.test.ts',kind:'file',bytes:5620}],skills:[{id:'s1',name:'TypeScript 质量规范',description:'严格类型、最小改动与测试要求',source:'workspace',relativePath:'.agents/skills/typescript/SKILL.md'},{id:'s2',name:'项目文档同步',description:'代码改动后同步 README 与技术文档',source:'copilot',relativePath:'~/.copilot/skills/project-doc-sync/SKILL.md',defaultEnabled:true,lastUsedAt:now-20000},{id:'s3',name:'安全审查',description:'检查凭据、权限和输入边界',source:'workspace',relativePath:'.hwchat/skills/security.md'}],selectedSkillIds:['s1','s2'],mode:'agent',workspaceTrusted:true,agentAvailable:true,showArchived:false
+    };
+    window.acquireVsCodeApi=()=>({postMessage(message){if(message.type==='ready')setTimeout(()=>window.dispatchEvent(new MessageEvent('message',{data:{type:'state',state:previewState,streamingConversationId:null}})),0);}});
+  </script><script src="../media/chat.js"></script>
+</body></html>
