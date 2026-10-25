@@ -1294,9 +1294,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           </div>
         </form>
         <div class="composer-runtime-controls" aria-label="本轮 Agent 设置">
-          <label class="runtime-field permission-field"><span>权限</span><select id="permissionPresetInput" aria-label="权限预设"><option value="askAll">每次询问</option><option value="review">风险操作询问</option><option value="autopilot">Autopilot</option><option value="full">完全访问</option><option value="custom">自定义</option></select></label>
-          <label class="runtime-field steps-field"><span>步骤</span><select id="agentMaxStepsInput" aria-label="最大执行步骤"><option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option><option value="80">80 步</option><option value="120">120 步</option></select></label>
-          <label class="runtime-field reasoning-field"><span>思考</span><select id="reasoningEffortInput" aria-label="思考层级"><option value="default">默认</option><option value="none">无</option><option value="low">低</option><option value="high">高</option><option value="max">最大值</option></select></label>
+          <label class="runtime-field permission-field"><span>权限预设：</span><select id="permissionPresetInput" aria-label="权限预设"><option value="askAll">每次询问</option><option value="review">风险操作询问</option><option value="autopilot">Autopilot</option><option value="full">完全访问</option><option value="custom">自定义</option></select></label>
+          <label class="runtime-field steps-field"><span>最大步骤：</span><select id="agentMaxStepsInput" aria-label="最大执行步骤"><option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option><option value="80">80 步</option><option value="120">120 步</option></select></label>
+          <label class="runtime-field reasoning-field"><span>思考深度：</span><select id="reasoningEffortInput" aria-label="思考深度"><option value="default">默认</option><option value="none">无</option><option value="low">低</option><option value="high">高</option><option value="max">最大值</option></select></label>
           <button id="voiceButton" class="runtime-icon-button" type="button" aria-label="语音输入" title="语音输入">${icon('mic')}</button>
         </div>
       </footer>

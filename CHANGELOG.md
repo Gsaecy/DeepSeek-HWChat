@@ -9,6 +9,7 @@
 - Fixed the unregistered `hwchat.reasoningEffort` upgrade-window error with a local fallback, and fixed active-section tracking in the settings navigation.
 - Made the settings navigation fixed while content scrolls, removed gradient styling, and improved foreground/background contrast in light and dark VS Code themes.
 - Tightened the composer action controls and hid the textarea scrollbar while preserving keyboard, wheel, and touch scrolling.
+- Replaced the boxed runtime dropdowns with compact labeled text selectors for permission preset, maximum steps, and reasoning depth.
 
 ## 0.1.2
 

@@ -322,9 +322,14 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .composer-actions > span { color: var(--muted); font-size: 9px; white-space: nowrap; }
 .composer-actions .icon-button { width: 26px; height: 26px; }
 .composer-actions .icon-button .icon { width: 14px; height: 14px; }
-.composer-runtime-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) 30px; gap: 7px; margin: 7px 2px 0; }
-.runtime-field { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 7px; min-width: 0; color: var(--muted); font-size: 9px; }
-.runtime-field select { width: 100%; min-width: 0; height: 28px; padding: 0 7px; border: 1px solid var(--border); border-radius: 6px; color: var(--dropdown-fg); background: var(--dropdown-bg); font: 10px var(--mono); }
+.composer-runtime-controls { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(0, .96fr) minmax(0, 1fr) 30px; gap: 7px; margin: 7px 2px 0; }
+.runtime-field { display: grid; grid-template-columns: auto minmax(0, 1fr) 9px; align-items: center; gap: 2px; min-width: 0; color: var(--muted); white-space: nowrap; }
+.runtime-field > span { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; }
+.runtime-field::after { content: "⌄"; color: var(--muted); font-size: 10px; line-height: 1; pointer-events: none; }
+.runtime-field select { appearance: none; width: 100%; min-width: 0; height: 28px; padding: 0; overflow: hidden; border: 0; border-radius: 0; outline: 0; color: var(--fg); background: transparent; font: 10px var(--mono); text-overflow: ellipsis; cursor: pointer; }
+.runtime-field:hover select, .runtime-field:hover::after { color: var(--surface-hover-fg); }
+.runtime-field:focus-within { color: var(--fg); }
+.runtime-field:focus-within::after { color: var(--focus); }
 .runtime-field select:disabled { opacity: .5; }
 .runtime-icon-button { display: grid; place-items: center; width: 30px; height: 28px; padding: 0; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--dropdown-bg); cursor: pointer; }
 .runtime-icon-button:hover, .runtime-icon-button.active { color: var(--surface-hover-fg); background: var(--surface-hover); }
@@ -385,9 +390,10 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
   .composer-actions .icon-button .icon { width: 13px; height: 13px; }
   .send-button, .stop-button { width: 28px; height: 28px; border-radius: 6px; }
   .send-button .icon, .stop-button .icon { width: 13px; height: 13px; }
-  .composer-runtime-controls { grid-template-columns: minmax(0, 1.25fr) minmax(0, .8fr) minmax(0, .8fr) 28px; gap: 5px; }
-  .runtime-field { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .runtime-field > span { display: none; }
+  .composer-runtime-controls { grid-template-columns: minmax(0, 1.22fr) minmax(0, .96fr) minmax(0, 1.02fr) 28px; gap: 5px; }
+  .runtime-field { grid-template-columns: auto minmax(0, 1fr) 8px; gap: 1px; }
+  .runtime-field > span { font-size: 8px; }
+  .runtime-field select { height: 28px; font-size: 9px; }
   .runtime-icon-button { width: 28px; }
   .agent-run-state > span:last-child { display: none; }
   .task-node small { display: none; }
