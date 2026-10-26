@@ -12,6 +12,8 @@
   --surface-hover-fg: var(--vscode-list-hoverForeground, var(--fg));
   --border: var(--vscode-contrastBorder, var(--vscode-panel-border, color-mix(in srgb, var(--fg) 18%, transparent)));
   --muted: var(--vscode-descriptionForeground, color-mix(in srgb, var(--fg) 62%, transparent));
+  /* 输入框占位提示：比次要文字更淡，避免在深色/浅色主题里过于抢眼 */
+  --placeholder: color-mix(in srgb, var(--vscode-input-placeholderForeground, var(--muted)) 55%, transparent);
   --accent: var(--vscode-button-background, #0a84ff);
   --accent-text: var(--vscode-button-foreground, #ffffff);
   --focus: var(--vscode-focusBorder, #0969da);
@@ -20,9 +22,8 @@
   --success: var(--vscode-testing-iconPassed, var(--vscode-terminal-ansiGreen, #1a7f37));
   --warning: var(--vscode-editorWarning-foreground, var(--vscode-terminal-ansiYellow, #9a6700));
   --user-accent: var(--vscode-terminal-ansiYellow, #c65f00);
-  --user-fg: color-mix(in srgb, var(--user-accent) 78%, var(--fg));
-  --user-bg: color-mix(in srgb, var(--user-accent) 10%, var(--bg));
-  --user-border: color-mix(in srgb, var(--user-accent) 42%, var(--border));
+  --user-bg: color-mix(in srgb, var(--user-accent) 8%, var(--bg));
+  --user-border: color-mix(in srgb, var(--user-accent) 32%, var(--border));
   --danger: var(--vscode-errorForeground, #cf222e);
   --link: var(--vscode-textLink-foreground, #0969da);
   --notification-bg: var(--vscode-notifications-background, var(--surface));
@@ -122,7 +123,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .search-field input { height: 32px; padding: 0 10px; border-radius: 6px; }
 .search-field input:focus, .model-field select:focus, .profile-field select:focus { border-color: var(--focus); outline: 0; }
-input::placeholder, textarea::placeholder { color: var(--vscode-input-placeholderForeground, var(--muted)); }
+input::placeholder, textarea::placeholder { color: var(--placeholder); }
 select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 
 .conversation-list { min-height: 0; overflow: auto; padding-right: 2px; }
@@ -147,35 +148,48 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .row-action:disabled { opacity: .35; cursor: default; }
 .danger-action:hover { color: var(--danger); }
 
-.chat-pane { position: relative; display: grid; grid-template-rows: 88px minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
+.chat-pane { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
 .chat-toolbar {
+  position: relative;
   display: grid;
-  grid-template-rows: 42px 34px;
-  gap: 3px;
-  padding: 4px 10px 5px;
+  gap: 6px;
+  padding: 5px 10px 7px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
   z-index: 2;
   min-width: 0;
-  overflow: hidden;
 }
-.toolbar-main, .toolbar-connection { min-width: 0; align-items: center; }
-.toolbar-main { display: grid; grid-template-columns: 30px minmax(0, 1fr) minmax(76px, 100px) 45px 30px 30px 30px; gap: 6px; }
-.toolbar-connection { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 30px; gap: 6px; }
-.toolbar-main > *, .toolbar-connection > * { min-width: 0; }
+.toolbar-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 34px; }
+.toolbar-title-row .conversation-heading { flex: 1 1 auto; }
+.toolbar-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
+.control-group { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.mode-group { flex: 0 0 auto; }
+.connection-group { flex: 1 1 240px; }
+.utility-group { flex: 0 0 auto; margin-left: auto; }
+.toolbar-controls .control-group > * { min-width: 0; }
 .conversation-heading { display: grid; min-width: 0; line-height: 1.2; }
 .conversation-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .conversation-heading span { margin-top: 3px; color: var(--muted); font-size: 10px; }
 .conversation-heading span.live { color: var(--accent); }
 .conversation-heading span.restricted { color: var(--warning); }
 .model-field select, .profile-field select, .mode-field select { width: 100%; height: 30px; border: 1px solid var(--border); border-radius: 6px; padding: 0 7px; color: var(--dropdown-fg); background: var(--dropdown-bg); font-family: var(--mono); font-size: 10px; }
+.mode-field { flex: 0 0 auto; width: 92px; }
+.profile-field { flex: 1 1 96px; }
+.model-field { flex: 1 1 132px; }
+.toolbar-controls .icon-button { width: 30px; height: 30px; }
+/* 兼容旧版 HTML 结构（toolbar-main / toolbar-connection）：升级瞬间若 webview 仍持有旧结构，
+   也不会把控件挤成竖排；新版结构不使用这两个类，因此无副作用。 */
+.toolbar-main, .toolbar-connection { min-width: 0; align-items: center; }
+.toolbar-main { display: grid; grid-template-columns: 30px minmax(0, 1fr) minmax(76px, 100px) 45px 30px 30px 30px; gap: 6px; }
+.toolbar-connection { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 30px; gap: 6px; }
+.toolbar-main > *, .toolbar-connection > * { min-width: 0; }
 .control-button { display: flex; align-items: center; justify-content: center; gap: 5px; height: 30px; min-width: 45px; padding: 0 8px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; cursor: pointer; }
 .control-button:hover, .control-button.active { color: var(--surface-hover-fg); background: var(--surface-hover); }
 .control-button span { min-width: 10px; font: 10px var(--mono); }
 .control-button:disabled { opacity: .4; cursor: default; }
 #refreshModelsButton.loading .icon { animation: spin .8s linear infinite; }
 
-.skills-panel { position: absolute; top: 84px; right: 10px; z-index: 9; width: min(410px, calc(100% - 20px)); max-height: min(560px, calc(100% - 100px)); overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); box-shadow: var(--shadow); }
+.skills-panel { position: absolute; top: calc(100% + 4px); right: 10px; z-index: 9; width: min(410px, calc(100vw - 40px)); max-height: min(560px, calc(100vh - 150px)); overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); box-shadow: var(--shadow); }
 .skills-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 1px 2px 10px; border-bottom: 1px solid var(--border); }
 .skills-panel-heading strong { font-size: 12px; }
 .skills-panel-heading span { color: var(--warning); font-size: 10px; }
@@ -204,8 +218,9 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .message-copy-button:disabled { opacity: .6; cursor: default; }
 .message-body { min-width: 0; overflow-wrap: anywhere; }
 .message-body, .message-content, .reasoning-content, .tool-detail, .code-block pre { user-select: text; -webkit-user-select: text; }
-.message.user .message-meta span { color: var(--user-accent); }
-.message.user .message-body { padding: 11px 13px; border-radius: 8px; color: var(--user-fg); background: var(--user-bg); border: 1px solid var(--user-border); }
+/* 用户消息只用淡底色和边框做区分，正文保持编辑器前景色，不再染成橘黄色。 */
+.message.user .message-meta span { color: var(--fg); }
+.message.user .message-body { padding: 11px 13px; border-radius: 8px; color: var(--fg); background: var(--user-bg); border: 1px solid var(--user-border); }
 .message.error .message-body { border-left: 2px solid var(--danger); padding-left: 12px; }
 .message-content > :first-child, .reasoning-content > :first-child { margin-top: 0; }
 .message-content > :last-child, .reasoning-content > :last-child { margin-bottom: 0; }
@@ -305,20 +320,19 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .task-node.status-routing .task-node-status, .task-node.status-active .task-node-status { color: var(--accent); }
 .composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   min-height: 60px;
-  padding: 9px 9px 9px 13px;
+  padding: 10px 10px 7px 13px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--vscode-input-background, var(--surface));
 }
 .composer:focus-within { border-color: color-mix(in srgb, var(--focus) 75%, var(--border)); }
 .composer textarea {
   width: 100%;
   max-height: 180px;
-  min-height: 40px;
+  min-height: 38px;
   resize: none;
   overflow-y: auto;
   scrollbar-width: none;
@@ -331,15 +345,29 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
   line-height: 1.5;
 }
 .composer textarea::-webkit-scrollbar { width: 0; height: 0; }
-.composer textarea::placeholder { color: var(--muted); }
-.composer-actions { display: flex; align-items: center; gap: 4px; }
+.composer textarea::placeholder { color: var(--placeholder); }
+.composer-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; padding-top: 6px; border-top: 1px solid color-mix(in srgb, var(--border) 62%, transparent); }
+.composer-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; margin-left: auto; }
 .composer-actions > span { color: var(--muted); font-size: 9px; white-space: nowrap; }
 .composer-actions .icon-button { width: 26px; height: 26px; }
 .composer-actions .icon-button .icon { width: 14px; height: 14px; }
-.composer-runtime-controls { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(0, .96fr) minmax(0, 1fr) 30px; gap: 7px; margin: 7px 2px 0; }
-.runtime-field { display: grid; grid-template-columns: auto minmax(0, 1fr) 9px; align-items: center; gap: 2px; min-width: 0; color: var(--muted); white-space: nowrap; }
+.composer-actions .runtime-icon-button { width: 26px; height: 26px; }
+.composer-runtime-controls { display: flex; flex: 1 1 0; align-items: center; gap: 10px; min-width: 0; }
+.runtime-field { display: grid; grid-template-columns: auto minmax(0, 1fr) 9px; align-items: center; flex: 0 1 auto; gap: 2px; min-width: 0; width: 150px; color: var(--muted); white-space: nowrap; }
+.runtime-field.steps-field { width: 132px; }
+.runtime-field.reasoning-field { width: 132px; }
 .runtime-field > span { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; }
-.runtime-field::after { content: "⌄"; color: var(--muted); font-size: 10px; line-height: 1; pointer-events: none; }
+.runtime-field::after {
+  content: "";
+  justify-self: center;
+  width: 0;
+  height: 0;
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+  border-top: 4px solid currentColor;
+  color: var(--muted);
+  pointer-events: none;
+}
 .runtime-field select { appearance: none; width: 100%; min-width: 0; height: 28px; padding: 0; overflow: hidden; border: 0; border-radius: 0; outline: 0; color: var(--fg); background: transparent; font: 10px var(--mono); text-overflow: ellipsis; cursor: pointer; }
 .runtime-field:hover select, .runtime-field:hover::after { color: var(--surface-hover-fg); }
 .runtime-field:focus-within { color: var(--fg); }
@@ -376,19 +404,23 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 @media (max-width: 720px) {
   html, body, .app-shell, .chat-pane { width: 100%; max-width: 100vw; }
   .app-shell { grid-template-columns: minmax(0, 1fr); }
-  .chat-pane { grid-template-rows: 88px minmax(0, 1fr) auto; }
+  .chat-pane { grid-template-rows: auto minmax(0, 1fr) auto; }
   .history-pane { position: fixed; inset: 0 auto 0 0; z-index: 8; width: min(290px, calc(100% - 44px)); transform: translateX(-102%); transition: transform 160ms ease; box-shadow: 22px 0 60px rgba(0, 0, 0, .28); }
   .app-shell.history-open .history-pane { transform: translateX(0); }
   .app-shell.history-open::after { content: ""; position: fixed; inset: 0; z-index: 7; background: rgba(0, 0, 0, .24); }
   .mobile-only { display: grid; }
-  .chat-toolbar { width: 100%; max-width: 100vw; padding: 4px 8px 5px; }
+  .chat-toolbar { width: 100%; max-width: 100vw; padding: 4px 8px 5px; gap: 5px; }
+  .toolbar-controls { gap: 5px 6px; }
+  .control-group { gap: 4px; }
+  .connection-group { flex: 1 1 186px; }
+  .toolbar-controls #exportButton, .toolbar-controls #archiveButton { display: none; }
+  .toolbar-controls #settingsButton { display: grid; width: 28px; height: 28px; }
   .toolbar-main { grid-template-columns: 28px minmax(0, 1fr) minmax(58px, 76px) 36px 28px; gap: 4px; }
   .toolbar-main #exportButton, .toolbar-main #archiveButton { display: none; }
-  .toolbar-main #settingsButton { display: grid; width: 28px; height: 28px; }
   .toolbar-connection { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 30px; gap: 4px; }
   .mode-field, .mode-field select { min-width: 0; width: 100%; max-width: 76px; }
   .control-button { min-width: 0; width: 36px; padding: 0 3px; }
-  .skills-panel { top: 84px; right: 8px; }
+  .skills-panel { top: calc(100% + 4px); right: 8px; width: min(410px, calc(100vw - 24px)); max-height: min(520px, calc(100vh - 140px)); }
   .message-viewport { width: 100%; max-width: 100vw; overflow-x: hidden; }
   .message-list { width: calc(100% - 22px); max-width: calc(100vw - 22px); }
   .message { grid-template-columns: 1fr; gap: 6px; margin-bottom: 24px; }
@@ -397,35 +429,43 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
   .tool-execution summary small { display: none; }
   .message-meta { display: flex; gap: 8px; text-align: left; }
   .composer-wrap { width: calc(100% - 16px); max-width: calc(100vw - 16px); padding-bottom: 8px; }
-  .composer { width: 100%; max-width: 100%; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; }
-  .composer-actions { width: auto; gap: 3px; }
+  .composer { width: 100%; max-width: 100%; grid-template-columns: minmax(0, 1fr); padding: 8px 8px 6px 11px; }
+  .composer-footer { gap: 5px 8px; }
+  .composer-actions { gap: 3px; }
   .composer-actions > span { display: none; }
   .composer-actions .icon-button { width: 24px; height: 24px; }
   .composer-actions .icon-button .icon { width: 13px; height: 13px; }
-  .send-button, .stop-button { width: 28px; height: 28px; border-radius: 6px; }
+  .composer-actions .runtime-icon-button { width: 24px; height: 24px; }
+  .send-button, .stop-button { width: 26px; height: 26px; border-radius: 6px; }
   .send-button .icon, .stop-button .icon { width: 13px; height: 13px; }
-  .composer-runtime-controls { grid-template-columns: minmax(0, 1.22fr) minmax(0, .96fr) minmax(0, 1.02fr) 28px; gap: 5px; }
+  .composer-runtime-controls { gap: 6px; }
+  .runtime-field, .runtime-field.steps-field, .runtime-field.reasoning-field { flex: 1 1 0; width: auto; }
   .runtime-field { grid-template-columns: auto minmax(0, 1fr) 8px; gap: 1px; }
   .runtime-field > span { font-size: 8px; }
-  .runtime-field select { height: 28px; font-size: 9px; }
+  .runtime-field select { height: 26px; font-size: 9px; }
   .runtime-icon-button { width: 28px; }
   .agent-run-state > span:last-child { display: none; }
   .task-node small { display: none; }
 }
 
 @media (max-width: 420px) {
-  .toolbar-main { grid-template-columns: 27px minmax(0, 1fr) minmax(54px, 66px) 32px 27px; gap: 3px; }
+  .connection-group { flex: 1 1 152px; }
   .control-button { width: 32px; }
-  .toolbar-connection { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr) 28px; gap: 3px; }
-  .toolbar-connection .icon-button { width: 28px; }
+  .toolbar-controls .icon-button { width: 28px; }
   .conversation-heading strong { font-size: 12px; }
   .conversation-heading span { font-size: 9px; }
 }
 
+@media (max-width: 560px) {
+  .composer-footer { gap: 5px; }
+  .composer-runtime-controls { flex: 1 1 100%; }
+  .composer-actions { flex: 1 1 100%; justify-content: flex-end; }
+}
+
 @media (min-width: 721px) and (max-width: 980px) {
-  .toolbar-main { grid-template-columns: 30px minmax(0, 1fr) minmax(70px, 96px) minmax(36px, 45px) 30px; }
-  .toolbar-main #exportButton, .toolbar-main #archiveButton { display: none; }
-  .toolbar-main #settingsButton { display: grid; }
+  .connection-group { flex: 1 1 200px; }
+  .toolbar-controls #exportButton, .toolbar-controls #archiveButton { display: none; }
+  .toolbar-controls #settingsButton { display: grid; }
 }
 
 @media (prefers-reduced-motion: reduce) {

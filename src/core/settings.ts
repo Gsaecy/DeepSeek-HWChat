@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ApiProfile, ChatSettings, PermissionPreset, ReasoningEffort } from './types';
+import { PERMISSION_PRESET_PROFILES } from './permissions';
 
 const SECTION = 'hwchat';
 const REASONING_FALLBACK_KEY = 'settings.reasoningEffort';
@@ -33,8 +34,15 @@ export function readSettings(): ChatSettings {
     fileReadPolicy: configuration.get<ChatSettings['fileReadPolicy']>('fileReadPolicy', 'allow'),
     fileWritePolicy: configuration.get<ChatSettings['fileWritePolicy']>('fileWritePolicy', 'ask'),
     commandPolicy: configuration.get<ChatSettings['commandPolicy']>('commandPolicy', 'ask'),
-    allowSensitiveFiles: configuration.get<boolean>('allowSensitiveFiles', false),
-    allowDangerousCommands: configuration.get<boolean>('allowDangerousCommands', false),
+    // 旧版本用两个布尔开关；这里保留一次性兼容迁移。
+    dangerousCommandPolicy: normalizeGuardedPolicy(
+      configuration.get<string>('dangerousCommandPolicy', ''),
+      configuration.get<boolean>('allowDangerousCommands', false) ? 'ask' : 'deny',
+    ),
+    sensitiveFilePolicy: normalizeGuardedPolicy(
+      configuration.get<string>('sensitiveFilePolicy', ''),
+      configuration.get<boolean>('allowSensitiveFiles', false) ? 'allow' : 'deny',
+    ),
   });
   return {
     apiProfiles,
@@ -89,8 +97,8 @@ export async function updateSettings(values: Partial<ChatSettings>): Promise<voi
     ['fileReadPolicy', values.fileReadPolicy],
     ['fileWritePolicy', values.fileWritePolicy],
     ['commandPolicy', values.commandPolicy],
-    ['allowSensitiveFiles', values.allowSensitiveFiles],
-    ['allowDangerousCommands', values.allowDangerousCommands],
+    ['dangerousCommandPolicy', values.dangerousCommandPolicy],
+    ['sensitiveFilePolicy', values.sensitiveFilePolicy],
     ['maxReadBytes', values.maxReadBytes],
     ['maxToolOutputBytes', values.maxToolOutputBytes],
     ['maxCommandSeconds', values.maxCommandSeconds],
@@ -183,23 +191,23 @@ export function applyRuntimeControls(
   };
 }
 
+export function normalizeGuardedPolicy(value: unknown, fallback: ChatSettings['dangerousCommandPolicy'] = 'deny'): ChatSettings['dangerousCommandPolicy'] {
+  return value === 'allow' || value === 'ask' || value === 'deny' ? value : fallback;
+}
+
 function resolvePermissionPreset(
   preset: PermissionPreset,
-  custom: Pick<ChatSettings, 'fileReadPolicy' | 'fileWritePolicy' | 'commandPolicy' | 'allowSensitiveFiles' | 'allowDangerousCommands'>,
+  custom: Pick<ChatSettings, 'fileReadPolicy' | 'fileWritePolicy' | 'commandPolicy' | 'dangerousCommandPolicy' | 'sensitiveFilePolicy'>,
 ): typeof custom {
-  if (preset === 'askAll') {
-    return { fileReadPolicy: 'ask', fileWritePolicy: 'ask', commandPolicy: 'ask', allowSensitiveFiles: false, allowDangerousCommands: false };
-  }
-  if (preset === 'review') {
-    return { fileReadPolicy: 'allow', fileWritePolicy: 'ask', commandPolicy: 'ask', allowSensitiveFiles: false, allowDangerousCommands: false };
-  }
-  if (preset === 'autopilot') {
-    return { fileReadPolicy: 'allow', fileWritePolicy: 'allow', commandPolicy: 'allow', allowSensitiveFiles: false, allowDangerousCommands: false };
-  }
-  if (preset === 'full') {
-    return { fileReadPolicy: 'allow', fileWritePolicy: 'allow', commandPolicy: 'allow', allowSensitiveFiles: true, allowDangerousCommands: true };
-  }
-  return custom;
+  if (preset === 'custom') return custom;
+  const profile = PERMISSION_PRESET_PROFILES[preset];
+  return {
+    fileReadPolicy: profile.fileReadPolicy,
+    fileWritePolicy: profile.fileWritePolicy,
+    commandPolicy: profile.commandPolicy,
+    dangerousCommandPolicy: profile.dangerousCommandPolicy,
+    sensitiveFilePolicy: profile.sensitiveFilePolicy,
+  };
 }
 
 export function normalizeAgentMaxSteps(value: unknown): number {

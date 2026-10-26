@@ -19,11 +19,23 @@ Remote model endpoints must use HTTPS. Plain HTTP is accepted only for loopback 
 
 ## Permission boundary
 
-Read, write, and command tools have independent policies and can be selected through permission presets. Workspace Trust is an additional hard boundary: file writes, moves, deletes, and commands are rejected in an untrusted workspace regardless of the configured policy.
+Read, write, and command tools have independent policies and can be selected through permission presets. Presets and their per-category boundaries are defined once in `src/core/permissions.ts` and rendered both in the settings matrix and in the composer tooltip:
+
+| Preset | Read | Write | Read-only commands | Regular commands | Dangerous commands | Sensitive files |
+| --- | --- | --- | --- | --- | --- | --- |
+| Ask every time | confirm | confirm | confirm | confirm | denied | denied |
+| Review risky actions | allow | allow | allow | allow | confirm | denied |
+| Autopilot | allow | allow | allow | allow | confirm | denied |
+| Full access | allow | allow | allow | allow | allow | confirm |
+| Custom | user-defined | user-defined | user-defined | user-defined | confirm / allow / deny | deny / confirm / allow |
+
+Workspace Trust is an additional hard boundary: file writes, moves, deletes, and commands are rejected in an untrusted workspace regardless of the configured policy.
+
+VS Code extension tools (anything exposed through `vscode.lm.tools`) are authorized by VS Code, not by HWChat. HWChat invokes them without its own approval prompt, so tools that need no authorization run immediately; tools whose `prepareInvocation` declares confirmation still show VS Code's own confirmation dialog, and cancelling is reported as a denied step. HWChat only records the invocation in its audit log. Plan mode still blocks tools classified as write or command, and untrusted workspaces still block tools that may write or execute.
 
 File tools resolve canonical paths and reject paths outside open workspace roots, including symlink escapes. Sensitive names and credential directories are denied by default. Deletes use the operating system trash and cannot remove directories.
 
-Command execution is intentionally more privileged than file tools. HWChat blocks common destructive commands, obvious paths outside the workspace, sensitive filenames, and inherited secret-like environment variables. This is defense in depth, not an operating-system sandbox: a sufficiently creative program launched by an approved command may still access resources available to the VS Code process. Keep `hwchat.commandPolicy` set to `ask`, review every command, and run VS Code with least privilege.
+Command execution is intentionally more privileged than file tools. Every command is classified as read-only, regular, or dangerous before a policy is applied. Dangerous commands — privilege escalation (`sudo`, `doas`, `su`), destructive deletes (`rm -r`, `rm -f`), `mkfs`/`dd`/disk erase, `shutdown`/`reboot`, destructive or force-pushed git operations, `chmod 777`, piping remote scripts into a shell, package publishing, and similar — are denied under "ask every time", confirmed one by one under "review" and "Autopilot", and auto-approved only under "full access". Sensitive files are a separate axis: denied under the first three presets, auto-approved only when explicitly allowed, and "full access" confirms each sensitive read with the concrete target path. HWChat also rejects obvious paths outside the workspace and sensitive filenames, and strips secret-like environment variables from child processes. This is defense in depth, not an operating-system sandbox: a sufficiently creative program launched by an approved command may still access resources available to the VS Code process. Keep `hwchat.commandPolicy` set to `ask`, review every command, and run VS Code with least privilege.
 
 ## Prompt injection
 

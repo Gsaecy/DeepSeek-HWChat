@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { SkillRegistry } from '../agent/skillRegistry';
 import { deleteApiKey, hasApiKey, storeApiKey } from '../core/apiKeys';
+import { PERMISSION_PRESET_DETAILS } from '../core/permissions';
 import { isPermissionPreset, profileFor, readSettings, updateSettings } from '../core/settings';
 import { ConversationStorage } from '../core/storage';
 import { ChatSettings } from '../core/types';
@@ -143,8 +144,8 @@ export class SettingsPanel implements vscode.Disposable {
         fileReadPolicy: previous.fileReadPolicy,
         fileWritePolicy: previous.fileWritePolicy,
         commandPolicy: previous.commandPolicy,
-        allowSensitiveFiles: previous.allowSensitiveFiles,
-        allowDangerousCommands: previous.allowDangerousCommands,
+        dangerousCommandPolicy: previous.dangerousCommandPolicy,
+        sensitiveFilePolicy: previous.sensitiveFilePolicy,
       };
     }
     await updateSettings(settings);
@@ -170,9 +171,9 @@ export class SettingsPanel implements vscode.Disposable {
 
   private async confirmPermissionPreset(permissionPreset: ChatSettings['permissionPreset']): Promise<boolean> {
     const risk = permissionPreset === 'full'
-      ? 'Agent 将可在受信任工作区内自动读写、移动和删除文件、运行常规命令，并允许读取 .env、密钥、证书等敏感文件。高风险命令仍会逐次确认，工作区外路径仍被禁止。'
+      ? 'Agent 将可在受信任工作区内自动读写、移动和删除文件，自动运行只读、正常和危险命令（含提权、破坏性删除、强制推送等），读取 .env、密钥、证书等敏感文件时仍会逐次确认。工作区外路径仍被禁止。'
       : permissionPreset === 'autopilot'
-        ? 'Agent 将可在受信任工作区内无需逐次确认地读写、移动和删除文件，并运行常规命令。敏感文件和高风险命令仍受硬性保护。'
+        ? 'Agent 将可在受信任工作区内无需逐次确认地读写、移动和删除文件，并自动运行只读与正常命令（含依赖安装、构建、提交等）。敏感文件仍被禁止，仅危险命令会逐次确认。'
         : 'Agent 将使用自定义读取、写入和命令策略，其中可能包含自动执行或敏感文件访问权限。';
     const answer = await vscode.window.showWarningMessage(
       '确认更改 Agent 权限预设？',
@@ -358,12 +359,19 @@ export class SettingsPanel implements vscode.Disposable {
           <div class="section-heading"><h2>权限与隐私</h2><span class="status-pill configured">无遥测</span></div>
           <div class="privacy-summary"><strong>数据流向</strong><p>消息、明确添加的文件、启用的 Skill 和必要的工具结果仅发送到你配置的模型接口。API Key 保存在 VS Code SecretStorage；历史和审计记录保存在本机。</p></div>
           <div class="settings-group">
-            <label class="setting-row"><span><strong>权限预设</strong><small>Autopilot 可免除常规操作弹窗；安全硬边界始终有效</small></span><select id="permissionPreset" class="control"><option value="askAll">每次询问</option><option value="review">风险操作询问</option><option value="autopilot">Autopilot</option><option value="full">完全访问</option><option value="custom">自定义</option></select></label>
+            <label class="setting-row"><span><strong>权限预设</strong><small id="permissionPresetHint">自动读写与常规命令，只有危险命令逐次确认</small></span><select id="permissionPreset" class="control">${permissionPresetOptionsHtml()}</select></label>
+            <div class="permission-matrix">
+              <table>
+                <thead><tr><th scope="col">档位</th><th scope="col">读取</th><th scope="col">写入</th><th scope="col">只读命令</th><th scope="col">正常命令</th><th scope="col">危险命令</th><th scope="col">敏感文件</th></tr></thead>
+                <tbody>${permissionMatrixRowsHtml()}</tbody>
+              </table>
+              <p>硬边界不受预设影响：未受信任工作区禁止写入与命令；工作区外路径隔离。危险命令指提权、破坏性删除、磁盘擦写、强制推送、把网络脚本管道给 shell 等操作。</p>
+            </div>
             <label class="setting-row"><span><strong>读取文件</strong><small>敏感文件仍受单独策略保护</small></span><select id="fileReadPolicy" class="control"><option value="allow">自动允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></label>
             <label class="setting-row"><span><strong>修改文件</strong><small>未受信任工作区始终禁止</small></span><select id="fileWritePolicy" class="control"><option value="ask">每次询问</option><option value="allow">自动允许</option><option value="deny">禁止</option></select></label>
-            <label class="setting-row"><span><strong>运行命令</strong><small>未受信任工作区始终禁止</small></span><select id="commandPolicy" class="control"><option value="ask">每次询问</option><option value="allow">自动允许</option><option value="deny">禁止</option></select></label>
-            <label class="setting-row"><span><strong>允许敏感文件</strong><small>.env、证书、密钥和常见凭据目录</small></span><input id="allowSensitiveFiles" class="switch" type="checkbox"></label>
-            <label class="setting-row"><span><strong>允许危险命令</strong><small>开启后仍强制逐次确认</small></span><input id="allowDangerousCommands" class="switch" type="checkbox"></label>
+            <label class="setting-row"><span><strong>运行命令</strong><small>只读命令与正常命令（仅“自定义”生效）</small></span><select id="commandPolicy" class="control"><option value="ask">每次询问</option><option value="allow">自动允许</option><option value="deny">禁止</option></select></label>
+            <label class="setting-row"><span><strong>危险命令</strong><small>仅“自定义”生效；提权、破坏性删除、强制推送等</small></span><select id="dangerousCommandPolicy" class="control"><option value="ask">逐次确认</option><option value="allow">自动允许</option><option value="deny">直接拒绝</option></select></label>
+            <label class="setting-row"><span><strong>敏感文件</strong><small>仅“自定义”生效；.env、证书、密钥和常见凭据目录</small></span><select id="sensitiveFilePolicy" class="control"><option value="deny">禁止</option><option value="ask">逐次确认</option><option value="allow">允许</option></select></label>
             <label class="setting-row"><span><strong>审计记录保留</strong><small>只记录工具、结果摘要和审批状态，不记录 API Key</small></span><span class="stepper"><input id="auditRetentionDays" type="number" min="0" max="365"><span>天</span></span></label>
           </div>
           <div class="danger-zone"><div><strong>删除本地数据</strong><span>删除全部对话和 Agent 审计记录，不删除 API Key</span></div><button id="clearLocalDataButton" type="button">全部删除</button></div>
@@ -435,7 +443,7 @@ function validateSettings(values: Partial<ChatSettings>): Partial<ChatSettings> 
   if (values.permissionPreset !== undefined && !['askAll', 'review', 'autopilot', 'full', 'custom'].includes(values.permissionPreset)) {
     throw new Error('权限预设无效。');
   }
-  for (const key of ['fileReadPolicy', 'fileWritePolicy', 'commandPolicy'] as const) {
+  for (const key of ['fileReadPolicy', 'fileWritePolicy', 'commandPolicy', 'dangerousCommandPolicy', 'sensitiveFilePolicy'] as const) {
     const value = values[key];
     if (value !== undefined && !['allow', 'ask', 'deny'].includes(value)) {
       throw new Error(`${key} 权限策略无效。`);
@@ -455,4 +463,25 @@ function validateEndpoint(value: string): string {
 
 function isRiskyPermissionPreset(value: ChatSettings['permissionPreset']): boolean {
   return value === 'autopilot' || value === 'full' || value === 'custom';
+}
+
+/** 权限预设下拉项与对照表都来自 core/permissions，避免 UI 与运行时策略漂移。 */
+function permissionPresetOptionsHtml(): string {
+  return PERMISSION_PRESET_DETAILS
+    .map((detail) => `<option value="${detail.id}" title="${escapeHtml(detail.summary)}">${escapeHtml(detail.label)}</option>`)
+    .join('');
+}
+
+function permissionMatrixRowsHtml(): string {
+  return PERMISSION_PRESET_DETAILS
+    .map((detail) => `<tr data-preset="${detail.id}"><th scope="row">${escapeHtml(detail.label)}</th><td>${escapeHtml(detail.read)}</td><td>${escapeHtml(detail.write)}</td><td>${escapeHtml(detail.readOnlyCommand)}</td><td>${escapeHtml(detail.regularCommand)}</td><td>${escapeHtml(detail.dangerousCommand)}</td><td>${escapeHtml(detail.sensitive)}</td></tr>`)
+    .join('');
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }

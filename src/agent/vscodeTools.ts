@@ -9,12 +9,16 @@ import {
 import { redact } from './auditLog';
 import type { RequestApproval, ToolExecutor } from './toolExecutor';
 import { resolveWorkspacePath } from './workspacePaths';
+import { classifyVscodeToolRisk } from '../core/permissions';
 
 const PREFIX = 'hwchat_vscode_';
 const BUILTIN_NAMES = ['open_web_preview', 'open_text_preview', 'open_markdown_preview', 'open_diff_preview'] as const;
 type BuiltinName = typeof BUILTIN_NAMES[number];
-const EXTERNAL_TOOL_LIMIT = 100;
-const DANGEROUS_NAME = /(delete|remove|drop|destroy|reset|force|publish|deploy|release|purchase|payment|send[_-]?email|post[_-]?message)/i;
+/**
+ * VS Code 暴露的语言模型工具全部登记为可调用工具。上限只是防御性保护，
+ * 远高于正常工作区的工具数量，避免工具被静默截断。
+ */
+const EXTERNAL_TOOL_LIMIT = 400;
 
 interface ExternalTool {
   name: string;
@@ -24,6 +28,8 @@ interface ExternalTool {
 }
 
 export class VscodeToolBridge {
+  private toolContributorsWarmed = false;
+
   constructor(private readonly tools: ToolExecutor) {}
 
   definitions(): ToolDefinition[] {
@@ -57,7 +63,8 @@ export class VscodeToolBridge {
   ): Promise<{ result: ToolExecutionResult } | undefined> {
     const builtin = builtinName(call.function.name);
     if (builtin) {
-        const risk = builtin === 'open_web_preview' ? 'command' : 'read';
+        // 预览类内建工具只读、不改工作区，按读取风险处理，预设允许读取时不再弹窗。
+        const risk = 'read';
         const result = await this.tools.executeExternal(
           call,
           mode,
@@ -67,14 +74,20 @@ export class VscodeToolBridge {
           `打开 VS Code 预览：${builtin.replace(/^open_|_preview$/g, '')}`,
           redact(call.function.arguments).slice(0, 1_000),
           () => this.executeBuiltin(builtin, parseInput(call.function.arguments)),
-          conversationId,
+          { conversationId },
         );
         return { result };
     }
     if (call.function.name.startsWith(PREFIX)) {
-      const externalLabel = call.function.name.slice(PREFIX.length);
-      const external = this.externalTools().find((item) => externalToolId(item.name) === call.function.name);
+      let external = this.findExternalTool(call.function.name);
       if (!external) {
+        // 扩展可能还没激活；补一次激活后重试，避免工具「看得见调不到」。
+        await this.warmToolContributors();
+        external = this.findExternalTool(call.function.name);
+      }
+      const externalLabel = call.function.name.slice(PREFIX.length);
+      if (!external) {
+        const available = this.externalTools().length;
         const result = await this.tools.executeExternal(
           call,
           mode,
@@ -82,14 +95,13 @@ export class VscodeToolBridge {
           'read',
           requestApproval,
           `调用 VS Code 工具：${externalLabel}`,
-          '工具已不可用。',
-          async () => denied(`未找到 VS Code 工具：${externalLabel}`),
-          conversationId,
+          '该 VS Code 工具当前不可用。',
+          async () => denied(`未找到 VS Code 工具（当前可用 ${available} 个）。请使用本轮工具列表中给出的工具 id 重试。`),
+          { conversationId, delegateApproval: true },
         );
         return { result };
       }
-      const risk = externalRisk(external);
-      const forceApproval = DANGEROUS_NAME.test(`${external.name} ${external.description} ${external.tags.join(' ')}`);
+      const risk = classifyVscodeToolRisk(external);
       const result = await this.tools.executeExternal(
         call,
         mode,
@@ -98,32 +110,84 @@ export class VscodeToolBridge {
         requestApproval,
         `调用 VS Code 工具：${external.name}`,
         `${external.description}\n\n参数：${redact(call.function.arguments).slice(0, 1_000)}`,
-        async () => {
-          const response = await vscode.lm.invokeTool(external.name, {
-            input: parseInput(call.function.arguments),
-            toolInvocationToken: undefined,
-          });
-          return success(`调用 VS Code 工具：${external.name}`, toolResultText(response) || '工具已完成，但没有返回文本结果。');
-        },
-        conversationId,
-        forceApproval,
+        () => this.invokeExternal(external, call.function.arguments),
+        // VS Code 工具是否需要用户授权由 VS Code / 工具自身决定，HWChat 不再叠加确认。
+        { conversationId, delegateApproval: true },
       );
       return { result };
     }
     return undefined;
   }
 
+  /**
+   * 直接调用 VS Code 语言模型工具。不传 toolInvocationToken 时 VS Code 不会插入
+   * 聊天轮次 UI，但仍会在工具自己声明需要确认时弹出确认框——因此「不需要授权的
+   * 工具」会直接执行，只有真正需要授权的工具才会询问用户。
+   */
+  private async invokeExternal(tool: ExternalTool, rawArguments: string): Promise<ToolExecutionResult> {
+    try {
+      const response = await vscode.lm.invokeTool(tool.name, {
+        input: parseInput(rawArguments),
+        toolInvocationToken: undefined,
+      });
+      return success(`调用 VS Code 工具：${tool.name}`, toolResultText(response) || '工具已完成，但没有返回文本结果。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/(cancel|denied|reject|not confirmed|confirmation|abort)/i.test(message)) {
+        return denied(`VS Code 工具 ${tool.name} 需要用户确认，本次调用已取消或拒绝。`);
+      }
+      const cleaned = message
+        .replace(/^Running Language Model Tool[^\n]*?(failed|error)[:,]?\s*/i, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      throw new Error(cleaned || `调用 VS Code 工具 ${tool.name} 失败。`);
+    }
+  }
+
+  private findExternalTool(id: string): ExternalTool | undefined {
+    return this.externalTools().find((item) => externalToolId(item.name) === id);
+  }
+
+  /**
+   * 激活尚未运行、但声明了语言模型工具的扩展，让它们的工具也出现在工具列表里。
+   * 只尝试一次，且失败不影响其它工具。
+   */
+  async warmToolContributors(): Promise<void> {
+    if (this.toolContributorsWarmed) return;
+    this.toolContributorsWarmed = true;
+    const candidates = vscode.extensions.all.filter((extension) => {
+      if (extension.isActive) return false;
+      const packageJSON = extension.packageJSON as {
+        contributes?: { languageModelTools?: unknown };
+        activationEvents?: unknown;
+      } | undefined;
+      const contributed = packageJSON?.contributes?.languageModelTools;
+      if (Array.isArray(contributed) && contributed.length > 0) return true;
+      const events = packageJSON?.activationEvents;
+      return Array.isArray(events) && events.some((event) => typeof event === 'string' && /^onLanguageModelTool:/.test(event));
+    });
+    await Promise.all(candidates.map(async (extension) => {
+      try {
+        await extension.activate();
+      } catch {
+        // 工具由扩展自身管理，激活失败只是少了可选工具，不影响其余调用。
+      }
+    }));
+  }
+
   private externalTools(): ExternalTool[] {
     const available = vscode.lm?.tools ?? [];
     return available
       .filter((tool): tool is typeof tool & { name: string } => Boolean(tool?.name))
-      .slice(0, EXTERNAL_TOOL_LIMIT)
       .map((tool) => ({
         name: tool.name,
         description: tool.description || `由其他 VS Code 扩展提供的工具：${tool.name}`,
         inputSchema: isObject(tool.inputSchema) ? tool.inputSchema : { type: 'object', properties: {}, additionalProperties: true },
         tags: tool.tags ?? [],
-      }));
+      }))
+      // 固定排序，保证刷新后工具 id 与顺序稳定，并且截断时不会随机丢工具。
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .slice(0, EXTERNAL_TOOL_LIMIT);
   }
 
   private externalDefinitions(): ToolDefinition[] {
@@ -199,14 +263,6 @@ function definition(name: string, description: string, parameters: Record<string
 function externalToolId(name: string): string {
   const safe = name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 38);
   return `${PREFIX}${safe || 'tool'}_${shortHash(name)}`;
-}
-
-function externalRisk(tool: ExternalTool): 'read' | 'write' | 'command' {
-  const text = `${tool.name} ${tool.description} ${tool.tags.join(' ')}`;
-  if (/(run|execute|command|terminal|shell|process|task|network|https?|web|fetch|request|upload|download|remote|cloud)/i.test(text)) return 'command';
-  if (/(write|edit|create|delete|remove|move|rename|apply|install|update|publish|deploy|send|post)/i.test(text)) return 'write';
-  if (/(read|get|list|search|find|view|preview|inspect|diagnostic)/i.test(text)) return 'read';
-  return 'command';
 }
 
 function shortHash(value: string): string {

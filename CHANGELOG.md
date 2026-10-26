@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.5
+
+- Rebuilt the chat header so the conversation title keeps its own row; work mode, API profile, model, refresh, and the right-aligned Skill, archive, export, and settings controls moved to a dedicated row underneath and wrap instead of squeezing the title. The Skill button now sits directly left of settings.
+- Merged the composer into one bordered card: the textarea sits on top, and a single bottom row inside the card holds the permission preset, maximum steps, reasoning depth, and the attach, voice, and send/stop buttons (attach is now left of the voice button).
+- Reworked the permission matrix to the requested shape: presets now carry six independent columns (read, write, read-only commands, regular commands, dangerous commands, sensitive files). Read-only and regular commands are auto-approved from "review risky actions" upward, "full access" also auto-runs dangerous commands, and sensitive-file reads are confirmed one by one even in "full access".
+- Replaced the `allowSensitiveFiles` / `allowDangerousCommands` booleans with the tri-state `hwchat.sensitiveFilePolicy` and `hwchat.dangerousCommandPolicy` (allow / ask / deny). Old booleans are kept as deprecated fallbacks and migrated on read.
+- Added a sensitive-file guard that asks once per tool call with the concrete target paths, denies them under stricter presets, and keeps skipping them in workspace-wide searches unless the policy is "allow".
+- Updated the settings matrix, composer preset tooltips, `package.json` enum descriptions, and docs to the new six-column model.
+- Consolidated the permission model in `src/core/permissions.ts` as the single source of truth: command tiers (read-only / regular / dangerous), the six-column preset table, and the sensitive-file policy all resolve from there, so the settings matrix, composer tooltips, and runtime checks cannot drift apart.
+- VS Code tool calls and built-in editor previews no longer prompt under `Autopilot` / `完全访问`; in fact every VS Code extension tool now delegates authorization to VS Code itself: tools that need no authorization run immediately, tools that declare a confirmation still show VS Code's own dialog, and cancel/deny is recorded as a denied step instead of an error.
+- Fixed VS Code tools being silently dropped from the tool list: the 100-tool cap is raised to 400 with stable sorting, extensions that contribute language model tools are activated in the background (and once more on demand when the model calls a tool that is not registered yet), and unknown tool ids now return a clear message instead of a generic failure.
+- Fixed tool-execution, reasoning, and Skill disclosure rows collapsing right after a click: the streaming re-render now captures and restores user expand/collapse state, and pauses rebuilding while the pointer is down in the message list.
+- Fixed the toolbar collapsing into stacked full-width rows when a webview kept an older HTML structure: `media/chat.css` now also styles the legacy `.toolbar-main` / `.toolbar-connection` wrappers, and media URLs are versioned (`?v=<version>`) so HTML, CSS, and JS always come from the same build instead of a stale webview cache.
+- Dimmed the composer placeholder/hint text (`--placeholder` uses 55% of the theme placeholder color) so the hint no longer competes with real input.
+- Changed the user message bubble to normal editor foreground text (the label and body used to render in orange/yellow) while keeping a subtle accent background and border.
+- Added a permission boundary matrix to the settings page and matching tooltips on the composer preset selector.
+- Anchored the Skill panel to the dynamic header height so it keeps opening directly below the toolbar when controls wrap.
+- Replaced the font-dependent glyphs with vector/CSS shapes: the composer runtime selectors draw their caret as a CSS triangle instead of the `⌄` character (which fell back to unreadable glyphs in some font stacks), and the export button now uses an inline SVG icon like every other toolbar button.
+- Synced the dev preview `test/preview-chat.html` with the shipped markup (title row plus control group row, inline SVG icons), so previewing it no longer shows the retired two-wrapper toolbar or placeholder text glyphs.
+
 ## 0.1.4
 
 - Added native multi-root workspace discovery, directory listing, and editor file opening. Requests such as opening a workspace Markdown file now use VS Code APIs directly instead of terminal commands, `code` CLI calls, or external Copilot tools.

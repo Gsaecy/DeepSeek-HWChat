@@ -8,6 +8,7 @@ import { ToolExecutor } from '../agent/toolExecutor';
 import { VscodeToolBridge } from '../agent/vscodeTools';
 import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
+import { PERMISSION_PRESET_DETAILS } from '../core/permissions';
 import {
   applyRuntimeControls,
   isPermissionPreset,
@@ -139,6 +140,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     this.agentRunner = new AgentRunner(client, toolExecutor);
     this.vscodeTools = new VscodeToolBridge(toolExecutor);
     this.activeSkillIds = skills.defaultEnabledIds();
+    // 后台预热：让提供语言模型工具的扩展尽快出现在工具列表中。
+    setTimeout(() => { void this.vscodeTools.warmToolContributors(); }, 1_000);
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -695,6 +698,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         pendingAttachments: [],
       });
       await this.postTaskTree(taskQueue);
+      // 先把声明了语言模型工具的扩展激活，再生成工具定义，避免工具列表缺项。
+      await this.vscodeTools.warmToolContributors();
       try {
         await this.agentRunner.run({
           settings,
@@ -1243,9 +1248,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
   private async confirmPermissionPreset(permissionPreset: PermissionPreset): Promise<boolean> {
     const risk = permissionPreset === 'full'
-      ? 'Agent 将可在受信任工作区内自动读写、移动和删除文件、运行常规命令，并允许读取 .env、密钥、证书等敏感文件。高风险命令仍会逐次确认，工作区外路径仍被禁止。'
+      ? 'Agent 将可在受信任工作区内自动读写、移动和删除文件，自动运行只读、正常和危险命令（含提权、破坏性删除、强制推送等），读取 .env、密钥、证书等敏感文件时仍会逐次确认。工作区外路径仍被禁止。'
       : permissionPreset === 'autopilot'
-        ? 'Agent 将可在受信任工作区内无需逐次确认地读写、移动和删除文件，并运行常规命令。敏感文件和高风险命令仍受硬性保护。'
+        ? 'Agent 将可在受信任工作区内无需逐次确认地读写、移动和删除文件，并自动运行只读与正常命令（含依赖安装、构建、提交等）。敏感文件仍被禁止，仅危险命令会逐次确认。'
         : 'Agent 将使用设置页中的自定义读取、写入和命令策略，其中可能包含自动执行或敏感文件访问权限。';
     const answer = await vscode.window.showWarningMessage(
       '确认更改 Agent 权限预设？',
@@ -1397,7 +1402,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           approval: 'not-required',
         };
       },
-      conversationId,
+      { conversationId },
     );
   }
 
@@ -1557,26 +1562,32 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     </aside>
     <main class="chat-pane">
       <header class="chat-toolbar">
-        <div class="toolbar-main">
+        <div class="toolbar-title-row">
           <button id="historyButton" class="icon-button" type="button" aria-label="显示对话记录" title="对话记录">${icon('history')}</button>
           <div class="conversation-heading"><strong id="conversationTitle">新对话</strong><span id="connectionState">准备就绪</span></div>
-          <label class="mode-field"><span class="sr-only">工作模式</span><select id="modeInput" aria-label="工作模式"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
-          <button id="skillsButton" class="control-button" type="button" aria-label="选择 Skill" title="选择 Skill">${icon('skills')}<span id="skillsCount">0</span></button>
-          <button id="archiveButton" class="icon-button" type="button" aria-label="归档当前对话" title="归档">${icon('archive')}</button>
-          <button id="exportButton" class="icon-button" type="button" aria-label="导出当前对话" title="导出">⇧</button>
-          <button id="settingsButton" class="icon-button" type="button" aria-label="打开设置" title="设置">${icon('settings')}</button>
         </div>
-        <div class="toolbar-connection">
-          <label class="profile-field"><span class="sr-only">API 配置</span><select id="profileInput" aria-label="API 配置"></select></label>
-          <label class="model-field"><span class="sr-only">模型</span><select id="modelInput" aria-label="模型"></select></label>
-          <button id="refreshModelsButton" class="icon-button" type="button" aria-label="从 API 刷新模型列表" title="刷新模型列表">${icon('refresh')}</button>
+        <div class="toolbar-controls">
+          <div class="control-group mode-group">
+            <label class="mode-field"><span class="sr-only">工作模式</span><select id="modeInput" aria-label="工作模式"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
+          </div>
+          <div class="control-group connection-group">
+            <label class="profile-field"><span class="sr-only">API 配置</span><select id="profileInput" aria-label="API 配置"></select></label>
+            <label class="model-field"><span class="sr-only">模型</span><select id="modelInput" aria-label="模型"></select></label>
+            <button id="refreshModelsButton" class="icon-button" type="button" aria-label="从 API 刷新模型列表" title="刷新模型列表">${icon('refresh')}</button>
+          </div>
+          <div class="control-group utility-group">
+            <button id="skillsButton" class="control-button" type="button" aria-label="选择 Skill" title="选择 Skill">${icon('skills')}<span id="skillsCount">0</span></button>
+            <button id="archiveButton" class="icon-button" type="button" aria-label="归档当前对话" title="归档">${icon('archive')}</button>
+            <button id="exportButton" class="icon-button" type="button" aria-label="导出当前对话" title="导出">${icon('export')}</button>
+            <button id="settingsButton" class="icon-button" type="button" aria-label="打开设置" title="设置">${icon('settings')}</button>
+          </div>
         </div>
+        <section id="skillsPanel" class="skills-panel" hidden aria-label="启用 Skill">
+          <div class="skills-panel-heading"><strong>本次对话使用的 Skill</strong><span id="workspaceTrustBadge">工作区状态</span></div>
+          <div id="skillsList" class="skills-list"></div>
+          <div class="skills-panel-note">“默认启用”来自本地skill快捷调用。route 模式只在命中后通过 load_skill 读取；每条回复会显示本轮实际加载的 Skill。</div>
+        </section>
       </header>
-      <section id="skillsPanel" class="skills-panel" hidden aria-label="启用 Skill">
-        <div class="skills-panel-heading"><strong>本次对话使用的 Skill</strong><span id="workspaceTrustBadge">工作区状态</span></div>
-        <div id="skillsList" class="skills-list"></div>
-        <div class="skills-panel-note">“默认启用”来自本地skill快捷调用。route 模式只在命中后通过 load_skill 读取；每条回复会显示本轮实际加载的 Skill。</div>
-      </section>
       <section id="messageViewport" class="message-viewport" aria-live="polite">
         <button id="loadOlderButton" class="load-older" type="button" hidden>加载更早消息</button>
         <div id="emptyState" class="empty-state">
@@ -1602,19 +1613,21 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         <details id="taskTree" class="task-tree" hidden><summary><span>任务树</span><small id="taskTreeSummary"></small></summary><div id="taskTreeList" class="task-tree-list"></div></details>
         <form id="composer" class="composer">
           <textarea id="promptInput" rows="1" placeholder="询问代码、调试问题或实现思路…" aria-label="消息"></textarea>
-          <div class="composer-actions">
-            <span id="composerHint">Enter 发送</span>
-            <button id="attachButton" class="icon-button" type="button" aria-label="添加文件" title="添加文件">${icon('attach')}</button>
-            <button id="sendButton" class="send-button" type="submit" aria-label="发送" title="发送">${icon('send')}</button>
-            <button id="stopButton" class="stop-button" type="button" aria-label="停止生成" title="停止" hidden>${icon('stop')}</button>
+          <div class="composer-footer">
+            <div class="composer-runtime-controls" aria-label="本轮 Agent 设置">
+              <label class="runtime-field permission-field"><span>权限预设：</span><select id="permissionPresetInput" aria-label="权限预设">${permissionPresetOptionsHtml()}</select></label>
+              <label class="runtime-field steps-field"><span>最大步骤：</span><select id="agentMaxStepsInput" aria-label="最大执行步骤"><option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option><option value="80">80 步</option><option value="120">120 步</option></select></label>
+              <label class="runtime-field reasoning-field"><span>思考深度：</span><select id="reasoningEffortInput" aria-label="思考深度"><option value="default">默认</option><option value="none">无</option><option value="low">低</option><option value="high">高</option><option value="max">最大值</option></select></label>
+            </div>
+            <div class="composer-actions">
+              <span id="composerHint">Enter 发送</span>
+              <button id="attachButton" class="icon-button" type="button" aria-label="添加文件" title="添加文件">${icon('attach')}</button>
+              <button id="voiceButton" class="runtime-icon-button" type="button" aria-label="语音输入" title="语音输入">${icon('mic')}</button>
+              <button id="sendButton" class="send-button" type="submit" aria-label="发送" title="发送">${icon('send')}</button>
+              <button id="stopButton" class="stop-button" type="button" aria-label="停止生成" title="停止" hidden>${icon('stop')}</button>
+            </div>
           </div>
         </form>
-        <div class="composer-runtime-controls" aria-label="本轮 Agent 设置">
-          <label class="runtime-field permission-field"><span>权限预设：</span><select id="permissionPresetInput" aria-label="权限预设"><option value="askAll">每次询问</option><option value="review">风险操作询问</option><option value="autopilot">Autopilot</option><option value="full">完全访问</option><option value="custom">自定义</option></select></label>
-          <label class="runtime-field steps-field"><span>最大步骤：</span><select id="agentMaxStepsInput" aria-label="最大执行步骤"><option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option><option value="80">80 步</option><option value="120">120 步</option></select></label>
-          <label class="runtime-field reasoning-field"><span>思考深度：</span><select id="reasoningEffortInput" aria-label="思考深度"><option value="default">默认</option><option value="none">无</option><option value="low">低</option><option value="high">高</option><option value="max">最大值</option></select></label>
-          <button id="voiceButton" class="runtime-icon-button" type="button" aria-label="语音输入" title="语音输入">${icon('mic')}</button>
-        </div>
       </footer>
     </main>
   </div>
@@ -1715,6 +1728,21 @@ function reasoningEffortForModel(requested: ReasoningEffort, model: ModelOption 
 
 function isRiskyPermissionPreset(value: PermissionPreset): boolean {
   return value === 'autopilot' || value === 'full' || value === 'custom';
+}
+
+/** 权限预设下拉项由权限矩阵生成，保证与设置页、运行时策略同源。 */
+function permissionPresetOptionsHtml(): string {
+  return PERMISSION_PRESET_DETAILS
+    .map((detail) => `<option value="${detail.id}" title="${escapeHtml(detail.summary)}">${escapeHtml(detail.label)}</option>`)
+    .join('');
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }
 
 function addUsage(total: UsageInfo | undefined, current: UsageInfo | undefined): UsageInfo | undefined {

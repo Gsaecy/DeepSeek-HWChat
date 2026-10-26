@@ -2,6 +2,8 @@ export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 export type MessageStatus = 'queued' | 'streaming' | 'complete' | 'error';
 export type ConversationMode = 'chat' | 'agent' | 'plan';
 export type PermissionPolicy = 'allow' | 'ask' | 'deny';
+/** 敏感文件与危险命令使用的三态策略：允许 / 逐次确认 / 禁止。 */
+export type GuardedPolicy = 'allow' | 'ask' | 'deny';
 export type PermissionPreset = 'askAll' | 'review' | 'autopilot' | 'full' | 'custom';
 export type ReasoningEffort = 'default' | 'none' | 'low' | 'high' | 'max';
 
@@ -174,8 +176,10 @@ export interface ChatSettings {
   fileReadPolicy: PermissionPolicy;
   fileWritePolicy: PermissionPolicy;
   commandPolicy: PermissionPolicy;
-  allowSensitiveFiles: boolean;
-  allowDangerousCommands: boolean;
+  /** 危险命令：允许 / 逐次确认 / 禁止。 */
+  dangerousCommandPolicy: GuardedPolicy;
+  /** 敏感文件（.env、密钥、证书等）：允许 / 逐次确认 / 禁止。 */
+  sensitiveFilePolicy: GuardedPolicy;
   maxReadBytes: number;
   maxToolOutputBytes: number;
   maxCommandSeconds: number;

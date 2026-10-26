@@ -56,34 +56,40 @@
         <div class="brand-copy"><strong>HWChat</strong><span>DeepSeek workspace</span></div>
         <button id="closeHistoryButton" class="icon-button mobile-only" type="button">←</button>
       </div>
-      <button id="newChatButton" class="primary-command" type="button"><span>＋</span><span>新建对话</span></button>
+      <button id="newChatButton" class="primary-command" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>新建对话</span></button>
       <label class="search-field"><span class="sr-only">搜索</span><input id="historySearch" type="search" placeholder="搜索对话"></label>
-      <button id="archiveViewButton" class="sidebar-command archive-toggle" type="button"><span>□</span><span>显示归档</span></button>
+      <button id="archiveViewButton" class="sidebar-command archive-toggle" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1zM10 12h4"/></svg><span>显示归档</span></button>
       <div id="conversationList" class="conversation-list"></div>
-      <button id="settingsButtonSide" class="sidebar-command" type="button"><span>⚙</span><span>设置</span></button>
+      <button id="settingsButtonSide" class="sidebar-command" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3v-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6V3h4v.1A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.6 1h.1v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg><span>设置</span></button>
     </aside>
     <main class="chat-pane">
       <header class="chat-toolbar">
-        <div class="toolbar-main">
-          <button id="historyButton" class="icon-button" type="button">☰</button>
+        <div class="toolbar-title-row">
+          <button id="historyButton" class="icon-button" type="button" aria-label="显示对话记录" title="对话记录"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg></button>
           <div class="conversation-heading"><strong id="conversationTitle">新对话</strong><span id="connectionState">准备就绪</span></div>
-          <label class="mode-field"><select id="modeInput"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
-          <button id="skillsButton" class="control-button" type="button"><span>✦</span><span id="skillsCount">0</span></button>
-          <button id="archiveButton" class="icon-button" type="button">□</button>
-          <button id="exportButton" class="icon-button" type="button">⇧</button>
-          <button id="settingsButton" class="icon-button" type="button">⚙</button>
         </div>
-        <div class="toolbar-connection">
-          <label class="profile-field"><select id="profileInput"></select></label>
-          <label class="model-field"><select id="modelInput"></select></label>
-          <button id="refreshModelsButton" class="icon-button" type="button">↻</button>
+        <div class="toolbar-controls">
+          <div class="control-group mode-group">
+            <label class="mode-field"><span class="sr-only">工作模式</span><select id="modeInput" aria-label="工作模式"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
+          </div>
+          <div class="control-group connection-group">
+            <label class="profile-field"><span class="sr-only">API 配置</span><select id="profileInput" aria-label="API 配置"></select></label>
+            <label class="model-field"><span class="sr-only">模型</span><select id="modelInput" aria-label="模型"></select></label>
+            <button id="refreshModelsButton" class="icon-button" type="button" aria-label="从 API 刷新模型列表" title="刷新模型列表"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0 2 5"/><path d="M20 4v7h-7"/></svg></button>
+          </div>
+          <div class="control-group utility-group">
+            <button id="skillsButton" class="control-button" type="button" aria-label="选择 Skill" title="选择 Skill"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 9.5 7 4 7.8l4 4-1 5.7 5-2.7 5 2.7-1-5.7 4-4L14.5 7 12 2Z"/></svg><span id="skillsCount">0</span></button>
+            <button id="archiveButton" class="icon-button" type="button" aria-label="归档当前对话" title="归档"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1zM10 12h4"/></svg></button>
+            <button id="exportButton" class="icon-button" type="button" aria-label="导出当前对话" title="导出"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="m8 8 4-4 4 4"/><path d="M4 14v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></svg></button>
+            <button id="settingsButton" class="icon-button" type="button" aria-label="打开设置" title="设置"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3v-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6V3h4v.1A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.6 1h.1v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg></button>
+          </div>
         </div>
+        <section id="skillsPanel" class="skills-panel" hidden>
+          <div class="skills-panel-heading"><strong>本次对话使用的 Skill</strong><span id="workspaceTrustBadge">工作区状态</span></div>
+          <div id="skillsList" class="skills-list"></div>
+          <div class="skills-panel-note">默认启用来自本地skill快捷调用；回复只显示本轮实际加载的 Skill。</div>
+        </section>
       </header>
-      <section id="skillsPanel" class="skills-panel" hidden>
-        <div class="skills-panel-heading"><strong>本次对话使用的 Skill</strong><span id="workspaceTrustBadge">工作区状态</span></div>
-        <div id="skillsList" class="skills-list"></div>
-        <div class="skills-panel-note">默认启用来自本地skill快捷调用；回复只显示本轮实际加载的 Skill。</div>
-      </section>
       <section id="messageViewport" class="message-viewport">
         <button id="loadOlderButton" class="load-older" type="button" hidden>加载更早消息</button>
         <div id="emptyState" class="empty-state">
@@ -94,20 +100,26 @@
         <div id="messageList" class="message-list"></div>
       </section>
       <footer class="composer-wrap">
+        <div id="historyLinkBanner" class="history-link-banner" hidden>
+          <span class="history-link-symbol" aria-hidden="true">↗</span>
+          <div><strong id="sourceHistoryTitle">任务历史</strong><small>只读摘要 + 按需检索；实际发送的摘要和片段会计入输入 Token</small></div>
+          <button id="detachHistoryButton" type="button" aria-label="解除任务历史" title="解除任务历史">×</button>
+        </div>
         <div id="attachmentList" class="attachment-list"></div>
         <div id="contextChip" class="context-chip" hidden><span id="contextLabel"></span><button id="removeContextButton" type="button">×</button></div>
         <div id="agentRunState" class="agent-run-state" hidden><span class="run-indicator"></span><strong id="agentRunLabel">Agent 正在执行</strong><span id="agentRunMeta"></span></div>
         <details id="taskTree" class="task-tree" hidden open><summary><span>任务树</span><small id="taskTreeSummary"></small></summary><div id="taskTreeList" class="task-tree-list"></div></details>
         <form id="composer" class="composer">
           <textarea id="promptInput" rows="1" placeholder="询问代码、调试问题或直接交给 Agent 实现…"></textarea>
-          <div class="composer-actions"><span id="composerHint">Enter 发送</span><button id="attachButton" class="icon-button" type="button">⌕</button><button id="sendButton" class="send-button" type="submit">↑</button><button id="stopButton" class="stop-button" type="button" hidden>■</button></div>
+          <div class="composer-footer">
+            <div class="composer-runtime-controls" aria-label="本轮 Agent 设置">
+              <label class="runtime-field permission-field"><span>权限预设：</span><select id="permissionPresetInput"><option value="askAll" title="读取、写入和命令全部逐次确认；危险命令直接拒绝">每次询问</option><option value="review" title="自动读写与常规命令，只有危险命令逐次确认">风险操作询问</option><option value="autopilot" title="自动读写与常规命令，只有危险命令逐次确认">Autopilot</option><option value="full" title="全部自动执行（含危险命令），读取敏感文件时逐次确认">完全访问</option><option value="custom" title="按设置页中的读取 / 写入 / 命令 / 危险命令 / 敏感文件策略逐项组合">自定义</option></select></label>
+              <label class="runtime-field steps-field"><span>最大步骤：</span><select id="agentMaxStepsInput"><option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option></select></label>
+              <label class="runtime-field reasoning-field"><span>思考深度：</span><select id="reasoningEffortInput"><option value="default">默认</option><option value="none">无</option><option value="low">低</option><option value="high">高</option><option value="max">最大值</option></select></label>
+            </div>
+            <div class="composer-actions"><span id="composerHint">Enter 发送</span><button id="attachButton" class="icon-button" type="button" aria-label="添加文件" title="添加文件"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.5-9.5a4 4 0 0 1 5.7 5.7l-9.6 9.5a2 2 0 1 1-2.8-2.8l8.9-8.9"/></svg></button><button id="voiceButton" class="runtime-icon-button" type="button" aria-label="语音输入" title="语音输入"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8"/></svg></button><button id="sendButton" class="send-button" type="submit" aria-label="发送" title="发送"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button><button id="stopButton" class="stop-button" type="button" aria-label="停止生成" title="停止" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button></div>
+          </div>
         </form>
-        <div class="composer-runtime-controls">
-          <label class="runtime-field permission-field"><span>权限预设：</span><select id="permissionPresetInput"><option value="askAll">每次询问</option><option value="review">风险操作询问</option><option value="autopilot">Autopilot</option><option value="full">完全访问</option><option value="custom">自定义</option></select></label>
-          <label class="runtime-field steps-field"><span>最大步骤：</span><select id="agentMaxStepsInput"><option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option></select></label>
-          <label class="runtime-field reasoning-field"><span>思考深度：</span><select id="reasoningEffortInput"><option value="default">默认</option><option value="none">无</option><option value="low">低</option><option value="high">高</option><option value="max">最大值</option></select></label>
-          <button id="voiceButton" class="runtime-icon-button" type="button" title="语音输入">◉</button>
-        </div>
       </footer>
     </main>
   </div>

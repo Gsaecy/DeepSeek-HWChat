@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek, local skills, durable history and approval-controlled workspace tools.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -20,7 +20,8 @@
       "restrictedConfigurations": [
         "hwchat.fileWritePolicy",
         "hwchat.commandPolicy",
-        "hwchat.allowDangerousCommands"
+        "hwchat.dangerousCommandPolicy",
+        "hwchat.sensitiveFilePolicy"
       ]
     }
   },
@@ -315,42 +316,58 @@
           "type": "string",
           "enum": ["askAll", "review", "autopilot", "full", "custom"],
           "enumDescriptions": [
-            "所有读取、写入和命令都询问",
-            "自动读取，写入和命令询问",
-            "工作区内自动读取、写入和运行常规命令；敏感文件和危险命令仍阻止",
-            "工作区内自动执行并允许敏感文件；危险命令仍强制逐次确认",
+            "读取、写入、只读命令、正常命令逐次确认；危险命令直接拒绝；敏感文件禁止",
+            "读取、写入、只读命令、正常命令自动执行；危险命令逐次确认；敏感文件禁止",
+            "读取、写入、只读命令、正常命令自动执行；危险命令逐次确认；敏感文件禁止",
+            "读取、写入、只读命令、正常命令、危险命令全部自动执行；敏感文件逐次确认",
             "使用下方各项自定义策略"
           ],
           "default": "review",
-          "description": "Agent 权限预设。工作区信任、路径隔离和危险命令确认等硬边界不会被关闭。"
+          "description": "Agent 权限预设。未受信任工作区、工作区外路径隔离属于硬边界，任何预设都不会关闭。"
         },
         "hwchat.fileReadPolicy": {
           "type": "string",
           "enum": ["allow", "ask", "deny"],
           "default": "allow",
-          "description": "Agent 读取工作区文件前的权限策略。"
+          "description": "Agent 读取工作区文件前的权限策略（仅“自定义”预设生效）。"
         },
         "hwchat.fileWritePolicy": {
           "type": "string",
           "enum": ["allow", "ask", "deny"],
           "default": "ask",
-          "description": "Agent 修改工作区文件前的权限策略。未受信任工作区始终禁止。"
+          "description": "Agent 修改工作区文件前的权限策略（仅“自定义”预设生效）。未受信任工作区始终禁止。"
         },
         "hwchat.commandPolicy": {
           "type": "string",
           "enum": ["allow", "ask", "deny"],
           "default": "ask",
-          "description": "Agent 运行终端命令前的权限策略。未受信任工作区始终禁止。"
+          "description": "Agent 运行只读命令与正常命令的权限策略（仅“自定义”预设生效）。危险命令由 hwchat.dangerousCommandPolicy 单独控制；未受信任工作区始终禁止。"
+        },
+        "hwchat.dangerousCommandPolicy": {
+          "type": "string",
+          "enum": ["allow", "ask", "deny"],
+          "enumDescriptions": ["自动允许", "逐次确认", "直接拒绝"],
+          "default": "ask",
+          "description": "危险命令（提权、破坏性删除、磁盘擦写、强制推送、把网络脚本管道给 shell 等）的策略，仅“自定义”预设生效。"
+        },
+        "hwchat.sensitiveFilePolicy": {
+          "type": "string",
+          "enum": ["allow", "ask", "deny"],
+          "enumDescriptions": ["允许", "逐次确认", "禁止"],
+          "default": "deny",
+          "description": "敏感文件（.env、密钥、证书及常见凭据路径）的读取策略，仅“自定义”预设生效。"
         },
         "hwchat.allowSensitiveFiles": {
           "type": "boolean",
           "default": false,
-          "description": "允许读取 .env、密钥、证书及常见凭据路径。默认关闭。"
+          "deprecationMessage": "已由 hwchat.sensitiveFilePolicy 取代，仅在未设置新配置时用作迁移回退。",
+          "description": "旧版开关：等同把敏感文件策略设为“允许”或“禁止”。"
         },
         "hwchat.allowDangerousCommands": {
           "type": "boolean",
           "default": false,
-          "description": "允许 sudo、破坏性 git/rm 等高风险命令。即使开启仍会逐次确认。"
+          "deprecationMessage": "已由 hwchat.dangerousCommandPolicy 取代，仅在未设置新配置时用作迁移回退。",
+          "description": "旧版开关：开启等同危险命令“逐次确认”，关闭等同“直接拒绝”。"
         },
         "hwchat.maxReadBytes": {
           "type": "number",

@@ -5,8 +5,8 @@
     'temperature', 'maxTokens', 'maxMessagesInContext', 'sendOnEnter',
     'systemPrompt', 'historyRetentionDays', 'taskCacheRetentionHours',
     'cacheBudgetMB', 'cleanupIntervalMinutes', 'defaultMode', 'agentMaxSteps',
-    'permissionPreset', 'fileReadPolicy', 'fileWritePolicy', 'commandPolicy', 'allowSensitiveFiles',
-    'allowDangerousCommands', 'maxReadBytes', 'maxToolOutputBytes',
+    'permissionPreset', 'fileReadPolicy', 'fileWritePolicy', 'commandPolicy', 'dangerousCommandPolicy',
+    'sensitiveFilePolicy', 'maxReadBytes', 'maxToolOutputBytes',
     'maxCommandSeconds', 'auditRetentionDays',
   ];
   const fields = Object.fromEntries(fieldIds.map((id) => [id, document.getElementById(id)]));
@@ -30,6 +30,7 @@
     rescanSkillsButton: document.getElementById('rescanSkillsButton'),
     openSkillFolderButton: document.getElementById('openSkillFolderButton'),
     clearLocalDataButton: document.getElementById('clearLocalDataButton'),
+    permissionPresetHint: document.getElementById('permissionPresetHint'),
     toast: document.getElementById('toast'),
     profileSelect: document.getElementById('profileSelect'),
     addProfileButton: document.getElementById('addProfileButton'),
@@ -97,8 +98,8 @@
       fileWritePolicy: fields.fileWritePolicy.value,
       commandPolicy: fields.commandPolicy.value,
       permissionPreset: fields.permissionPreset.value,
-      allowSensitiveFiles: fields.allowSensitiveFiles.checked,
-      allowDangerousCommands: fields.allowDangerousCommands.checked,
+      dangerousCommandPolicy: fields.dangerousCommandPolicy.value,
+      sensitiveFilePolicy: fields.sensitiveFilePolicy.value,
       maxReadBytes: numberValue(fields.maxReadBytes, 512000),
       maxToolOutputBytes: numberValue(fields.maxToolOutputBytes, 200000),
       maxCommandSeconds: numberValue(fields.maxCommandSeconds, 120),
@@ -168,21 +169,33 @@
     renderProfileSelect();
   }
 
+  // 与 src/core/permissions.ts 的 PERMISSION_PRESET_PROFILES 保持一致：
+  // [读取, 写入, 只读命令, 正常命令, 危险命令, 敏感文件]
+  const permissionPresetProfiles = {
+    askAll: ['ask', 'ask', 'ask', 'ask', 'deny', 'deny'],
+    review: ['allow', 'allow', 'allow', 'allow', 'ask', 'deny'],
+    autopilot: ['allow', 'allow', 'allow', 'allow', 'ask', 'deny'],
+    full: ['allow', 'allow', 'allow', 'allow', 'allow', 'ask'],
+  };
+
   function applyPermissionPreset() {
     const preset = fields.permissionPreset.value;
-    const values = {
-      askAll: ['ask', 'ask', 'ask', false, false],
-      review: ['allow', 'ask', 'ask', false, false],
-      autopilot: ['allow', 'allow', 'allow', false, false],
-      full: ['allow', 'allow', 'allow', true, true],
-    }[preset];
+    const values = permissionPresetProfiles[preset];
     if (values) {
-      [fields.fileReadPolicy.value, fields.fileWritePolicy.value, fields.commandPolicy.value] = values;
-      fields.allowSensitiveFiles.checked = values[3];
-      fields.allowDangerousCommands.checked = values[4];
+      fields.fileReadPolicy.value = values[0];
+      fields.fileWritePolicy.value = values[1];
+      fields.commandPolicy.value = values[3];
+      fields.dangerousCommandPolicy.value = values[4];
+      fields.sensitiveFilePolicy.value = values[5];
     }
     const locked = preset !== 'custom';
-    for (const field of [fields.fileReadPolicy, fields.fileWritePolicy, fields.commandPolicy, fields.allowSensitiveFiles, fields.allowDangerousCommands]) field.disabled = locked;
+    for (const field of [fields.fileReadPolicy, fields.fileWritePolicy, fields.commandPolicy, fields.dangerousCommandPolicy, fields.sensitiveFilePolicy]) field.disabled = locked;
+    if (elements.permissionPresetHint) {
+      elements.permissionPresetHint.textContent = fields.permissionPreset.selectedOptions[0]?.title || '';
+    }
+    for (const row of document.querySelectorAll('.permission-matrix tbody tr')) {
+      row.classList.toggle('active', row.dataset.preset === preset);
+    }
   }
 
   function populate(settings, apiKeyConfigured, stats, skills, workspaceTrusted, workspaceFolderCount, keyMap) {
@@ -213,8 +226,8 @@
     fields.fileReadPolicy.value = settings.fileReadPolicy;
     fields.fileWritePolicy.value = settings.fileWritePolicy;
     fields.commandPolicy.value = settings.commandPolicy;
-    fields.allowSensitiveFiles.checked = settings.allowSensitiveFiles;
-    fields.allowDangerousCommands.checked = settings.allowDangerousCommands;
+    fields.dangerousCommandPolicy.value = settings.dangerousCommandPolicy || 'deny';
+    fields.sensitiveFilePolicy.value = settings.sensitiveFilePolicy || 'deny';
     applyPermissionPreset();
     fields.maxReadBytes.value = settings.maxReadBytes;
     fields.maxToolOutputBytes.value = settings.maxToolOutputBytes;

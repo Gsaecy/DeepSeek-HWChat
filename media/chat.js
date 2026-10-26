@@ -32,6 +32,8 @@
   let pendingPaste = null;
   let deferredMessageRenderMode = null;
   let selectingMessageText = false;
+  let interactingWithMessages = false;
+  let interactionTimer = null;
 
   function post(type, payload = {}) { vscode.postMessage({ type, ...payload }); }
 
@@ -127,6 +129,7 @@
     elements.skillsCount.textContent = String(state.selectedSkillIds.length);
     elements.skillsButton.classList.toggle('active', state.selectedSkillIds.length > 0);
     elements.permissionPresetInput.value = state.permissionPreset;
+    syncPermissionHint();
     ensureStepOption(state.agentMaxSteps);
     elements.agentMaxStepsInput.value = String(state.agentMaxSteps);
     syncReasoningSelector();
@@ -134,6 +137,13 @@
     const modelsLoading = state.modelLoadingProfileId === activeProfileId;
     elements.refreshModelsButton.classList.toggle('loading', modelsLoading);
     elements.refreshModelsButton.title = modelsLoading ? '正在刷新模型列表' : '刷新模型列表';
+  }
+
+  function syncPermissionHint() {
+    const selected = elements.permissionPresetInput.selectedOptions[0];
+    const hint = selected?.title || '';
+    elements.permissionPresetInput.title = hint ? `权限预设：${hint}` : '权限预设';
+    elements.permissionPresetInput.closest('.permission-field')?.setAttribute('title', hint);
   }
 
   function syncConnectionSelectors() {
@@ -243,7 +253,7 @@
   }
 
   function renderMessages(mode = 'keep') {
-    if (selectingMessageText || hasMessageSelection()) {
+    if (selectingMessageText || interactingWithMessages || hasMessageSelection()) {
       deferMessageRender(mode);
       return;
     }
@@ -253,9 +263,13 @@
     const previousHeight = viewport.scrollHeight;
     const shouldFollow = mode === 'bottom' || state.autoFollow;
     state.renderingMessages = true;
+    // 消息列表每次都是整段重建（流式输出期间每 70ms 一次）。先记录用户手动展开/收起的
+    // <details> 状态，重建后再恢复，否则点击展开会立刻被下一次渲染收起。
+    const detailOverrides = captureDetailOverrides();
     elements.messageList.replaceChildren(); elements.emptyState.hidden = state.messages.length > 0;
     elements.loadOlderButton.hidden = !state.hasMore || !state.messages.length;
     for (const message of state.messages) elements.messageList.append(renderMessage(message));
+    restoreDetailOverrides(detailOverrides);
     requestAnimationFrame(() => {
       if (shouldFollow) viewport.scrollTop = viewport.scrollHeight;
       else if (mode === 'prepend') viewport.scrollTop = previousTop + Math.max(0, viewport.scrollHeight - previousHeight);
@@ -267,6 +281,49 @@
   function scheduleMessageRender() {
     if (state.renderTimer) return;
     state.renderTimer = setTimeout(() => { state.renderTimer = null; renderMessages('keep'); }, 70);
+  }
+
+  /** 用户交互结束后补做被推迟的渲染。 */
+  function releaseMessageInteraction() {
+    clearTimeout(interactionTimer);
+    interactionTimer = null;
+    if (!interactingWithMessages && !selectingMessageText) return;
+    interactingWithMessages = false;
+    selectingMessageText = false;
+    flushDeferredMessageRender();
+  }
+
+  function flushDeferredMessageRender() {
+    if (interactingWithMessages || hasMessageSelection() || !deferredMessageRenderMode) return;
+    const mode = deferredMessageRenderMode;
+    deferredMessageRenderMode = null;
+    renderMessages(mode);
+  }
+
+  /** 读取当前 DOM 中“与默认状态不同”的展开状态。 */
+  function captureDetailOverrides() {
+    const overrides = new Map();
+    for (const details of elements.messageList.querySelectorAll('details[data-detail-key]')) {
+      const messageId = details.closest('[data-message-id]')?.dataset.messageId;
+      const key = details.dataset.detailKey;
+      if (!messageId || !key) continue;
+      if (details.open !== (details.dataset.defaultOpen === '1')) {
+        overrides.set(`${messageId}::${key}`, details.open);
+      }
+    }
+    return overrides;
+  }
+
+  /** 重建后恢复用户的展开/收起状态，保证“点开展开、再点收起”。 */
+  function restoreDetailOverrides(overrides) {
+    if (!overrides.size) return;
+    for (const details of elements.messageList.querySelectorAll('details[data-detail-key]')) {
+      const messageId = details.closest('[data-message-id]')?.dataset.messageId;
+      const key = details.dataset.detailKey;
+      if (!messageId || !key) continue;
+      const value = overrides.get(`${messageId}::${key}`);
+      if (value !== undefined) details.open = value;
+    }
   }
 
   function renderTaskTree() {
@@ -322,6 +379,8 @@
 
   function renderSkillUsage(skills) {
     const details = document.createElement('details'); details.className = 'message-skills';
+    details.dataset.detailKey = 'skills';
+    details.dataset.defaultOpen = '0';
     const summary = document.createElement('summary'); summary.textContent = `本轮调用 ${skills.length} 个 Skill`;
     const list = document.createElement('div'); list.className = 'message-skills-list';
     for (const skill of skills) {
@@ -350,8 +409,10 @@
     const section = document.createElement('section'); section.className = 'tool-stack';
     const changed = new Set(tools.flatMap((tool) => tool.changedFiles || []));
     section.append(textElement('div', 'tool-stack-heading', `${tools.length} 个执行步骤${changed.size ? ` · 修改 ${changed.size} 个文件` : ''}`));
-    for (const tool of tools) {
+    for (const [index, tool] of tools.entries()) {
       const details = document.createElement('details'); details.className = `tool-execution status-${tool.status || 'pending'}`;
+      details.dataset.detailKey = `tool:${tool.callId || index}`;
+      details.dataset.defaultOpen = tool.status === 'pending' ? '1' : '0';
       if (tool.status === 'pending') details.open = true;
       const summary = document.createElement('summary');
       summary.append(textElement('span', 'tool-status', statusSymbol(tool.status)), textElement('span', 'tool-summary', tool.summary || tool.name), textElement('small', '', toolMeta(tool)));
@@ -394,6 +455,8 @@
 
   function renderReasoning(reasoning) {
     const details = document.createElement('details'); details.className = 'reasoning';
+    details.dataset.detailKey = 'reasoning';
+    details.dataset.defaultOpen = '0';
     const content = document.createElement('div'); content.className = 'reasoning-content'; appendRichText(content, reasoning);
     details.append(textElement('summary', '', '思考过程'), content); return details;
   }
@@ -504,6 +567,7 @@
   elements.modeInput.addEventListener('change', (event) => { state.mode = event.target.value; post('setMode', { mode: state.mode }); renderHeader(); updateComposerState(); });
   elements.permissionPresetInput.addEventListener('change', (event) => {
     const permissionPreset = event.target.value;
+    syncPermissionHint();
     if (permissionPreset === state.permissionPreset) return;
     state.permissionPresetPending = true;
     updateComposerState();
@@ -561,23 +625,20 @@
   for (const button of document.querySelectorAll('[data-prompt]')) button.addEventListener('click', () => { elements.promptInput.value = button.dataset.prompt || ''; autoResize(); elements.promptInput.focus(); });
   document.addEventListener('click', (event) => { if (!elements.skillsPanel.hidden && !elements.skillsPanel.contains(event.target) && !elements.skillsButton.contains(event.target)) elements.skillsPanel.hidden = true; });
   elements.messageViewport.addEventListener('pointerdown', (event) => {
-    if (event.button === 0 && event.target instanceof Element && event.target.closest('.message-body')) selectingMessageText = true;
+    if (event.button !== 0) return;
+    // 用户在消息区按住鼠标（选中文字、点开工具详情）时暂停重建列表，
+    // 避免点击展开后被紧随其后的流式渲染立刻收起。
+    interactingWithMessages = true;
+    if (event.target instanceof Element && event.target.closest('.message-body')) selectingMessageText = true;
+    // 兜底：指针在窗口外松开时可能收不到 pointerup，超时后恢复渲染。
+    clearTimeout(interactionTimer);
+    interactionTimer = setTimeout(releaseMessageInteraction, 3000);
   });
-  document.addEventListener('pointerup', () => {
-    if (!selectingMessageText) return;
-    selectingMessageText = false;
-    if (!hasMessageSelection() && deferredMessageRenderMode) {
-      const mode = deferredMessageRenderMode;
-      deferredMessageRenderMode = null;
-      renderMessages(mode);
-    }
-  });
+  document.addEventListener('pointerup', releaseMessageInteraction);
+  document.addEventListener('pointercancel', releaseMessageInteraction);
+  window.addEventListener('blur', releaseMessageInteraction);
   document.addEventListener('selectionchange', () => {
-    if (!selectingMessageText && !hasMessageSelection() && deferredMessageRenderMode) {
-      const mode = deferredMessageRenderMode;
-      deferredMessageRenderMode = null;
-      renderMessages(mode);
-    }
+    if (!selectingMessageText) flushDeferredMessageRender();
   });
   document.addEventListener('copy', (event) => {
     const text = selectedTextForCopy(event.target);
@@ -755,7 +816,7 @@
       case 'modeChanged': state.mode = message.mode; renderHeader(); break;
       case 'skillsChanged': state.selectedSkillIds = message.skillIds || []; renderSkills(); renderHeader(); break;
       case 'permissionPresetPending': state.permissionPresetPending = Boolean(message.active); updateComposerState(); break;
-      case 'permissionPresetChanged': state.permissionPreset = message.permissionPreset || 'review'; elements.permissionPresetInput.value = state.permissionPreset; break;
+      case 'permissionPresetChanged': state.permissionPreset = message.permissionPreset || 'review'; elements.permissionPresetInput.value = state.permissionPreset; syncPermissionHint(); break;
       case 'agentMaxStepsChanged': state.agentMaxSteps = Math.max(0, Math.floor(Number(message.agentMaxSteps) || 0)); ensureStepOption(state.agentMaxSteps); elements.agentMaxStepsInput.value = String(state.agentMaxSteps); break;
       case 'reasoningEffortChanged': state.reasoningEffort = message.reasoningEffort || 'default'; elements.reasoningEffortInput.value = state.reasoningEffort; break;
       case 'taskTreeChanged': state.taskTree = message.taskTree || null; renderTaskTree(); updateComposerState(); break;

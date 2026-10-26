@@ -14,6 +14,7 @@ import {
 } from '../core/types';
 import { AuditLog, redact } from './auditLog';
 import { isPathWithin, resolveWorkspacePath } from './workspacePaths';
+import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
 
 export interface ToolApprovalRequest {
   callId: string;
@@ -25,6 +26,14 @@ export interface ToolApprovalRequest {
 
 export type RequestApproval = (request: ToolApprovalRequest) => Promise<boolean>;
 
+export interface ExternalExecutionOptions {
+  conversationId?: string;
+  /** 名称/描述命中破坏性关键词时强制确认（不适用于委托授权的 VS Code 工具）。 */
+  forceApproval?: boolean;
+  /** true 表示把授权交给外部系统（VS Code 工具自己的确认 UI），HWChat 不再弹窗。 */
+  delegateApproval?: boolean;
+}
+
 interface ResolvedPath {
   uri: vscode.Uri;
   fsPath: string;
@@ -35,9 +44,11 @@ interface ResolvedPath {
 const DEFAULT_EXCLUDE = '**/{.git,node_modules,dist,build,out,.next,coverage}/**';
 const SENSITIVE_NAMES = /(^|\/)(\.env(?:\..*)?|\.npmrc|\.pypirc|\.netrc|credentials?(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|service[-_]?account(?:\.[^/]*)?|id_(?:rsa|dsa|ecdsa|ed25519)|.*\.(?:pem|key|p12|pfx|jks|keystore))$/i;
 const SENSITIVE_PARTS = /(^|\/)(\.git|\.ssh|\.aws|\.kube)(\/|$)/i;
-const DANGEROUS_COMMAND = /(^|[;&|])\s*(sudo|rm\s+-rf|mkfs|dd\s+if=|shutdown|reboot|:\(\)\s*\{|git\s+(?:reset\s+--hard|clean\s+-f|push\s+--force)|chmod\s+777|curl[^\n|]*\|\s*(?:sh|bash)|wget[^\n|]*\|\s*(?:sh|bash))/i;
 const OUTSIDE_WORKSPACE_COMMAND = /(^|[\s'"=])(?:~(?:\/|\s|$)|\.\.(?:\/|\\)|\$(?:\{)?HOME\}?\b|\/(?:Users|home|etc|private|var|root|Volumes)(?:\/|\s|$)|[A-Za-z]:\\)/i;
 const SENSITIVE_COMMAND = /(^|[\s'"/])(?:\.env(?:\.[^\s'"]*)?|\.ssh|\.aws|\.kube|credentials?(?:\.[^\s'"]*)?|secrets?(?:\.[^\s'"]*)?|service[-_]?account(?:\.[^\s'"]*)?|id_(?:rsa|dsa|ecdsa|ed25519)|[^\s'"]+\.(?:pem|key|p12|pfx))(?:[\s'"/]|$)/i;
+
+/** 带路径参数、需要单独做敏感文件守卫的工具。 */
+const PATH_TOOLS = ['list_directory', 'read_file', 'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file', 'delete_file'];
 
 export class ToolExecutor implements vscode.Disposable {
   constructor(
@@ -114,23 +125,48 @@ export class ToolExecutor implements vscode.Disposable {
       return result;
     }
     const risk = riskFor(name);
-    const policy = policyFor(risk, settings);
-    const denied = this.checkAccess(name, args, mode, settings, policy);
+    const tier: CommandRiskTier | undefined = risk === 'command'
+      ? classifyCommandTier(String(args.command ?? ''))
+      : undefined;
+    const policy = policyFor(risk, settings, tier);
+    const denied = this.checkAccess(name, args, mode, settings, policy, tier);
     if (denied) {
       const result = deniedResult(denied);
       await this.auditResult(call, result, conversationId);
       return result;
     }
 
-    const approvalRequired = policy === 'ask' || (risk === 'command' && DANGEROUS_COMMAND.test(String(args.command ?? '')));
-    if (approvalRequired) {
-      const approved = await requestApproval({
+    let approvalRequired = policy === 'ask';
+    let approvalRequest: ToolApprovalRequest | undefined = approvalRequired
+      ? {
         callId: call.id,
         name,
         summary: approvalSummary(name, args),
-        detail: approvalDetail(name, args),
+        detail: approvalDetail(name, args, tier),
         risk,
-      });
+      }
+      : undefined;
+
+    // 敏感文件与危险命令各自还有独立的“逐次确认 / 禁止”策略。
+    const sensitive = await this.sensitiveGuard(name, args, settings);
+    if (sensitive.denied) {
+      const result = deniedResult(sensitive.denied);
+      await this.auditResult(call, result, conversationId);
+      return result;
+    }
+    if (sensitive.ask && !approvalRequired) {
+      approvalRequired = true;
+      approvalRequest = {
+        callId: call.id,
+        name,
+        summary: sensitive.summary!,
+        detail: sensitive.detail!,
+        risk,
+      };
+    }
+
+    if (approvalRequest) {
+      const approved = await requestApproval(approvalRequest);
       if (!approved) {
         const result = deniedResult('用户拒绝了这次操作。');
         await this.auditResult(call, result, conversationId);
@@ -202,11 +238,11 @@ export class ToolExecutor implements vscode.Disposable {
     summary: string,
     detail: string,
     invoke: () => Promise<ToolExecutionResult>,
-    conversationId?: string,
-    forceApproval = false,
+    options: ExternalExecutionOptions = {},
   ): Promise<ToolExecutionResult> {
-    const policy = policyFor(risk, settings);
-    if (policy === 'deny') {
+    const { conversationId, forceApproval = false, delegateApproval = false } = options;
+    const policy = policyFor(risk, settings, risk === 'command' ? 'standard' : undefined);
+    if (!delegateApproval && policy === 'deny') {
       const result = deniedResult(`当前权限策略禁止该${risk === 'read' ? '读取' : risk === 'write' ? '写入' : '命令'}工具。`);
       await this.auditResult(call, result, conversationId);
       return result;
@@ -221,7 +257,10 @@ export class ToolExecutor implements vscode.Disposable {
       await this.auditResult(call, result, conversationId);
       return result;
     }
-    const approvalRequired = policy === 'ask' || forceApproval;
+    // delegateApproval：VS Code 扩展工具是否弹窗由 VS Code 自己（prepareInvocation）决定，
+    // HWChat 只负责记录审计，不再叠加一层确认。
+    const approvalRequired = !delegateApproval
+      && (policy === 'ask' || (forceApproval && !isAutonomousPreset(settings)));
     if (approvalRequired && !await requestApproval({
       callId: call.id,
       name: call.function.name,
@@ -237,7 +276,11 @@ export class ToolExecutor implements vscode.Disposable {
     try {
       result = await invoke();
       result.content = truncate(redact(result.content), settings.maxToolOutputBytes);
-      result.approval = approvalRequired ? 'approved' : 'not-required';
+      result.approval = result.status === 'denied'
+        ? 'denied'
+        : approvalRequired
+          ? 'approved'
+          : 'not-required';
     } catch (error) {
       result = {
         status: 'error',
@@ -320,7 +363,7 @@ export class ToolExecutor implements vscode.Disposable {
     const matches: string[] = [];
     for (const uri of files) {
       const resolved = await this.resolvePath(uri.fsPath);
-      if (isSensitivePath(resolved.relativePath) && !settings.allowSensitiveFiles) continue;
+      if (isSensitivePath(resolved.relativePath) && sensitiveFilePolicyFor(settings) !== 'allow') continue;
       const stat = await Promise.resolve(vscode.workspace.fs.stat(uri)).catch(() => undefined);
       if (!stat || stat.size > settings.maxReadBytes) continue;
       const text = decodeText(await vscode.workspace.fs.readFile(uri));
@@ -481,23 +524,22 @@ export class ToolExecutor implements vscode.Disposable {
     mode: ConversationMode,
     settings: ChatSettings,
     policy: PermissionPolicy,
+    tier?: CommandRiskTier,
   ): string | undefined {
     if (!['list_workspace_roots', 'list_directory', 'list_files', 'search_files', 'read_file', 'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name)) {
       return `工具 ${name} 未被允许。`;
     }
-    if (policy === 'deny') return `当前权限策略禁止 ${name}。`;
+    if (policy === 'deny') {
+      return tier === 'severe'
+        ? '命令包含高风险或破坏性操作（提权、破坏性删除、磁盘擦写、强制推送等），当前权限预设禁止执行。可在“自定义”权限中允许逐次确认。'
+        : `当前权限策略禁止 ${name}。`;
+    }
     if (mode === 'plan' && ['write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name)) return '规划模式只允许只读分析。';
     if (['write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name) && !this.isWorkspaceTrusted()) {
       return '当前工作区未受信任，文件写入和命令执行已禁用。请先信任工作区。';
     }
-    if (name === 'run_command' && DANGEROUS_COMMAND.test(String(args.command ?? '')) && !settings.allowDangerousCommands) {
-      return '命令被安全策略拦截：包含高风险或破坏性操作。';
-    }
     if (name === 'run_command' && OUTSIDE_WORKSPACE_COMMAND.test(String(args.command ?? ''))) {
       return '命令被路径隔离策略拦截：不能引用工作区外路径、HOME 或上级目录。';
-    }
-    if (name === 'run_command' && !settings.allowSensitiveFiles && SENSITIVE_COMMAND.test(String(args.command ?? ''))) {
-      return '命令被隐私策略拦截：不能通过终端访问敏感文件。';
     }
     return undefined;
   }
@@ -516,9 +558,56 @@ export class ToolExecutor implements vscode.Disposable {
     };
   }
 
+  /**
+   * 敏感文件 / 危险命令的独立守卫：`allow` 直接放行，`deny` 直接拒绝，
+   * `ask` 返回需要确认的内容（由调用方合并到同一次审批弹窗里）。
+   */
+  private async sensitiveGuard(
+    name: string,
+    args: Record<string, unknown>,
+    settings: ChatSettings,
+  ): Promise<{ denied?: string; ask?: boolean; summary?: string; detail?: string }> {
+    const policy = sensitiveFilePolicyFor(settings);
+    if (policy === 'allow') return {};
+
+    const targets: string[] = [];
+    if (name === 'run_command') {
+      if (SENSITIVE_COMMAND.test(String(args.command ?? ''))) {
+        targets.push('命令参数引用了敏感文件名');
+      }
+    } else if (PATH_TOOLS.includes(name)) {
+      const fields = name === 'rename_file' ? ['from', 'to'] : ['path'];
+      for (const field of fields) {
+        const value = args[field];
+        if (typeof value !== 'string' || !value.trim()) continue;
+        try {
+          const resolved = await this.resolvePath(value);
+          if (isSensitivePath(resolved.relativePath)) targets.push(resolved.relativePath);
+        } catch {
+          // 路径解析失败由具体工具返回更精确的错误信息。
+        }
+      }
+    }
+
+    const unique = [...new Set(targets)];
+    if (!unique.length) return {};
+    if (policy === 'deny') {
+      return {
+        denied: `已阻止访问敏感文件：${unique.join('、')}。可在设置中把“敏感文件”策略改为“逐次确认”或“允许”。`,
+      };
+    }
+    return {
+      ask: true,
+      summary: name === 'run_command' ? '命令可能访问敏感文件' : `访问敏感文件：${unique.join('、')}`,
+      detail: name === 'run_command'
+        ? `命令：${redact(String(args.command ?? '')).slice(0, 1_000)}\n\n该命令引用了 .env、密钥、证书或凭据文件。`
+        : `目标：${unique.join('、')}\n\n敏感文件包含密钥、令牌或凭据；确认后会读取内容并可能随请求发送给模型接口。`,
+    };
+  }
+
   private assertReadable(path: ResolvedPath, settings: ChatSettings): void {
-    if (!settings.allowSensitiveFiles && isSensitivePath(path.relativePath)) {
-      throw new Error(`已阻止读取敏感文件：${path.relativePath}。可在设置中显式允许。`);
+    if (sensitiveFilePolicyFor(settings) === 'deny' && isSensitivePath(path.relativePath)) {
+      throw new Error(`已阻止读取敏感文件：${path.relativePath}。可在设置中把“敏感文件”策略改为“逐次确认”或“允许”。`);
     }
   }
 
@@ -562,9 +651,13 @@ function riskFor(name: string): ToolApprovalRequest['risk'] {
   return 'read';
 }
 
-function policyFor(risk: ToolApprovalRequest['risk'], settings: ChatSettings): PermissionPolicy {
+function policyFor(
+  risk: ToolApprovalRequest['risk'],
+  settings: ChatSettings,
+  tier?: CommandRiskTier,
+): PermissionPolicy {
   if (risk === 'write') return settings.fileWritePolicy;
-  if (risk === 'command') return settings.commandPolicy;
+  if (risk === 'command') return commandPolicyFor(settings, tier ?? 'standard');
   return settings.fileReadPolicy;
 }
 
@@ -608,13 +701,16 @@ function approvalSummary(name: string, args: Record<string, unknown>): string {
   return `读取工作区数据：${name}`;
 }
 
-function approvalDetail(name: string, args: Record<string, unknown>): string {
-  if (name === 'write_file') return `目标：${String(args.path ?? '')}\n写入内容：${String(args.content ?? '').length.toLocaleString()} 字符`;
-  if (name === 'replace_in_file') return `目标：${String(args.path ?? '')}\n精确替换：${String(args.oldText ?? '').length.toLocaleString()} -> ${String(args.newText ?? '').length.toLocaleString()} 字符`;
-  if (name === 'rename_file') return `来源：${String(args.from ?? '')}\n目标：${String(args.to ?? '')}`;
-  if (name === 'delete_file') return `目标：${String(args.path ?? '')}\n文件将移到系统废纸篓。`;
-  if (name === 'run_command') return `工作目录：${String(args.cwd ?? '.')}\n命令：${redact(String(args.command ?? '')).slice(0, 1_000)}`;
-  return JSON.stringify(args, null, 2).slice(0, 1_000);
+function approvalDetail(name: string, args: Record<string, unknown>, tier?: CommandRiskTier): string {
+  const prefix = tier === 'severe'
+    ? '⚠️ 严重风险命令：提权、破坏性删除、磁盘擦写或不可逆操作。\n\n'
+    : '';
+  if (name === 'write_file') return `${prefix}目标：${String(args.path ?? '')}\n写入内容：${String(args.content ?? '').length.toLocaleString()} 字符`;
+  if (name === 'replace_in_file') return `${prefix}目标：${String(args.path ?? '')}\n精确替换：${String(args.oldText ?? '').length.toLocaleString()} -> ${String(args.newText ?? '').length.toLocaleString()} 字符`;
+  if (name === 'rename_file') return `${prefix}来源：${String(args.from ?? '')}\n目标：${String(args.to ?? '')}`;
+  if (name === 'delete_file') return `${prefix}目标：${String(args.path ?? '')}\n文件将移到系统废纸篓。`;
+  if (name === 'run_command') return `${prefix}工作目录：${String(args.cwd ?? '.')}\n命令：${redact(String(args.command ?? '')).slice(0, 1_000)}`;
+  return `${prefix}${JSON.stringify(args, null, 2).slice(0, 1_000)}`;
 }
 
 function isSensitivePath(value: string): boolean {
