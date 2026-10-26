@@ -32,6 +32,7 @@ const settings: ChatSettings = {
   maxToolOutputBytes: 200_000,
   maxCommandSeconds: 120,
   auditRetentionDays: 30,
+  language: 'auto',
 };
 
 test('streams and assembles fragmented native tool calls', async () => {

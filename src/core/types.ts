@@ -4,8 +4,10 @@ export type ConversationMode = 'chat' | 'agent' | 'plan';
 export type PermissionPolicy = 'allow' | 'ask' | 'deny';
 /** 敏感文件与危险命令使用的三态策略：允许 / 逐次确认 / 禁止。 */
 export type GuardedPolicy = 'allow' | 'ask' | 'deny';
-export type PermissionPreset = 'askAll' | 'review' | 'autopilot' | 'full' | 'custom';
+export type PermissionPreset = 'askAll' | 'review' | 'autopilot' | 'full';
 export type ReasoningEffort = 'default' | 'none' | 'low' | 'high' | 'max';
+import type { LanguageSetting } from './i18n';
+export type { Language, LanguageSetting } from './i18n';
 
 export interface ApiProfile {
   id: string;
@@ -184,6 +186,8 @@ export interface ChatSettings {
   maxToolOutputBytes: number;
   maxCommandSeconds: number;
   auditRetentionDays: number;
+  /** 界面语言：auto 跟随 VS Code，zh / en 强制指定。 */
+  language: LanguageSetting;
 }
 
 export interface SkillSummary {
@@ -235,6 +239,13 @@ export interface ToolExecution {
   finishedAt?: number;
   changedFiles?: string[];
   risk?: 'read' | 'write' | 'command';
+  /**
+   * 这条步骤接在正文的第几个字符之后（相对本条消息的 content）。
+   * Agent 每轮会先说一句「我打算做什么」，再调用工具；把边界记下来，
+   * 面板就能在渲染时把步骤显示在它对应的那段说明下面，而不是全部堆在正文之前。
+   * 旧数据没有这个字段，渲染时退回「步骤块 + 正文」的旧排法。
+   */
+  contentOffset?: number;
 }
 
 export interface ToolExecutionResult {

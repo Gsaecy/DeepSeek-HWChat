@@ -1,4 +1,5 @@
 import { ChatSettings, GuardedPolicy, PermissionPolicy, PermissionPreset } from './types';
+import { Language, t } from './i18n';
 
 /**
  * 权限边界说明
@@ -27,7 +28,7 @@ export interface PermissionPresetProfile {
   sensitiveFilePolicy: GuardedPolicy;
 }
 
-export interface PermissionPresetDetail extends Partial<PermissionPresetProfile> {
+export interface PermissionPresetDetail extends PermissionPresetProfile {
   id: PermissionPreset;
   label: string;
   /** 一句话说明，用于输入框下拉提示与设置页副标题 */
@@ -41,7 +42,10 @@ export interface PermissionPresetDetail extends Partial<PermissionPresetProfile>
   sensitive: string;
 }
 
-export const PERMISSION_PRESET_PROFILES: Record<Exclude<PermissionPreset, 'custom'>, PermissionPresetProfile> = {
+/** 预设顺序，设置页与输入框下拉共用，避免两处顺序漂移。 */
+export const PERMISSION_PRESET_IDS: readonly PermissionPreset[] = ['askAll', 'review', 'autopilot', 'full'];
+
+export const PERMISSION_PRESET_PROFILES: Record<PermissionPreset, PermissionPresetProfile> = {
   askAll: {
     fileReadPolicy: 'ask',
     fileWritePolicy: 'ask',
@@ -63,7 +67,8 @@ export const PERMISSION_PRESET_PROFILES: Record<Exclude<PermissionPreset, 'custo
     fileWritePolicy: 'allow',
     readOnlyCommandPolicy: 'allow',
     commandPolicy: 'allow',
-    dangerousCommandPolicy: 'ask',
+    // 与 review 区分开：Autopilot 连危险命令也自动执行，只把敏感文件挡住。
+    dangerousCommandPolicy: 'allow',
     sensitiveFilePolicy: 'deny',
   },
   full: {
@@ -76,70 +81,57 @@ export const PERMISSION_PRESET_PROFILES: Record<Exclude<PermissionPreset, 'custo
   },
 };
 
-export const PERMISSION_PRESET_DETAILS: readonly PermissionPresetDetail[] = [
-  {
-    id: 'askAll',
-    label: '每次询问',
-    summary: '读取、写入和命令全部逐次确认；危险命令直接拒绝',
-    read: '逐次确认',
-    write: '逐次确认',
-    readOnlyCommand: '逐次确认',
-    regularCommand: '逐次确认',
-    dangerousCommand: '直接拒绝',
-    sensitive: '禁止',
-    ...PERMISSION_PRESET_PROFILES.askAll,
-  },
-  {
-    id: 'review',
-    label: '风险操作询问',
-    summary: '自动读写与常规命令，只有危险命令逐次确认',
-    read: '自动允许',
-    write: '自动允许（工作区内）',
-    readOnlyCommand: '自动允许',
-    regularCommand: '自动允许',
-    dangerousCommand: '逐次确认',
-    sensitive: '禁止',
-    ...PERMISSION_PRESET_PROFILES.review,
-  },
-  {
-    id: 'autopilot',
-    label: 'Autopilot',
-    summary: '自动读写与常规命令，只有危险命令逐次确认',
-    read: '自动允许',
-    write: '自动允许（工作区内）',
-    readOnlyCommand: '自动允许',
-    regularCommand: '自动允许',
-    dangerousCommand: '逐次确认',
-    sensitive: '禁止',
-    ...PERMISSION_PRESET_PROFILES.autopilot,
-  },
-  {
-    id: 'full',
-    label: '完全访问',
-    summary: '全部自动执行（含危险命令），读取敏感文件时逐次确认',
-    read: '自动允许',
-    write: '自动允许（工作区内）',
-    readOnlyCommand: '自动允许',
-    regularCommand: '自动允许',
-    dangerousCommand: '自动允许',
-    sensitive: '逐次确认',
-    ...PERMISSION_PRESET_PROFILES.full,
-  },
-  {
-    id: 'custom',
-    label: '自定义',
-    summary: '按设置页中的读取 / 写入 / 命令 / 危险命令 / 敏感文件策略逐项组合',
-    read: '自定义',
-    write: '自定义',
-    readOnlyCommand: '自定义',
-    regularCommand: '自定义',
-    dangerousCommand: '自定义',
-    sensitive: '自定义',
-  },
-];
+/**
+ * 对照表单元格文案由策略值推导，而不是另写一份文字表。
+ * 这样「界面写自动允许、实际却逐次确认」这类不一致在结构上不可能出现。
+ */
+function matrixCell(
+  kind: 'read' | 'write' | 'readOnlyCommand' | 'regularCommand' | 'dangerousCommand' | 'sensitive',
+  policy: GuardedPolicy,
+  lang: Language,
+): string {
+  if (kind === 'dangerousCommand') {
+    if (policy === 'deny') return t(lang, 'matrix.deny');
+    return policy === 'allow' ? t(lang, 'matrix.allow') : t(lang, 'matrix.askEvery');
+  }
+  if (kind === 'sensitive') {
+    if (policy === 'allow') return t(lang, 'matrix.allow');
+    return policy === 'ask' ? t(lang, 'matrix.askEvery') : t(lang, 'matrix.block');
+  }
+  if (policy === 'ask') return t(lang, 'matrix.askEvery');
+  if (policy === 'deny') return t(lang, 'matrix.deny');
+  return kind === 'write' ? t(lang, 'matrix.allowInWorkspace') : t(lang, 'matrix.allow');
+}
 
-export function permissionPresetDetail(preset: PermissionPreset): PermissionPresetDetail {
-  return PERMISSION_PRESET_DETAILS.find((detail) => detail.id === preset) ?? PERMISSION_PRESET_DETAILS[1]!;
+/** 按语言生成预设说明列表；设置页与输入框下拉都从这里取。 */
+export function permissionPresetDetails(lang: Language): PermissionPresetDetail[] {
+  return PERMISSION_PRESET_IDS.map((id) => {
+    const profile = PERMISSION_PRESET_PROFILES[id];
+    return {
+      id,
+      ...profile,
+      label: t(lang, `preset.${id}.label`),
+      summary: t(lang, `preset.${id}.summary`),
+      read: matrixCell('read', profile.fileReadPolicy, lang),
+      write: matrixCell('write', profile.fileWritePolicy, lang),
+      readOnlyCommand: matrixCell('readOnlyCommand', profile.readOnlyCommandPolicy, lang),
+      regularCommand: matrixCell('regularCommand', profile.commandPolicy, lang),
+      dangerousCommand: matrixCell('dangerousCommand', profile.dangerousCommandPolicy, lang),
+      sensitive: matrixCell('sensitive', profile.sensitiveFilePolicy, lang),
+    };
+  });
+}
+
+/**
+ * 预设策略表：只含 id 与六项策略，不含任何语言相关文案。
+ * 供测试断言「说明表与策略表同源」。
+ */
+export const PERMISSION_PRESET_DETAILS: readonly (PermissionPresetProfile & { id: PermissionPreset })[] =
+  PERMISSION_PRESET_IDS.map((id) => ({ id, ...PERMISSION_PRESET_PROFILES[id] }));
+
+export function permissionPresetDetail(preset: PermissionPreset, lang: Language): PermissionPresetDetail {
+  const details = permissionPresetDetails(lang);
+  return details.find((detail) => detail.id === preset) ?? details[1]!;
 }
 
 /** Autopilot / 完全访问：常规操作不弹窗。 */
@@ -148,14 +140,12 @@ export function isAutonomousPreset(settings: Pick<ChatSettings, 'permissionPrese
 }
 
 /**
- * 终端命令的最终策略。预设由 PERMISSION_PRESET_PROFILES 决定；自定义模式使用
- * 设置页里的 commandPolicy（只读 + 正常命令）与 dangerousCommandPolicy（危险命令）。
+ * 终端命令的最终策略，完全由当前预设决定。
+ *
+ * 自定义档位已移除：内置四档之外不再允许逐项拼策略，避免出现
+ * “设置页显示禁止、实际却按预设放行”这类界面与行为不一致。
  */
 export function commandPolicyFor(settings: ChatSettings, tier: CommandRiskTier): PermissionPolicy {
-  if (settings.permissionPreset === 'custom') {
-    if (tier === 'severe') return settings.dangerousCommandPolicy;
-    return settings.commandPolicy;
-  }
   const profile = PERMISSION_PRESET_PROFILES[settings.permissionPreset];
   if (tier === 'severe') return profile.dangerousCommandPolicy;
   if (tier === 'safe') return profile.readOnlyCommandPolicy;
@@ -164,7 +154,6 @@ export function commandPolicyFor(settings: ChatSettings, tier: CommandRiskTier):
 
 /** 敏感文件读取的最终策略：允许 / 逐次确认 / 禁止。 */
 export function sensitiveFilePolicyFor(settings: ChatSettings): GuardedPolicy {
-  if (settings.permissionPreset === 'custom') return settings.sensitiveFilePolicy;
   return PERMISSION_PRESET_PROFILES[settings.permissionPreset].sensitiveFilePolicy;
 }
 
@@ -180,7 +169,9 @@ export function classifyCommandTier(command: string): CommandRiskTier {
  * shell、发布制品等。默认预设逐次确认，只有「完全访问」会静默执行。
  */
 const SEVERE_COMMAND_PATTERNS: readonly RegExp[] = [
-  /(?:^|[\s;&|(`{])(?:sudo|doas|su)\s/i,
+  // 提权命令：sudo / doas / su。原先要求命令名后必须跟一个空白，导致单独一条
+  // `sudo`（等着输密码）被判成 standard、在 review 预设下静默执行；改成“后面是空白或结束”都算危险。
+  /(?:^|[\s;&|(`{])(?:sudo|doas|su)(?=\s|$)/i,
   /(?:^|[\s;&|(`])rm\s+(?:-[a-z]*[rf][a-z]*|--recursive|--force)/i,
   /\bmkfs(?:\.\w+)?\b/i,
   /\bdd\s+if=/i,
@@ -188,10 +179,15 @@ const SEVERE_COMMAND_PATTERNS: readonly RegExp[] = [
   /\bdiskutil\s+(?:erase|partition|secureErase)/i,
   /\b(?:shutdown|reboot|halt|poweroff)\b/i,
   /:\s*\(\s*\)\s*\{/,
-  /\bgit\s+(?:reset\s+--hard|clean\s+-[a-z]*[fd]|push\s+(?:--force|-f)|filter-branch|reflog\s+expire|checkout\s+--\s+\.)/i,
+  /\bgit\s+(?:reset\s+--hard|clean\s+-[a-z]*[fd]|filter-branch|reflog\s+expire|checkout\s+--\s+\.)/i,
+  // 只要 push 就拦：推出去的提交拿不回来，而 approvalPlan.ts 本来就把 push 列为“不自动批准”。
+  // 之前只拦 --force，普通 push 落到 standard、review 预设下静默执行，两个模块口径不一致。
+  /\bgit\s+push\b/i,
   /\bchmod\s+(?:-r\s+)?777\b/i,
   /\bchown\s+-r\b/i,
-  /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|fish|python3?|node|perl)\b/i,
+  // 同理：approvalPlan.ts 把 curl / wget 整类当成“网络下载，不自动批准”。
+  // 这里对齐，只放过纯 --version / --help。管道给 shell 的情形本来也由这条覆盖。
+  /\b(?:curl|wget)\b(?!\s+(?:--version|-V|--help|-h)\s*$)/i,
   /\b(?:npm|pnpm|yarn)\s+(?:publish|unpublish)\b/i,
   /\btwine\s+upload\b/i,
   /\b(?:drop|truncate)\s+(?:database|schema|table)\b/i,

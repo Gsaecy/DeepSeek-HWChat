@@ -12,6 +12,7 @@ import { DeepSeekClient } from '../providers/deepseekClient';
 import { redact } from './auditLog';
 import type { AgentTaskUpdate } from './taskQueue';
 import type { RequestApproval, ToolExecutor } from './toolExecutor';
+import { tt } from '../core/i18n';
 
 export interface AgentRunCallbacks {
   onDelta: (delta: { content?: string; reasoning?: string; usage?: UsageInfo }) => void | Promise<void>;
@@ -94,6 +95,16 @@ export class AgentRunner {
         return { content, reasoning, usage, tools: executions, stoppedByStepLimit: false };
       }
 
+      // 这一轮的文字属于「行动说明」：后面还会调用工具，模型随后会继续说话。
+      // 如果不在这里给累积正文补一个段落分隔，下一轮的第一句就会紧贴上一句末尾，
+      // 多轮下来整段挤成一行、看不出层次（正文默认 white-space: pre-wrap，只认真实换行）。
+      // 这里只影响展示与存档；发给模型的历史用的是 round.content，不受影响。
+      if (content && !content.endsWith('\n\n')) {
+        const separator = content.endsWith('\n') ? '\n' : '\n\n';
+        content += separator;
+        await options.callbacks.onDelta({ content: separator });
+      }
+
       requestMessages.push({
         role: 'assistant',
         content: round.content,
@@ -157,9 +168,9 @@ export class AgentRunner {
             const skipped: ToolExecution = {
               callId: skippedCall.id,
               name: skippedCall.function.name || 'unknown_tool',
-              summary: '收到相关新消息，已跳过尚未执行的旧步骤',
+              summary: tt('agent.mergedGuidance'),
               input: toolInputForHistory(skippedCall.function.name, skippedCall.function.arguments),
-              output: '任务树已合并用户的新指导，Agent 将先重新规划。',
+              output: tt('agent.mergedGuidanceOutput'),
               status: 'denied',
               approval: 'not-required',
               startedAt: Date.now(),
@@ -190,7 +201,7 @@ export class AgentRunner {
 
     const maxSteps = options.settings.agentMaxSteps;
     if (maxSteps > 0) {
-      const notice = `\n\nAgent 已达到 ${maxSteps} 步执行上限，已停止继续调用工具。`;
+      const notice = tt('agent.stepLimit', { steps: maxSteps });
       content += notice;
       await options.callbacks.onDelta({ content: notice });
       return { content, reasoning, usage, tools: executions, stoppedByStepLimit: true };
@@ -205,22 +216,22 @@ function cloneExecutions(executions: ToolExecution[]): ToolExecution[] {
 
 function toolPendingSummary(name: string): string {
   const labels: Record<string, string> = {
-    list_workspace_roots: '正在读取 VS Code 工作区根目录',
-    list_directory: '正在列出目录',
-    list_files: '正在列出工作区文件',
-    search_files: '正在搜索工作区',
-    read_file: '正在读取文件',
-    open_file: '正在 VS Code 编辑器中打开文件',
-    get_diagnostics: '正在读取诊断',
-    write_file: '准备写入文件',
-    replace_in_file: '准备修改文件',
-    rename_file: '准备移动文件',
-    delete_file: '准备删除文件',
-    run_command: '准备运行命令',
-    load_skill: '正在加载 Skill',
-    search_conversation_history: '正在检索关联的只读任务历史',
+    list_workspace_roots: tt('agent.progress.list_workspace_roots'),
+    list_directory: tt('agent.progress.list_directory'),
+    list_files: tt('agent.progress.list_files'),
+    search_files: tt('agent.progress.search_files'),
+    read_file: tt('agent.progress.read_file'),
+    open_file: tt('agent.progress.open_file'),
+    get_diagnostics: tt('agent.progress.get_diagnostics'),
+    write_file: tt('agent.progress.write_file'),
+    replace_in_file: tt('agent.progress.replace_in_file'),
+    rename_file: tt('agent.progress.rename_file'),
+    delete_file: tt('agent.progress.delete_file'),
+    run_command: tt('agent.progress.run_command'),
+    load_skill: tt('agent.progress.load_skill'),
+    search_conversation_history: tt('agent.progress.search_conversation_history'),
   };
-  return labels[name] ?? `正在执行 ${name}`;
+  return labels[name] ?? tt('agent.progress.generic', { name });
 }
 
 function toolRisk(name: string): ToolExecution['risk'] {
@@ -250,7 +261,7 @@ function toolInputForHistory(name: string, rawArguments: string): string {
     return truncateLocal(redact(rawArguments || '{}'));
   }
   if (name === 'write_file' && typeof args.content === 'string') {
-    args.content = `[正文未写入历史：${Buffer.byteLength(args.content).toLocaleString()} 字节]`;
+    args.content = tt('agent.contentOmitted', { bytes: Buffer.byteLength(args.content).toLocaleString() });
   }
   if (name === 'replace_in_file') {
     for (const key of ['oldText', 'newText'] as const) {
@@ -265,12 +276,12 @@ function toolInputForHistory(name: string, rawArguments: string): string {
 function summarizeText(value: string): string {
   const redacted = redact(value);
   if (redacted.length <= 600) return redacted;
-  return `${redacted.slice(0, 600)}… [${Buffer.byteLength(value).toLocaleString()} 字节]`;
+  return tt('agent.valueTruncated', { value: redacted.slice(0, 600), bytes: Buffer.byteLength(value).toLocaleString() });
 }
 
 function truncateLocal(value: string, maxBytes = 200_000): string {
   if (Buffer.byteLength(value) <= maxBytes) return value;
   let result = value.slice(0, Math.floor(maxBytes * 0.75));
   while (Buffer.byteLength(result) > maxBytes - 64) result = result.slice(0, -256);
-  return `${result}\n… [本地详情已截断]`;
+  return tt('agent.detailsTruncated', { result });
 }

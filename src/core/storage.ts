@@ -18,6 +18,7 @@ import {
   ConversationSummary,
   StorageStats,
 } from './types';
+import { tt } from './i18n';
 
 interface Manifest {
   version: 1;
@@ -82,7 +83,7 @@ export class ConversationStorage {
     return summary ? { ...summary } : undefined;
   }
 
-  async createConversation(title = '新对话', model?: string): Promise<ConversationSummary> {
+  async createConversation(title = tt('storage.defaultTitle'), model?: string): Promise<ConversationSummary> {
     await this.initialize();
     const now = Math.max(Date.now(), this.lastMessageTimestamp + 1);
     this.lastMessageTimestamp = now;
@@ -143,7 +144,7 @@ export class ConversationStorage {
       summary.totalTokens = Math.max(0, (summary.totalTokens ?? 0) + (message.usage?.totalTokens ?? 0));
       summary.updatedAt = now;
       summary.preview = previewText(message.content);
-      if (message.role === 'user' && summary.title === '新对话') {
+      if (message.role === 'user' && summary.title === tt('storage.defaultTitle')) {
         summary.title = shortTitle(message.content);
       }
       if (message.role === 'assistant' && message.toolExecutions?.length) {
@@ -168,7 +169,7 @@ export class ConversationStorage {
     await this.enqueueWrite(async () => {
       const current = await this.readMessage(conversationId, messageId);
       if (!current) {
-        throw new Error('找不到要更新的消息。');
+        throw new Error(tt('storage.messageMissing'));
       }
       updated = {
         ...current,
@@ -593,7 +594,7 @@ export class ConversationStorage {
   private requireSummary(id: string): ConversationSummary {
     const summary = this.findSummary(id);
     if (!summary) {
-      throw new Error('对话不存在，可能已被清理。');
+      throw new Error(tt('storage.conversationMissing'));
     }
     return summary;
   }
@@ -657,7 +658,7 @@ export class ConversationStorage {
       const createdAt = firstMessage?.createdAt ?? Date.now();
       conversations.push({
         id,
-        title: shortTitle(firstUser?.content ?? '新对话'),
+        title: shortTitle(firstUser?.content ?? tt('storage.defaultTitle')),
         createdAt,
         updatedAt: lastMessage?.updatedAt ?? createdAt,
         messageCount: files.length,
@@ -706,7 +707,7 @@ export class ConversationStorage {
         const createdAt = first?.createdAt ?? Date.now();
         summary = {
           id,
-          title: shortTitle(firstUser?.content ?? '新对话'),
+          title: shortTitle(firstUser?.content ?? tt('storage.defaultTitle')),
           createdAt,
           updatedAt: last?.updatedAt ?? createdAt,
           messageCount: files.length,
@@ -762,7 +763,7 @@ export class ConversationStorage {
         }
         const previousStatus = message.status;
         message.status = 'error';
-        message.content = message.content || (previousStatus === 'queued' ? '排队任务在上次会话结束时尚未执行。' : '上次生成被中断。');
+        message.content = message.content || (previousStatus === 'queued' ? tt('storage.queuedNotRun') : tt('storage.interrupted'));
         message.updatedAt = Date.now();
         await writeJsonAtomic(path, message);
       }

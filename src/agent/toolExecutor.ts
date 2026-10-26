@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { dirname, extname, resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import * as vscode from 'vscode';
 import { readSettings } from '../core/settings';
+import { tt } from '../core/i18n';
 import {
   ChatSettings,
   ConversationMode,
@@ -13,7 +15,8 @@ import {
   ToolExecutionResult,
 } from '../core/types';
 import { AuditLog, redact } from './auditLog';
-import { isPathWithin, resolveWorkspacePath } from './workspacePaths';
+import { commandPathViolation } from './commandPaths';
+import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './workspacePaths';
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
 
 export interface ToolApprovalRequest {
@@ -42,9 +45,15 @@ interface ResolvedPath {
 }
 
 const DEFAULT_EXCLUDE = '**/{.git,node_modules,dist,build,out,.next,coverage}/**';
+/** 指定了根目录前缀时，单根最多取这么多文件。 */
+const ROOT_FILE_LIMIT = 1_000;
+/** 未指定根目录时必须逐根查询，这是每个根目录各自的上限。 */
+const PER_ROOT_FILE_LIMIT = 400;
+/** 搜索时最多读取的文件数，避免“全工作区搜索”退化成无限 IO。 */
+const SEARCH_FILE_BUDGET = 1_500;
 const SENSITIVE_NAMES = /(^|\/)(\.env(?:\..*)?|\.npmrc|\.pypirc|\.netrc|credentials?(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|service[-_]?account(?:\.[^/]*)?|id_(?:rsa|dsa|ecdsa|ed25519)|.*\.(?:pem|key|p12|pfx|jks|keystore))$/i;
 const SENSITIVE_PARTS = /(^|\/)(\.git|\.ssh|\.aws|\.kube)(\/|$)/i;
-const OUTSIDE_WORKSPACE_COMMAND = /(^|[\s'"=])(?:~(?:\/|\s|$)|\.\.(?:\/|\\)|\$(?:\{)?HOME\}?\b|\/(?:Users|home|etc|private|var|root|Volumes)(?:\/|\s|$)|[A-Za-z]:\\)/i;
+
 const SENSITIVE_COMMAND = /(^|[\s'"/])(?:\.env(?:\.[^\s'"]*)?|\.ssh|\.aws|\.kube|credentials?(?:\.[^\s'"]*)?|secrets?(?:\.[^\s'"]*)?|service[-_]?account(?:\.[^\s'"]*)?|id_(?:rsa|dsa|ecdsa|ed25519)|[^\s'"]+\.(?:pem|key|p12|pfx))(?:[\s'"/]|$)/i;
 
 /** 带路径参数、需要单独做敏感文件守卫的工具。 */
@@ -58,25 +67,25 @@ export class ToolExecutor implements vscode.Disposable {
 
   definitions(mode: ConversationMode): ToolDefinition[] {
     const readOnly: ToolDefinition[] = [
-      this.definition('list_workspace_roots', '列出当前 VS Code 多根工作区中的全部根文件夹。询问“工作区有哪些项目”时优先使用。', {
+      this.definition('list_workspace_roots', tt('tool.listWorkspaceRoots.description'), {
         type: 'object', properties: {}, additionalProperties: false,
       }),
-      this.definition('list_directory', '列出工作区内一个目录的直接子项，不递归。支持工作区内绝对路径和多根工作区路径。', {
-        type: 'object', properties: { path: { type: 'string', description: '目录路径；默认当前首个工作区根目录' } }, additionalProperties: false,
+      this.definition('list_directory', tt('tool.listDirectory.description'), {
+        type: 'object', properties: { path: { type: 'string', description: tt('tool.listDirectory.pathParam') } }, additionalProperties: false,
       }),
-      this.definition('list_files', '列出工作区内匹配的文件路径，不读取文件内容。', {
-        type: 'object', properties: { glob: { type: 'string', description: '相对工作区的 glob，例如 src/**/*.ts' } }, required: ['glob'], additionalProperties: false,
+      this.definition('list_files', tt('tool.listFiles.description'), {
+        type: 'object', properties: { glob: { type: 'string', description: tt('tool.listFiles.globParam') } }, required: ['glob'], additionalProperties: false,
       }),
-      this.definition('search_files', '在工作区文本文件中搜索字符串，返回匹配文件和行号。', {
+      this.definition('search_files', tt('tool.searchFiles.description'), {
         type: 'object', properties: { query: { type: 'string' }, glob: { type: 'string' }, caseSensitive: { type: 'boolean' } }, required: ['query'], additionalProperties: false,
       }),
-      this.definition('read_file', '读取工作区内一个文本文件。敏感文件默认禁止。', {
+      this.definition('read_file', tt('tool.readFile.description'), {
         type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'integer' }, endLine: { type: 'integer' } }, required: ['path'], additionalProperties: false,
       }),
-      this.definition('open_file', '直接在 VS Code 编辑器中打开工作区内文件。不运行终端命令；用户要求打开文件时优先使用。', {
-        type: 'object', properties: { path: { type: 'string', description: '工作区相对路径、带工作区根目录名的路径，或工作区内绝对路径' }, preview: { type: 'boolean', description: '是否以预览标签打开，默认 true' } }, required: ['path'], additionalProperties: false,
+      this.definition('open_file', tt('tool.openFile.description'), {
+        type: 'object', properties: { path: { type: 'string', description: tt('tool.openFile.pathParam') }, preview: { type: 'boolean', description: tt('tool.openFile.previewParam') } }, required: ['path'], additionalProperties: false,
       }),
-      this.definition('get_diagnostics', '读取 VS Code 当前已知的语法和类型诊断。', {
+      this.definition('get_diagnostics', tt('tool.getDiagnostics.description'), {
         type: 'object', properties: { path: { type: 'string' } }, additionalProperties: false,
       }),
     ];
@@ -85,19 +94,19 @@ export class ToolExecutor implements vscode.Disposable {
     }
     return [
       ...readOnly,
-      this.definition('write_file', '创建或完整替换一个工作区文本文件。写入前必须经过权限检查。', {
+      this.definition('write_file', tt('tool.writeFile.description'), {
         type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false,
       }),
-      this.definition('replace_in_file', '在一个工作区文本文件中进行精确文本替换，适合小范围修改。', {
+      this.definition('replace_in_file', tt('tool.replaceInFile.description'), {
         type: 'object', properties: { path: { type: 'string' }, oldText: { type: 'string' }, newText: { type: 'string' }, replaceAll: { type: 'boolean' } }, required: ['path', 'oldText', 'newText'], additionalProperties: false,
       }),
-      this.definition('rename_file', '重命名或移动工作区内的单个文件。', {
+      this.definition('rename_file', tt('tool.renameFile.description'), {
         type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' } }, required: ['from', 'to'], additionalProperties: false,
       }),
-      this.definition('delete_file', '将工作区内的单个文件移到系统废纸篓。不能删除目录。', {
+      this.definition('delete_file', tt('tool.deleteFile.description'), {
         type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false,
       }),
-      this.definition('run_command', '在工作区根目录或指定子目录运行命令，并返回截断后的输出。不得借此访问工作区外路径。', {
+      this.definition('run_command', tt('tool.runCommand.description'), {
         type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeoutSeconds: { type: 'number' } }, required: ['command'], additionalProperties: false,
       }),
     ];
@@ -117,7 +126,7 @@ export class ToolExecutor implements vscode.Disposable {
     } catch (error) {
       const result: ToolExecutionResult = {
         status: 'error',
-        summary: `${name || 'unknown_tool'} 参数无效`,
+        summary: tt('tool.invalidArguments', { name: name || 'unknown_tool' }),
         content: error instanceof Error ? error.message : String(error),
         approval: 'not-required',
       };
@@ -168,7 +177,7 @@ export class ToolExecutor implements vscode.Disposable {
     if (approvalRequest) {
       const approved = await requestApproval(approvalRequest);
       if (!approved) {
-        const result = deniedResult('用户拒绝了这次操作。');
+        const result = deniedResult(tt('tool.deniedByUser'));
         await this.auditResult(call, result, conversationId);
         return result;
       }
@@ -214,12 +223,12 @@ export class ToolExecutor implements vscode.Disposable {
           result = await this.runCommand(args, settings);
           break;
         default:
-          result = deniedResult(`未知工具：${name}`);
+          result = deniedResult(tt('tool.unknownTool', { name }));
       }
     } catch (error) {
       result = {
         status: 'error',
-        summary: `${name} 执行失败`,
+        summary: tt('tool.executionFailed', { name }),
         content: truncate(redact(error instanceof Error ? error.message : String(error)), settings.maxToolOutputBytes),
         approval: approvalRequired ? 'approved' : 'not-required',
       };
@@ -243,17 +252,17 @@ export class ToolExecutor implements vscode.Disposable {
     const { conversationId, forceApproval = false, delegateApproval = false } = options;
     const policy = policyFor(risk, settings, risk === 'command' ? 'standard' : undefined);
     if (!delegateApproval && policy === 'deny') {
-      const result = deniedResult(`当前权限策略禁止该${risk === 'read' ? '读取' : risk === 'write' ? '写入' : '命令'}工具。`);
+      const result = deniedResult(tt('tool.policyDenied', { kind: risk === 'read' ? tt('tool.policyKind.read') : risk === 'write' ? tt('tool.policyKind.write') : tt('tool.policyKind.command') }));
       await this.auditResult(call, result, conversationId);
       return result;
     }
     if (mode === 'plan' && risk !== 'read') {
-      const result = deniedResult('规划模式只允许只读工具。');
+      const result = deniedResult(tt('tool.planModeReadOnly'));
       await this.auditResult(call, result, conversationId);
       return result;
     }
     if (risk !== 'read' && !this.isWorkspaceTrusted()) {
-      const result = deniedResult('当前工作区未受信任，已阻止可能修改文件或执行命令的工具。');
+      const result = deniedResult(tt('tool.untrustedWorkspace'));
       await this.auditResult(call, result, conversationId);
       return result;
     }
@@ -268,7 +277,7 @@ export class ToolExecutor implements vscode.Disposable {
       detail,
       risk,
     })) {
-      const result = deniedResult('用户拒绝了这次工具调用。');
+      const result = deniedResult(tt('tool.deniedByUserTool'));
       await this.auditResult(call, result, conversationId);
       return result;
     }
@@ -284,7 +293,7 @@ export class ToolExecutor implements vscode.Disposable {
     } catch (error) {
       result = {
         status: 'error',
-        summary: `${summary}失败`,
+        summary: tt('tool.summaryFailed', { summary }),
         content: truncate(redact(error instanceof Error ? error.message : String(error)), settings.maxToolOutputBytes),
         approval: approvalRequired ? 'approved' : 'not-required',
       };
@@ -300,7 +309,7 @@ export class ToolExecutor implements vscode.Disposable {
     const mimeType = imageMimeType(resolved.fsPath);
     const maxBytes = mimeType ? Math.min(6 * 1024 * 1024, settings.maxReadBytes * 12) : settings.maxReadBytes;
     if (stat.size > maxBytes) {
-      throw new Error(`文件过大（${formatBytes(stat.size)}），上限为 ${formatBytes(maxBytes)}。`);
+      throw new Error(tt('tool.fileTooLarge', { size: formatBytes(stat.size), max: formatBytes(maxBytes) }));
     }
     const bytes = await vscode.workspace.fs.readFile(resolved.uri);
     if (mimeType) {
@@ -328,45 +337,144 @@ export class ToolExecutor implements vscode.Disposable {
   }
 
   private async listFiles(args: Record<string, unknown>): Promise<ToolExecutionResult> {
-    const glob = stringArg(args, 'glob', '**/*');
-    const files = await vscode.workspace.findFiles(glob, DEFAULT_EXCLUDE, 200);
+    const { files, truncated } = await this.findWorkspaceFiles(args);
     const paths = files.map(workspaceRelativePath).sort();
-    return success(`找到 ${paths.length} 个文件`, paths.join('\n') || '没有匹配文件。');
+    const summary = truncated ? tt('tool.filesFoundTruncated', { count: paths.length }) : tt('tool.filesFound', { count: paths.length });
+    const note = truncated ? tt('tool.filesTruncatedNote') : '';
+    return success(summary, (paths.join('\n') || tt('tool.noMatchingFiles')) + note);
+  }
+
+  /**
+   * 解析 glob 的「根目录名前缀」，命中时把结果限制在该根目录内。
+   * 与 path 参数共用同一套约定，避免带前缀的 glob 静默返回 0 条结果。
+   *
+   * 多根工作区必须逐根查询：findFiles 的上限是「所有根合计」，靠后的根目录
+   * 会被整个吞掉，对外却只回答“找到 N 个文件”。真实会话里因此漏掉了用户的
+   * 项目根，被误判成“这个目录下没有文件”。
+   */
+  private async findWorkspaceFiles(
+    args: Record<string, unknown>,
+  ): Promise<{ files: vscode.Uri[]; scoped: boolean; truncated: boolean }> {
+    const requested = stringArg(args, 'glob', '**/*');
+    const { glob, root } = normalizeWorkspaceGlob(requested, workspaceRoots());
+    const limit = root ? ROOT_FILE_LIMIT : PER_ROOT_FILE_LIMIT;
+    if (root) {
+      // 必须用 RelativePattern 把查询限定在该根目录内。若只传字符串 glob，
+      // 多根工作区里 findFiles 会搜遍所有根、共享同一个上限：真实会话中第 17 个
+      // 根（DeepSeek-HWChat）被前 16 个根挤掉，过滤后返回 0 个文件，还因为
+      // files.length 撞到上限被标成「已达上限」，调用方只能判定“这里没有文件”。
+      const folder = (vscode.workspace.workspaceFolders ?? []).find(
+        (candidate) => candidate.uri.fsPath === root.fsPath,
+      );
+      const files = folder
+        ? await vscode.workspace.findFiles(new vscode.RelativePattern(folder, glob), DEFAULT_EXCLUDE, limit)
+        : await vscode.workspace.findFiles(glob, DEFAULT_EXCLUDE, limit);
+      return {
+        files: files.filter((uri) => isPathWithin(root.fsPath, uri.fsPath)),
+        scoped: true,
+        truncated: files.length >= limit,
+      };
+    }
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length <= 1) {
+      const files = await vscode.workspace.findFiles(glob, DEFAULT_EXCLUDE, limit);
+      return { files, scoped: false, truncated: files.length >= limit };
+    }
+    const merged: vscode.Uri[] = [];
+    let truncated = false;
+    const perRoot: vscode.Uri[][] = [];
+    for (const folder of folders) {
+      const found = await vscode.workspace.findFiles(
+        new vscode.RelativePattern(folder, glob),
+        DEFAULT_EXCLUDE,
+        limit,
+      );
+      if (found.length >= limit) truncated = true;
+      perRoot.push(found);
+    }
+    // 按根轮转交错合并，而不是「第一个根的全部 → 第二个根的全部」。
+    // 否则下游的扫描预算（SEARCH_FILE_BUDGET / 输出行数）会被最靠前的根吃光，
+    // 后面的根永远轮不到，工具却回答“没有匹配”——真实会话里搜索第 17 个根
+    // （DeepSeek-HWChat）就得到 0 处匹配，而该字符串确实存在。
+    const longest = perRoot.reduce((max, list) => Math.max(max, list.length), 0);
+    for (let index = 0; index < longest; index += 1) {
+      for (const list of perRoot) {
+        const uri = list[index];
+        if (uri) merged.push(uri);
+      }
+    }
+    return { files: merged, scoped: false, truncated };
   }
 
   private async listWorkspaceRoots(): Promise<ToolExecutionResult> {
     const folders = vscode.workspace.workspaceFolders ?? [];
     const lines = folders.map((folder, index) => `${index + 1}. ${folder.name}\t${folder.uri.fsPath}`);
-    return success(`找到 ${folders.length} 个工作区根目录`, lines.join('\n') || '当前没有打开的工作区。');
+    return success(tt('tool.workspaceRootsFound', { count: folders.length }), lines.join('\n') || tt('tool.noWorkspaceOpen'));
   }
 
   private async listDirectory(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
-    const resolved = await this.resolvePath(stringArg(args, 'path', '.'));
+    const requestedPath = typeof args.path === 'string' ? args.path.trim() : '';
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    // 多根工作区里不传 path 时，静默只列第一个根会把调用方带偏（真实会话里发生过：
+    // 用户的项目在第二个根，工具却返回了第一个根的内容）。
+    if (!requestedPath && folders.length > 1) {
+      const blocks: string[] = [];
+      for (const folder of folders) {
+        const folderPath = await this.resolvePath(folder.name);
+        this.assertReadable(folderPath, settings);
+        blocks.push(`## ${folder.name}${tt('tool.folderItemCountSuffix', { count: await this.directoryRowCount(folderPath) })}\n${await this.directoryRows(folderPath)}`);
+      }
+      return success(tt('tool.workspaceRootsListed', { count: folders.length }), blocks.join('\n\n'));
+    }
+    const resolved = await this.resolvePath(requestedPath || '.');
     this.assertReadable(resolved, settings);
     const stat = await vscode.workspace.fs.stat(resolved.uri);
-    if ((stat.type & vscode.FileType.Directory) === 0) throw new Error(`${resolved.relativePath} 不是目录。`);
+    if ((stat.type & vscode.FileType.Directory) === 0) throw new Error(tt('tool.notDirectory', { path: resolved.relativePath }));
+    return success(
+      tt('tool.listed', { path: resolved.relativePath, count: await this.directoryRowCount(resolved) }),
+      await this.directoryRows(resolved),
+    );
+  }
+
+  private async directoryRowCount(resolved: ResolvedPath): Promise<number> {
+    return (await vscode.workspace.fs.readDirectory(resolved.uri)).slice(0, 500).length;
+  }
+
+  private async directoryRows(resolved: ResolvedPath): Promise<string> {
     const entries = await vscode.workspace.fs.readDirectory(resolved.uri);
     const rows = entries
       .sort(([leftName, leftType], [rightName, rightType]) => directoryRank(leftType) - directoryRank(rightType) || leftName.localeCompare(rightName))
       .slice(0, 500)
       .map(([name, type]) => `${fileTypeLabel(type)}\t${name}`);
-    return success(`列出 ${resolved.relativePath}（${rows.length} 项）`, rows.join('\n') || '目录为空。');
+    return rows.join('\n') || tt('tool.directoryEmpty');
   }
 
   private async searchFiles(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
     const query = stringArg(args, 'query');
-    if (!query) throw new Error('query 不能为空。');
-    const glob = stringArg(args, 'glob', '**/*');
+    if (!query) throw new Error(tt('tool.queryEmpty'));
     const caseSensitive = Boolean(args.caseSensitive);
     const needle = caseSensitive ? query : query.toLocaleLowerCase();
-    const files = await vscode.workspace.findFiles(glob, DEFAULT_EXCLUDE, 200);
+    const { files, truncated } = await this.findWorkspaceFiles(args);
     const matches: string[] = [];
+    let scanned = 0;
+    let budgetExhausted = false;
     for (const uri of files) {
+      if (scanned >= SEARCH_FILE_BUDGET) {
+        budgetExhausted = true;
+        break;
+      }
+      scanned += 1;
       const resolved = await this.resolvePath(uri.fsPath);
       if (isSensitivePath(resolved.relativePath) && sensitiveFilePolicyFor(settings) !== 'allow') continue;
       const stat = await Promise.resolve(vscode.workspace.fs.stat(uri)).catch(() => undefined);
       if (!stat || stat.size > settings.maxReadBytes) continue;
-      const text = decodeText(await vscode.workspace.fs.readFile(uri));
+      // 单个二进制或不可读文件不能中断整次搜索：它只是没有可搜索的文本。
+      let text: string;
+      try {
+        text = decodeText(await vscode.workspace.fs.readFile(uri));
+      } catch {
+        continue;
+      }
       const lines = text.split(/\r?\n/);
       lines.forEach((line, index) => {
         const haystack = caseSensitive ? line : line.toLocaleLowerCase();
@@ -376,9 +484,13 @@ export class ToolExecutor implements vscode.Disposable {
       });
       if (matches.length >= 120) break;
     }
+    const notes: string[] = [];
+    if (truncated) notes.push(tt('tool.searchRangeNote'));
+    if (budgetExhausted) notes.push(tt('tool.searchBudgetNote', { count: SEARCH_FILE_BUDGET }));
+    const body = matches.join('\n') || tt('tool.noMatches');
     return success(
-      `找到 ${matches.length} 处匹配`,
-      truncate(redact(matches.join('\n') || '没有匹配。'), settings.maxToolOutputBytes),
+      tt('tool.matchesFound', { count: matches.length }),
+      truncate(redact(notes.length ? `${body}\n… ${notes.join(' ')}` : body), settings.maxToolOutputBytes),
     );
   }
 
@@ -387,7 +499,7 @@ export class ToolExecutor implements vscode.Disposable {
     this.assertReadable(resolved, settings);
     const stat = await vscode.workspace.fs.stat(resolved.uri);
     if (stat.size > settings.maxReadBytes) {
-      throw new Error(`文件过大（${formatBytes(stat.size)}），已超过 ${formatBytes(settings.maxReadBytes)} 上限；请提高读取上限或先用搜索定位内容。`);
+      throw new Error(tt('tool.readFileTooLarge', { size: formatBytes(stat.size), max: formatBytes(settings.maxReadBytes) }));
     }
     let text = decodeText(await vscode.workspace.fs.readFile(resolved.uri));
     const startLine = Math.max(1, numberArg(args, 'startLine', 1));
@@ -399,7 +511,7 @@ export class ToolExecutor implements vscode.Disposable {
     text = truncate(redact(text), settings.maxToolOutputBytes);
     return {
       status: 'success',
-      summary: `读取 ${resolved.relativePath}（${formatBytes(stat.size)}）`,
+      summary: tt('tool.readSummary', { path: resolved.relativePath, size: formatBytes(stat.size) }),
       content: text,
       approval: 'not-required',
     };
@@ -409,10 +521,10 @@ export class ToolExecutor implements vscode.Disposable {
     const resolved = await this.resolvePath(stringArg(args, 'path'));
     this.assertReadable(resolved, settings);
     const stat = await vscode.workspace.fs.stat(resolved.uri);
-    if ((stat.type & vscode.FileType.File) === 0) throw new Error('open_file 只能打开文件。');
+    if ((stat.type & vscode.FileType.File) === 0) throw new Error(tt('tool.openFileOnlyFiles'));
     const document = await vscode.workspace.openTextDocument(resolved.uri);
     await vscode.window.showTextDocument(document, { preview: args.preview !== false, preserveFocus: false });
-    return success(`已在编辑器中打开 ${resolved.relativePath}`, '文件已通过 VS Code 原生编辑器打开。');
+    return success(tt('tool.openedInEditor', { path: resolved.relativePath }), tt('tool.openedInEditorContent'));
   }
 
   private async getDiagnostics(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
@@ -427,8 +539,8 @@ export class ToolExecutor implements vscode.Disposable {
         return `${location} [${diagnostic.severity}] ${diagnostic.message}`;
       }));
     return success(
-      `读取 ${entries.length} 条诊断`,
-      truncate(redact(entries.join('\n') || '没有已知诊断。'), settings.maxToolOutputBytes),
+      tt('tool.diagnosticsRead', { count: entries.length }),
+      truncate(redact(entries.join('\n') || tt('tool.noDiagnostics')), settings.maxToolOutputBytes),
     );
   }
 
@@ -438,7 +550,7 @@ export class ToolExecutor implements vscode.Disposable {
     const content = stringArg(args, 'content');
     const maxWriteBytes = settings.maxReadBytes * 4;
     if (Buffer.byteLength(content) > maxWriteBytes) {
-      throw new Error('写入内容过大，超过单文件安全上限。');
+      throw new Error(tt('tool.writeTooLarge'));
     }
     await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(resolved.fsPath)));
     const previousStat = await Promise.resolve(vscode.workspace.fs.stat(resolved.uri)).catch(() => undefined);
@@ -447,9 +559,9 @@ export class ToolExecutor implements vscode.Disposable {
       : '';
     await vscode.workspace.fs.writeFile(resolved.uri, new TextEncoder().encode(content));
     const summary = previousStat
-      ? previous ? `更新 ${resolved.relativePath}：${lineDelta(previous, content)}` : `更新 ${resolved.relativePath}`
-      : `创建 ${resolved.relativePath}`;
-    return { status: 'success', summary, content: `${summary}\n文件已写入。`, approval: 'approved', changedFiles: [resolved.relativePath] };
+      ? previous ? tt('tool.updatedFile', { path: resolved.relativePath, delta: lineDelta(previous, content) }) : tt('tool.updatedFileNoDelta', { path: resolved.relativePath })
+      : tt('tool.createdFile', { path: resolved.relativePath });
+    return { status: 'success', summary, content: `${summary}\n${tt('tool.fileWritten')}`, approval: 'approved', changedFiles: [resolved.relativePath] };
   }
 
   private async replaceInFile(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
@@ -457,26 +569,26 @@ export class ToolExecutor implements vscode.Disposable {
     this.assertWritable(resolved, settings);
     const oldText = stringArg(args, 'oldText');
     const newText = stringArg(args, 'newText');
-    if (!oldText) throw new Error('oldText 不能为空。');
+    if (!oldText) throw new Error(tt('tool.oldTextEmpty'));
     const stat = await vscode.workspace.fs.stat(resolved.uri);
     if (stat.size > settings.maxReadBytes) {
-      throw new Error(`文件过大（${formatBytes(stat.size)}），精确替换上限为 ${formatBytes(settings.maxReadBytes)}。`);
+      throw new Error(tt('tool.replaceTooLarge', { size: formatBytes(stat.size), max: formatBytes(settings.maxReadBytes) }));
     }
     const current = decodeText(await vscode.workspace.fs.readFile(resolved.uri));
     const occurrences = current.split(oldText).length - 1;
-    if (occurrences < 1) throw new Error('oldText 在文件中不存在，未执行修改。');
+    if (occurrences < 1) throw new Error(tt('tool.oldTextMissing'));
     if (occurrences > 1 && !Boolean(args.replaceAll)) {
-      throw new Error(`oldText 出现 ${occurrences} 次，请提供更精确的文本或明确 replaceAll=true。`);
+      throw new Error(tt('tool.oldTextMultiple', { count: occurrences }));
     }
     const replacements = Boolean(args.replaceAll) ? occurrences : 1;
     const estimatedBytes = Buffer.byteLength(current)
       + replacements * (Buffer.byteLength(newText) - Buffer.byteLength(oldText));
     if (estimatedBytes > settings.maxReadBytes * 4) {
-      throw new Error('替换后的文件预计超过单文件安全上限。');
+      throw new Error(tt('tool.replaceTooLargeAfter'));
     }
     const next = Boolean(args.replaceAll) ? current.split(oldText).join(newText) : current.replace(oldText, newText);
     await vscode.workspace.fs.writeFile(resolved.uri, new TextEncoder().encode(next));
-    const summary = `修改 ${resolved.relativePath}：替换 ${Boolean(args.replaceAll) ? occurrences : 1} 处文本`;
+    const summary = tt('tool.replaceSummary', { path: resolved.relativePath, count: Boolean(args.replaceAll) ? occurrences : 1 });
     return { status: 'success', summary, content: `${summary}\n${lineDelta(current, next)}`, approval: 'approved', changedFiles: [resolved.relativePath] };
   }
 
@@ -486,10 +598,10 @@ export class ToolExecutor implements vscode.Disposable {
     this.assertWritable(from, settings);
     this.assertWritable(to, settings);
     const sourceStat = await vscode.workspace.fs.stat(from.uri);
-    if ((sourceStat.type & vscode.FileType.File) === 0) throw new Error('rename_file 只能移动普通文件。');
+    if ((sourceStat.type & vscode.FileType.File) === 0) throw new Error(tt('tool.renameOnlyFiles'));
     await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(to.fsPath)));
     await vscode.workspace.fs.rename(from.uri, to.uri, { overwrite: false });
-    const summary = `移动 ${from.relativePath} → ${to.relativePath}`;
+    const summary = tt('tool.movedFile', { from: from.relativePath, to: to.relativePath });
     return { status: 'success', summary, content: summary, approval: 'approved', changedFiles: [from.relativePath, to.relativePath] };
   }
 
@@ -497,23 +609,23 @@ export class ToolExecutor implements vscode.Disposable {
     const resolved = await this.resolvePath(stringArg(args, 'path'));
     this.assertWritable(resolved, settings);
     const targetStat = await vscode.workspace.fs.stat(resolved.uri);
-    if ((targetStat.type & vscode.FileType.File) === 0) throw new Error('delete_file 只能删除普通文件，目录删除被禁止。');
+    if ((targetStat.type & vscode.FileType.File) === 0) throw new Error(tt('tool.deleteOnlyFiles'));
     await vscode.workspace.fs.delete(resolved.uri, { recursive: false, useTrash: true });
-    const summary = `已将 ${resolved.relativePath} 移到废纸篓`;
+    const summary = tt('tool.trashedFile', { path: resolved.relativePath });
     return { status: 'success', summary, content: summary, approval: 'approved', changedFiles: [resolved.relativePath] };
   }
 
   private async runCommand(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
     const command = stringArg(args, 'command');
-    if (!command || command.length > 4_000) throw new Error('命令为空或过长。');
+    if (!command || command.length > 4_000) throw new Error(tt('tool.commandEmpty'));
     const resolvedCwd = await this.resolvePath(stringArg(args, 'cwd', '.'));
     const timeout = Math.min(settings.maxCommandSeconds, Math.max(5, numberArg(args, 'timeoutSeconds', settings.maxCommandSeconds)));
     const result = await spawnCommand(command, resolvedCwd.fsPath, timeout, settings.maxToolOutputBytes);
     const output = redact([result.stdout, result.stderr].filter(Boolean).join('\n')).trim();
     return {
       status: result.code === 0 ? 'success' : 'error',
-      summary: result.timedOut ? `命令超时（${timeout} 秒）` : `命令退出码 ${result.code ?? 'unknown'}`,
-      content: truncate(output || '(无输出)', settings.maxToolOutputBytes),
+      summary: result.timedOut ? tt('tool.commandTimeout', { seconds: timeout }) : tt('tool.commandExit', { code: result.code ?? 'unknown' }),
+      content: truncate(output || tt('tool.noOutput'), settings.maxToolOutputBytes),
       approval: 'approved',
     };
   }
@@ -527,29 +639,46 @@ export class ToolExecutor implements vscode.Disposable {
     tier?: CommandRiskTier,
   ): string | undefined {
     if (!['list_workspace_roots', 'list_directory', 'list_files', 'search_files', 'read_file', 'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name)) {
-      return `工具 ${name} 未被允许。`;
+      return tt('tool.toolNotAllowed', { name });
     }
     if (policy === 'deny') {
       return tier === 'severe'
-        ? '命令包含高风险或破坏性操作（提权、破坏性删除、磁盘擦写、强制推送等），当前权限预设禁止执行。可在“自定义”权限中允许逐次确认。'
-        : `当前权限策略禁止 ${name}。`;
+        ? tt('tool.dangerousDenied')
+        : tt('tool.policyDeniedTool', { name });
     }
-    if (mode === 'plan' && ['write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name)) return '规划模式只允许只读分析。';
+    if (mode === 'plan' && ['write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name)) return tt('tool.planModeReadOnlyTool');
     if (['write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name) && !this.isWorkspaceTrusted()) {
-      return '当前工作区未受信任，文件写入和命令执行已禁用。请先信任工作区。';
+      return tt('tool.untrustedWrite');
     }
-    if (name === 'run_command' && OUTSIDE_WORKSPACE_COMMAND.test(String(args.command ?? ''))) {
-      return '命令被路径隔离策略拦截：不能引用工作区外路径、HOME 或上级目录。';
+    if (name === 'run_command') {
+      const roots = workspaceRoots();
+      const cwd = (() => {
+        try {
+          return resolveWorkspacePath(String(args.cwd ?? '.'), roots, { exists: existsSync }).fsPath;
+        } catch {
+          return undefined;
+        }
+      })();
+      const violation = commandPathViolation(
+        String(args.command ?? ''),
+        roots.map((root) => root.fsPath),
+        cwd,
+      );
+      if (violation) return violation;
     }
     return undefined;
   }
 
   private async resolvePath(input: string): Promise<ResolvedPath> {
     const folders = vscode.workspace.workspaceFolders ?? [];
-    const resolved = resolveWorkspacePath(input, folders.map((folder) => ({ folder, name: folder.name, fsPath: folder.uri.fsPath })));
+    const resolved = resolveWorkspacePath(
+      input,
+      folders.map((folder) => ({ folder, name: folder.name, fsPath: folder.uri.fsPath })),
+      { exists: existsSync },
+    );
     const actual = await safeRealpath(resolved.fsPath);
     const realRoot = await safeRealpath(resolved.root.fsPath);
-    if (!isPathWithin(realRoot, actual)) throw new Error('路径通过符号链接离开了工作区。');
+    if (!isPathWithin(realRoot, actual)) throw new Error(tt('tool.symlinkEscape'));
     return {
       uri: vscode.Uri.file(resolved.fsPath),
       fsPath: resolved.fsPath,
@@ -573,7 +702,7 @@ export class ToolExecutor implements vscode.Disposable {
     const targets: string[] = [];
     if (name === 'run_command') {
       if (SENSITIVE_COMMAND.test(String(args.command ?? ''))) {
-        targets.push('命令参数引用了敏感文件名');
+        targets.push(tt('tool.sensitiveCommandArg'));
       }
     } else if (PATH_TOOLS.includes(name)) {
       const fields = name === 'rename_file' ? ['from', 'to'] : ['path'];
@@ -593,27 +722,27 @@ export class ToolExecutor implements vscode.Disposable {
     if (!unique.length) return {};
     if (policy === 'deny') {
       return {
-        denied: `已阻止访问敏感文件：${unique.join('、')}。可在设置中把“敏感文件”策略改为“逐次确认”或“允许”。`,
+        denied: tt('tool.sensitiveBlocked', { files: unique.join(tt('common.listSeparator')) }),
       };
     }
     return {
       ask: true,
-      summary: name === 'run_command' ? '命令可能访问敏感文件' : `访问敏感文件：${unique.join('、')}`,
+      summary: name === 'run_command' ? tt('tool.sensitiveCommandRisk') : tt('tool.sensitiveAccess', { files: unique.join(tt('common.listSeparator')) }),
       detail: name === 'run_command'
-        ? `命令：${redact(String(args.command ?? '')).slice(0, 1_000)}\n\n该命令引用了 .env、密钥、证书或凭据文件。`
-        : `目标：${unique.join('、')}\n\n敏感文件包含密钥、令牌或凭据；确认后会读取内容并可能随请求发送给模型接口。`,
+        ? tt('tool.sensitiveCommandDetail', { command: redact(String(args.command ?? '')).slice(0, 1_000) })
+        : tt('tool.sensitiveAccessDetail', { files: unique.join(tt('common.listSeparator')) }),
     };
   }
 
   private assertReadable(path: ResolvedPath, settings: ChatSettings): void {
     if (sensitiveFilePolicyFor(settings) === 'deny' && isSensitivePath(path.relativePath)) {
-      throw new Error(`已阻止读取敏感文件：${path.relativePath}。可在设置中把“敏感文件”策略改为“逐次确认”或“允许”。`);
+      throw new Error(tt('tool.sensitiveReadBlocked', { path: path.relativePath }));
     }
   }
 
   private assertWritable(path: ResolvedPath, settings: ChatSettings): void {
     this.assertReadable(path, settings);
-    if (!this.isWorkspaceTrusted()) throw new Error('当前工作区未受信任，不能写入文件。');
+    if (!this.isWorkspaceTrusted()) throw new Error(tt('tool.untrustedNoWrite'));
   }
 
   private async auditResult(call: ToolCall, result: ToolExecutionResult, conversationId?: string): Promise<void> {
@@ -664,17 +793,17 @@ function policyFor(
 function parseArguments(raw: string): Record<string, unknown> {
   try {
     const value = JSON.parse(raw || '{}') as unknown;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('工具参数必须是 JSON 对象。');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(tt('tool.argsNotObject'));
     return value as Record<string, unknown>;
   } catch (error) {
-    throw new Error(`工具参数无效：${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(tt('tool.argsInvalid', { error: error instanceof Error ? error.message : String(error) }));
   }
 }
 
 function stringArg(args: Record<string, unknown>, key: string, fallback?: string): string {
   const value = args[key];
   if (value === undefined && fallback !== undefined) return fallback;
-  if (typeof value !== 'string') throw new Error(`${key} 必须是字符串。`);
+  if (typeof value !== 'string') throw new Error(tt('tool.paramMustBeString', { key }));
   return value;
 }
 
@@ -694,22 +823,22 @@ function deniedResult(summary: string): ToolExecutionResult {
 }
 
 function approvalSummary(name: string, args: Record<string, unknown>): string {
-  if (name === 'run_command') return `运行命令：${redact(String(args.command ?? '')).slice(0, 180)}`;
-  if (name === 'rename_file') return `移动文件：${String(args.from ?? '')} → ${String(args.to ?? '')}`;
-  if (name === 'delete_file') return `删除文件：${String(args.path ?? '')}`;
-  if (name === 'write_file' || name === 'replace_in_file') return `修改文件：${String(args.path ?? '')}`;
-  return `读取工作区数据：${name}`;
+  if (name === 'run_command') return tt('tool.approvalRunCommand', { command: redact(String(args.command ?? '')).slice(0, 180) });
+  if (name === 'rename_file') return tt('tool.approvalMoveFile', { from: String(args.from ?? ''), to: String(args.to ?? '') });
+  if (name === 'delete_file') return tt('tool.approvalDeleteFile', { path: String(args.path ?? '') });
+  if (name === 'write_file' || name === 'replace_in_file') return tt('tool.approvalModifyFile', { path: String(args.path ?? '') });
+  return tt('tool.approvalReadData', { name });
 }
 
 function approvalDetail(name: string, args: Record<string, unknown>, tier?: CommandRiskTier): string {
   const prefix = tier === 'severe'
-    ? '⚠️ 严重风险命令：提权、破坏性删除、磁盘擦写或不可逆操作。\n\n'
+    ? tt('tool.detailSeverePrefix')
     : '';
-  if (name === 'write_file') return `${prefix}目标：${String(args.path ?? '')}\n写入内容：${String(args.content ?? '').length.toLocaleString()} 字符`;
-  if (name === 'replace_in_file') return `${prefix}目标：${String(args.path ?? '')}\n精确替换：${String(args.oldText ?? '').length.toLocaleString()} -> ${String(args.newText ?? '').length.toLocaleString()} 字符`;
-  if (name === 'rename_file') return `${prefix}来源：${String(args.from ?? '')}\n目标：${String(args.to ?? '')}`;
-  if (name === 'delete_file') return `${prefix}目标：${String(args.path ?? '')}\n文件将移到系统废纸篓。`;
-  if (name === 'run_command') return `${prefix}工作目录：${String(args.cwd ?? '.')}\n命令：${redact(String(args.command ?? '')).slice(0, 1_000)}`;
+  if (name === 'write_file') return `${prefix}${tt('tool.detailWriteFile', { path: String(args.path ?? ''), chars: String(args.content ?? '').length.toLocaleString() })}`;
+  if (name === 'replace_in_file') return `${prefix}${tt('tool.detailReplaceInFile', { path: String(args.path ?? ''), old: String(args.oldText ?? '').length.toLocaleString(), new: String(args.newText ?? '').length.toLocaleString() })}`;
+  if (name === 'rename_file') return `${prefix}${tt('tool.detailRenameFile', { from: String(args.from ?? ''), to: String(args.to ?? '') })}`;
+  if (name === 'delete_file') return `${prefix}${tt('tool.detailDeleteFile', { path: String(args.path ?? '') })}`;
+  if (name === 'run_command') return `${prefix}${tt('tool.detailRunCommand', { cwd: String(args.cwd ?? '.'), command: redact(String(args.command ?? '')).slice(0, 1_000) })}`;
   return `${prefix}${JSON.stringify(args, null, 2).slice(0, 1_000)}`;
 }
 
@@ -722,14 +851,22 @@ function workspaceRelativePath(uri: vscode.Uri): string {
   return vscode.workspace.asRelativePath(uri, (vscode.workspace.workspaceFolders?.length ?? 0) > 1);
 }
 
+/** 当前工作区根目录的轻量视图，供路径解析与 glob 前缀消解共用。 */
+function workspaceRoots(): Array<{ name: string; fsPath: string }> {
+  return (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+    name: folder.name,
+    fsPath: folder.uri.fsPath,
+  }));
+}
+
 function directoryRank(type: vscode.FileType): number {
   return (type & vscode.FileType.Directory) !== 0 ? 0 : 1;
 }
 
 function fileTypeLabel(type: vscode.FileType): string {
-  if ((type & vscode.FileType.Directory) !== 0) return '[目录]';
-  if ((type & vscode.FileType.SymbolicLink) !== 0) return '[链接]';
-  return '[文件]';
+  if ((type & vscode.FileType.Directory) !== 0) return tt('tool.dirTag');
+  if ((type & vscode.FileType.SymbolicLink) !== 0) return tt('tool.linkTag');
+  return tt('tool.fileTag');
 }
 
 async function safeRealpath(value: string): Promise<string> {
@@ -743,7 +880,7 @@ async function safeRealpath(value: string): Promise<string> {
 }
 
 function decodeText(bytes: Uint8Array): string {
-  if (bytes.includes(0)) throw new Error('该文件似乎是二进制文件，未加入模型上下文。');
+  if (bytes.includes(0)) throw new Error(tt('tool.binaryFile'));
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
@@ -751,7 +888,7 @@ function truncate(value: string, maxBytes: number): string {
   if (Buffer.byteLength(value) <= maxBytes) return value;
   let result = value.slice(0, Math.max(1, Math.floor(maxBytes * 0.75)));
   while (Buffer.byteLength(result) > maxBytes - 80) result = result.slice(0, -256);
-  return `${result}\n… [输出已截断，原始大小 ${Buffer.byteLength(value).toLocaleString()} 字节]`;
+  return tt('tool.outputTruncated', { result, bytes: Buffer.byteLength(value).toLocaleString() });
 }
 
 function formatBytes(bytes: number): string {
@@ -764,7 +901,7 @@ function lineDelta(before: string, after: string): string {
   const beforeLines = before.split(/\r?\n/).length;
   const afterLines = after.split(/\r?\n/).length;
   const delta = afterLines - beforeLines;
-  return `${afterLines} 行（${delta >= 0 ? '+' : ''}${delta}）`;
+  return tt('tool.lineDelta', { lines: afterLines, delta: `${delta >= 0 ? '+' : ''}${delta}` });
 }
 
 function spawnCommand(command: string, cwd: string, timeoutSeconds: number, maxOutputBytes: number): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {

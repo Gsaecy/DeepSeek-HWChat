@@ -6,11 +6,13 @@ import { SkillRegistry } from './agent/skillRegistry';
 import { ToolExecutor } from './agent/toolExecutor';
 import { CleanupScheduler } from './core/cleanupScheduler';
 import { getApiKey, storeApiKey } from './core/apiKeys';
-import { initializeSettingsStorage, profileFor, readSettings } from './core/settings';
+import { describePermissionScope, formatPermissionScope, initializeSettingsStorage, profileFor, readSettings } from './core/settings';
 import { ConversationStorage } from './core/storage';
+import { revertApprovalBridge, showApprovalBridge } from './core/vscodeApprovals';
 import { DeepSeekClient } from './providers/deepseekClient';
 import { ChatPanel } from './views/chatPanel';
 import { SettingsPanel } from './views/settingsPanel';
+import { tt } from './core/i18n';
 
 let activeStorage: ConversationStorage | undefined;
 
@@ -29,6 +31,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   await skills.refresh();
   const toolExecutor = new ToolExecutor(audit, () => vscode.workspace.isTrusted);
+
+  const logPermissionScope = (): void => {
+    const report = describePermissionScope();
+    for (const line of formatPermissionScope(report)) {
+      output.info(line);
+    }
+  };
+  logPermissionScope();
 
   const client = new DeepSeekClient((profileId) => getApiKey(context.secrets, profileId, profileId === 'default'));
   let settingsPanel!: SettingsPanel;
@@ -102,7 +112,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ['hwchat.rescanSkills', async () => {
       await skills.refresh();
       await chat.refresh();
-      void vscode.window.showInformationMessage(`已发现 ${skills.list().length} 个 Skill。`);
+      void vscode.window.showInformationMessage(tt('ext.skillsFound', { count: skills.list().length }));
+    }],
+    // 桥接工具（run_in_terminal 等）的审批由 VS Code 决定，只能改它自己的设置。
+    ['hwchat.syncVsCodeApprovals', () => showApprovalBridge(context)],
+    ['hwchat.revertVsCodeApprovals', () => revertApprovalBridge(context)],
+    ['hwchat.showPermissionScope', async () => {
+      const report = describePermissionScope();
+      for (const line of formatPermissionScope(report)) {
+        output.info(line);
+      }
+      output.show(true);
+      await vscode.window.showInformationMessage(tt('ext.permissionScope', { preset: report.preset }));
     }],
   ];
   const commandDisposables = commands.map(([name, handler]) => vscode.commands.registerCommand(name, handler));
@@ -111,6 +132,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     scheduler.restart();
+    logPermissionScope();
     void chat.refresh();
     void settingsPanel.refresh();
     void skills.refresh();
@@ -144,12 +166,12 @@ async function ensurePrivacyConsent(context: vscode.ExtensionContext): Promise<b
     return true;
   }
   const answer = await vscode.window.showInformationMessage(
-    'HWChat 会将你发送的消息、已选择的文件内容和必要的工具结果发送到你在设置中配置的模型接口。对话、Skill 和审计记录默认只保存在本机；扩展不上传遥测。Agent 的写入和命令操作仍需按权限策略审批。',
-    { modal: true, detail: '请确认你了解并同意这项数据流向后继续。可在 HWChat 设置中清除本地记录。' },
-    '同意并继续',
-    '取消',
+    tt('ext.privacyTitle'),
+    { modal: true, detail: tt('ext.privacyDetail') },
+    tt('ext.privacyAgree'),
+    tt('ext.privacyCancel'),
   );
-  if (answer !== '同意并继续') return false;
+  if (answer !== tt('ext.privacyAgree')) return false;
   await context.globalState.update('hwchat.privacyConsent.v1', true);
   return true;
 }
@@ -163,30 +185,30 @@ async function setApiKey(secrets: vscode.SecretStorage, settingsPanel: SettingsP
   const settings = readSettings();
   const profile = profileFor(settings);
   const value = await vscode.window.showInputBox({
-    title: `设置 ${profile.name} API Key`,
-    prompt: '密钥将安全保存在 VS Code SecretStorage 中。',
+    title: tt('ext.apiKeyTitle', { profile: profile.name }),
+    prompt: tt('ext.apiKeyPrompt'),
     password: true,
     ignoreFocusOut: true,
     placeHolder: 'sk-…',
-    validateInput: (input) => input.trim() ? undefined : 'API Key 不能为空。',
+    validateInput: (input) => input.trim() ? undefined : tt('ext.apiKeyEmpty'),
   });
   if (value === undefined) {
     return;
   }
   await storeApiKey(secrets, profile.id, value.trim());
   await settingsPanel.refresh();
-  void vscode.window.showInformationMessage('HWChat API Key 已保存。');
+  void vscode.window.showInformationMessage(tt('ext.apiKeySaved'));
 }
 
 async function exportHistory(storage: ConversationStorage): Promise<void> {
   const destination = await vscode.window.showSaveDialog({
     filters: { JSON: ['json'] },
-    saveLabel: '导出全部对话',
+    saveLabel: tt('ext.exportLabel'),
     defaultUri: vscode.Uri.file(`HWChat-history-${new Date().toISOString().slice(0, 10)}.json`),
   });
   if (!destination) {
     return;
   }
   await storage.writeExportFile(destination.fsPath);
-  void vscode.window.showInformationMessage('HWChat 对话记录已导出。');
+  void vscode.window.showInformationMessage(tt('ext.exported'));
 }

@@ -21,7 +21,8 @@ export function icon(name: IconName): string {
     plus: '<path d="M12 5v14M5 12h14"/>',
     settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3v-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6V3h4v.1A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.6 1h.1v4H21a1.7 1.7 0 0 0-1.6 1Z"/>',
     send: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
-    stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+    // 实心方块：停止按钮以危险色高亮时，描边图标会被底色吃掉，实心才看得清。
+    stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
     attach: '<path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.5-9.5a4 4 0 0 1 5.7 5.7l-9.6 9.5a2 2 0 1 1-2.8-2.8l8.9-8.9"/>',
     archive: '<path d="M21 8v13H3V8"/><path d="M1 3h22v5H1zM10 12h4"/>',
     export: '<path d="M12 15V4"/><path d="m8 8 4-4 4 4"/><path d="M4 14v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/>',
@@ -30,8 +31,11 @@ export function icon(name: IconName): string {
     shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/>',
     refresh: '<path d="M20 11a8 8 0 1 0 2 5"/><path d="M20 4v7h-7"/>',
     mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8"/>',
+    arrowDown: '<path d="M12 5v14"/><path d="m5 12 7 7 7-7"/>',
   };
-  return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
+  // data-icon 供 CSS 做光学尺寸修正：同一个 24 格网格里，回形针、麦克风的墨迹约占 19~20 格，
+  // 发送箭头只有 14 格、停止方块只有 12 格；图标框一样大时后两者看起来明显偏小。
+  return `<svg class="icon" data-icon="${name}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
 }
 
-type IconName = 'history' | 'plus' | 'settings' | 'send' | 'stop' | 'attach' | 'archive' | 'export' | 'skills' | 'restore' | 'shield' | 'refresh' | 'mic';
+type IconName = 'history' | 'plus' | 'settings' | 'send' | 'stop' | 'attach' | 'archive' | 'export' | 'skills' | 'restore' | 'shield' | 'refresh' | 'mic' | 'arrowDown';

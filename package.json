@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek, local skills, durable history and approval-controlled workspace tools.",
-  "version": "0.1.5",
+  "version": "0.1.8",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -16,8 +16,10 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Chat remains available. Agent file writes and command execution require a trusted workspace.",
+      "description": "%capability.untrustedWorkspaces%",
       "restrictedConfigurations": [
+        "hwchat.permissionPreset",
+        "hwchat.fileReadPolicy",
         "hwchat.fileWritePolicy",
         "hwchat.commandPolicy",
         "hwchat.dangerousCommandPolicy",
@@ -46,72 +48,90 @@
     "commands": [
       {
         "command": "hwchat.openChat",
-        "title": "HWChat: 打开对话面板",
+        "title": "HWChat: %command.openChat%",
         "category": "HWChat",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "hwchat.newChat",
-        "title": "HWChat: 新建对话",
+        "title": "HWChat: %command.newChat%",
         "category": "HWChat",
         "icon": "$(add)"
       },
       {
         "command": "hwchat.openSettings",
-        "title": "HWChat: 打开设置",
+        "title": "HWChat: %command.openSettings%",
         "category": "HWChat",
         "icon": "$(settings-gear)"
       },
       {
         "command": "hwchat.askSelection",
-        "title": "HWChat: 询问选中的代码",
+        "title": "HWChat: %command.askSelection%",
         "category": "HWChat"
       },
       {
         "command": "hwchat.explainSelection",
-        "title": "HWChat: 解释选中的代码",
+        "title": "HWChat: %command.explainSelection%",
         "category": "HWChat"
       },
       {
         "command": "hwchat.cleanupNow",
-        "title": "HWChat: 立即清理缓存",
+        "title": "HWChat: %command.cleanupNow%",
         "category": "HWChat",
         "icon": "$(trash)"
       },
       {
         "command": "hwchat.setApiKey",
-        "title": "HWChat: 设置 API Key",
+        "title": "HWChat: %command.setApiKey%",
         "category": "HWChat"
       },
       {
         "command": "hwchat.exportHistory",
-        "title": "HWChat: 导出对话记录",
+        "title": "HWChat: %command.exportHistory%",
         "category": "HWChat",
         "icon": "$(export)"
       },
       {
         "command": "hwchat.attachFiles",
-        "title": "HWChat: 添加文件到对话",
+        "title": "HWChat: %command.attachFiles%",
         "category": "HWChat",
         "icon": "$(attach)"
       },
       {
         "command": "hwchat.archiveConversation",
-        "title": "HWChat: 归档当前对话",
+        "title": "HWChat: %command.archiveConversation%",
         "category": "HWChat",
         "icon": "$(archive)"
       },
       {
         "command": "hwchat.continueConversation",
-        "title": "HWChat: 在新对话中续接当前任务历史",
+        "title": "HWChat: %command.continueConversation%",
         "category": "HWChat",
         "icon": "$(debug-step-over)"
       },
       {
         "command": "hwchat.rescanSkills",
-        "title": "HWChat: 重新扫描 Skills",
+        "title": "HWChat: %command.rescanSkills%",
         "category": "HWChat",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "hwchat.syncVsCodeApprovals",
+        "title": "HWChat: %command.syncVsCodeApprovals%",
+        "category": "HWChat",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "hwchat.revertVsCodeApprovals",
+        "title": "HWChat: %command.revertVsCodeApprovals%",
+        "category": "HWChat",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "hwchat.showPermissionScope",
+        "title": "HWChat: %command.showPermissionScope%",
+        "category": "HWChat",
+        "icon": "$(eye)"
       }
     ],
     "viewsContainers": {
@@ -136,7 +156,7 @@
     "viewsWelcome": [
       {
         "view": "hwchat.chatView",
-        "contents": "还没有对话。\n[新建对话](command:hwchat.newChat)\n[配置 API](command:hwchat.openSettings)"
+        "contents": "%viewsWelcome.chat%"
       }
     ],
     "keybindings": [
@@ -194,34 +214,60 @@
         "hwchat.apiProfiles": {
           "type": "array",
           "default": [],
-          "description": "API 配置档列表。密钥不会写入这里，而是按配置档分别保存在 VS Code SecretStorage。",
+          "description": "%config.apiProfiles%",
           "items": {
             "type": "object",
-            "required": ["id", "name", "baseUrl", "models"],
+            "required": [
+              "id",
+              "name",
+              "baseUrl",
+              "models"
+            ],
             "properties": {
-              "id": { "type": "string" },
-              "name": { "type": "string" },
-              "baseUrl": { "type": "string" },
-              "models": { "type": "array", "items": { "type": "string" } },
-              "excludedModels": { "type": "array", "items": { "type": "string" } },
-              "requestHeaders": { "type": "object", "additionalProperties": { "type": "string" } }
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "baseUrl": {
+                "type": "string"
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "excludedModels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "requestHeaders": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
             }
           }
         },
         "hwchat.activeApiProfileId": {
           "type": "string",
           "default": "default",
-          "description": "当前默认 API 配置档。"
+          "description": "%config.activeApiProfileId%"
         },
         "hwchat.baseUrl": {
           "type": "string",
           "default": "https://api.deepseek.com",
-          "markdownDescription": "兼容 OpenAI 协议的接口地址，例如 `https://api.deepseek.com`、`https://api.moonshot.cn/v1`。"
+          "markdownDescription": "%config.baseUrl%"
         },
         "hwchat.model": {
           "type": "string",
           "default": "deepseek-flash",
-          "description": "默认模型。可在对话面板顶部即时切换。"
+          "description": "%config.model%"
         },
         "hwchat.requestHeaders": {
           "type": "object",
@@ -229,173 +275,251 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "发送给兼容接口的额外请求头。Authorization 由 API Key 自动设置。"
+          "description": "%config.requestHeaders%"
         },
         "hwchat.requestTimeoutSeconds": {
           "type": "number",
           "default": 120,
           "minimum": 10,
           "maximum": 900,
-          "description": "单次请求超时秒数。"
+          "description": "%config.requestTimeoutSeconds%"
         },
         "hwchat.temperature": {
           "type": "number",
           "default": 1,
           "minimum": 0,
           "maximum": 2,
-          "description": "生成的随机性。"
+          "description": "%config.temperature%"
         },
         "hwchat.maxTokens": {
           "type": "number",
           "default": 0,
           "minimum": 0,
-          "description": "单次回复的 token 上限，0 表示由服务端决定。"
+          "description": "%config.maxTokens%"
         },
         "hwchat.systemPrompt": {
           "type": "string",
           "editPresentation": "multilineText",
           "default": "",
-          "description": "每次对话前追加的系统提示词。留空则不发送。"
+          "description": "%config.systemPrompt%"
         },
         "hwchat.sendOnEnter": {
           "type": "boolean",
           "default": true,
-          "description": "回车发送，Shift+回车换行。"
+          "description": "%config.sendOnEnter%"
         },
         "hwchat.historyRetentionDays": {
           "type": "number",
           "default": 30,
           "minimum": 0,
-          "description": "未固定的对话保留天数，0 表示永不按时间清理。"
+          "description": "%config.historyRetentionDays%"
         },
         "hwchat.taskCacheRetentionHours": {
           "type": "number",
           "default": 24,
           "minimum": 0,
-          "description": "已完成任务的重内容（思考、用量、工具详情、附件正文）保留小时数；超时后保留回复与执行摘要。0 表示立即瘦身。"
+          "description": "%config.taskCacheRetentionHours%"
         },
         "hwchat.cacheBudgetMB": {
           "type": "number",
           "default": 100,
           "minimum": 5,
-          "description": "历史记录总体积上限。超出后从最久未使用的未固定对话开始淘汰。"
+          "description": "%config.cacheBudgetMB%"
         },
         "hwchat.cleanupIntervalMinutes": {
           "type": "number",
           "default": 10,
           "minimum": 1,
-          "description": "后台清理任务的执行间隔（分钟）。"
+          "description": "%config.cleanupIntervalMinutes%"
         },
         "hwchat.maxMessagesInContext": {
           "type": "number",
           "default": 20,
           "minimum": 0,
-          "description": "发送给模型的历史消息条数上限，避免上下文无限膨胀。0 表示不限制。"
+          "description": "%config.maxMessagesInContext%"
         },
         "hwchat.defaultMode": {
           "type": "string",
-          "enum": ["chat", "agent", "plan"],
-          "enumDescriptions": ["仅对话，不调用工作区工具", "可按权限读取、修改文件并运行命令", "只读分析和规划，不修改工作区"],
+          "enum": [
+            "chat",
+            "agent",
+            "plan"
+          ],
+          "enumDescriptions": [
+            "%config.defaultMode.enum0%",
+            "%config.defaultMode.enum1%",
+            "%config.defaultMode.enum2%"
+          ],
           "default": "agent",
-          "description": "新对话的默认工作模式。"
+          "description": "%config.defaultMode%"
         },
         "hwchat.agentMaxSteps": {
           "type": "number",
           "default": 0,
           "minimum": 0,
-          "description": "单轮 Agent 请求最多执行的工具循环次数，0 表示不限制。"
+          "description": "%config.agentMaxSteps%"
         },
         "hwchat.reasoningEffort": {
           "type": "string",
-          "enum": ["default", "none", "low", "high", "max"],
-          "enumDescriptions": ["跟随模型默认值", "关闭思考", "低思考强度", "高思考强度", "最大思考强度"],
+          "enum": [
+            "default",
+            "none",
+            "low",
+            "high",
+            "max"
+          ],
+          "enumDescriptions": [
+            "%config.reasoningEffort.enum0%",
+            "%config.reasoningEffort.enum1%",
+            "%config.reasoningEffort.enum2%",
+            "%config.reasoningEffort.enum3%",
+            "%config.reasoningEffort.enum4%"
+          ],
           "default": "default",
-          "description": "对话请求的思考层级。对 DeepSeek 使用 none/low/high/max；其他 OpenAI 兼容接口会把 max 映射为 high。"
+          "description": "%config.reasoningEffort%"
         },
         "hwchat.permissionPreset": {
           "type": "string",
-          "enum": ["askAll", "review", "autopilot", "full", "custom"],
+          "scope": "resource",
+          "enum": [
+            "askAll",
+            "review",
+            "autopilot",
+            "full"
+          ],
           "enumDescriptions": [
-            "读取、写入、只读命令、正常命令逐次确认；危险命令直接拒绝；敏感文件禁止",
-            "读取、写入、只读命令、正常命令自动执行；危险命令逐次确认；敏感文件禁止",
-            "读取、写入、只读命令、正常命令自动执行；危险命令逐次确认；敏感文件禁止",
-            "读取、写入、只读命令、正常命令、危险命令全部自动执行；敏感文件逐次确认",
-            "使用下方各项自定义策略"
+            "%config.permissionPreset.enum0%",
+            "%config.permissionPreset.enum1%",
+            "%config.permissionPreset.enum2%",
+            "%config.permissionPreset.enum3%"
           ],
           "default": "review",
-          "description": "Agent 权限预设。未受信任工作区、工作区外路径隔离属于硬边界，任何预设都不会关闭。"
+          "description": "%config.permissionPreset%"
         },
         "hwchat.fileReadPolicy": {
           "type": "string",
-          "enum": ["allow", "ask", "deny"],
+          "scope": "resource",
+          "enum": [
+            "allow",
+            "ask",
+            "deny"
+          ],
           "default": "allow",
-          "description": "Agent 读取工作区文件前的权限策略（仅“自定义”预设生效）。"
+          "deprecationMessage": "%config.fileReadPolicy.deprecated%",
+          "description": "%config.fileReadPolicy%"
         },
         "hwchat.fileWritePolicy": {
           "type": "string",
-          "enum": ["allow", "ask", "deny"],
+          "scope": "resource",
+          "enum": [
+            "allow",
+            "ask",
+            "deny"
+          ],
           "default": "ask",
-          "description": "Agent 修改工作区文件前的权限策略（仅“自定义”预设生效）。未受信任工作区始终禁止。"
+          "deprecationMessage": "%config.fileWritePolicy.deprecated%",
+          "description": "%config.fileWritePolicy%"
         },
         "hwchat.commandPolicy": {
           "type": "string",
-          "enum": ["allow", "ask", "deny"],
+          "scope": "resource",
+          "enum": [
+            "allow",
+            "ask",
+            "deny"
+          ],
           "default": "ask",
-          "description": "Agent 运行只读命令与正常命令的权限策略（仅“自定义”预设生效）。危险命令由 hwchat.dangerousCommandPolicy 单独控制；未受信任工作区始终禁止。"
+          "deprecationMessage": "%config.commandPolicy.deprecated%",
+          "description": "%config.commandPolicy%"
         },
         "hwchat.dangerousCommandPolicy": {
           "type": "string",
-          "enum": ["allow", "ask", "deny"],
-          "enumDescriptions": ["自动允许", "逐次确认", "直接拒绝"],
+          "scope": "resource",
+          "enum": [
+            "allow",
+            "ask",
+            "deny"
+          ],
+          "enumDescriptions": [
+            "%config.dangerousCommandPolicy.enum0%",
+            "%config.dangerousCommandPolicy.enum1%",
+            "%config.dangerousCommandPolicy.enum2%"
+          ],
           "default": "ask",
-          "description": "危险命令（提权、破坏性删除、磁盘擦写、强制推送、把网络脚本管道给 shell 等）的策略，仅“自定义”预设生效。"
+          "deprecationMessage": "%config.dangerousCommandPolicy.deprecated%",
+          "description": "%config.dangerousCommandPolicy%"
         },
         "hwchat.sensitiveFilePolicy": {
           "type": "string",
-          "enum": ["allow", "ask", "deny"],
-          "enumDescriptions": ["允许", "逐次确认", "禁止"],
+          "scope": "resource",
+          "enum": [
+            "allow",
+            "ask",
+            "deny"
+          ],
+          "enumDescriptions": [
+            "%config.sensitiveFilePolicy.enum0%",
+            "%config.sensitiveFilePolicy.enum1%",
+            "%config.sensitiveFilePolicy.enum2%"
+          ],
           "default": "deny",
-          "description": "敏感文件（.env、密钥、证书及常见凭据路径）的读取策略，仅“自定义”预设生效。"
+          "deprecationMessage": "%config.sensitiveFilePolicy.deprecated%",
+          "description": "%config.sensitiveFilePolicy%"
         },
         "hwchat.allowSensitiveFiles": {
           "type": "boolean",
           "default": false,
-          "deprecationMessage": "已由 hwchat.sensitiveFilePolicy 取代，仅在未设置新配置时用作迁移回退。",
-          "description": "旧版开关：等同把敏感文件策略设为“允许”或“禁止”。"
+          "deprecationMessage": "%config.allowSensitiveFiles.deprecated%",
+          "description": "%config.allowSensitiveFiles%"
         },
         "hwchat.allowDangerousCommands": {
           "type": "boolean",
           "default": false,
-          "deprecationMessage": "已由 hwchat.dangerousCommandPolicy 取代，仅在未设置新配置时用作迁移回退。",
-          "description": "旧版开关：开启等同危险命令“逐次确认”，关闭等同“直接拒绝”。"
+          "deprecationMessage": "%config.allowDangerousCommands.deprecated%",
+          "description": "%config.allowDangerousCommands%"
         },
         "hwchat.maxReadBytes": {
           "type": "number",
           "default": 512000,
           "minimum": 16384,
           "maximum": 5242880,
-          "description": "单个文件允许加入上下文或读取的最大字节数。"
+          "description": "%config.maxReadBytes%"
         },
         "hwchat.maxToolOutputBytes": {
           "type": "number",
           "default": 200000,
           "minimum": 16384,
           "maximum": 2097152,
-          "description": "单次工具结果发送给模型的最大字节数。"
+          "description": "%config.maxToolOutputBytes%"
         },
         "hwchat.maxCommandSeconds": {
           "type": "number",
           "default": 120,
           "minimum": 5,
           "maximum": 900,
-          "description": "Agent 命令的最长运行时间。"
+          "description": "%config.maxCommandSeconds%"
         },
         "hwchat.auditRetentionDays": {
           "type": "number",
           "default": 30,
           "minimum": 0,
           "maximum": 365,
-          "description": "本地 Agent 审计记录保留天数，0 表示仅保留当前会话。"
+          "description": "%config.auditRetentionDays%"
+        },
+        "hwchat.language": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "zh",
+            "en"
+          ],
+          "enumDescriptions": [
+            "%config.language.enum0%",
+            "%config.language.enum1%",
+            "%config.language.enum2%"
+          ],
+          "default": "auto",
+          "description": "%config.language%"
         }
       }
     }

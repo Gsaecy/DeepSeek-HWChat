@@ -3,3 +3,7 @@ out/
 *.vsix
 .DS_Store
 coverage/
+.vscode/
+
+# 截图构建的中间页面（由 docs/screenshots/build.mjs 生成）
+docs/screenshots/*.html

@@ -12,7 +12,7 @@ const settings: ChatSettings = {
   requestTimeoutSeconds: 30, defaultMode: 'agent', agentMaxSteps: 4, reasoningEffort: 'default', permissionPreset: 'review', fileReadPolicy: 'allow',
   fileWritePolicy: 'ask', commandPolicy: 'ask', dangerousCommandPolicy: 'ask',
   sensitiveFilePolicy: 'deny', maxReadBytes: 512_000, maxToolOutputBytes: 200_000,
-  maxCommandSeconds: 120, auditRetentionDays: 30,
+  maxCommandSeconds: 120, auditRetentionDays: 30, language: 'auto',
 };
 
 test('runs a tool call and feeds its result back before the final answer', async () => {
@@ -281,4 +281,79 @@ test('allows more than twelve agent rounds when the step limit is unlimited', as
   assert.equal(round, 14);
   assert.equal(result.stoppedByStepLimit, false);
   assert.match(result.content, /完成全部步骤/);
+});
+
+test('puts a paragraph break between each round of narration so long runs stay readable', async () => {
+  const streamed: string[] = [];
+  let round = 0;
+  const client = {
+    async streamChat(_settings: ChatSettings, _messages: ChatRequestMessage[], options: { onDelta: (delta: { content?: string }) => unknown }) {
+      round += 1;
+      if (round <= 2) {
+        const narration = round === 1 ? '先读配置文件。' : '再核对权限设置。';
+        await options.onDelta({ content: narration });
+        return {
+          content: narration, reasoning: '', usage: undefined, finishReason: 'tool_calls',
+          toolCalls: [{ id: `call_${round}`, type: 'function' as const, function: { name: 'read_file', arguments: `{"path":"src/${round}.ts"}` } }],
+        };
+      }
+      await options.onDelta({ content: '结论如下。' });
+      return { content: '结论如下。', reasoning: '', usage: undefined, finishReason: 'stop', toolCalls: [] };
+    },
+  };
+  const tools = {
+    definitions: () => [],
+    execute: async () => ({ status: 'success', summary: '读取完成', content: 'ok', approval: 'not-required' }) satisfies ToolExecutionResult,
+  };
+  const runner = new AgentRunner(client as never, tools as never);
+  const result = await runner.run({
+    settings,
+    messages: [{ role: 'user', content: '分析项目' }],
+    mode: 'agent',
+    signal: new AbortController().signal,
+    conversationId: 'narration',
+    callbacks: {
+      onDelta: (delta) => { if (delta.content) streamed.push(delta.content); },
+      onToolsChanged: () => undefined,
+      requestApproval: async () => true,
+    },
+  });
+
+  // 三轮叙述各自独立成段，不会首尾相接挤成一行。
+  assert.equal(result.content, '先读配置文件。\n\n再核对权限设置。\n\n结论如下。');
+  // 界面流式收到的内容与存档内容完全一致，否则刷新后排版会变。
+  assert.equal(streamed.join(''), result.content);
+});
+
+test('does not stack extra blank lines when the model already ended with one', async () => {
+  let round = 0;
+  const client = {
+    async streamChat(_settings: ChatSettings, _messages: ChatRequestMessage[], options: { onDelta: (delta: { content?: string }) => unknown }) {
+      round += 1;
+      if (round === 1) {
+        await options.onDelta({ content: '先读配置文件。\n' });
+        return {
+          content: '先读配置文件。\n', reasoning: '', usage: undefined, finishReason: 'tool_calls',
+          toolCalls: [{ id: 'call_a', type: 'function' as const, function: { name: 'read_file', arguments: '{"path":"src/a.ts"}' } }],
+        };
+      }
+      await options.onDelta({ content: '结论如下。' });
+      return { content: '结论如下。', reasoning: '', usage: undefined, finishReason: 'stop', toolCalls: [] };
+    },
+  };
+  const tools = {
+    definitions: () => [],
+    execute: async () => ({ status: 'success', summary: '读取完成', content: 'ok', approval: 'not-required' }) satisfies ToolExecutionResult,
+  };
+  const runner = new AgentRunner(client as never, tools as never);
+  const result = await runner.run({
+    settings,
+    messages: [{ role: 'user', content: '分析项目' }],
+    mode: 'agent',
+    signal: new AbortController().signal,
+    conversationId: 'narration-existing-break',
+    callbacks: { onDelta: () => undefined, onToolsChanged: () => undefined, requestApproval: async () => true },
+  });
+
+  assert.equal(result.content, '先读配置文件。\n\n结论如下。');
 });

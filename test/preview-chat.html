@@ -117,7 +117,7 @@
               <label class="runtime-field steps-field"><span>最大步骤：</span><select id="agentMaxStepsInput"><option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option></select></label>
               <label class="runtime-field reasoning-field"><span>思考深度：</span><select id="reasoningEffortInput"><option value="default">默认</option><option value="none">无</option><option value="low">低</option><option value="high">高</option><option value="max">最大值</option></select></label>
             </div>
-            <div class="composer-actions"><span id="composerHint">Enter 发送</span><button id="attachButton" class="icon-button" type="button" aria-label="添加文件" title="添加文件"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.5-9.5a4 4 0 0 1 5.7 5.7l-9.6 9.5a2 2 0 1 1-2.8-2.8l8.9-8.9"/></svg></button><button id="voiceButton" class="runtime-icon-button" type="button" aria-label="语音输入" title="语音输入"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8"/></svg></button><button id="sendButton" class="send-button" type="submit" aria-label="发送" title="发送"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button><button id="stopButton" class="stop-button" type="button" aria-label="停止生成" title="停止" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button></div>
+            <div class="composer-actions"><button id="attachButton" class="icon-button" type="button" aria-label="添加文件" title="添加文件"><svg class="icon" data-icon="attach" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.5-9.5a4 4 0 0 1 5.7 5.7l-9.6 9.5a2 2 0 1 1-2.8-2.8l8.9-8.9"/></svg></button><button id="voiceButton" class="runtime-icon-button" type="button" aria-label="语音输入" title="语音输入"><svg class="icon" data-icon="mic" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8"/></svg></button><button id="sendButton" class="send-button" type="submit" aria-label="发送" title="发送"><svg class="icon" data-icon="send" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button><button id="stopButton" class="stop-button" type="button" aria-label="停止生成" title="停止" hidden><svg class="icon" data-icon="stop" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button></div>
           </div>
         </form>
       </footer>
@@ -135,7 +135,7 @@
       archivedConversations: [{ id: 'c3', title: '旧版上传模块方案', updatedAt: now - 604800000, messageCount: 12, preview: '已归档', pinned: false, totalTokens: 82001, archived: true }],
       messages: [
         { id: 'm1', role: 'user', content: '重构登录逻辑，修复并发刷新问题并运行测试。', createdAt: now - 90000, updatedAt: now - 90000, status: 'complete', attachments: [{ label: 'failure-screenshot.png', kind: 'image', mimeType: 'image/png', bytes: 5620, thumbnailDataUrl: '../resources/logo.png' }, { label: 'src/AuthManager.ts', path: 'src/AuthManager.ts', kind: 'file', bytes: 8421 }] },
-        { id: 'm2', role: 'assistant', content: '已把刷新过程改为共享任务，并补充失败重试与并发测试。\n\n需要手动复查时可运行：\n\n```zsh\nnpm run check\nnpm test\n```', reasoning: '先检查认证状态的共享写入，再确认测试覆盖。', createdAt: now - 80000, updatedAt: now - 20000, status: 'streaming', usage: { totalTokens: 312462 }, usedSkills: [{ id: 's1', name: 'TypeScript 质量规范', source: 'workspace', relativePath: '.agents/skills/typescript/SKILL.md' }, { id: 's2', name: '项目文档同步', source: 'copilot', relativePath: '~/.copilot/skills/project-doc-sync/SKILL.md' }], toolExecutions: [
+        { id: 'm2', role: 'assistant', content: '先看一下现在的刷新入口是怎么写的。\n\n- 认证状态由 `authStore` 共享写入\n- 刷新入口有两处，都走同一个任务队列\n\n现在把并发刷新合并成一个共享任务。\n\n改完了，接下来跑测试确认没有回归。\n\n## 已完成\n\n把并发刷新改成 *共享任务*，并将失败重试写进测试。\n\n## 改动\n\n1. 刷新逻辑\n   - 并发调用只保留一个请求\n   - 失败后按 0.5s / 1s / 2s 退避重试\n2. 测试\n   - 新增刷新失败后的恢复用例\n\n> 公共接口未改动，调用方无需调整。\n\n| 项 | 改动前 | 改动后 |\n| --- | --- | --- |\n| 并发请求 | 3 个 | 1 个 |\n| 失败重试 | 无 | 3 次 |\n\n---\n\n需要手动复查时可运行：\n\n```zsh\nnpm run check\nnpm test\n```', reasoning: '## 先看清调用链\n\n- 认证状态由 `authStore` 共享写入\n- 刷新入口有两处，都走同一个任务队列\n\n## 再确认风险\n\n1. 并发时会不会重复请求 → *会*，需要合并\n2. 失败后有没有重试 → 目前没有\n\n> 结论：先合并请求，再补退避重试。', createdAt: now - 80000, updatedAt: now - 20000, status: 'streaming', usage: { totalTokens: 312462 }, usedSkills: [{ id: 's1', name: 'TypeScript 质量规范', source: 'workspace', relativePath: '.agents/skills/typescript/SKILL.md' }, { id: 's2', name: '项目文档同步', source: 'copilot', relativePath: '~/.copilot/skills/project-doc-sync/SKILL.md' }], toolExecutions: [
           { callId: 't1', name: 'read_file', summary: '读取 src/AuthManager.ts（8.2 KB）', status: 'success', approval: 'not-required', risk: 'read', startedAt: now - 79000, finishedAt: now - 78500, input: '{"path":"src/AuthManager.ts"}', output: '读取 214 行代码。' },
           { callId: 't2', name: 'replace_in_file', summary: '修改 src/AuthManager.ts：替换 1 处文本', status: 'success', approval: 'approved', risk: 'write', startedAt: now - 70000, finishedAt: now - 68000, changedFiles: ['src/AuthManager.ts'], input: '共享 refreshTask 并在 finally 中清理', output: '文件更新为 228 行（+14）。' },
           { callId: 't3', name: 'run_command', summary: '正在运行测试', status: 'pending', approval: 'approved', risk: 'command', startedAt: now - 4000, input: '{"command":"npm test","cwd":"/workspace"}' },
@@ -151,8 +151,16 @@
       selectedSkillIds: ['s1', 's2'], mode: 'agent', workspaceTrusted: true, agentAvailable: true, availableToolCount: 27, showArchived: false,
       taskTree: { active: true, currentNodeId: 'root', nodes: [{ id: 'root', title: '重构登录逻辑并运行测试', status: 'active', relation: 'root' }, { id: 'update', parentId: 'root', title: '保留公共接口并补恢复测试', status: 'merged', relation: 'related' }, { id: 'queued', parentId: 'root', title: '更新 README 使用说明', status: 'queued', relation: 'queued' }] },
     };
+    // 预览用：给步骤钉上「接在哪段说明之后」的边界，验证分段交错渲染。
+    const previewReply = previewState.messages[1];
+    const previewTools = previewReply.toolExecutions || [];
+    previewTools[0].contentOffset = previewReply.content.indexOf('现在把并发刷新合并成一个共享任务');
+    previewTools[1].contentOffset = previewReply.content.indexOf('改完了，接下来跑测试确认没有回归');
+    previewTools[2].contentOffset = previewReply.content.indexOf('## 已完成');
     window.__hwchatMessages = [];
     window.acquireVsCodeApi = () => ({
+      getState() { return window.__hwchatState; },
+      setState(next) { window.__hwchatState = next; },
       postMessage(message) {
         window.__hwchatMessages.push(message);
         if (message.type === 'ready') setTimeout(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'state', state: previewState, streamingConversationId: 'c1' } })), 0);
@@ -175,6 +183,12 @@
         body: { width: document.body.clientWidth, scrollWidth: document.body.scrollWidth },
         toolbar: rect('modelInput'), profile: rect('profileInput'), mode: rect('modeInput'), skills: rect('skillsButton'), settings: rect('settingsButton'), composer: rect('composer'), permissions: rect('permissionPresetInput'),
         steps: rect('agentMaxStepsInput'), reasoning: rect('reasoningEffortInput'), voice: rect('voiceButton'),
+        // 分段交错渲染的契约：正文说明与它触发的步骤必须交替出现，且步骤紧跟在对应说明之后。
+        flow: [...(document.querySelector('[data-message-id="m2"] .message-body')?.children || [])]
+          .filter((node) => node.classList.contains('message-narration') || node.classList.contains('tool-stack'))
+          .map((node) => node.classList.contains('tool-stack')
+            ? `steps:${node.querySelectorAll('.tool-execution').length}`
+            : `note:${(node.textContent || '').trim().slice(0, 12)}`),
         taskTree: rect('taskTree'), pendingImageCount: document.querySelectorAll('.attachment-chip-image img').length, messageImageCount: document.querySelectorAll('.message-image-attachment img').length, selectedModelLabel: document.querySelector('#modelInput option:checked')?.textContent, commandCopy: [...document.querySelectorAll('.terminal-command button')].map((node) => {
           const box = node.getBoundingClientRect(); return { left: box.left, right: box.right, width: box.width };
         }),

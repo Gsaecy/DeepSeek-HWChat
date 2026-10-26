@@ -208,7 +208,14 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .skill-option code { color: var(--muted); font: 9px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skills-panel-note { padding: 8px 3px 2px; border-top: 1px solid var(--border); color: var(--muted); font-size: 9px; }
 
+/* 消息区外壳：给「回到最新消息」按钮提供定位参考。
+   按钮必须放在滚动容器之外，否则会跟着内容一起滚走。 */
+.message-area { position: relative; display: grid; grid-template-rows: minmax(0, 1fr); min-height: 0; }
 .message-viewport { position: relative; min-height: 0; overflow: auto; }
+/* 悬浮在输入框上方一点：贴住消息区底边，与右侧留出与消息列表一致的边距。 */
+.scroll-to-bottom { position: absolute; bottom: 12px; right: 14px; z-index: 6; border-radius: 999px; background: var(--surface); box-shadow: var(--shadow); }
+/* .icon-button 是 display:grid，会覆盖 [hidden] 的默认 display:none，这里必须显式声明。 */
+.scroll-to-bottom[hidden] { display: none; }
 .message-list { width: min(820px, calc(100% - 40px)); margin: 0 auto; padding: 30px 0 42px; }
 .message { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 16px; margin-bottom: 30px; }
 .message-meta { display: grid; align-content: start; gap: 3px; padding-top: 2px; color: var(--muted); font-size: 10px; text-align: right; }
@@ -227,6 +234,52 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .message-content p, .reasoning-content p { margin: 0 0 12px; white-space: pre-wrap; }
 .message-content code, .reasoning-content code { padding: 1px 4px; border-radius: 4px; background: var(--surface-raised); font: 12px var(--mono); }
 .message-content a { color: var(--link); }
+/* ── 回复正文排版 ─────────────────────────────────────────────────────────────
+   appendRichText 现在把标题 / 列表 / 表格 / 引用 / 分隔线渲染成真正的结构元素，
+   所以必须给出对应层级：浏览器默认的 h1 2em、紧凑列表反而更难读。
+   目标是让不写代码的人也能一眼看出「分几块、每块几条、哪条是重点」。 */
+.message-content { line-height: 1.7; }
+/* 分段后的「行动说明」：和它下面的执行步骤拉开一点距离，避免文字贴着步骤框；
+   最后一段（通常是结论）不再留底部空白。 */
+.message-narration { margin: 0 0 10px; }
+.message-body > .message-narration:last-child { margin-bottom: 0; }
+.message-content strong { font-weight: 660; }
+.message-content del { color: var(--muted); }
+.message-content h1, .message-content h2, .message-content h3, .message-content h4, .message-content h5, .message-content h6 {
+  margin: 22px 0 9px; line-height: 1.35; font-weight: 660;
+}
+.message-content h1 { padding-bottom: 7px; border-bottom: 1px solid var(--border); font-size: 18px; }
+.message-content h2 { font-size: 16px; }
+.message-content h3 { font-size: 14.5px; }
+.message-content h4 { font-size: 13.5px; }
+.message-content h5, .message-content h6 { font-size: 13px; color: var(--muted); }
+.message-content ul, .message-content ol { margin: 0 0 12px; padding-left: 22px; }
+.message-content ul { list-style: disc; }
+.message-content ul ul { list-style: circle; }
+.message-content ol { list-style: decimal; }
+.message-content li { margin: 0 0 5px; white-space: pre-wrap; }
+.message-content li::marker { color: var(--muted); }
+/* 嵌套列表收窄缩进：侧栏只有 420px，深一层再占 22px 正文就没宽度了。 */
+.message-content li > ul, .message-content li > ol { margin: 5px 0 0; padding-left: 18px; }
+.message-content blockquote {
+  margin: 0 0 12px; padding: 2px 12px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 52%, var(--border));
+  color: color-mix(in srgb, var(--fg) 86%, transparent);
+}
+.message-content blockquote > :last-child { margin-bottom: 0; }
+.message-content hr { margin: 18px 0; border: 0; border-top: 1px solid var(--border); }
+.message-content .table-wrap { margin: 0 0 14px; overflow-x: auto; }
+.message-content table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.55; }
+.message-content th, .message-content td { padding: 6px 10px; border: 1px solid var(--border); vertical-align: top; text-align: left; }
+.message-content thead th { background: var(--surface); font-weight: 650; }
+.message-content tbody tr:nth-child(even) { background: color-mix(in srgb, var(--surface) 45%, transparent); }
+/* 思考过程沿用同一套结构，但字号压小，避免抢正文的位置。 */
+.reasoning-content h1, .reasoning-content h2, .reasoning-content h3,
+.reasoning-content h4, .reasoning-content h5, .reasoning-content h6 { margin: 12px 0 6px; font-size: 12px; font-weight: 650; }
+.reasoning-content ul, .reasoning-content ol { margin: 0 0 10px; padding-left: 20px; }
+.reasoning-content li { margin: 0 0 4px; }
+.reasoning-content blockquote { margin: 0 0 10px; padding-left: 10px; border-left: 2px solid var(--border); }
+.reasoning-content hr { margin: 12px 0; border: 0; border-top: 1px solid var(--border); }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
 .message-file-attachment { max-width: 100%; padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font: 10px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-image-attachment { display: grid; width: 132px; margin: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
@@ -268,9 +321,18 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 @keyframes pulse { 50% { opacity: .55; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* 思考过程默认折叠。折叠标题上直接给出「进行中 / 多少字」，不用点开就能判断值不值得看；
+   ▸/▾ 是自绘的，因为 summary 用 flex 之后浏览器自带的三角标记会消失。 */
 .reasoning { margin: 0 0 14px; border-left: 2px solid var(--border); padding-left: 10px; color: var(--muted); }
-.reasoning summary { cursor: pointer; color: var(--muted); font-size: 11px; user-select: none; }
-.reasoning-content { margin-top: 10px; font-size: 12px; }
+.reasoning summary { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--muted); font-size: 11px; user-select: none; list-style: none; }
+.reasoning summary::-webkit-details-marker { display: none; }
+.reasoning summary::before { content: "▸"; flex: 0 0 auto; color: color-mix(in srgb, var(--fg) 58%, transparent); }
+.reasoning[open] > summary::before { content: "▾"; }
+.reasoning summary:hover { color: var(--fg); }
+.reasoning-title { font-weight: 600; color: color-mix(in srgb, var(--fg) 84%, transparent); }
+.reasoning-hint { color: var(--muted); font-size: 10px; }
+.reasoning-content { margin-top: 10px; max-height: 360px; overflow-y: auto; font-size: 12px; }
+.reasoning-content em, .message-content em { font-style: italic; }
 .stream-cursor { display: inline-block; width: 6px; height: 15px; margin-left: 3px; vertical-align: -2px; border-radius: 1px; background: var(--accent); animation: blink 1s steps(2, start) infinite; }
 @keyframes blink { 50% { opacity: .2; } }
 
@@ -346,17 +408,28 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 }
 .composer textarea::-webkit-scrollbar { width: 0; height: 0; }
 .composer textarea::placeholder { color: var(--placeholder); }
-.composer-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; padding-top: 6px; border-top: 1px solid color-mix(in srgb, var(--border) 62%, transparent); }
-.composer-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; margin-left: auto; }
-.composer-actions > span { color: var(--muted); font-size: 9px; white-space: nowrap; }
-.composer-actions .icon-button { width: 26px; height: 26px; }
-.composer-actions .icon-button .icon { width: 14px; height: 14px; }
-.composer-actions .runtime-icon-button { width: 26px; height: 26px; }
-.composer-runtime-controls { display: flex; flex: 1 1 0; align-items: center; gap: 10px; min-width: 0; }
-.runtime-field { display: grid; grid-template-columns: auto minmax(0, 1fr) 9px; align-items: center; flex: 0 1 auto; gap: 2px; min-width: 0; width: 150px; color: var(--muted); white-space: nowrap; }
-.runtime-field.steps-field { width: 132px; }
-.runtime-field.reasoning-field { width: 132px; }
-.runtime-field > span { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; }
+.composer-footer { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px 10px; min-width: 0; padding-top: 6px; border-top: 1px solid color-mix(in srgb, var(--border) 62%, transparent); container: composer-footer / inline-size; }
+.composer-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; margin-left: auto; --icon-box-attach: 11px; --icon-box-mic: 11.5px; --icon-box-send: 16px; --icon-box-stop: 18px; }
+/* 附件 / 语音 / 发送 / 停止 四个按钮：按钮框统一 26×26，图标框按各自墨迹单独定。
+   四个 svg 都在 24 格网格里，但墨迹占的格数差别很大（按路径实算，含描边）：
+     回形针 20.96×22.74、麦克风 15.80×21.80、发送箭头 15.80×15.80、停止方块 12.00×12.00
+   图标框给同样大小时，画出来的最大边会从 6.50px 差到 15.44px —— 这就是「麦克风明显比停止大一圈」。
+   所以改成按「墨迹最大边统一到约 10.4px」反解每个图标的框：回形针收得多（它最满），
+   发送箭头反而要放大（它最虚）。停止是实心方块，同尺寸下比描边读起来更重，墨迹收到 9px 才和邻居齐平。
+   改完最大边跨度 9.00~10.53px（差 1.53px）。 */
+.composer-actions .icon-button,
+.composer-actions .runtime-icon-button,
+.composer-actions .send-button,
+.composer-actions .stop-button { width: 26px; height: 26px; }
+.composer-actions .icon { width: var(--icon-box-attach); height: var(--icon-box-attach); }
+.composer-actions .icon[data-icon="mic"] { width: var(--icon-box-mic); height: var(--icon-box-mic); }
+.composer-actions .icon[data-icon="send"] { width: var(--icon-box-send); height: var(--icon-box-send); }
+.composer-actions .icon[data-icon="stop"] { width: var(--icon-box-stop); height: var(--icon-box-stop); }
+.composer-runtime-controls { display: flex; flex: 1 1 auto; align-items: center; gap: 10px; min-width: 0; overflow: hidden; }
+.runtime-field { display: grid; grid-template-columns: auto minmax(0, 1fr) 9px; align-items: center; flex: 0 1 auto; gap: 2px; min-width: 0; width: 190px; color: var(--muted); white-space: nowrap; }
+.runtime-field.steps-field { width: 150px; }
+.runtime-field.reasoning-field { width: 158px; }
+.runtime-field > span { min-width: 0; overflow: hidden; color: color-mix(in srgb, var(--fg) 85%, transparent); font-size: 10px; text-overflow: ellipsis; }
 .runtime-field::after {
   content: "";
   justify-self: center;
@@ -365,23 +438,46 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
   border-left: 3.5px solid transparent;
   border-right: 3.5px solid transparent;
   border-top: 4px solid currentColor;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
   pointer-events: none;
 }
 .runtime-field select { appearance: none; width: 100%; min-width: 0; height: 28px; padding: 0; overflow: hidden; border: 0; border-radius: 0; outline: 0; color: var(--fg); background: transparent; font: 10px var(--mono); text-overflow: ellipsis; cursor: pointer; }
 .runtime-field:hover select, .runtime-field:hover::after { color: var(--surface-hover-fg); }
 .runtime-field:focus-within { color: var(--fg); }
 .runtime-field:focus-within::after { color: var(--focus); }
-.runtime-field select:disabled { opacity: .5; }
+.runtime-field select:disabled { opacity: .82; cursor: default; }
+/* 收窄时按「思考深度 → 最大步骤 → 权限预设」的顺序隐藏文字前缀，只保留当前选项，
+   三个下拉与附件/语音/发送始终同一行，不会被挤到第二行。 */
+@container composer-footer (max-width: 388px) {
+  .runtime-field.reasoning-field > span { display: none; }
+}
+@container composer-footer (max-width: 342px) {
+  .runtime-field.steps-field > span { display: none; }
+}
+@container composer-footer (max-width: 296px) {
+  .runtime-field.permission-field > span { display: none; }
+}
 .runtime-icon-button { display: grid; place-items: center; width: 30px; height: 28px; padding: 0; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--dropdown-bg); cursor: pointer; }
 .runtime-icon-button:hover, .runtime-icon-button.active { color: var(--surface-hover-fg); background: var(--surface-hover); }
 .runtime-icon-button.active { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
 .runtime-icon-button:disabled { opacity: .45; cursor: default; }
-.send-button, .stop-button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; cursor: pointer; }
-.send-button .icon, .stop-button .icon { width: 14px; height: 14px; }
+/* 尺寸全部交给 .composer-actions 那一套统一规则，这里只保留外观。 */
+.send-button, .stop-button { display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; cursor: pointer; }
 .send-button { color: var(--accent-text); background: var(--accent); }
 .send-button:disabled { opacity: .35; cursor: default; }
-.stop-button { color: var(--surface-hover-fg); background: var(--surface-hover); }
+/* Agent 执行期间停止按钮是唯一可见的操作：用危险色 + 呼吸光环，一眼看出「正在跑、点这里停」。
+   按钮只在 state.streaming 时取消 hidden（chat.js updateComposerState），所以这条样式天然只在运行时生效。
+   底色用固定的深红而不是 var(--danger)：深色主题的 errorForeground 通常是浅红（如 #ff6961），
+   白字压上去对比度只有 2.3:1；#b4232a 在两种主题下都有 ≥6:1。光晕仍取主题的 --danger。 */
+.stop-button { color: #ffffff; background: #d32f2f; animation: stop-pulse 1.7s ease-out infinite; }
+.stop-button:hover { background: #b71c1c; }
+.stop-button:active { animation: none; transform: scale(.95); }
+@keyframes stop-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 58%, transparent); }
+  70% { box-shadow: 0 0 0 5px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .stop-button { animation: none; } }
 .context-chip { display: inline-flex; align-items: center; max-width: calc(100% - 10px); gap: 7px; height: 28px; margin: 0 0 7px 4px; padding: 0 5px 0 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--muted); font: 10px var(--mono); }
 .context-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .context-chip button { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
@@ -422,6 +518,7 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
   .control-button { min-width: 0; width: 36px; padding: 0 3px; }
   .skills-panel { top: calc(100% + 4px); right: 8px; width: min(410px, calc(100vw - 24px)); max-height: min(520px, calc(100vh - 140px)); }
   .message-viewport { width: 100%; max-width: 100vw; overflow-x: hidden; }
+  .scroll-to-bottom { bottom: 10px; right: 10px; }
   .message-list { width: calc(100% - 22px); max-width: calc(100vw - 22px); }
   .message { grid-template-columns: 1fr; gap: 6px; margin-bottom: 24px; }
   .message, .message-body, .tool-stack { min-width: 0; max-width: 100%; }
@@ -431,21 +528,22 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
   .composer-wrap { width: calc(100% - 16px); max-width: calc(100vw - 16px); padding-bottom: 8px; }
   .composer { width: 100%; max-width: 100%; grid-template-columns: minmax(0, 1fr); padding: 8px 8px 6px 11px; }
   .composer-footer { gap: 5px 8px; }
-  .composer-actions { gap: 3px; }
-  .composer-actions > span { display: none; }
-  .composer-actions .icon-button { width: 24px; height: 24px; }
-  .composer-actions .icon-button .icon { width: 13px; height: 13px; }
-  .composer-actions .runtime-icon-button { width: 24px; height: 24px; }
-  .send-button, .stop-button { width: 26px; height: 26px; border-radius: 6px; }
-  .send-button .icon, .stop-button .icon { width: 13px; height: 13px; }
+  .composer-actions { gap: 3px; --icon-box-attach: 10.5px; --icon-box-mic: 11px; --icon-box-send: 15px; --icon-box-stop: 17px; }
+  .composer-actions .icon-button,
+  .composer-actions .runtime-icon-button,
+  .composer-actions .send-button,
+  .composer-actions .stop-button { width: 24px; height: 24px; }
   .composer-runtime-controls { gap: 6px; }
-  .runtime-field, .runtime-field.steps-field, .runtime-field.reasoning-field { flex: 1 1 0; width: auto; }
+  .runtime-field, .runtime-field.steps-field, .runtime-field.reasoning-field { flex: 0 1 auto; width: auto; }
   .runtime-field { grid-template-columns: auto minmax(0, 1fr) 8px; gap: 1px; }
-  .runtime-field > span { font-size: 8px; }
+  .runtime-field > span { font-size: 9px; }
   .runtime-field select { height: 26px; font-size: 9px; }
   .runtime-icon-button { width: 28px; }
   .agent-run-state > span:last-child { display: none; }
-  .task-node small { display: none; }
+  /* 窄屏也保留节点状态文字（执行中 / 判断关联性 / 排队 / 完成 …）。
+     隐藏这一列后整行右侧就是一片空白，看不出节点处在哪个阶段；
+     标题列本身有 text-overflow: ellipsis，压缩时优先截断标题。 */
+  .task-node small { display: block; }
 }
 
 @media (max-width: 420px) {
@@ -458,8 +556,6 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 
 @media (max-width: 560px) {
   .composer-footer { gap: 5px; }
-  .composer-runtime-controls { flex: 1 1 100%; }
-  .composer-actions { flex: 1 1 100%; justify-content: flex-end; }
 }
 
 @media (min-width: 721px) and (max-width: 980px) {

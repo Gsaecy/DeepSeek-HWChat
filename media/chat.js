@@ -1,13 +1,32 @@
 (() => {
   const vscode = acquireVsCodeApi();
+
+  // 词表由扩展在生成 HTML 时按当前语言注入，脚本只做查表，不保存任何文案。
+  const messages = (() => {
+    try {
+      const node = document.getElementById('hwchat-i18n');
+      return node ? JSON.parse(node.textContent || '{}') : {};
+    } catch {
+      return {};
+    }
+  })();
+
+  /** 查表；缺键返回键本身，便于发现漏译。{name} 占位符按 vars 替换。 */
+  function t(key, vars) {
+    const template = messages[key];
+    if (typeof template !== 'string') return key;
+    if (!vars) return template;
+    return template.replace(/\{(\w+)\}/g, (match, name) => (vars[name] === undefined ? match : String(vars[name])));
+  }
+
   const elements = Object.fromEntries([
     'app', 'historyPane', 'historyButton', 'closeHistoryButton', 'newChatButton',
     'historySearch', 'archiveViewButton', 'conversationList', 'settingsButton',
     'settingsButtonSide', 'exportButton', 'archiveButton', 'conversationTitle',
     'connectionState', 'profileInput', 'modelInput', 'modeInput', 'refreshModelsButton', 'skillsButton', 'skillsCount',
     'skillsPanel', 'skillsList', 'workspaceTrustBadge', 'messageViewport',
-    'messageList', 'emptyState', 'loadOlderButton', 'attachmentList', 'contextChip',
-    'contextLabel', 'removeContextButton', 'composer', 'promptInput', 'composerHint',
+    'messageList', 'emptyState', 'loadOlderButton', 'scrollToBottomButton', 'attachmentList', 'contextChip',
+    'contextLabel', 'removeContextButton', 'composer', 'promptInput',
     'historyLinkBanner', 'sourceHistoryTitle', 'detachHistoryButton',
     'permissionPresetInput', 'agentMaxStepsInput', 'reasoningEffortInput', 'voiceButton',
     'agentRunState', 'agentRunLabel', 'agentRunMeta', 'taskTree', 'taskTreeSummary', 'taskTreeList',
@@ -37,17 +56,17 @@
 
   function post(type, payload = {}) { vscode.postMessage({ type, ...payload }); }
 
-  function requestClipboardWrite(text, button, idleLabel = '复制') {
+  function requestClipboardWrite(text, button, idleLabel = t('common.copy')) {
     if (!text) {
-      showToast('没有可复制的内容。', 'warning');
+      showToast(t('chat.noContentToCopy'), 'warning');
       return;
     }
     const requestId = `copy-${Date.now()}-${++clipboardSequence}`;
     if (button) {
       button.disabled = true;
-      button.textContent = '复制中…';
+      button.textContent = t('common.copying');
     }
-    const timer = setTimeout(() => finishClipboardWrite(requestId, false, '写入剪贴板超时。'), 3_000);
+    const timer = setTimeout(() => finishClipboardWrite(requestId, false, t('chat.clipboardTimeout')), 3_000);
     clipboardWrites.set(requestId, { button, idleLabel, timer });
     post('copyText', { text, requestId });
   }
@@ -59,10 +78,10 @@
     clearTimeout(pending.timer);
     if (pending.button) {
       pending.button.disabled = false;
-      pending.button.textContent = ok ? '已复制' : pending.idleLabel;
+      pending.button.textContent = ok ? t('common.copied') : pending.idleLabel;
       if (ok) setTimeout(() => { if (pending.button.isConnected) pending.button.textContent = pending.idleLabel; }, 1_200);
     }
-    if (!ok) showToast(`复制失败：${error || '无法访问系统剪贴板'}`, 'warning');
+    if (!ok) showToast(t('chat.clipboardFailed', { error: error || t('chat.clipboardUnavailable') }), 'warning');
   }
 
   function renderAll() {
@@ -75,12 +94,12 @@
     const conversations = source.filter((item) => !query || `${item.title} ${item.preview || ''}`.toLocaleLowerCase().includes(query));
     elements.archiveViewButton.classList.toggle('active', state.showArchived);
     const archiveLabel = elements.archiveViewButton.querySelector('span:last-child');
-    if (archiveLabel) archiveLabel.textContent = state.showArchived ? '返回对话' : `显示归档${state.archivedConversations.length ? ` (${state.archivedConversations.length})` : ''}`;
+    if (archiveLabel) archiveLabel.textContent = state.showArchived ? t('chat.backToConversations') : `${t('chat.showArchived')}${state.archivedConversations.length ? ` (${state.archivedConversations.length})` : ''}`;
     elements.conversationList.replaceChildren();
     if (!conversations.length) {
       const empty = document.createElement('p');
       empty.className = 'history-empty';
-      empty.textContent = query ? '没有匹配的对话' : state.showArchived ? '没有已归档的对话' : '对话会安全地保存在本机';
+      empty.textContent = query ? t('chat.noMatchingConversations') : state.showArchived ? t('chat.noArchivedConversations') : t('chat.conversationsStoredLocally');
       elements.conversationList.append(empty);
       return;
     }
@@ -91,20 +110,20 @@
       content.type = 'button'; content.className = 'conversation-content';
       const title = textElement('span', 'conversation-title', conversation.title);
       const tokenTotal = conversation.totalTokens ? ` · ${formatMillionTokens(conversation.totalTokens)} tokens` : '';
-      const linked = conversation.sourceConversationId ? '续接 · ' : '';
+      const linked = conversation.sourceConversationId ? t('chat.continuedPrefix') : '';
       const meta = textElement('span', 'conversation-meta', `${linked}${relativeTime(conversation.updatedAt)}${tokenTotal}`);
-      const preview = textElement('span', 'conversation-preview', conversation.preview || '空对话');
+      const preview = textElement('span', 'conversation-preview', conversation.preview || t('common.emptyConversation'));
       content.append(title, meta, preview);
       content.addEventListener('click', () => { post('selectConversation', { id: conversation.id }); closeMobileHistory(); });
       const actions = document.createElement('div'); actions.className = 'conversation-actions';
-      const continueTask = actionButton('在新对话中续接任务历史', '↗');
+      const continueTask = actionButton(t('chat.continueTaskHistory'), '↗');
       continueTask.disabled = state.streaming;
       continueTask.addEventListener('click', () => { post('continueConversation', { id: conversation.id }); closeMobileHistory(); });
-      const pin = actionButton(conversation.pinned ? '取消固定' : '固定', conversation.pinned ? '●' : '○');
+      const pin = actionButton(conversation.pinned ? t('chat.unpin') : t('chat.pin'), conversation.pinned ? '●' : '○');
       pin.addEventListener('click', () => post('togglePin', { id: conversation.id, pinned: !conversation.pinned }));
-      const archive = actionButton(conversation.archived ? '恢复对话' : '归档', conversation.archived ? '↺' : '□');
+      const archive = actionButton(conversation.archived ? t('chat.restoreConversation') : t('chat.archive'), conversation.archived ? '↺' : '□');
       archive.addEventListener('click', () => post('toggleArchive', { id: conversation.id, archived: !conversation.archived }));
-      const remove = actionButton('删除', '×'); remove.classList.add('danger-action');
+      const remove = actionButton(t('common.delete'), '×'); remove.classList.add('danger-action');
       remove.addEventListener('click', () => post('deleteConversation', { id: conversation.id }));
       actions.append(continueTask, pin, archive, remove); row.append(content, actions); elements.conversationList.append(row);
     }
@@ -118,12 +137,12 @@
 
   function renderHeader() {
     const archived = Boolean(state.conversation?.archived);
-    elements.conversationTitle.textContent = state.conversation?.title || '新对话';
+    elements.conversationTitle.textContent = state.conversation?.title || t('common.newChat');
     syncConnectionSelectors();
     elements.modeInput.value = state.mode; elements.exportButton.disabled = !state.conversation;
     elements.archiveButton.disabled = !state.conversation || state.streaming;
-    elements.archiveButton.title = archived ? '恢复对话' : '归档';
-    elements.connectionState.textContent = state.streaming ? 'Agent 正在执行' : archived ? '已归档 · 只读' : state.mode !== 'chat' && !state.workspaceTrusted ? '未信任 · 写入与命令受限' : `准备就绪${state.availableToolCount ? ` · ${state.availableToolCount} 个工具` : ''}`;
+    elements.archiveButton.title = archived ? t('chat.restoreConversation') : t('chat.archive');
+    elements.connectionState.textContent = state.streaming ? t('chat.agentRunning') : archived ? t('chat.archivedReadOnly') : state.mode !== 'chat' && !state.workspaceTrusted ? t('chat.untrustedRestricted') : (state.availableToolCount ? t('chat.readyWithTools', { count: state.availableToolCount }) : t('chat.ready'));
     elements.connectionState.classList.toggle('live', state.streaming);
     elements.connectionState.classList.toggle('restricted', !state.workspaceTrusted && state.mode !== 'chat');
     elements.skillsCount.textContent = String(state.selectedSkillIds.length);
@@ -136,13 +155,13 @@
     const activeProfileId = state.conversation?.apiProfileId || state.activeApiProfileId;
     const modelsLoading = state.modelLoadingProfileId === activeProfileId;
     elements.refreshModelsButton.classList.toggle('loading', modelsLoading);
-    elements.refreshModelsButton.title = modelsLoading ? '正在刷新模型列表' : '刷新模型列表';
+    elements.refreshModelsButton.title = modelsLoading ? t('chat.refreshingModels') : t('chat.refreshModels');
   }
 
   function syncPermissionHint() {
     const selected = elements.permissionPresetInput.selectedOptions[0];
     const hint = selected?.title || '';
-    elements.permissionPresetInput.title = hint ? `权限预设：${hint}` : '权限预设';
+    elements.permissionPresetInput.title = hint ? t('chat.permissionPresetTitle', { hint }) : t('chat.permissionPreset');
     elements.permissionPresetInput.closest('.permission-field')?.setAttribute('title', hint);
   }
 
@@ -165,20 +184,20 @@
     const profileId = state.conversation?.apiProfileId || state.activeApiProfileId || state.apiProfiles[0]?.id || '';
     const modelOption = option || (state.modelOptionsByProfile[profileId] || []).find((item) => item.id === elements.modelInput.value);
     const support = modelOption?.reasoningSupport || 'unknown';
-    const labels = { default: '默认', none: '无', low: '低', high: '高', max: '最大值' };
+    const labels = { default: t('chat.reasoning.default'), none: t('chat.reasoning.none'), low: t('chat.reasoning.low'), high: t('chat.reasoning.high'), max: t('chat.reasoning.max') };
     let efforts = ['default'];
-    let title = '当前模型未声明思考深度能力';
+    let title = t('chat.reasoningSupport.unknown');
     if (support === 'configurable') {
       efforts = modelOption?.reasoningEfforts?.length ? modelOption.reasoningEfforts : ['default', 'none', 'low', 'high', 'max'];
       if (!efforts.includes('default')) efforts.unshift('default');
-      title = '当前模型支持调节思考深度';
+      title = t('chat.reasoningSupport.configurable');
     } else if (support === 'unsupported') {
-      title = '当前模型不支持思考深度设置';
+      title = t('chat.reasoningSupport.unsupported');
     } else if (support === 'fixed') {
-      title = '当前模型的思考模式由模型固定';
+      title = t('chat.reasoningSupport.fixed');
     }
     if (!efforts.includes(state.reasoningEffort)) state.reasoningEffort = 'default';
-    const singleLabel = support === 'unsupported' ? '不支持' : support === 'fixed' ? '模型固定' : support === 'unknown' ? '能力未知' : undefined;
+    const singleLabel = support === 'unsupported' ? t('chat.reasoningUnsupportedShort') : support === 'fixed' ? t('chat.reasoningFixedShort') : support === 'unknown' ? t('chat.reasoningUnknownShort') : undefined;
     replaceSelectOptions(elements.reasoningEffortInput, efforts.map((value) => ({ value, label: singleLabel || labels[value] || value })), state.reasoningEffort);
     elements.reasoningEffortInput.dataset.support = support;
     elements.reasoningEffortInput.title = title;
@@ -198,16 +217,16 @@
   function ensureStepOption(value) {
     const normalized = Math.max(0, Math.floor(Number(value) || 0));
     if ([...elements.agentMaxStepsInput.options].some((option) => Number(option.value) === normalized)) return;
-    const option = document.createElement('option'); option.value = String(normalized); option.textContent = `${normalized} 步`;
+    const option = document.createElement('option'); option.value = String(normalized); option.textContent = t('chat.stepsOption', { count: normalized });
     elements.agentMaxStepsInput.append(option);
   }
 
   function renderSkills() {
     elements.skillsList.replaceChildren();
-    elements.workspaceTrustBadge.textContent = state.workspaceTrusted ? '工作区已信任' : '工作区未信任';
+    elements.workspaceTrustBadge.textContent = state.workspaceTrusted ? t('settings.workspaceTrusted') : t('settings.workspaceUntrusted');
     elements.workspaceTrustBadge.classList.toggle('trusted', state.workspaceTrusted);
     if (!state.skills.length) {
-      elements.skillsList.append(textElement('p', 'skills-empty', '未发现 Skill。可放入 .hwchat/skills 或兼容的 SKILL.md 目录。'));
+      elements.skillsList.append(textElement('p', 'skills-empty', t('chat.skillsEmpty')));
       return;
     }
     for (const skill of state.skills) {
@@ -220,8 +239,8 @@
       });
       const copy = document.createElement('span');
       const title = document.createElement('span'); title.className = 'skill-option-title'; title.append(textElement('strong', '', skill.name));
-      if (skill.defaultEnabled) title.append(textElement('em', 'skill-badge', '默认启用'));
-      if (skill.lastUsedAt) title.append(textElement('em', 'skill-badge used', '已调用'));
+      if (skill.defaultEnabled) title.append(textElement('em', 'skill-badge', t('chat.skillDefaultEnabled')));
+      if (skill.lastUsedAt) title.append(textElement('em', 'skill-badge used', t('chat.skillUsed')));
       copy.append(title, textElement('small', '', skill.description || skill.relativePath), textElement('code', '', skill.relativePath));
       label.append(input, copy); elements.skillsList.append(label);
     }
@@ -230,6 +249,18 @@
   function isNearBottom() {
     const viewport = elements.messageViewport;
     return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 72;
+  }
+
+  /**
+   * 「回到最新消息」按钮只在两件事同时成立时出现：内容可滚动，且用户已离开底部。
+   * 短对话和空状态不显示，避免挂一个点了等于没反应的按钮。
+   */
+  function updateScrollToBottom() {
+    const button = elements.scrollToBottomButton;
+    if (!button) return;
+    const viewport = elements.messageViewport;
+    const overflowing = viewport.scrollHeight - viewport.clientHeight > 120;
+    button.hidden = !overflowing || isNearBottom();
   }
 
   function hasMessageSelection() {
@@ -275,6 +306,7 @@
       else if (mode === 'prepend') viewport.scrollTop = previousTop + Math.max(0, viewport.scrollHeight - previousHeight);
       else viewport.scrollTop = previousTop;
       state.renderingMessages = false;
+      updateScrollToBottom();
     });
   }
 
@@ -335,9 +367,9 @@
     const routing = nodes.filter((node) => node.status === 'routing').length;
     const queued = nodes.filter((node) => node.status === 'queued').length;
     const current = nodes.find((node) => node.id === tree.currentNodeId);
-    elements.agentRunLabel.textContent = current?.title ? `Agent 正在执行：${current.title}` : 'Agent 正在执行';
-    elements.agentRunMeta.textContent = [routing ? `${routing} 条判断中` : '', queued ? `${queued} 条排队` : ''].filter(Boolean).join(' · ');
-    elements.taskTreeSummary.textContent = `${nodes.length} 个节点${queued ? ` · ${queued} 个排队` : ''}`;
+    elements.agentRunLabel.textContent = current?.title ? t('chat.agentRunningWith', { title: current.title }) : t('chat.agentRunning');
+    elements.agentRunMeta.textContent = [routing ? t('chat.routingCount', { count: routing }) : '', queued ? t('chat.queuedCount', { count: queued }) : ''].filter(Boolean).join(' · ');
+    elements.taskTreeSummary.textContent = queued ? t('chat.nodeCountWithQueue', { count: nodes.length, queued }) : t('chat.nodeCount', { count: nodes.length });
     elements.taskTreeList.replaceChildren();
     const rootId = nodes[0]?.id;
     for (const node of nodes) {
@@ -350,42 +382,100 @@
   }
 
   function taskStatusSymbol(status) { return status === 'complete' ? '✓' : status === 'active' ? '●' : status === 'routing' ? '…' : status === 'merged' ? '↳' : status === 'queued' ? '○' : '−'; }
-  function taskStatusLabel(status) { return ({ active: '执行中', routing: '判断关联性', merged: '已合并', queued: '排队', complete: '完成', cancelled: '已取消', error: '失败' })[status] || status; }
+  function taskStatusLabel(status) { return ({ active: t('chat.taskStatus.active'), routing: t('chat.taskStatus.routing'), merged: t('chat.taskStatus.merged'), queued: t('chat.taskStatus.queued'), complete: t('chat.taskStatus.complete'), cancelled: t('chat.taskStatus.cancelled'), error: t('chat.taskStatus.error') })[status] || status; }
 
   function renderMessage(message) {
     const article = document.createElement('article');
     article.className = `message ${message.role}${message.status === 'error' ? ' error' : ''}`; article.dataset.messageId = message.id;
     const meta = document.createElement('div'); meta.className = 'message-meta';
-    const author = textElement('span', '', message.role === 'user' ? '你' : 'HWChat');
+    const author = textElement('span', '', message.role === 'user' ? t('chat.you') : 'HWChat');
     const time = textElement('time', '', formatTime(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); meta.append(author, time);
     if (message.content) {
-      const copy = textElement('button', 'message-copy-button', '复制'); copy.type = 'button'; copy.title = '复制这条消息';
+      const copy = textElement('button', 'message-copy-button', t('common.copy')); copy.type = 'button'; copy.title = t('chat.copyMessage');
       copy.addEventListener('click', () => requestClipboardWrite(message.content, copy));
       meta.append(copy);
     }
     const body = document.createElement('div'); body.className = 'message-body';
     const attached = [message.context, ...(message.attachments || [])].filter(Boolean);
     if (attached.length) body.append(renderMessageAttachments(attached));
-    if (message.toolExecutions?.length) body.append(renderToolExecutions(message.toolExecutions));
     if (message.usedSkills?.length) body.append(renderSkillUsage(message.usedSkills));
-    if (message.reasoning) body.append(renderReasoning(message.reasoning));
-    const content = document.createElement('div'); content.className = 'message-content';
-    const emptyStatusText = message.status === 'queued' ? '已加入任务队列，等待当前分支完成…' : message.status === 'streaming' ? '正在继续处理…' : '';
-    appendRichText(content, message.content || emptyStatusText); body.append(content);
-    if (message.status === 'streaming') { const cursor = document.createElement('span'); cursor.className = 'stream-cursor'; cursor.setAttribute('aria-label', '生成中'); body.append(cursor); }
+    if (message.reasoning) body.append(renderReasoning(message.reasoning, message.status === 'streaming'));
+    appendMessageFlow(body, message);
+    if (message.status === 'streaming') { const cursor = document.createElement('span'); cursor.className = 'stream-cursor'; cursor.setAttribute('aria-label', t('chat.generating')); body.append(cursor); }
     if (message.usage?.totalTokens) body.append(textElement('div', 'message-usage', `${formatMillionTokens(message.usage.totalTokens)} tokens`));
     article.append(meta, body); return article;
+  }
+
+  /**
+   * 按发生顺序把「说明」和「它触发的步骤」摆在一起：
+   * 我先说要做什么 → 下面紧接着这一步真正执行了什么、结果如何 → 再回到下一段说明。
+   * 这样读的人不用在「上面的话」和「下面的步骤列表」之间来回对照。
+   * 旧消息没有分段信息时，退回原来的「步骤块 + 正文」排法。
+   */
+  function appendMessageFlow(body, message) {
+    const tools = message.toolExecutions || [];
+    const text = message.content || '';
+    const idleStatusText = message.status === 'queued' ? t('chat.queuedWaiting') : message.status === 'streaming' ? t('chat.continuing') : '';
+    const groups = groupToolsByOffset(tools, text.length);
+    if (!groups) {
+      if (tools.length) body.append(renderToolExecutions(tools));
+      const content = document.createElement('div'); content.className = 'message-content';
+      appendRichText(content, text || idleStatusText); body.append(content);
+      return;
+    }
+    let cursor = 0;
+    let rendered = false;
+    for (const group of groups) {
+      const boundary = Math.max(cursor, Math.min(group.offset, text.length));
+      rendered = appendNarration(body, text.slice(cursor, boundary)) || rendered;
+      body.append(renderToolExecutions(group.tools));
+      cursor = boundary;
+    }
+    rendered = appendNarration(body, text.slice(cursor)) || rendered;
+    if (!rendered) {
+      const content = document.createElement('div'); content.className = 'message-content';
+      appendRichText(content, idleStatusText); body.append(content);
+    }
+  }
+
+  /** 只渲染有内容的段落：分段边界上的空行、纯空白段直接跳过，不占版面。 */
+  function appendNarration(body, rawText) {
+    const text = String(rawText || '').trim();
+    if (!text) return false;
+    const content = document.createElement('div'); content.className = 'message-content message-narration';
+    appendRichText(content, text);
+    body.append(content);
+    return true;
+  }
+
+  /**
+   * 把步骤按「接在哪段正文之后」分组。同一轮里连续调用的几个工具边界相同，合成一组。
+   * 返回 null 表示这条消息没有分段信息（旧数据），由调用方走老排法。
+   */
+  function groupToolsByOffset(tools, textLength) {
+    if (!tools.length) return null;
+    if (!tools.some((tool) => typeof tool.contentOffset === 'number')) return null;
+    const limit = Math.max(0, textLength);
+    const groups = [];
+    for (const tool of tools) {
+      const raw = typeof tool.contentOffset === 'number' ? tool.contentOffset : limit;
+      const offset = Math.max(0, Math.min(raw, limit));
+      const last = groups[groups.length - 1];
+      if (last && last.offset === offset) last.tools.push(tool);
+      else groups.push({ offset, tools: [tool] });
+    }
+    return groups;
   }
 
   function renderSkillUsage(skills) {
     const details = document.createElement('details'); details.className = 'message-skills';
     details.dataset.detailKey = 'skills';
     details.dataset.defaultOpen = '0';
-    const summary = document.createElement('summary'); summary.textContent = `本轮调用 ${skills.length} 个 Skill`;
+    const summary = document.createElement('summary'); summary.textContent = t('chat.skillsUsedCount', { count: skills.length });
     const list = document.createElement('div'); list.className = 'message-skills-list';
     for (const skill of skills) {
       const row = document.createElement('span'); row.title = skill.relativePath;
-      row.append(textElement('strong', '', skill.name), textElement('small', '', skill.source === 'copilot' ? '快捷调用' : skill.source));
+      row.append(textElement('strong', '', skill.name), textElement('small', '', skill.source === 'copilot' ? t('chat.skillQuickInvoke') : skill.source));
       list.append(row);
     }
     details.append(summary, list); return details;
@@ -408,7 +498,11 @@
   function renderToolExecutions(tools) {
     const section = document.createElement('section'); section.className = 'tool-stack';
     const changed = new Set(tools.flatMap((tool) => tool.changedFiles || []));
-    section.append(textElement('div', 'tool-stack-heading', `${tools.length} 个执行步骤${changed.size ? ` · 修改 ${changed.size} 个文件` : ''}`));
+    // 一步就够读清楚时不再加标题：分段渲染后每组通常只有一两步，
+    // 反复出现「处理过程 · 共 1 步」只会把版面撑长。
+    if (tools.length > 1) {
+      section.append(textElement('div', 'tool-stack-heading', changed.size ? t('chat.toolStackWithFiles', { count: tools.length, files: changed.size }) : t('chat.toolStack', { count: tools.length })));
+    }
     for (const [index, tool] of tools.entries()) {
       const details = document.createElement('details'); details.className = `tool-execution status-${tool.status || 'pending'}`;
       details.dataset.detailKey = `tool:${tool.callId || index}`;
@@ -417,10 +511,10 @@
       const summary = document.createElement('summary');
       summary.append(textElement('span', 'tool-status', statusSymbol(tool.status)), textElement('span', 'tool-summary', tool.summary || tool.name), textElement('small', '', toolMeta(tool)));
       const detail = document.createElement('div'); detail.className = 'tool-detail';
-      if (tool.changedFiles?.length) detail.append(textElement('div', 'tool-files', `文件：${tool.changedFiles.join('、')}`));
-      if (tool.input) detail.append(detailBlock('输入', tool.input, tool.risk === 'command' ? commandText(tool.input) : undefined));
-      if (tool.output) detail.append(detailBlock('结果', tool.output));
-      if (!tool.input && !tool.output) detail.append(textElement('p', 'tool-cleaned', tool.finishedAt ? '详细缓存已按保留策略清理，摘要仍保留。' : '等待执行结果。'));
+      if (tool.changedFiles?.length) detail.append(textElement('div', 'tool-files', t('chat.toolFiles', { files: tool.changedFiles.join(t('common.listSeparator')) })));
+      if (tool.input) detail.append(detailBlock(t('chat.toolInput'), tool.input, tool.risk === 'command' ? commandText(tool.input) : undefined));
+      if (tool.output) detail.append(detailBlock(t('chat.toolOutput'), tool.output));
+      if (!tool.input && !tool.output) detail.append(textElement('p', 'tool-cleaned', tool.finishedAt ? t('chat.toolCleaned') : t('chat.toolWaiting')));
       details.append(summary, detail); section.append(details);
     }
     return section;
@@ -429,8 +523,8 @@
   function detailBlock(label, value, preferredCopyText) {
     const block = document.createElement('div'); block.className = 'tool-detail-block';
     const heading = document.createElement('div'); heading.className = 'tool-detail-heading';
-    const idleLabel = preferredCopyText ? '复制命令' : '复制';
-    const copy = textElement('button', '', idleLabel); copy.type = 'button'; copy.title = preferredCopyText ? '复制实际终端命令' : `复制${label}`;
+    const idleLabel = preferredCopyText ? t('chat.copyCommand') : t('common.copy');
+    const copy = textElement('button', '', idleLabel); copy.type = 'button'; copy.title = preferredCopyText ? t('chat.copyActualCommand') : t('chat.copyLabel', { label });
     copy.addEventListener('click', () => requestClipboardWrite(preferredCopyText || value, copy, idleLabel));
     const pre = document.createElement('pre'); const code = document.createElement('code'); code.textContent = value; pre.append(code);
     heading.append(textElement('strong', '', label), copy); block.append(heading, pre); return block;
@@ -448,49 +542,260 @@
 
   function statusSymbol(status) { return status === 'success' ? '✓' : status === 'denied' ? '−' : status === 'error' ? '!' : '…'; }
   function toolMeta(tool) {
-    const labels = { read: '读取', write: '写入', command: '命令' };
+    const labels = { read: t('chat.risk.read'), write: t('chat.risk.write'), command: t('chat.risk.command') };
     const duration = tool.finishedAt && tool.startedAt ? ` · ${formatDuration(tool.finishedAt - tool.startedAt)}` : '';
     return `${labels[tool.risk] || tool.name}${duration}`;
   }
 
-  function renderReasoning(reasoning) {
+  function renderReasoning(reasoning, streaming) {
     const details = document.createElement('details'); details.className = 'reasoning';
     details.dataset.detailKey = 'reasoning';
+    // 默认收起：思考过程是给想追根究底的人看的，不该一上来就占满视野。
     details.dataset.defaultOpen = '0';
     const content = document.createElement('div'); content.className = 'reasoning-content'; appendRichText(content, reasoning);
-    details.append(textElement('summary', '', '思考过程'), content); return details;
+    const summary = document.createElement('summary');
+    // 标题上直接写清「现在在干什么 / 里面有多少内容」，不用点开也能判断要不要看。
+    const chars = String(reasoning || '').replace(/\s+/g, '').length;
+    summary.append(
+      textElement('span', 'reasoning-title', t('chat.reasoningTitle')),
+      textElement('small', 'reasoning-hint', streaming ? t('chat.reasoningStreaming') : t('chat.reasoningChars', { count: chars })),
+    );
+    details.append(summary, content); return details;
   }
 
+  /**
+   * 把回复正文渲染成「结构」，而不是一大段等宽文本。
+   * 支持：围栏代码块、标题（# ~ ######）、有序/无序列表（按缩进嵌套）、表格、
+   * 引用、分隔线、段落；行内支持 **加粗**、`代码`、~~删除~~、[文字](链接)、裸链接。
+   * 全程用 DOM + textContent 构造，不拼 HTML 字符串——模型输出里的尖括号永远是文字。
+   */
   function appendRichText(container, text) {
-    const lines = String(text || '').replace(/\r\n/g, '\n').split('\n'); let paragraph = []; let code = []; let language = ''; let inCode = false;
-    const flushParagraph = () => { if (!paragraph.length) return; const value = paragraph.join('\n').trimEnd(); if (value) { const node = document.createElement('p'); appendInline(node, value); container.append(node); } paragraph = []; };
-    const flushCode = () => {
-      const codeText = code.join('\n');
-      const shellLanguage = /^(bash|zsh|sh|shell|powershell|pwsh|cmd|bat|terminal|console)$/i.test(language) || (!language && looksLikeShell(codeText));
-      const wrapper = document.createElement('div'); wrapper.className = `code-block${shellLanguage ? ' terminal-command' : ''}`; const header = document.createElement('div'); header.className = 'code-header';
-      const idleLabel = shellLanguage ? '复制命令' : '复制';
-      const copy = textElement('button', '', idleLabel); copy.type = 'button'; copy.title = shellLanguage ? '复制终端命令' : '复制代码'; copy.addEventListener('click', () => requestClipboardWrite(codeText, copy, idleLabel));
-      const pre = document.createElement('pre'); const codeNode = document.createElement('code'); codeNode.textContent = codeText; pre.append(codeNode);
-      header.append(textElement('span', '', shellLanguage ? `终端命令 · ${language || 'shell'}` : language || 'code'), copy); wrapper.append(header, pre); container.append(wrapper); code = []; language = '';
+    const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+    let paragraph = [];
+    const flushParagraph = () => {
+      if (!paragraph.length) return;
+      const value = paragraph.join('\n').trim();
+      paragraph = [];
+      if (!value) return;
+      const node = document.createElement('p');
+      appendInline(node, value);
+      container.append(node);
     };
-    for (const line of lines) {
-      const fence = line.match(/^```\s*([^\s`]*)/);
-      if (fence) { if (inCode) { flushCode(); inCode = false; } else { flushParagraph(); language = fence[1] || ''; inCode = true; } continue; }
-      if (inCode) code.push(line); else if (!line.trim()) flushParagraph(); else paragraph.push(line);
+    let index = 0;
+    while (index < lines.length) {
+      const line = lines[index] || '';
+      // 围栏代码块。流式输出时结束围栏可能还没到，先按代码块渲染，避免整段闪成正文。
+      const fence = line.match(/^\s*```\s*([^\s`]*)/);
+      if (fence) {
+        flushParagraph();
+        const code = [];
+        const language = fence[1] || '';
+        index += 1;
+        while (index < lines.length && !/^\s*```\s*$/.test(lines[index] || '')) { code.push(lines[index] || ''); index += 1; }
+        index += 1;
+        container.append(codeBlockNode(code.join('\n'), language));
+        continue;
+      }
+      if (!line.trim()) { flushParagraph(); index += 1; continue; }
+      // 分隔线：--- / *** / ___（三个以上同类符号）
+      if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+        flushParagraph();
+        container.append(document.createElement('hr'));
+        index += 1;
+        continue;
+      }
+      // 标题：# 到 ######，行尾多余的 # 只是装饰
+      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (heading) {
+        flushParagraph();
+        const node = document.createElement(`h${heading[1].length}`);
+        appendInline(node, heading[2]);
+        container.append(node);
+        index += 1;
+        continue;
+      }
+      // 表格：表头行 + |---|---| 分隔行
+      if (isTableStart(lines, index)) { flushParagraph(); index = appendTable(container, lines, index); continue; }
+      // 引用：连续的 > 行合成一个引用块，块内再走一遍同样的排版
+      if (/^\s{0,3}>/.test(line)) {
+        flushParagraph();
+        const quoted = [];
+        while (index < lines.length) {
+          const current = lines[index] || '';
+          if (/^\s{0,3}>/.test(current)) { quoted.push(current.replace(/^\s{0,3}>\s?/, '')); index += 1; continue; }
+          if (!current.trim() && /^\s{0,3}>/.test(lines[index + 1] || '')) { quoted.push(''); index += 1; continue; }
+          break;
+        }
+        const node = document.createElement('blockquote');
+        appendRichText(node, quoted.join('\n'));
+        container.append(node);
+        continue;
+      }
+      // 列表：层级由 appendList 按缩进算，正文里不再叠加第二套缩进规则
+      if (isListLine(line)) { flushParagraph(); index = appendList(container, lines, index); continue; }
+      paragraph.push(line);
+      index += 1;
     }
-    if (inCode) flushCode(); flushParagraph();
+    flushParagraph();
+  }
+
+  /** 代码块：终端命令与普通代码用不同底色和标题，方便非技术读者区分「要我做什么」和「这是什么」。 */
+  function codeBlockNode(codeText, language) {
+    const shellLanguage = /^(bash|zsh|sh|shell|powershell|pwsh|cmd|bat|terminal|console)$/i.test(language) || (!language && looksLikeShell(codeText));
+    const wrapper = document.createElement('div');
+    wrapper.className = `code-block${shellLanguage ? ' terminal-command' : ''}`;
+    const header = document.createElement('div'); header.className = 'code-header';
+    const idleLabel = shellLanguage ? t('chat.copyCommand') : t('common.copy');
+    const copy = textElement('button', '', idleLabel); copy.type = 'button';
+    copy.title = shellLanguage ? t('chat.copyTerminalCommand') : t('chat.copyCode');
+    copy.addEventListener('click', () => requestClipboardWrite(codeText, copy, idleLabel));
+    const pre = document.createElement('pre');
+    const codeNode = document.createElement('code'); codeNode.textContent = codeText; pre.append(codeNode);
+    header.append(textElement('span', '', shellLanguage ? t('chat.terminalCommand', { language: language || 'shell' }) : (language || 'code')), copy);
+    wrapper.append(header, pre);
+    return wrapper;
+  }
+
+  function isListLine(line) { return /^\s*(?:[-*+]|\d{1,3}[.)])\s+\S/.test(String(line || '')); }
+
+  /**
+   * 列表：按缩进算出层级，缩进变深就往下挂一层。
+   * 有序 / 无序在同一层级切换时另起一个列表，序号从原文写的数字开始。
+   */
+  function appendList(container, lines, start) {
+    const items = [];
+    let index = start;
+    while (index < lines.length) {
+      const line = lines[index] || '';
+      if (!line.trim()) {
+        let next = index + 1;
+        while (next < lines.length && !String(lines[next] || '').trim()) next += 1;
+        if (next < lines.length && isListLine(lines[next])) { index = next; continue; }
+        break;
+      }
+      const match = line.match(/^(\s*)([-*+]|\d{1,3}[.)])\s+([\s\S]*)$/);
+      if (!match) {
+        // 缩进的续行并入上一条，而不是断开列表
+        if (items.length && /^\s+\S/.test(line)) { items[items.length - 1].text += `\n${line.trim()}`; index += 1; continue; }
+        break;
+      }
+      items.push({
+        indent: match[1].replace(/\t/g, '    ').length,
+        ordered: /\d/.test(match[2]),
+        startNumber: Number.parseInt(match[2], 10) || 1,
+        text: match[3],
+      });
+      index += 1;
+    }
+    const stack = [];
+    for (const item of items) {
+      while (stack.length && item.indent < stack[stack.length - 1].indent) stack.pop();
+      let frame = stack[stack.length - 1];
+      const tagName = item.ordered ? 'ol' : 'ul';
+      if (!frame || item.indent > frame.indent) {
+        const list = document.createElement(tagName);
+        if (item.ordered && item.startNumber !== 1) list.start = item.startNumber;
+        if (frame?.li) frame.li.append(list); else container.append(list);
+        frame = { indent: item.indent, list, li: null };
+        stack.push(frame);
+      } else if (frame.list.tagName.toLowerCase() !== tagName) {
+        const list = document.createElement(tagName);
+        if (item.ordered && item.startNumber !== 1) list.start = item.startNumber;
+        frame.list.after(list);
+        frame.list = list;
+        frame.li = null;
+      }
+      const li = document.createElement('li');
+      appendInline(li, item.text);
+      frame.list.append(li);
+      frame.li = li;
+    }
+    return index;
+  }
+
+  function splitTableRow(line) {
+    let value = String(line || '').trim();
+    if (value.startsWith('|')) value = value.slice(1);
+    if (value.endsWith('|')) value = value.slice(0, -1);
+    return value.split('|').map((cell) => cell.trim());
+  }
+
+  function tableAlignOf(cell) {
+    const value = String(cell || '');
+    const left = value.startsWith(':');
+    const right = value.endsWith(':');
+    if (left && right) return 'center';
+    if (right) return 'right';
+    return '';
+  }
+
+  /** 表头行 + 分隔行同时成立才算表格，避免把正文里的竖线误判成表。 */
+  function isTableStart(lines, index) {
+    const head = String(lines[index] || '');
+    const rule = String(lines[index + 1] || '');
+    if (!head.includes('|') || !rule.includes('-')) return false;
+    if (!/^\s*\|?[\s:|-]+\|?\s*$/.test(rule)) return false;
+    const separators = splitTableRow(rule);
+    if (!separators.length || !separators.every((cell) => /^:?-+:?$/.test(cell))) return false;
+    return splitTableRow(head).length === separators.length;
+  }
+
+  function appendTable(container, lines, start) {
+    const aligns = splitTableRow(lines[start + 1]).map(tableAlignOf);
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    for (const [column, cell] of splitTableRow(lines[start]).entries()) {
+      const th = document.createElement('th');
+      if (aligns[column]) th.style.textAlign = aligns[column];
+      appendInline(th, cell);
+      headRow.append(th);
+    }
+    head.append(headRow);
+    const body = document.createElement('tbody');
+    let index = start + 2;
+    while (index < lines.length) {
+      const line = lines[index] || '';
+      if (!line.trim() || !line.includes('|')) break;
+      const cells = splitTableRow(line);
+      const row = document.createElement('tr');
+      for (let column = 0; column < Math.max(cells.length, aligns.length); column += 1) {
+        const td = document.createElement('td');
+        if (aligns[column]) td.style.textAlign = aligns[column];
+        appendInline(td, cells[column] || '');
+        row.append(td);
+      }
+      body.append(row);
+      index += 1;
+    }
+    const table = document.createElement('table'); table.append(head, body);
+    const wrap = document.createElement('div'); wrap.className = 'table-wrap'; wrap.append(table);
+    container.append(wrap);
+    return index;
   }
 
   function looksLikeShell(value) {
     return /^(?:\$\s*)?(?:npm|pnpm|yarn|git|cd|ls|mkdir|rm|cp|mv|curl|wget|python3?|node|npx|docker|kubectl|gradle|\.\/|swift|go|cargo|chmod|chown|brew|apt|pip3?|export|setx|powershell)\b/im.test(value.trim());
   }
 
+  /** 行内格式：`代码`、**加粗**、~~删除~~、[文字](链接)、裸链接。 */
   function appendInline(parent, value) {
-    const pattern = /(`[^`]+`|\*\*[^*]+\*\*|https?:\/\/[^\s<]+)/g; let cursor = 0;
+    // 只把「目标看起来像链接」的 [文字](目标) 当链接：目标必须以 http(s)://、mailto:、# 或 / 开头，
+    // 这样 [文字](javascript:…) 之类的构造连匹配都不会匹配，不会出现半个链接加一个多余的右括号。
+    const pattern = /(`[^`]+`|\*\*[^*\n]+\*\*|\*[^\s*][^*\n]*\*|~~[^~\n]+~~|\[[^\]\n]+\]\((?:https?:\/\/|mailto:|#|\/)[^)\s]*\)|https?:\/\/[^\s<]+)/g; let cursor = 0;
     for (const match of value.matchAll(pattern)) {
       const index = match.index || 0; if (index > cursor) parent.append(document.createTextNode(value.slice(cursor, index))); const token = match[0];
       if (token.startsWith('`')) parent.append(textElement('code', '', token.slice(1, -1)));
       else if (token.startsWith('**')) parent.append(textElement('strong', '', token.slice(2, -2)));
+      else if (token.startsWith('*')) parent.append(textElement('em', '', token.slice(1, -1)));
+      else if (token.startsWith('~~')) parent.append(textElement('del', '', token.slice(2, -2)));
+      else if (token.startsWith('[')) {
+        const parts = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+        const rawTarget = parts?.[2] || '';
+        const link = textElement('a', '', parts?.[1] || token);
+        // 只放行 http/https/mailto/站内锚点：webview 里不能让模型输出决定 href 的 scheme。
+        link.href = /^(?:https?:\/\/|mailto:|#|\/)/i.test(rawTarget) ? rawTarget : '#';
+        link.target = '_blank'; link.rel = 'noreferrer'; parent.append(link);
+      }
       else { const link = textElement('a', '', token); link.href = token; link.target = '_blank'; link.rel = 'noreferrer'; parent.append(link); }
       cursor = index + token.length;
     }
@@ -506,8 +811,8 @@
         chip.append(image);
       }
       const label = textElement('span', '', attachment.label); label.title = attachment.path || attachment.label;
-      const size = textElement('small', '', attachment.kind === 'selection' ? '代码选区' : formatBytes(attachment.bytes || 0));
-      const remove = textElement('button', '', '×'); remove.type = 'button'; remove.title = '移除';
+      const size = textElement('small', '', attachment.kind === 'selection' ? t('chat.codeSelection') : formatBytes(attachment.bytes || 0));
+      const remove = textElement('button', '', '×'); remove.type = 'button'; remove.title = t('common.remove');
       if (attachment.kind === 'selection') remove.addEventListener('click', () => post('removeContext'));
       else { const index = fileIndex; remove.addEventListener('click', () => post('removeAttachment', { index })); fileIndex += 1; }
       chip.append(label, size, remove); elements.attachmentList.append(chip);
@@ -519,7 +824,7 @@
     const sourceId = state.conversation?.sourceConversationId;
     elements.historyLinkBanner.hidden = !sourceId;
     if (!sourceId) return;
-    elements.sourceHistoryTitle.textContent = `任务历史：${state.conversation.sourceConversationTitle || '旧对话'}`;
+    elements.sourceHistoryTitle.textContent = t('chat.sourceHistory', { title: state.conversation.sourceConversationTitle || t('chat.previousConversation') });
   }
 
   function updateComposerState() {
@@ -533,8 +838,7 @@
     elements.reasoningEffortInput.disabled = state.streaming || archived || elements.reasoningEffortInput.dataset.support !== 'configurable';
     elements.voiceButton.disabled = archived;
     elements.detachHistoryButton.disabled = state.streaming || archived;
-    elements.promptInput.placeholder = archived ? '该对话已归档，恢复后可继续' : state.streaming ? 'Agent 正在执行；新消息会自动合并到当前任务或加入队列…' : '询问代码、调试问题或直接交给 Agent 实现…';
-    elements.composerHint.textContent = archived ? '归档对话为只读' : state.streaming ? '发送后自动判断任务关系' : state.sendOnEnter ? 'Enter 发送 · Shift+Enter 换行' : '⌘/Ctrl+Enter 发送';
+    elements.promptInput.placeholder = archived ? t('chat.promptPlaceholderArchived') : state.streaming ? t('chat.promptPlaceholderStreaming') : t('chat.promptPlaceholderAgent');
   }
 
   function autoResize() { elements.promptInput.style.height = 'auto'; elements.promptInput.style.height = `${Math.min(elements.promptInput.scrollHeight, 180)}px`; updateComposerState(); }
@@ -610,8 +914,16 @@
     if (commandEnter || regularEnter) { event.preventDefault(); submit(); }
   });
   elements.loadOlderButton.addEventListener('click', () => { const first = state.messages[0]; if (first) post('loadOlder', { before: first.id }); });
+  // 可选链：万一 webview 仍加载旧 HTML（结构里没有这个按钮），这里不会中断后续初始化。
+  elements.scrollToBottomButton?.addEventListener('click', () => {
+    state.autoFollow = true;
+    elements.messageViewport.scrollTo({ top: elements.messageViewport.scrollHeight, behavior: 'smooth' });
+    updateScrollToBottom();
+  });
+  window.addEventListener('resize', updateScrollToBottom);
   elements.messageViewport.addEventListener('scroll', () => {
     if (!state.renderingMessages) state.autoFollow = isNearBottom();
+    updateScrollToBottom();
   }, { passive: true });
   elements.promptInput.addEventListener('paste', (event) => {
     const files = clipboardFiles(event.clipboardData);
@@ -703,9 +1015,9 @@
       try {
         const buffer = await file.arrayBuffer();
         const thumbnailDataUrl = file.type.startsWith('image/') ? await imageThumbnailDataUrl(file) : undefined;
-        encoded.push({ name: file.name || (file.type.startsWith('image/') ? '粘贴的图片' : '粘贴的文件'), mimeType: file.type, size: buffer.byteLength, dataBase64: arrayBufferToBase64(buffer), thumbnailDataUrl });
+        encoded.push({ name: file.name || (file.type.startsWith('image/') ? t('chat.pastedImage') : t('chat.pastedFile')), mimeType: file.type, size: buffer.byteLength, dataBase64: arrayBufferToBase64(buffer), thumbnailDataUrl });
       } catch (error) {
-        showToast(`读取剪贴板附件失败：${error?.message || error}`, 'warning');
+        showToast(t('chat.clipboardReadFailed', { error: error?.message || error }), 'warning');
       }
     }
     if (encoded.length) post('attachClipboardFiles', { files: encoded });
@@ -741,7 +1053,7 @@
   function startVoiceRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      showToast('当前 VS Code/Webview 不提供语音识别。请启用系统听写或使用支持语音识别的 VS Code 版本。', 'warning');
+      showToast(t('chat.noSpeechRecognition'), 'warning');
       return;
     }
     if (state.voiceRecognition) {
@@ -764,10 +1076,10 @@
       elements.promptInput.value = `${original}${original && transcript ? ' ' : ''}${transcript}`;
       autoResize();
     };
-    recognition.onerror = (event) => showToast(`语音输入失败：${event.error || '未知错误'}`, 'warning');
+    recognition.onerror = (event) => showToast(t('chat.speechFailed', { error: event.error || t('common.unknown') }), 'warning');
     recognition.onend = () => { state.voiceRecognition = null; state.voiceActive = false; elements.voiceButton.classList.remove('active'); updateComposerState(); };
     elements.voiceButton.classList.add('active');
-    try { recognition.start(); } catch (error) { recognition.onend(); showToast(`无法开始语音输入：${error?.message || error}`, 'warning'); }
+    try { recognition.start(); } catch (error) { recognition.onend(); showToast(t('chat.speechStartFailed', { error: error?.message || error }), 'warning'); }
     updateComposerState();
   }
 
@@ -797,8 +1109,8 @@
       case 'messageComplete': { if (message.conversationId !== state.conversation?.id) break; if (state.renderTimer) { clearTimeout(state.renderTimer); state.renderTimer = null; } const index = state.messages.findIndex((item) => item.id === message.message.id); if (index >= 0) state.messages[index] = message.message; else state.messages.push(message.message); renderMessages('keep'); break; }
       case 'streamIdle': setStreaming(false); renderTaskTree(); elements.promptInput.focus(); break;
       case 'olderMessages': state.messages = [...message.messages, ...state.messages]; state.hasMore = Boolean(message.hasMore); renderMessages('prepend'); break;
-      case 'modelChanged': state.model = message.model; if (state.conversation) state.conversation.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; elements.modelInput.value = message.model; syncReasoningSelector(); updateComposerState(); showToast(`已切换到 ${message.model}`); break;
-      case 'profileChanged': state.activeApiProfileId = message.profileId; state.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; if (state.conversation) { state.conversation.apiProfileId = message.profileId; state.conversation.model = message.model; } elements.modelInput.value = message.model; renderHeader(); showToast('API 配置已切换'); break;
+      case 'modelChanged': state.model = message.model; if (state.conversation) state.conversation.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; elements.modelInput.value = message.model; syncReasoningSelector(); updateComposerState(); showToast(t('chat.modelChanged', { model: message.model })); break;
+      case 'profileChanged': state.activeApiProfileId = message.profileId; state.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; if (state.conversation) { state.conversation.apiProfileId = message.profileId; state.conversation.model = message.model; } elements.modelInput.value = message.model; renderHeader(); showToast(t('chat.profileChanged')); break;
       case 'modelsLoading': state.modelLoadingProfileId = message.active ? message.profileId : state.modelLoadingProfileId === message.profileId ? null : state.modelLoadingProfileId; renderHeader(); updateComposerState(); break;
       case 'modelsChanged': {
         const profile = state.apiProfiles.find((item) => item.id === message.profileId);
@@ -830,7 +1142,7 @@
             elements.promptInput.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
             insertPromptText(message.text || '');
           }
-          if (message.truncated) showToast('剪贴板文字过长，已粘贴前 200 万个字符。', 'warning');
+          if (message.truncated) showToast(t('chat.clipboardTruncated'), 'warning');
         }
         break;
       case 'toast': showToast(message.text, message.tone); break;
@@ -838,8 +1150,8 @@
   });
 
   function formatTime(value) { return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(value)); }
-  function relativeTime(value) { const delta = Date.now() - value; if (delta < 60_000) return '刚刚'; if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`; if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`; if (delta < 604_800_000) return `${Math.floor(delta / 86_400_000)} 天前`; return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(new Date(value)); }
-  function formatBytes(bytes) { if (!bytes) return '文件'; if (bytes < 1024) return `${bytes} B`; return `${(bytes / 1024).toFixed(1)} KB`; }
+  function relativeTime(value) { const delta = Date.now() - value; if (delta < 60_000) return t('time.justNow'); if (delta < 3_600_000) return t('time.minutesAgo', { count: Math.floor(delta / 60_000) }); if (delta < 86_400_000) return t('time.hoursAgo', { count: Math.floor(delta / 3_600_000) }); if (delta < 604_800_000) return t('time.daysAgo', { count: Math.floor(delta / 86_400_000) }); return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(new Date(value)); }
+  function formatBytes(bytes) { if (!bytes) return t('common.file'); if (bytes < 1024) return `${bytes} B`; return `${(bytes / 1024).toFixed(1)} KB`; }
   function formatDuration(ms) { if (ms < 1000) return `${ms} ms`; if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`; return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`; }
   function formatMillionTokens(tokens) {
     const millions = Math.max(0, Number(tokens) || 0) / 1_000_000;

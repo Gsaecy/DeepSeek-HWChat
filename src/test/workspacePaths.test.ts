@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveWorkspacePath } from '../agent/workspacePaths';
+import { externalToolPathViolation, normalizeWorkspaceGlob, resolveWorkspacePath } from '../agent/workspacePaths';
 
 const roots = [
   { name: 'Safevault_android', fsPath: '/Users/test/AI projects/Safevault_android' },
   { name: 'MaiKer_Win', fsPath: '/Users/test/AI projects/MaiKer_Win' },
 ];
+
+/** 只把列出的路径视为存在，模拟真实文件系统探测。 */
+function probe(existing: readonly string[]) {
+  const set = new Set(existing);
+  return (fsPath: string) => set.has(fsPath);
+}
 
 test('resolves absolute files inside any VS Code workspace root', () => {
   const resolved = resolveWorkspacePath('/Users/test/AI projects/MaiKer_Win/docs/TECHNICAL.md', roots);
@@ -23,5 +29,148 @@ test('rejects paths outside all workspace roots', () => {
   assert.throws(
     () => resolveWorkspacePath('/Users/test/Documents/private.txt', roots),
     /当前 VS Code 工作区内/,
+  );
+});
+
+test('resolves a relative path that only exists in a later workspace root', () => {
+  // 旧实现只把相对路径解析到第一个根目录，导致读取第二个根里的文件时抛出 ENOENT。
+  const resolved = resolveWorkspacePath('src/agent/commandPaths.ts', roots, {
+    exists: probe(['/Users/test/AI projects/MaiKer_Win/src/agent/commandPaths.ts']),
+  });
+  assert.equal(resolved.root.name, 'MaiKer_Win');
+  assert.equal(resolved.fsPath, '/Users/test/AI projects/MaiKer_Win/src/agent/commandPaths.ts');
+});
+
+test('prefers the first root when the relative path exists only there', () => {
+  const resolved = resolveWorkspacePath('src/index.ts', roots, {
+    exists: probe(['/Users/test/AI projects/Safevault_android/src/index.ts']),
+  });
+  assert.equal(resolved.root.name, 'Safevault_android');
+});
+
+test('rejects a relative path that exists in several roots and asks for a prefix', () => {
+  assert.throws(
+    () =>
+      resolveWorkspacePath('src/index.ts', roots, {
+        exists: probe([
+          '/Users/test/AI projects/Safevault_android/src/index.ts',
+          '/Users/test/AI projects/MaiKer_Win/src/index.ts',
+        ]),
+      }),
+    /同时存在.*Safevault_android、MaiKer_Win.*根目录名/,
+  );
+});
+
+test('falls back to the first root when the path exists nowhere, so new files can be created', () => {
+  const resolved = resolveWorkspacePath('src/new-file.ts', roots, { exists: probe([]) });
+  assert.equal(resolved.root.name, 'Safevault_android');
+  assert.equal(resolved.fsPath, '/Users/test/AI projects/Safevault_android/src/new-file.ts');
+});
+
+test('does not treat the bare workspace root as ambiguous', () => {
+  const resolved = resolveWorkspacePath('.', roots, {
+    exists: probe(roots.map((root) => root.fsPath)),
+  });
+  assert.equal(resolved.root.name, 'Safevault_android');
+  assert.equal(resolved.fsPath, '/Users/test/AI projects/Safevault_android');
+});
+
+test('keeps legacy first-root behavior when no existence probe is supplied', () => {
+  const resolved = resolveWorkspacePath('src/agent/commandPaths.ts', roots);
+  assert.equal(resolved.root.name, 'Safevault_android');
+});
+
+test('an explicit root prefix still wins over existence probing', () => {
+  const resolved = resolveWorkspacePath('MaiKer_Win/src/index.ts', roots, {
+    exists: probe(['/Users/test/AI projects/Safevault_android/src/index.ts']),
+  });
+  assert.equal(resolved.root.name, 'MaiKer_Win');
+});
+
+// ── glob 的根目录名前缀必须与 path 参数同一套约定 ─────────────────────────
+test('strips a root-name prefix from a glob and reports the matched root', () => {
+  const normalized = normalizeWorkspaceGlob('MaiKer_Win/src/**/*.ts', roots);
+  assert.equal(normalized.glob, 'src/**/*.ts');
+  assert.equal(normalized.root?.name, 'MaiKer_Win');
+});
+
+test('leaves a glob without a root prefix untouched', () => {
+  const normalized = normalizeWorkspaceGlob('src/**/*.ts', roots);
+  assert.equal(normalized.glob, 'src/**/*.ts');
+  assert.equal(normalized.root, undefined);
+});
+
+test('does not strip a prefix that only looks similar to a root name', () => {
+  const normalized = normalizeWorkspaceGlob('MaiKer_Win_backup/src/*.ts', roots);
+  assert.equal(normalized.glob, 'MaiKer_Win_backup/src/*.ts');
+  assert.equal(normalized.root, undefined);
+});
+
+test('falls back to a match-everything glob when the input is empty', () => {
+  assert.equal(normalizeWorkspaceGlob('   ', roots).glob, '**/*');
+});
+
+// ── 裸 `**` 必须归一：findFiles 的 include 里 `**` 匹配不到任何文件 ──────────
+// 真实故障：`DeepSeek-HWChat/**` 剥掉前缀后剩 `**`，交给 findFiles 后 0 个文件，
+// 工具却回答“没有匹配文件”，调用方只能误判为该目录下没有文件。
+test('rewrites a bare ** left over from stripping a root prefix', () => {
+  const normalized = normalizeWorkspaceGlob('MaiKer_Win/**', roots);
+  assert.equal(normalized.glob, '**/*');
+  assert.equal(normalized.root?.name, 'MaiKer_Win');
+});
+
+test('rewrites a bare ** even without a root prefix', () => {
+  assert.equal(normalizeWorkspaceGlob('**', roots).glob, '**/*');
+});
+
+test('keeps a trailing ** that still has a directory before it', () => {
+  const normalized = normalizeWorkspaceGlob('MaiKer_Win/src/**', roots);
+  assert.equal(normalized.glob, 'src/**');
+  assert.equal(normalized.root?.name, 'MaiKer_Win');
+});
+
+// ── 桥接工具的路径隔离 ───────────────────────────────────────────────────
+// 真实缺陷：`hwchat_vscode_copilot_readFile` 传 /etc/hosts 直接返回了工作区外的
+// 文件内容，`copilot_listDirectory` 传 /etc 列出了整个系统目录。原生 read_file 被
+// 锁在工作区内，桥接通道却能读任何路径，两条通道安全等级不一致。
+test('external tools: absolute path outside every root is rejected', () => {
+  const violation = externalToolPathViolation({ filePath: '/etc/hosts' }, roots);
+  assert.match(String(violation), /filePath/);
+  assert.match(String(violation), /不在当前工作区内/);
+});
+
+test('external tools: absolute path inside a root is allowed', () => {
+  assert.equal(
+    externalToolPathViolation({ path: '/Users/test/AI projects/MaiKer_Win/src/index.ts' }, roots),
+    undefined,
+  );
+});
+
+test('external tools: directory traversal outside every root is rejected', () => {
+  assert.match(String(externalToolPathViolation({ path: '../../../etc/passwd' }, roots)), /不在当前工作区内/);
+});
+
+test('external tools: traversal that stays inside a root is allowed', () => {
+  assert.equal(externalToolPathViolation({ path: 'MaiKer_Win/src/../package.json' }, roots), undefined);
+});
+
+test('external tools: HOME reference is rejected', () => {
+  assert.match(String(externalToolPathViolation({ path: '~/.zshrc' }, roots)), /HOME/);
+  assert.match(String(externalToolPathViolation({ path: '$HOME/.ssh/id_rsa' }, roots)), /HOME/);
+});
+
+test('external tools: content-like arguments are not treated as paths', () => {
+  // 正文里出现 /etc/passwd 是正常内容，不能误杀。
+  assert.equal(
+    externalToolPathViolation({ filePath: 'MaiKer_Win/notes.md', content: 'see /etc/passwd here' }, roots),
+    undefined,
+  );
+  assert.equal(externalToolPathViolation({ command: 'cat /etc/hosts' }, roots), undefined);
+});
+
+test('external tools: path arrays are checked element by element', () => {
+  assert.match(
+    String(externalToolPathViolation({ files: ['MaiKer_Win/a.ts', '/etc/hosts'] }, roots)),
+    /不在当前工作区内/,
   );
 });

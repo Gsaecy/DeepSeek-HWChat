@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { existsSync } from 'node:fs';
 import {
   ChatSettings,
   ConversationMode,
@@ -8,7 +9,7 @@ import {
 } from '../core/types';
 import { redact } from './auditLog';
 import type { RequestApproval, ToolExecutor } from './toolExecutor';
-import { resolveWorkspacePath } from './workspacePaths';
+import { externalToolPathViolation, resolveWorkspacePath } from './workspacePaths';
 import { classifyVscodeToolRisk } from '../core/permissions';
 
 const PREFIX = 'hwchat_vscode_';
@@ -126,8 +127,19 @@ export class VscodeToolBridge {
    */
   private async invokeExternal(tool: ExternalTool, rawArguments: string): Promise<ToolExecutionResult> {
     try {
+      const input = parseInput(rawArguments);
+      // 桥接工具的参数由 VS Code 侧解释，HWChat 无法插手其内部行为，因此必须
+      // 在调用前就挡掉越界路径——否则 `copilot_readFile` 能读到 /etc 下的任何文件。
+      const folders = vscode.workspace.workspaceFolders ?? [];
+      const violation = externalToolPathViolation(
+        input,
+        folders.map((folder) => ({ name: folder.name, fsPath: folder.uri.fsPath })),
+      );
+      if (violation) {
+        return denied(`VS Code 工具 ${tool.name} 被路径隔离策略拦截：${violation}`);
+      }
       const response = await vscode.lm.invokeTool(tool.name, {
-        input: parseInput(rawArguments),
+        input,
         toolInvocationToken: undefined,
       });
       return success(`调用 VS Code 工具：${tool.name}`, toolResultText(response) || '工具已完成，但没有返回文本结果。');
@@ -193,7 +205,7 @@ export class VscodeToolBridge {
   private externalDefinitions(): ToolDefinition[] {
     return this.externalTools().map((tool) => definition(
       externalToolId(tool.name),
-      `VS Code 扩展工具 ${tool.name}：${tool.description}`,
+      `VS Code 扩展工具 ${tool.name}：${tool.description}${absolutePathHint(tool.inputSchema)}`,
       tool.inputSchema as Record<string, unknown>,
     ));
   }
@@ -245,7 +257,11 @@ export class VscodeToolBridge {
 
   private workspaceUri(input: string): vscode.Uri {
     const folders = vscode.workspace.workspaceFolders ?? [];
-    const resolved = resolveWorkspacePath(input, folders.map((folder) => ({ folder, name: folder.name, fsPath: folder.uri.fsPath })));
+    const resolved = resolveWorkspacePath(
+      input,
+      folders.map((folder) => ({ folder, name: folder.name, fsPath: folder.uri.fsPath })),
+      { exists: existsSync },
+    );
     return vscode.Uri.file(resolved.fsPath);
   }
 }
@@ -263,6 +279,18 @@ function definition(name: string, description: string, parameters: Record<string
 function externalToolId(name: string): string {
   const safe = name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 38);
   return `${PREFIX}${safe || 'tool'}_${shortHash(name)}`;
+}
+
+/**
+ * VS Code 侧的文件类工具只接受绝对路径，传相对路径会直接回
+ * `Invalid input path: … Be sure to use an absolute path.`。
+ * 工具说明里点明这一点，调用方就不必先撞一次错再猜。
+ */
+function absolutePathHint(inputSchema: unknown): string {
+  const properties = isObject(inputSchema) ? inputSchema.properties : undefined;
+  if (!isObject(properties)) return '';
+  const keys = Object.keys(properties).filter((key) => /^(?:path|filepath|repositorypath|gitfolderpath)$/i.test(key));
+  return keys.length ? `（注意：${keys.join('、')} 必须传工作区内绝对路径）` : '';
 }
 
 function shortHash(value: string): string {

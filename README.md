@@ -1,96 +1,107 @@
 # HWChat
 
-当前版本：**0.1.5**
+[English](README.md) · [中文](README.zh-CN.md)
 
-HWChat 是面向 VS Code 的本地优先编码 Agent 扩展。项目仓库：<https://github.com/Gsaecy/DeepSeek-HWChat>
+Current version: **0.1.8**
 
-HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent 扩展。它提供简洁的聊天与设置界面、原生流式 tool calling、本地 Skill、文件附件、权限预设、归档历史和可恢复的分片存储。聊天固定在 VS Code 右侧辅助侧边栏，不会再占用编辑器标签页。
+HWChat is a local-first coding agent for VS Code with a DeepSeek / OpenAI-compatible backend. Repository: <https://github.com/Gsaecy/DeepSeek-HWChat>
 
-## 编码 Agent
+It ships a compact chat surface and settings page, native streaming tool calling, local skills, file attachments, permission presets, archived history and crash-resilient chunked storage. The chat lives in the VS Code secondary sidebar, so it never takes over an editor tab.
 
-- `Agent`：读取和搜索项目、检查诊断、创建/修改/移动/删除文件、运行命令，并把工具结果继续回传模型完成多轮任务。
-- `Plan`：只开放只读工具，用于分析代码和制定方案，不修改工作区。
-- `Chat`：不开放工作区工具，仅使用对话和明确添加的上下文。
-- 原生识别 VS Code 的单根和多根工作区，可直接列出工作区根目录、浏览目录、读取文件，并通过 `open_file` 在编辑器中打开文件，不再绕行终端、`code` CLI 或其它扩展工具。
-- 在受信任工作区和当前权限预设允许时，Agent 可自行执行工作区内命令。终端命令按风险分成三档：只读命令（`ls`、`git status`、`grep` 等）、正常命令（安装、构建、提交等）和危险命令（提权、破坏性删除、磁盘擦写、强制推送、把网络脚本管道给 shell 等）。`每次询问` 全部确认且危险命令直接拒绝；`风险操作询问` / `Autopilot` 自动执行只读与正常命令、危险命令逐次确认；`完全访问` 连危险命令也自动执行，但读取敏感文件时仍逐次确认。未受信任工作区和工作区外路径隔离始终有效。
-- 每个执行步骤默认折叠，只显示结果摘要；展开后可查看工具输入、输出、审批状态、耗时和涉及文件。展开/收起状态由用户决定：流式输出期间列表重新渲染也不会再自动收起，点开保持展开，再点一次才收起。
-- 可从聊天输入区添加多个文件，也可在资源管理器右键选择“HWChat: 添加文件到对话”。文件内容不会发送给 Webview，只在扩展宿主中按需加入 API 请求。
-- 支持多个 OpenAI 兼容 API 配置档，每个配置档可独立保存地址、API Key、模型列表和请求头，并在对话标题下方的控件行即时切换。
-- 模型选择不依赖 Copilot 或其它扩展注册的模型。HWChat 会直接调用当前 API 的 `/models` 接口读取可用细分模型和展示名称，过滤接口标记为停用、过期或不可用的模型，并记住用户手动排除的模型；DeepSeek 官网接口在首次刷新前以 `deepseek-flash` 和 `deepseek-v4-pro` 作为离线兜底。
-- 思考深度跟随当前模型能力：仅当 `/models` 元数据声明支持多档调节时开放选择；不支持、固定思考或能力未知的模型不会伪装成可调节。兼容接口拒绝思考参数时会自动移除不支持的参数后重试。
-- 每条完成的助手回复显示本轮 Token 消耗，统一换算为百万 Token（`M tokens`）；左侧对话记录显示该对话所有轮次的累计消耗。
-- 对话面板顶部第一行只放对话标题与状态，第二行单独放工作模式、API 配置、模型、刷新，以及靠右的 Skill、归档、导出、设置控件（Skill 在设置左侧）；面板变窄时控件自动换行而不是压缩标题。
-- 输入框是单个圆角框：上方是文本输入区，框内底部单独一行放权限预设、最大步骤、思考层级，以及靠右的附件、语音、发送/停止按钮（附件在语音左侧）。执行步骤默认不限；切换权限预设时会显示对应档位的风险说明，确认后对下一次发送立即生效。
-- Agent 运行时输入框仍可编辑和发送。相关补充会合并到当前任务并在下一个工具边界重新规划，尚未执行的冲突步骤会跳过；无关任务进入可见任务树队列，前一分支完成后自动继续。
-- 运行中插入的每个问题都会立即生成自己的排队回答位，并最终把结果显示在对应问题下方，不再把后续问题的答案堆到上一条回复前面。
-- Agent 运行时可以自由向上查看历史；只有用户停留在底部时才自动跟随流式输出。
-- 支持从输入框粘贴图片、截图和文件，粘贴后会先显示本地缩略图。图片会以兼容 OpenAI 的多模态内容发送；任务缓存到期后会移除附件正文、图片 Base64 和缩略图，只保留名称、类型和大小摘要。
-- 支持语音输入。HWChat 仅接收识别后的文字，不把音频写入对话缓存；识别文字仍需点击发送才会提交给当前 API。
-- 模型回复中的终端命令会显示为独立的“终端命令”代码块，并提供经 VS Code 剪贴板确认的一键复制；Agent 执行步骤中的输入、结果和实际命令也可直接复制，消息正文支持选择后用 `⌘/Ctrl+C` 复制。
-- 输入框支持 `⌘/Ctrl+V` 粘贴文字、图片、截图和文件；剪贴板同时包含文字和附件时会一起保留，并在 Webview 原生粘贴失效时自动使用 VS Code 剪贴板兜底。
-- 除内置工作区工具外，HWChat 会发现并调用当前 VS Code 中通过 Language Model Tool API 暴露的全部扩展工具（不再固定截断在 100 个）；需要授权的工具只弹 VS Code 自己的确认框，不需要授权的工具直接调用，HWChat 不再叠加一层“允许 Agent …”弹窗。启动时会激活声明了语言模型工具但尚未运行的扩展，模型调用了暂时缺失的工具时也会补激活一次再重试；网页、文本、Markdown 和差异内容可直接在编辑区预览。
-- 可从任意历史记录点击“续接”，或运行命令 `HWChat: 在新对话中续接当前任务历史`。新对话保存来源对话的本地只读交接摘要，Agent 还可按需检索来源链中的旧消息，避免重复踩已经记录的坑。旧对话不会被复制或修改；本地保存本身不产生 API Token，但实际发送给模型的摘要和检索片段会计入输入 Token。
+![HWChat chat panel in dark theme](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-dark.png)
+
+## Interface language
+
+HWChat speaks Chinese and English. Open **Settings → General → Interface language** and pick `Auto` (follow the VS Code display language), `Chinese` or `English`. The chat panel, settings page, notifications and error messages switch immediately — no window reload needed.
+
+Command palette titles and the configuration descriptions in the VS Code Settings UI follow the editor's own display language through the standard VS Code localization (NLS) mechanism.
+
+![HWChat settings page in light theme](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/settings-light.png)
+
+## Coding agent
+
+- **Agent** — reads and searches the project, checks diagnostics, creates/edits/moves/deletes files, runs commands, and feeds tool results back to the model for multi-step work.
+- **Plan** — read-only tools only: analyse code and produce a plan without touching the workspace.
+- **Chat** — no workspace tools at all; only the conversation and the context you explicitly attach.
+- Understands single-root and multi-root VS Code workspaces natively: list workspace roots, browse directories, read files, and open them in the editor through `open_file` — no detouring through a terminal, the `code` CLI or another extension. Tools bridged from other VS Code extensions obey the same path isolation as the built-in ones, and their parameter descriptions state that file arguments must be absolute paths inside the workspace.
+- In a trusted workspace, and when the active permission preset allows it, the agent runs commands inside the workspace on its own. Commands are graded in three tiers: read-only (`ls`, `git status`, `grep`…), regular (install, build, commit…) and dangerous (privilege escalation, destructive deletion, disk wiping, forced pushes, piping remote scripts into a shell…). `Ask every time` confirms everything and denies dangerous commands outright; `Ask on risky actions` and `Autopilot` run read-only and regular commands automatically and ask for dangerous ones; `Full access` even runs dangerous commands but still confirms before reading sensitive files. Untrusted workspaces and path isolation outside the workspace always apply. `sed`/`grep` pattern or script arguments (such as `sed -n '/a/,/^b/p'`) are treated as patterns and not mistaken for escaping paths, while real file arguments are still validated one by one — including direct filesystem-root targets like `rm -rf /`, which are rejected.
+- Every execution step is collapsed by default and shows a result summary; expanding it reveals tool input, output, approval state, elapsed time and touched files. The expand/collapse state belongs to you: re-rendering during streaming no longer collapses a step you opened.
+- Add multiple files from the composer, or right-click a file in Explorer and choose **HWChat: Add files to chat**. File contents never reach the webview; they are attached to the API request on demand from the extension host.
+- Multiple OpenAI-compatible API profiles, each with its own endpoint, API key, model list and request headers, switchable from the control row under the conversation title.
+- Model selection does not depend on Copilot or any other extension. HWChat calls the profile's `/models` endpoint, filters models the API marks as retired, expired or unavailable, and remembers models you excluded. Before the first refresh, the official DeepSeek endpoint falls back to `deepseek-flash` and `deepseek-v4-pro`.
+- Reasoning depth follows the current model's declared capability: the selector is only enabled when `/models` metadata advertises adjustable effort. Unsupported, fixed or unknown models are never dressed up as adjustable, and compatible endpoints that reject the parameter get a retry with it removed.
+- Each finished assistant reply shows its own token usage normalised to millions (`M tokens`); the conversation list shows the running total for the whole conversation.
+- The chat header keeps the title and status on the first row and puts work mode, API profile, model, refresh, plus skills/archive/export/settings on a second row that wraps instead of squeezing the title.
+- The composer is a single rounded box: the text area on top, and one bottom row holding permission preset, max steps, reasoning level plus attach, voice and send/stop. That row never wraps; as it narrows, the text prefixes disappear in the order reasoning → max steps → permission preset, leaving only the selected values. Switching presets shows that preset's risk summary and takes effect on the next send.
+- The composer stays editable while the agent runs. Related follow-ups merge into the current task and re-plan at the next tool boundary, skipping conflicting pending steps; unrelated tasks join a visible task-tree queue and continue automatically when the current branch finishes.
+- Every question you insert while the agent is running immediately gets its own queued reply slot, and the answer ends up under that question instead of being prepended to the previous reply.
+- You can scroll freely through history while the agent runs; streaming only auto-follows while you are at the bottom. During execution the send button becomes a **red highlighted stop button** (danger background, breathing halo, solid square icon) so it is obvious the task is running and how to stop it; the animation is skipped when the system requests reduced motion.
+- Paste images, screenshots and files straight into the composer; pasted images show a local thumbnail first. Images are sent as OpenAI-compatible multimodal content. When the task cache expires, attachment bodies, image Base64 and thumbnails are dropped while names, types and sizes remain.
+- Voice input is supported. HWChat only receives the transcribed text and never writes audio into the conversation cache; the text is still only sent to the API after you press send.
+- Replies are rendered as Markdown rather than one wall of text: headings (`#`–`######`), nested ordered/unordered lists, tables (with alignment and horizontal scrolling), quotes and rules, plus inline bold, `inline code`, strikethrough and `[text](link)`. Terminal commands appear as a dedicated block with one-click copy through the VS Code clipboard confirmation; tool input, results and the actual command can be copied too, and message text supports select-then-`⌘/Ctrl+C`. Step summaries read like "Process · 5 steps, 2 files changed" so non-programmers can follow along. Every "here is what I am about to do" paragraph is followed by the exact steps it triggered — what ran and how it ended — interleaved in the order things happened, so nothing has to be cross-referenced; a single-step group omits the summary heading, and older messages keep the previous "steps, then text" layout.
+- The composer supports `⌘/Ctrl+V` for text, images, screenshots and files. When the clipboard carries both text and attachments, both are kept; if the webview's native paste fails, HWChat falls back to the VS Code clipboard.
+- Beyond the built-in workspace tools, HWChat discovers and calls every language-model tool exposed by other VS Code extensions (no longer capped at 100). Tools that need authorisation show VS Code's own confirmation only; tools that do not are called directly and HWChat adds no extra "Allow the agent…" prompt. Extensions that declare language-model tools but are not running are activated at startup, and a tool call that hits a temporarily missing tool triggers one more activation and retry. Web pages, text, Markdown and diffs preview inside the editor.
+- Continue any conversation with **Continue**, or run `HWChat: Continue current task history in a new chat`. The new conversation keeps a local read-only handover digest of the source conversation and can also search the upstream chain on demand, so previously recorded pitfalls are not repeated. The old conversation is never copied or modified. Keeping the digest is free; whatever is actually sent counts toward input tokens.
 
 ## Skills
 
-HWChat 扫描以下本地格式：
+HWChat scans these local formats:
 
 - `.hwchat/skills/*.md`
 - `.agents/skills/**/SKILL.md`
 - `.claude/skills/**/SKILL.md`
-- VS Code 全局存储中的用户 Skill 目录
+- the user skill folder in VS Code global storage
 - `~/.copilot/skills/**/SKILL.md`
 
-HWChat 与“本地skill快捷调用”共享 `~/.copilot/.skill-quick-launch.json`。在那里勾选的 Skill 会成为新对话的默认选择，但“默认启用”不等于每轮都加载：`route` 模式下，Agent / Plan 会先看到轻量路由表，仅在任务匹配时通过 `load_skill` 读取全文；Chat 模式会按任务文字匹配后预载。每条回复只显示本轮真正读取过的 Skill 名称和数量，并把最近调用时间同步回快捷调用扩展。
+HWChat shares `~/.copilot/.skill-quick-launch.json` with the local skill quick-launch extension. Skills ticked there become the default selection for new conversations, but "enabled by default" does not mean "loaded every turn": in `route` mode the agent first sees a lightweight routing table and only reads the full text through `load_skill` on a match; chat mode preloads on a text match. Each reply lists only the skills actually read in that turn, and the last-used timestamp is written back to the quick-launch extension.
 
-用户也可以在当前对话中手动增减 Skill。非快捷调用来源的已选 Skill，以及 `always` 模式下的 Skill，会直接加入本轮系统上下文。支持简单 YAML frontmatter 的 `name` 和 `description`。
+You can also add or remove skills for the current conversation by hand. Selected skills from non-quick-launch sources, plus `always`-mode skills, join the system context directly. Simple YAML frontmatter with `name` and `description` is supported.
 
-## 权限与隐私
+## Permissions and privacy
 
-- API Key 使用 VS Code `SecretStorage`，不会写入项目或对话记录。
-- 首次发送前明确展示数据流向并取得同意。
-- 提供“每次询问 / 风险操作询问 / Autopilot / 完全访问 / 自定义”权限预设，设置页内置各档位边界对照表，输入框下拉项也带同源说明：
+- API keys live in VS Code `SecretStorage` — never in the project, the conversation, or the VSIX.
+- Before the first send, the data flow is shown explicitly and must be accepted.
+- Four permission presets (no per-item custom combination), with a boundary table in settings and the same wording in the composer dropdown:
 
-| 档位 | 读取 | 写入 | 只读命令 | 正常命令 | 危险命令 | 敏感文件 |
+| Preset | Read | Write | Read-only commands | Regular commands | Dangerous commands | Sensitive files |
 | --- | --- | --- | --- | --- | --- | --- |
-| 每次询问 | 逐次确认 | 逐次确认 | 逐次确认 | 逐次确认 | 直接拒绝 | 禁止 |
-| 风险操作询问 | 自动允许 | 自动允许（工作区内） | 自动允许 | 自动允许 | 逐次确认 | 禁止 |
-| Autopilot | 自动允许 | 自动允许（工作区内） | 自动允许 | 自动允许 | 逐次确认 | 禁止 |
-| 完全访问 | 自动允许 | 自动允许（工作区内） | 自动允许 | 自动允许 | 自动允许 | 逐次确认 |
-| 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 逐次确认 / 自动允许 / 直接拒绝 | 禁止 / 逐次确认 / 允许 |
+| Ask every time | Ask | Ask | Ask | Ask | Deny outright | Blocked |
+| Ask on risky actions | Allow | Allow (in workspace) | Allow | Allow | Ask | Blocked |
+| Autopilot | Allow | Allow (in workspace) | Allow | Allow | Allow | Blocked |
+| Full access | Allow | Allow (in workspace) | Allow | Allow | Allow | Ask |
 
-- 只读命令是 `ls`、`git status`、`grep` 等无副作用命令；正常命令是安装、构建、提交等常规命令；危险命令是提权、破坏性删除、磁盘擦写、强制推送、把网络脚本管道给 shell 等操作。
-- 未受信任工作区中的写入和命令始终关闭。
-- `.env`、证书、私钥、SSH/AWS/Kubernetes 凭据路径按“敏感文件”策略处理：默认禁止，设为“逐次确认”时每次访问都会弹窗说明目标文件，设为“允许”才自动读取。
-- 子进程环境会移除常见 Token、Secret、Password 和 API Key 变量。
-- 远程 API 地址必须使用 HTTPS；只有本机 `localhost`、`127.0.0.1` 和 `::1` 可使用 HTTP。
-- 无遥测。对话、Skill 和 Agent 审计记录默认只保存在本机，可在设置中全部删除。
+- Read-only commands are side-effect-free (`ls`, `git status`, `grep`…); regular commands are everyday operations (install, build, commit…); dangerous commands cover privilege escalation, destructive deletion, disk wiping, forced pushes and piping remote scripts into a shell.
+- Writes and commands are always disabled in untrusted workspaces.
+- `.env`, certificates, private keys and SSH/AWS/Kubernetes credential paths follow the sensitive-file policy: blocked by default, confirmed with the target file shown when set to "Ask every time", and only read automatically when set to "Allow".
+- Subprocess environments strip common token, secret, password and API-key variables.
+- Remote API endpoints must use HTTPS; only `localhost`, `127.0.0.1` and `::1` may use HTTP.
+- No telemetry. Conversations, skills and agent audit records stay on your machine and can be deleted from settings.
 
-详细边界见 [SECURITY.md](SECURITY.md)。
+See [SECURITY.md](SECURITY.md) for the full boundary description.
 
-## 历史与缓存
+## History and cache
 
-- 每条消息独立存储，采用同目录临时文件、原子替换和恢复备份，索引损坏时会从磁盘重建。
-- 流式回复每 1.5 秒持久化；扩展异常退出后保留已经生成的内容。
-- 对话支持固定、归档、恢复、搜索、删除和流式导出。
-- 被续接对话引用的来源历史会受自动清理保护；手动删除来源前会提示其对后续按需检索的影响。续接对话仍保留创建时的本地摘要。
-- 已完成任务的思考过程、Token 输入/输出明细、工具输入/输出和附件正文会按保留时间自动瘦身，但最终回复、累计 Token、实际调用的 Skill、工具摘要、文件列表和审批结果会保留。
-- UI 和模型上下文都有条数与字节上限；附件还有单文件、数量和总容量限制。
-- 超出磁盘预算时按最久未使用顺序淘汰普通对话，固定、归档和执行中的对话不会被删除。
+- Every message is stored independently with same-directory temp files, atomic replacement and recovery backups; a corrupt index is rebuilt from disk.
+- Streaming replies are persisted every 1.5 seconds, so content already produced survives an abnormal exit.
+- Conversations can be pinned, archived, restored, searched, deleted and exported as a stream.
+- Source history referenced by a continuation is protected from automatic cleanup, and deleting a source warns about the effect on on-demand retrieval. Continuations keep the local digest created at link time.
+- Heavy payloads of finished tasks (reasoning, token detail, tool input/output, attachment bodies) are trimmed on schedule, while the final reply, total tokens, skills actually used, tool summaries, file lists and approval results are kept.
+- Both the UI and the model context have count and byte limits; attachments additionally have per-file, count and total-size limits.
+- When the disk budget is exceeded, ordinary conversations are evicted least-recently-used first; pinned, archived and running conversations are never deleted.
 
-## 开发
+## Install
 
-运行要求：VS Code `1.106.0` 或更高版本，Node.js 20+。
-
-安装已构建的 VSIX：
+Requires VS Code `1.106.0` or newer.
 
 ```bash
-code --install-extension hwchat-0.1.5.vsix
+code --install-extension hwchat-0.1.8.vsix
 ```
 
-在 VS Code 中打开命令面板，执行 `HWChat: 打开对话面板`。首次使用时进入设置，创建一个 API 配置档并保存 API Key；密钥只会进入 VS Code SecretStorage，不会写入 `settings.json`、项目文件或 VSIX。
+Open the command palette and run `HWChat: Open chat panel`. On first use, open settings, create an API profile and save its API key — the key only goes into VS Code `SecretStorage`, never into `settings.json`, project files or the VSIX.
 
-从源码构建：
+## Build from source
+
+Requires Node.js 20+.
 
 ```bash
 npm install
@@ -99,21 +110,39 @@ npm test
 npm run package
 ```
 
-构建结果为项目根目录下的 `hwchat-0.1.5.vsix`。同一扩展已发布过的版本不能覆盖上传 Marketplace，发布新构建时必须递增版本号。
+The build output is `hwchat-0.1.8.vsix` in the project root. A version already published to the Marketplace cannot be uploaded again, so bump the version for every public build.
 
-扩展图标使用 `resources/logo.png`。在 VS Code 中按 `F5` 启动扩展开发主机。
+The extension icon is `resources/logo.png`. Press `F5` in VS Code to launch the extension development host.
 
-## 主要配置
+## Key settings
 
-- `hwchat.apiProfiles` / `hwchat.activeApiProfileId`：OpenAI 兼容接口配置档和当前配置档。
-- `hwchat.baseUrl` / `hwchat.model`：兼容旧版配置，并保存当前默认接口和模型。
-- `hwchat.defaultMode` / `hwchat.agentMaxSteps`：默认模式和单轮工具循环上限；步骤为 `0` 时不限制。
-- `hwchat.reasoningEffort`：默认、无、低、高、最大五档思考层级；不支持该参数的兼容接口会自动降级重试。
-- `hwchat.permissionPreset`：常用权限预设（每次询问 / 风险操作询问 / Autopilot / 完全访问 / 自定义）。
-- `hwchat.fileReadPolicy` / `hwchat.fileWritePolicy` / `hwchat.commandPolicy`：读取、写入、命令（只读 + 正常命令）的分级权限；仅“自定义”预设下生效。
-- `hwchat.dangerousCommandPolicy`：危险命令策略（逐次确认 / 自动允许 / 直接拒绝），仅“自定义”预设下生效。
-- `hwchat.sensitiveFilePolicy`：敏感文件策略（禁止 / 逐次确认 / 允许），仅“自定义”预设下生效。
-- `hwchat.allowSensitiveFiles` / `hwchat.allowDangerousCommands`：已废弃的旧布尔开关，仅在未设置上面两项新配置时用作迁移回退。
-- `hwchat.taskCacheRetentionHours` / `hwchat.cacheBudgetMB`：任务缓存和磁盘预算。
+- `hwchat.language` — interface language: `auto` (follow VS Code), `zh` or `en`.
+- `hwchat.apiProfiles` / `hwchat.activeApiProfileId` — OpenAI-compatible profiles and the active one.
+- `hwchat.baseUrl` / `hwchat.model` — legacy-compatible endpoint and current default model.
+- `hwchat.defaultMode` / `hwchat.agentMaxSteps` — default mode and per-turn tool-loop limit; `0` means unlimited.
+- `hwchat.reasoningEffort` — five levels (default, none, low, high, max); endpoints without support get an automatic retry.
+- `hwchat.permissionPreset` — one of the four presets above.
+- `hwchat.fileReadPolicy` / `hwchat.fileWritePolicy` / `hwchat.commandPolicy` / `hwchat.dangerousCommandPolicy` / `hwchat.sensitiveFilePolicy` — fully derived from the preset; display-only, marked deprecated in the VS Code settings UI.
+- Permission settings are `resource`-scoped and may be set in a folder's `.vscode/settings.json`. Precedence is most-specific-first (workspace folder → `.code-workspace` → user), and when folders disagree the strictest value wins (`Ask every time` > `Ask on risky actions` > `Autopilot` > `Full access`).
+- `hwchat.allowSensitiveFiles` / `hwchat.allowDangerousCommands` — deprecated booleans, used only as a migration fallback when the newer settings are absent.
+- `hwchat.taskCacheRetentionHours` / `hwchat.cacheBudgetMB` — task cache and disk budget.
 
-对话数据位于 VS Code 的全局存储目录，不会写入项目目录。
+Conversation data lives in the VS Code global storage directory and is never written into your project.
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `src/core/` | i18n, settings, permissions, storage, approval plans |
+| `src/agent/` | agent loop, tool executor, path isolation, skills, task queue |
+| `src/views/` | chat panel, settings panel, history view |
+| `src/providers/` | DeepSeek / OpenAI-compatible client |
+| `media/` | webview scripts and styles |
+| `docs/screenshots/` | screenshot build script and generated images |
+| `test/` | browser preview pages used for layout checks |
+
+Screenshots are generated with `node docs/screenshots/build.mjs`, which reuses the real webview CSS and the real English dictionary, so the images match the shipped UI.
+
+## License
+
+[MIT](LICENSE)

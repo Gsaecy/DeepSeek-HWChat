@@ -22,8 +22,15 @@ const builds = [
     outfile: 'out/extension.js',
     external: ['vscode'],
   },
+  // 测试构建把 `vscode` 指向本地替身，这样 ToolExecutor 这种依赖 vscode 的
+  // 模块也能在 node --test 里运行；扩展构建仍然保持 external。
   ...(testEntries.length > 0
-    ? [{ ...shared, entryPoints: testEntries, outdir: 'out/test' }]
+    ? [{
+        ...shared,
+        entryPoints: testEntries,
+        outdir: 'out/test',
+        alias: { vscode: './src/test/support/vscodeMock.ts' },
+      }]
     : []),
 ];
 

@@ -7,6 +7,7 @@ import {
   ToolDefinition,
   UsageInfo,
 } from '../core/types';
+import { tt } from '../core/i18n';
 
 export interface StreamChatOptions {
   signal?: AbortSignal;
@@ -78,7 +79,7 @@ export class DeepSeekClient {
   ): Promise<StreamChatResult> {
     const apiKey = options.apiKey?.trim() || await this.getApiKey(settings.activeApiProfileId);
     if (!apiKey?.trim()) {
-      throw new Error('尚未配置 API Key。请打开设置完成配置。');
+      throw new Error(tt('api.noKey'));
     }
 
     const endpoint = buildEndpoint(settings.baseUrl);
@@ -131,19 +132,19 @@ export class DeepSeekClient {
           throw new RequestCancelledError();
         }
         if (isAbortError(error)) {
-          throw new Error(`请求超时（${settings.requestTimeoutSeconds} 秒）。`);
+          throw new Error(tt('api.timeout', { seconds: settings.requestTimeoutSeconds }));
         }
-        throw new Error(`无法连接到接口：${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(tt('api.connectFailed', { error: error instanceof Error ? error.message : String(error) }));
       }
       if (response.ok) break;
       const detail = await readError(response, apiKey);
       if (response.status === 400 && removeRejectedReasoningControl(body, detail)) continue;
       clearTimeout(timer);
-      throw new Error(`接口请求失败（${response.status}）：${detail}`);
+      throw new Error(tt('api.requestFailed', { status: response.status, detail }));
     }
     if (!response.body) {
       clearTimeout(timer);
-      throw new Error('接口没有返回可读取的数据流。');
+      throw new Error(tt('api.noStream'));
     }
 
     try {
@@ -153,7 +154,7 @@ export class DeepSeekClient {
         throw new RequestCancelledError();
       }
       if (timeout.signal.aborted || isAbortError(error)) {
-        throw new Error(`请求超时（${settings.requestTimeoutSeconds} 秒）。`);
+        throw new Error(tt('api.timeout', { seconds: settings.requestTimeoutSeconds }));
       }
       throw error;
     } finally {
@@ -164,7 +165,7 @@ export class DeepSeekClient {
   async listModels(settings: ChatSettings, options: ListModelsOptions = {}): Promise<DiscoveredModel[]> {
     const apiKey = options.apiKey?.trim() || await this.getApiKey(settings.activeApiProfileId);
     if (!apiKey?.trim()) {
-      throw new Error('尚未配置 API Key，无法获取模型列表。');
+      throw new Error(tt('api.noKeyForModels'));
     }
     const endpoint = buildModelsEndpoint(settings.baseUrl);
     const timeout = new AbortController();
@@ -184,17 +185,17 @@ export class DeepSeekClient {
     } catch (error) {
       clearTimeout(timer);
       if (isAbortError(error) && options.signal?.aborted) throw new RequestCancelledError();
-      if (isAbortError(error)) throw new Error(`获取模型列表超时（${settings.requestTimeoutSeconds} 秒）。`);
-      throw new Error(`无法获取模型列表：${error instanceof Error ? error.message : String(error)}`);
+      if (isAbortError(error)) throw new Error(tt('api.modelListTimeout', { seconds: settings.requestTimeoutSeconds }));
+      throw new Error(tt('api.modelListFailed', { error: error instanceof Error ? error.message : String(error) }));
     }
     try {
       if (!response.ok) {
-        throw new Error(`获取模型列表失败（${response.status}）：${await readError(response, apiKey)}`);
+        throw new Error(tt('api.modelListStatus', { status: response.status, detail: await readError(response, apiKey) }));
       }
       const payload = await response.json() as unknown;
       const models = parseModels(payload);
       if (!models.length) {
-        throw new Error('接口返回成功，但没有发现可用模型。');
+        throw new Error(tt('api.noModels'));
       }
       return models;
     } finally {
@@ -205,7 +206,7 @@ export class DeepSeekClient {
 
 export class RequestCancelledError extends Error {
   constructor() {
-    super('请求已停止。');
+    super(tt('api.cancelled'));
     this.name = 'RequestCancelledError';
   }
 }
@@ -219,7 +220,7 @@ export function buildEndpoint(baseUrl: string): string {
   const url = new URL(endpoint);
   const local = ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) {
-    throw new Error('为保护 API Key，远程模型接口必须使用 HTTPS；本机 localhost 可使用 HTTP。');
+    throw new Error(tt('api.httpsRequired'));
   }
   return endpoint;
 }
@@ -244,7 +245,7 @@ export function buildModelsEndpoint(baseUrl: string): string {
 function assertSecureUrl(url: URL): void {
   const local = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) {
-    throw new Error('为保护 API Key，远程模型接口必须使用 HTTPS；本机 localhost 可使用 HTTP。');
+    throw new Error(tt('api.httpsRequired'));
   }
 }
 
@@ -381,7 +382,7 @@ function sanitizeHeaders(headers: Record<string, string>): Record<string, string
 async function readError(response: Response, apiKey: string): Promise<string> {
   const text = await response.text().catch(() => '');
   if (!text) {
-    return response.statusText || '未知错误';
+    return response.statusText || tt('api.unknownError');
   }
   try {
     const payload = JSON.parse(text) as OpenAIErrorResponse;

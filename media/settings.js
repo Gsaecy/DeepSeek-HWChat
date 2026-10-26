@@ -1,5 +1,24 @@
 (() => {
   const vscode = acquireVsCodeApi();
+
+  // 词表由扩展在生成 HTML 时按当前语言注入，脚本只做查表，不保存任何文案。
+  const messages = (() => {
+    try {
+      const node = document.getElementById('hwchat-i18n');
+      return node ? JSON.parse(node.textContent || '{}') : {};
+    } catch {
+      return {};
+    }
+  })();
+
+  /** 查表；缺键返回键本身，便于发现漏译。{name} 占位符按 vars 替换。 */
+  function t(key, vars) {
+    const template = messages[key];
+    if (typeof template !== 'string') return key;
+    if (!vars) return template;
+    return template.replace(/\{(\w+)\}/g, (match, name) => (vars[name] === undefined ? match : String(vars[name])));
+  }
+
   const fieldIds = [
     'apiKey', 'profileName', 'profileModels', 'baseUrl', 'model', 'requestHeaders', 'requestTimeoutSeconds',
     'temperature', 'maxTokens', 'maxMessagesInContext', 'sendOnEnter',
@@ -7,7 +26,7 @@
     'cacheBudgetMB', 'cleanupIntervalMinutes', 'defaultMode', 'agentMaxSteps',
     'permissionPreset', 'fileReadPolicy', 'fileWritePolicy', 'commandPolicy', 'dangerousCommandPolicy',
     'sensitiveFilePolicy', 'maxReadBytes', 'maxToolOutputBytes',
-    'maxCommandSeconds', 'auditRetentionDays',
+    'maxCommandSeconds', 'auditRetentionDays', 'language',
   ];
   const fields = Object.fromEntries(fieldIds.map((id) => [id, document.getElementById(id)]));
   const elements = {
@@ -47,7 +66,7 @@
   }
 
   function markDirty() {
-    elements.saveState.textContent = '有未保存的更改';
+    elements.saveState.textContent = t('settings.unsaved');
     elements.saveState.classList.add('dirty');
   }
 
@@ -59,21 +78,21 @@
       try {
         requestHeaders = JSON.parse(headerText);
       } catch {
-        throw new Error('额外请求头不是有效的 JSON。');
+        throw new Error(t('error.headersInvalidJson'));
       }
       if (!requestHeaders || Array.isArray(requestHeaders) || typeof requestHeaders !== 'object') {
-        throw new Error('额外请求头必须是 JSON 对象。');
+        throw new Error(t('error.headersNotObject'));
       }
       for (const [key, value] of Object.entries(requestHeaders)) {
-        if (typeof value !== 'string') throw new Error(`请求头 ${key} 的值必须是字符串。`);
+        if (typeof value !== 'string') throw new Error(t('error.headerValueNotString', { key }));
       }
     }
     const profile = profiles.find((item) => item.id === activeProfileId);
     const nextProfiles = profiles.map((item) => ({ ...item, models: [...(item.models || [])], excludedModels: [...(item.excludedModels || [])], requestHeaders: { ...(item.requestHeaders || {}) } }));
     if (!nextProfiles.length || nextProfiles.some((item) => !item.id || !item.name || !item.baseUrl)) {
-      throw new Error('请补全每个 API 配置档的名称和接口地址。');
+      throw new Error(t('error.profileIncomplete'));
     }
-    if (!profile?.models?.length) throw new Error('当前 API 配置档至少需要一个可选模型。');
+    if (!profile?.models?.length) throw new Error(t('error.profileNeedsModel'));
     const selectedModel = profile.models.includes(fields.model.value.trim()) ? fields.model.value.trim() : profile.models[0];
     fields.model.value = selectedModel;
     return {
@@ -116,10 +135,10 @@
     const headerText = fields.requestHeaders.value.trim();
     if (!headerText) return {};
     let headers;
-    try { headers = JSON.parse(headerText); } catch { throw new Error('额外请求头不是有效的 JSON。'); }
-    if (!headers || Array.isArray(headers) || typeof headers !== 'object') throw new Error('额外请求头必须是 JSON 对象。');
+    try { headers = JSON.parse(headerText); } catch { throw new Error(t('error.headersInvalidJson')); }
+    if (!headers || Array.isArray(headers) || typeof headers !== 'object') throw new Error(t('error.headersNotObject'));
     for (const [key, value] of Object.entries(headers)) {
-      if (typeof value !== 'string') throw new Error(`请求头 ${key} 的值必须是字符串。`);
+      if (typeof value !== 'string') throw new Error(t('error.headerValueNotString', { key }));
     }
     return headers;
   }
@@ -162,8 +181,8 @@
     fields.requestHeaders.value = Object.keys(profile.requestHeaders || {}).length ? JSON.stringify(profile.requestHeaders, null, 2) : '';
     fields.apiKey.value = pendingApiKeys[profile.id] || '';
     const configured = Boolean(apiKeyConfiguredByProfile[profile.id]);
-    fields.apiKey.placeholder = configured ? '已安全保存，输入新值可替换' : 'sk-…';
-    elements.keyState.textContent = configured ? '已配置' : '未配置';
+    fields.apiKey.placeholder = configured ? t('settings.apiKey.savedPlaceholder') : 'sk-…';
+    elements.keyState.textContent = configured ? t('settings.keyConfigured') : t('settings.keyUnconfigured');
     elements.keyState.classList.toggle('configured', configured);
     elements.clearKeyButton.disabled = !configured && !pendingApiKeys[profile.id];
     renderProfileSelect();
@@ -171,10 +190,13 @@
 
   // 与 src/core/permissions.ts 的 PERMISSION_PRESET_PROFILES 保持一致：
   // [读取, 写入, 只读命令, 正常命令, 危险命令, 敏感文件]
+  // 这张表只用于填充预设锁定时的只读下拉框；真实判定走 src 里的 PERMISSION_PRESET_PROFILES。
+  // 两处必须逐项相同，否则设置页会把“实际更宽松”的档位显示得更严格（曾经 autopilot
+  // 的危险命令这里写 ask、真实策略是 allow，页面上显示“逐次确认”却直接执行）。
   const permissionPresetProfiles = {
     askAll: ['ask', 'ask', 'ask', 'ask', 'deny', 'deny'],
     review: ['allow', 'allow', 'allow', 'allow', 'ask', 'deny'],
-    autopilot: ['allow', 'allow', 'allow', 'allow', 'ask', 'deny'],
+    autopilot: ['allow', 'allow', 'allow', 'allow', 'allow', 'deny'],
     full: ['allow', 'allow', 'allow', 'allow', 'allow', 'ask'],
   };
 
@@ -188,8 +210,8 @@
       fields.dangerousCommandPolicy.value = values[4];
       fields.sensitiveFilePolicy.value = values[5];
     }
-    const locked = preset !== 'custom';
-    for (const field of [fields.fileReadPolicy, fields.fileWritePolicy, fields.commandPolicy, fields.dangerousCommandPolicy, fields.sensitiveFilePolicy]) field.disabled = locked;
+    // 预设是唯一来源：这五个下拉框只用于展示当前档位的实际边界，始终不可编辑。
+    for (const field of [fields.fileReadPolicy, fields.fileWritePolicy, fields.commandPolicy, fields.dangerousCommandPolicy, fields.sensitiveFilePolicy]) field.disabled = true;
     if (elements.permissionPresetHint) {
       elements.permissionPresetHint.textContent = fields.permissionPreset.selectedOptions[0]?.title || '';
     }
@@ -209,7 +231,7 @@
     renderProfileSelect();
     loadProfileFields();
     fields.apiKey.value = '';
-    fields.apiKey.placeholder = apiKeyConfigured ? '已安全保存，输入新值可替换' : 'sk-…';
+    fields.apiKey.placeholder = apiKeyConfigured ? t('settings.apiKey.savedPlaceholder') : 'sk-…';
     fields.requestTimeoutSeconds.value = settings.requestTimeoutSeconds;
     fields.temperature.value = settings.temperature;
     fields.maxTokens.value = settings.maxTokens;
@@ -233,23 +255,24 @@
     fields.maxToolOutputBytes.value = settings.maxToolOutputBytes;
     fields.maxCommandSeconds.value = settings.maxCommandSeconds;
     fields.auditRetentionDays.value = settings.auditRetentionDays;
+    fields.language.value = settings.language || 'auto';
     elements.temperatureValue.textContent = Number(settings.temperature).toFixed(1);
     loadProfileFields();
     renderStats(stats, settings.cacheBudgetMB);
     renderSkills(skills || []);
-    elements.trustState.textContent = workspaceFolderCount === 0 ? '未打开工作区' : workspaceTrusted ? '工作区已信任' : '工作区未信任';
+    elements.trustState.textContent = workspaceFolderCount === 0 ? t('settings.noWorkspace') : workspaceTrusted ? t('settings.workspaceTrusted') : t('settings.workspaceUntrusted');
     elements.trustState.classList.toggle('configured', Boolean(workspaceTrusted));
-    elements.saveState.textContent = '所有更改已保存';
+    elements.saveState.textContent = t('settings.saved');
     elements.saveState.classList.remove('dirty');
   }
 
   function renderSkills(skills) {
-    elements.skillCount.textContent = `${skills.length} 个`;
+    elements.skillCount.textContent = t('settings.skills.count', { count: skills.length });
     elements.skillSummaryList.replaceChildren();
     if (!skills.length) {
       const empty = document.createElement('p');
       empty.className = 'skill-summary-empty';
-      empty.textContent = '未发现 Skill。支持 .hwchat/skills/*.md、.agents/skills/**/SKILL.md 和 .claude/skills/**/SKILL.md。';
+      empty.textContent = t('settings.skills.empty');
       elements.skillSummaryList.append(empty);
       return;
     }
@@ -259,8 +282,8 @@
       const copy = document.createElement('span');
       const title = document.createElement('strong');
       title.textContent = skill.name;
-      if (skill.defaultEnabled) title.append(makeBadge('默认启用'));
-      if (skill.lastUsedAt) title.append(makeBadge('已调用', 'used'));
+      if (skill.defaultEnabled) title.append(makeBadge(t('chat.skillDefaultEnabled')));
+      if (skill.lastUsedAt) title.append(makeBadge(t('chat.skillUsed'), 'used'));
       const description = document.createElement('small');
       description.textContent = skill.description;
       copy.append(title, description);
@@ -307,6 +330,11 @@
   fields.temperature.addEventListener('input', () => {
     elements.temperatureValue.textContent = Number(fields.temperature.value).toFixed(1);
   });
+  // 语言切换立即生效：只提交语言字段，避免顺带保存还没确认的其它改动。
+  // 扩展侧保存后会重建两个面板的 HTML，界面与提示随即换成新语言。
+  fields.language.addEventListener('change', () => {
+    post('save', { settings: { language: fields.language.value } });
+  });
 
   elements.saveButton.addEventListener('click', () => withForm((settings) => {
     post('save', {
@@ -320,7 +348,7 @@
   }));
   elements.clearKeyButton.addEventListener('click', () => {
     fields.apiKey.value = '';
-    fields.apiKey.placeholder = '保存后清除';
+    fields.apiKey.placeholder = t('settings.apiKey.clearPlaceholder');
     delete pendingApiKeys[activeProfileId];
     clearApiKeyIds.add(activeProfileId);
     markDirty();
@@ -336,7 +364,7 @@
   elements.addProfileButton.addEventListener('click', () => {
     try { commitProfileEditor(); } catch (error) { showToast(error.message || String(error), 'error'); return; }
     const id = `profile-${Date.now().toString(36)}`;
-    profiles.push({ id, name: '新 API', baseUrl: 'https://api.example.com/v1', models: ['model-name'], excludedModels: [], requestHeaders: {} });
+    profiles.push({ id, name: t('settings.newProfileName'), baseUrl: 'https://api.example.com/v1', models: ['model-name'], excludedModels: [], requestHeaders: {} });
     activeProfileId = id;
     fields.model.value = 'model-name';
     loadProfileFields();
@@ -435,7 +463,7 @@
         break;
       case 'testing':
         elements.testButton.disabled = message.active;
-        elements.testButton.textContent = message.active ? '正在测试…' : '测试连接';
+        elements.testButton.textContent = message.active ? t('settings.testing') : t('settings.test');
         break;
       case 'toast':
         showToast(message.text, message.tone);

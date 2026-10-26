@@ -13,3 +13,11 @@ package-lock.json
 .gitignore
 resources/icon.png
 resources/icon.svg
+# 探测/临时文件不能进包：0.1.8 曾把根的 .hwchat-approval-probe.txt 与 .tmp-perm-probe.mjs
+# （一次性的权限探针 bundle）一起打了进去。凡是临时产物都不该出现在用户装的包里。
+.hwchat-*
+.tmp-*
+.vsix-check/**
+.DS_Store
+# 截图构建脚本与图片只服务于仓库文档（README 用绝对地址引用），不进安装包
+docs/**

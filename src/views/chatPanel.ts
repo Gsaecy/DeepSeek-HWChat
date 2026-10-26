@@ -8,7 +8,8 @@ import { ToolExecutor } from '../agent/toolExecutor';
 import { VscodeToolBridge } from '../agent/vscodeTools';
 import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
-import { PERMISSION_PRESET_DETAILS } from '../core/permissions';
+import { PERMISSION_PRESET_IDS, permissionPresetDetails } from '../core/permissions';
+import { currentLanguage, messageScriptTag, t, tt, type Language } from '../core/i18n';
 import {
   applyRuntimeControls,
   isPermissionPreset,
@@ -118,10 +119,17 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private readonly activeResponses = new Map<string, ActiveResponseState>();
   private activeResponseTaskId: string | undefined;
   private activeGlobalTools: ToolExecution[] = [];
+  /**
+   * 每条步骤接在响应正文的第几个字符之后。按 callId 记：执行器每次快照都会重建
+   * 对象，不回填的话后面几次快照会把已经算好的边界覆盖掉。
+   */
+  private readonly toolContentOffsets = new Map<string, number>();
   private checkpointTail: Promise<void> = Promise.resolve();
   private readonly lastCheckpointByMessage = new Map<string, number>();
   private voiceConsentGranted = false;
   private readonly disposables: vscode.Disposable[] = [];
+  /** 上次生成 HTML 时用的语言；语言设置变化后据此触发重建。 */
+  private renderedLanguage?: Language;
   private readonly agentRunner: AgentRunner;
   private readonly vscodeTools: VscodeToolBridge;
   private readonly modelDiscoveryAttempts = new Set<string>();
@@ -203,12 +211,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   async openSelection(mode: 'ask' | 'explain'): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.selection.isEmpty) {
-      void vscode.window.showInformationMessage('请先在编辑器中选择代码。');
+      void vscode.window.showInformationMessage(tt('notice.selectCodeFirst'));
       return;
     }
     const raw = editor.document.getText(editor.selection);
     const maxChars = 120_000;
-    const selected = raw.length > maxChars ? `${raw.slice(0, maxChars)}\n\n[选区过长，已截断]` : raw;
+    const selected = raw.length > maxChars ? `${raw.slice(0, maxChars)}\n\n[${tt('notice.selectionTruncated')}]` : raw;
     const startLine = editor.selection.start.line + 1;
     const endLine = editor.selection.end.line + 1;
     const label = `${basename(editor.document.fileName)}:${startLine}-${endLine}`;
@@ -231,7 +239,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     await this.open();
     await this.post({
       type: 'draft',
-      text: mode === 'explain' ? '请解释这段代码，并指出可能的风险和改进点。' : '',
+      text: mode === 'explain' ? tt('notice.explainPrompt') : '',
       attachments: [this.attachmentForWebview(this.pendingContext)],
     });
   }
@@ -241,8 +249,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         canSelectMany: true,
         canSelectFiles: true,
         canSelectFolders: false,
-        openLabel: '添加到对话',
-        filters: { '文本与代码': ['txt', 'md', 'json', 'yaml', 'yml', 'ts', 'tsx', 'js', 'jsx', 'py', 'java', 'go', 'rs', 'swift', 'kt', 'html', 'css', 'xml', 'sql', 'sh'], '所有文件': ['*'] },
+        openLabel: tt('notice.addToChat'),
+        filters: { [tt('notice.filter.textAndCode')]: ['txt', 'md', 'json', 'yaml', 'yml', 'ts', 'tsx', 'js', 'jsx', 'py', 'java', 'go', 'rs', 'swift', 'kt', 'html', 'css', 'xml', 'sql', 'sh'], [tt('notice.filter.allFiles')]: ['*'] },
       });
     if (!selected?.length) return;
     const settings = readSettings();
@@ -251,12 +259,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     for (const uri of selected) {
       try {
         if (this.pendingAttachments.length >= 20) {
-          throw new Error('单次最多添加 20 个文件。');
+          throw new Error(tt('error.tooManyFiles'));
         }
         const attachment = await this.toolExecutor.readAttachment(uri, settings);
         const currentBytes = this.pendingAttachments.reduce((total, item) => total + (item.bytes ?? 0), 0);
         if (currentBytes + (attachment.bytes ?? 0) > maxTotalBytes) {
-          throw new Error(`附件总量超过 ${Math.round(maxTotalBytes / 1024)} KB 上限。`);
+          throw new Error(tt('error.attachmentsTooLargeKb', { kb: Math.round(maxTotalBytes / 1024) }));
         }
         if (!this.pendingAttachments.some((item) => item.path === attachment.path)) {
           this.pendingAttachments.push(attachment);
@@ -276,6 +284,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   async refresh(): Promise<void> {
+    // 文案在生成 HTML 时静态注入，语言变了必须整页重建，否则界面会停留在旧语言。
+    if (this.view && this.renderedLanguage !== currentLanguage()) {
+      this.view.webview.html = this.html(this.view.webview);
+      return;
+    }
     if (this.view?.visible) {
       await this.sendState();
     }
@@ -297,7 +310,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   async continueActiveConversation(conversationId?: string): Promise<void> {
     const sourceId = conversationId ?? this.activeConversationId;
     if (!sourceId) {
-      void vscode.window.showInformationMessage('请先选择一段要续接的对话。');
+      void vscode.window.showInformationMessage(tt('notice.selectConversationFirst'));
       return;
     }
     await this.continueFromConversation(sourceId);
@@ -322,14 +335,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           break;
         case 'newChat':
           if (this.activeAbortController) {
-            await this.post({ type: 'toast', tone: 'warning', text: 'Agent 正在执行，请先停止当前任务再新建对话。' });
+            await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusyNewChat') });
             break;
           }
           await this.newChat();
           break;
         case 'selectConversation':
           if (this.activeAbortController && message.id !== this.streamingConversationId) {
-            await this.post({ type: 'toast', tone: 'warning', text: 'Agent 正在执行，请先停止当前任务再切换对话。' });
+            await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusySwitch') });
             break;
           }
           this.activeConversationId = message.id;
@@ -470,19 +483,19 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const errors: string[] = [];
     for (const file of files.slice(0, 20)) {
       try {
-        if (this.pendingAttachments.length >= 20) throw new Error('单次最多添加 20 个附件。');
+        if (this.pendingAttachments.length >= 20) throw new Error(tt('error.tooManyAttachments'));
         const data = decodeBase64File(file.dataBase64);
         const declaredSize = Math.max(0, Number(file.size) || 0);
-        if (declaredSize && declaredSize !== data.byteLength) throw new Error('剪贴板文件大小校验失败。');
+        if (declaredSize && declaredSize !== data.byteLength) throw new Error(tt('error.clipboardSizeMismatch'));
         const mimeType = normalizeAttachmentMime(file.mimeType, file.name);
         const isImage = mimeType.startsWith('image/');
         const maxFileBytes = isImage ? 6 * 1024 * 1024 : settings.maxReadBytes;
         if (data.byteLength > maxFileBytes) {
-          throw new Error(`文件过大，上限为 ${Math.round(maxFileBytes / 1024 / 1024 * 10) / 10} MB。`);
+          throw new Error(tt('error.fileTooLargeMb', { mb: Math.round(maxFileBytes / 1024 / 1024 * 10) / 10 }));
         }
         const currentBytes = this.pendingAttachments.reduce((total, item) => total + (item.bytes ?? 0), 0);
-        if (currentBytes + data.byteLength > maxTotalBytes) throw new Error('附件总量超过本轮容量上限。');
-        const label = cleanAttachmentName(file.name, isImage ? '粘贴的图片' : '粘贴的文件');
+        if (currentBytes + data.byteLength > maxTotalBytes) throw new Error(tt('error.attachmentCapacity'));
+        const label = cleanAttachmentName(file.name, isImage ? tt('chat.pastedImage') : tt('chat.pastedFile'));
         const attachment: MessageContext = isImage
           ? {
             label,
@@ -495,7 +508,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           : { label, kind: 'file', bytes: data.byteLength, mimeType, content: decodeClipboardText(data) };
         this.pendingAttachments.push(attachment);
       } catch (error) {
-        errors.push(`${cleanAttachmentName(file.name, '剪贴板附件')}：${error instanceof Error ? error.message : String(error)}`);
+        errors.push(`${cleanAttachmentName(file.name, tt('chat.clipboardAttachment'))}：${error instanceof Error ? error.message : String(error)}`);
       }
     }
     await this.post({ type: 'attachments', attachments: this.pendingAttachmentsForWebview() });
@@ -508,7 +521,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const settings = this.activeRunSettings;
     const content = text.trim();
     if (!queue || !conversationId || !settings || !queue.isAccepting()) {
-      if (content) await this.post({ type: 'toast', tone: 'warning', text: 'Agent 正在收尾，请稍后再次发送。' });
+      if (content) await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentFinishing') });
       return;
     }
     if (!content && !this.pendingAttachments.length && !this.pendingContext) return;
@@ -518,7 +531,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     this.pendingAttachments = [];
     const userMessage = await this.storage.appendMessage(conversationId, {
       role: 'user',
-      content: content || '请处理已添加的文件。',
+      content: content || tt('notice.processAttachments'),
       status: 'complete',
       context,
       attachments,
@@ -532,7 +545,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       replyToMessageId: userMessage.id,
     });
     const request = this.requestMessageFromParts(userMessage.content, context, attachments);
-    const taskTitle = content || `处理附件：${attachments.map((attachment) => attachment.label).join('、')}`;
+    const taskTitle = content || `${tt('notice.attachmentTaskPrefix')}${attachments.map((attachment) => attachment.label).join(tt('common.listSeparator'))}`;
     const node = queue.enqueue(
       taskTitle,
       request,
@@ -573,7 +586,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     this.sendPending = true;
     try {
       if (!await this.callbacks.ensurePrivacyConsent()) {
-        await this.post({ type: 'toast', tone: 'warning', text: '需要确认隐私说明后才能向配置的模型接口发送内容。' });
+        await this.post({ type: 'toast', tone: 'warning', text: tt('notice.privacyRequired') });
         return;
       }
       let configuredSettings = readSettings();
@@ -616,18 +629,18 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         reasoningEffort: effectiveReasoning,
       };
       if (!await hasApiKey(this.secrets, profile.id, profile.id === 'default')) {
-        await this.post({ type: 'toast', tone: 'warning', text: `请先为“${profile.name}”配置 API Key。` });
+        await this.post({ type: 'toast', tone: 'warning', text: tt('notice.configureApiKey', { profile: profile.name }) });
         this.callbacks.openSettings();
         return;
       }
       const mode = isConversationMode(requestedMode) ? requestedMode : this.activeMode;
       const skillIds = (requestedSkillIds ?? this.activeSkillIds).filter((id) => this.skills.has(id));
       if (existingConversation?.archived) {
-        await this.post({ type: 'toast', tone: 'warning', text: '该对话已归档，请恢复后继续。' });
+        await this.post({ type: 'toast', tone: 'warning', text: tt('notice.archivedResume') });
         return;
       }
       if (!conversationId) {
-        conversationId = (await this.storage.createConversation('新对话', settings.model)).id;
+        conversationId = (await this.storage.createConversation(tt('common.newChat'), settings.model)).id;
         this.activeConversationId = conversationId;
       }
       this.activeMode = mode;
@@ -645,13 +658,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       this.pendingAttachments = [];
       const userMessage = await this.storage.appendMessage(conversationId, {
         role: 'user',
-        content: content || '请处理已添加的文件。',
+        content: content || tt('notice.processAttachments'),
         status: 'complete',
         context,
         attachments,
         model: settings.model,
       });
-      const preparedSkills = this.skills.prepare(skillIds, mode, content || '处理已添加的文件');
+      const preparedSkills = this.skills.prepare(skillIds, mode, content || tt('notice.processAttachments'));
       const usedSkills = [...preparedSkills.preloaded];
       if (usedSkills.length) await this.skills.recordUsage(usedSkills.map((skill) => skill.id));
       const requestMessages = await this.requestMessages(conversationId, settings, mode, preparedSkills.prompt);
@@ -666,7 +679,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         replyToMessageId: userMessage.id,
       });
       const controller = new AbortController();
-      const taskQueue = new AgentTaskQueue(content || attachments.map((attachment) => attachment.label).join('、') || '处理已添加的文件');
+      const taskQueue = new AgentTaskQueue(content || attachments.map((attachment) => attachment.label).join(tt('common.listSeparator')) || tt('notice.processAttachments'));
       this.activeAbortController = controller;
       this.streamingConversationId = conversationId;
       this.activeTaskQueue = taskQueue;
@@ -687,6 +700,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       });
       this.activeResponseTaskId = rootTaskId;
       this.activeGlobalTools = [];
+      this.toolContentOffsets.clear();
       this.checkpointTail = Promise.resolve();
       this.lastCheckpointByMessage.clear();
       this.callbacks.onHistoryChanged();
@@ -753,8 +767,18 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
               }
             },
             onToolsChanged: async (tools) => {
-              this.activeGlobalTools = tools.map((item) => ({ ...item }));
               const response = this.currentActiveResponse();
+              // 新出现的步骤在这里钉住它的位置：此刻正文刚好写完「这一步要做什么」，
+              // 后面几轮正文还会继续增长，所以边界必须现在记，事后算不回来。
+              const boundary = response ? response.content.length : 0;
+              this.activeGlobalTools = tools.map((item) => {
+                let offset = this.toolContentOffsets.get(item.callId);
+                if (offset === undefined) {
+                  offset = boundary;
+                  this.toolContentOffsets.set(item.callId, offset);
+                }
+                return { ...item, contentOffset: offset };
+              });
               if (!response) return;
               response.tools = this.activeGlobalTools.slice(response.toolStartIndex).map((item) => ({ ...item }));
               await this.post({ type: 'toolExecutions', conversationId, messageId: response.assistantMessageId, tools: response.tools });
@@ -782,9 +806,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         await this.checkpointTail;
         for (const response of this.activeResponses.values()) {
           if (!response.activated) {
-            await this.completeResponse(conversationId, response, 'error', '该排队任务在当前 Agent 运行结束前尚未执行。');
+            await this.completeResponse(conversationId, response, 'error', tt('chat.queuedNotExecuted'));
           } else if (!response.completed) {
-            await this.completeResponse(conversationId, response, 'complete', '接口没有返回正文。');
+            await this.completeResponse(conversationId, response, 'complete', tt('chat.emptyResponse'));
           }
         }
       } catch (error) {
@@ -797,12 +821,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         for (const response of this.activeResponses.values()) {
           if (response.completed) continue;
           const fallback = response.activated
-            ? cancelled ? '已停止生成。' : `请求失败：${errorText}`
-            : cancelled ? '任务在执行前被停止。' : `任务未执行：${errorText}`;
+            ? cancelled ? tt('chat.stopped') : tt('chat.requestFailed', { error: errorText })
+            : cancelled ? tt('chat.stoppedBeforeRun') : tt('chat.taskNotRun', { error: errorText });
           await this.completeResponse(conversationId, response, cancelled ? 'complete' : 'error', fallback);
         }
         if (!cancelled) {
-          await this.post({ type: 'toast', tone: 'error', text: `请求失败：${errorText}` });
+          await this.post({ type: 'toast', tone: 'error', text: tt('chat.requestFailed', { error: errorText }) });
         }
       } finally {
         this.activeAbortController = undefined;
@@ -812,6 +836,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         this.activeResponses.clear();
         this.activeResponseTaskId = undefined;
         this.activeGlobalTools = [];
+        this.toolContentOffsets.clear();
         this.lastCheckpointByMessage.clear();
         this.callbacks.onHistoryChanged();
         await this.post({ type: 'streamIdle', conversationId });
@@ -832,8 +857,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const current = this.currentActiveResponse();
     if (current && current.taskId !== next.taskId && !current.completed) {
       const fallback = current.tools.length
-        ? '已完成以上步骤，并根据后续消息继续处理。'
-        : '已根据后续消息调整任务。';
+        ? tt('chat.followUpDone')
+        : tt('chat.followUpAdjusted');
       await this.completeResponse(conversationId, current, 'complete', fallback);
     }
     next.activated = true;
@@ -1060,7 +1085,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const conversation = this.activeConversationId ? await this.storage.getConversation(this.activeConversationId) : undefined;
     const profile = profileFor(settings, conversation?.apiProfileId);
     if (!this.modelOptionsForProfile(profile).some((option) => option.id === normalized)) {
-      await this.post({ type: 'toast', tone: 'warning', text: '该模型已不可用或已从当前 API 配置中排除。' });
+      await this.post({ type: 'toast', tone: 'warning', text: tt('chat.modelUnavailable') });
       await this.sendState();
       return;
     }
@@ -1105,7 +1130,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     if (this.modelDiscoveryInFlight.has(discoveryKey)) return;
     if (!await hasApiKey(this.secrets, profile.id, profile.id === 'default')) {
       if (showFeedback) {
-        await this.post({ type: 'toast', tone: 'warning', text: `请先为“${profile.name}”配置 API Key。` });
+        await this.post({ type: 'toast', tone: 'warning', text: tt('notice.configureApiKey', { profile: profile.name }) });
       }
       return;
     }
@@ -1132,7 +1157,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           : undefined;
       const excluded = new Set(profile.excludedModels ?? []);
       const options = mergeModelOptions(apiModels.map(withKnownModelName)).filter((model) => !excluded.has(model.id));
-      if (!options.length) throw new Error('接口返回的模型均已过期、不可用或被当前配置排除。');
+      if (!options.length) throw new Error(tt('error.allModelsInvalid'));
       this.discoveredModelOptions.set(profile.id, options);
       const nextModels = options.map((model) => model.id);
       const selectedModel = currentModel && nextModels.includes(currentModel) ? currentModel : nextModels[0]!;
@@ -1150,9 +1175,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       await this.post({ type: 'modelsChanged', profileId: profile.id, models: nextModels, options, model: selectedModel });
       if (showFeedback) {
         const switched = currentModel && currentModel !== selectedModel
-          ? ` 当前模型“${currentModel}”不在接口目录中，已切换到“${selectedModel}”。`
+          ? tt('chat.modelSwitchedSuffix', { current: currentModel, next: selectedModel })
           : '';
-        await this.post({ type: 'toast', tone: switched ? 'warning' : 'neutral', text: `已从“${profile.name}”获取 ${options.length} 个 API 模型。${switched}` });
+        await this.post({ type: 'toast', tone: switched ? 'warning' : 'neutral', text: tt('chat.modelsFetched', { profile: profile.name, count: options.length, switched }) });
       }
     } catch (error) {
       if (showFeedback) {
@@ -1196,7 +1221,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     try {
       if (isRiskyPermissionPreset(permissionPreset) && !await this.confirmPermissionPreset(permissionPreset)) {
         await this.post({ type: 'permissionPresetChanged', permissionPreset: current });
-        await this.post({ type: 'toast', tone: 'neutral', text: '已取消权限预设更改。' });
+        await this.post({ type: 'toast', tone: 'neutral', text: tt('chat.permissionCancelled') });
         return;
       }
       await updateSettings({ permissionPreset });
@@ -1228,15 +1253,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private async requestVoiceInput(): Promise<void> {
     if (!this.voiceConsentGranted) {
       const answer = await vscode.window.showWarningMessage(
-        '允许 HWChat 使用语音输入？',
+        tt('notice.voiceTitle'),
         {
           modal: true,
-          detail: 'HWChat 只接收语音识别后的文字，不保存音频，也不会把音频写入对话缓存。具体的语音识别服务由 VS Code/Webview 和系统浏览器实现，可能会按你的系统设置处理音频。识别出的文字只有在你点击发送后才会发送给当前 API。',
+          detail: tt('notice.voiceDetail'),
         },
-        '允许语音输入',
-        '取消',
+        tt('notice.voiceAllow'),
+        tt('common.cancel'),
       );
-      if (answer !== '允许语音输入') return;
+      if (answer !== tt('notice.voiceAllow')) return;
       this.voiceConsentGranted = true;
     }
     await this.post({ type: 'voiceInputAllowed' });
@@ -1248,20 +1273,18 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
   private async confirmPermissionPreset(permissionPreset: PermissionPreset): Promise<boolean> {
     const risk = permissionPreset === 'full'
-      ? 'Agent 将可在受信任工作区内自动读写、移动和删除文件，自动运行只读、正常和危险命令（含提权、破坏性删除、强制推送等），读取 .env、密钥、证书等敏感文件时仍会逐次确认。工作区外路径仍被禁止。'
-      : permissionPreset === 'autopilot'
-        ? 'Agent 将可在受信任工作区内无需逐次确认地读写、移动和删除文件，并自动运行只读与正常命令（含依赖安装、构建、提交等）。敏感文件仍被禁止，仅危险命令会逐次确认。'
-        : 'Agent 将使用设置页中的自定义读取、写入和命令策略，其中可能包含自动执行或敏感文件访问权限。';
+      ? tt('notice.permissionFull')
+      : tt('notice.permissionReview');
     const answer = await vscode.window.showWarningMessage(
-      '确认更改 Agent 权限预设？',
+      tt('notice.permissionTitle'),
       {
         modal: true,
-        detail: `${risk}\n\n点击“确认并承担风险”表示你已了解可能造成文件损坏、数据丢失、命令执行或敏感信息暴露，并自行承担相关风险。`,
+        detail: tt('notice.permissionDetail', { risk }),
       },
-      '确认并承担风险',
-      '取消',
+      tt('notice.permissionConfirm'),
+      tt('common.cancel'),
     );
-    return answer === '确认并承担风险';
+    return answer === tt('notice.permissionConfirm');
   }
 
   private modelDiscoveryKey(profileId: string, baseUrl: string): string {
@@ -1292,11 +1315,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
   private async continueFromConversation(sourceId: string): Promise<void> {
     if (this.activeAbortController || this.sendPending) {
-      await this.post({ type: 'toast', tone: 'warning', text: 'Agent 正在执行，请先停止当前任务再续接历史。' });
+      await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusyContinue') });
       return;
     }
     const source = await this.storage.getConversation(sourceId);
-    if (!source) throw new Error('来源对话不存在，可能已被删除或清理。');
+    if (!source) throw new Error(tt('error.sourceConversationMissing'));
     const digestMessages = await this.storage.getContextMessages(source.id, 0, 8 * 1024 * 1024);
     const digest = buildConversationHistoryDigest(source, digestMessages);
     const settings = readSettings();
@@ -1325,14 +1348,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     await this.post({
       type: 'toast',
       tone: 'neutral',
-      text: `已创建续接对话，并关联“${source.title}”的只读任务历史。`,
+      text: tt('chat.continuationCreated', { title: source.title }),
     });
   }
 
   private async detachConversationHistory(): Promise<void> {
     if (!this.activeConversationId) return;
     if (this.activeAbortController || this.sendPending) {
-      await this.post({ type: 'toast', tone: 'warning', text: 'Agent 正在执行，暂时不能解除任务历史。' });
+      await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusyDetach') });
       return;
     }
     const conversation = await this.storage.getConversation(this.activeConversationId);
@@ -1345,7 +1368,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     });
     this.callbacks.onHistoryChanged();
     await this.sendState();
-    await this.post({ type: 'toast', tone: 'neutral', text: '已解除只读任务历史。' });
+    await this.post({ type: 'toast', tone: 'neutral', text: tt('chat.historyDetached') });
   }
 
   private async searchLinkedConversationHistory(
@@ -1358,8 +1381,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     if (!conversation?.sourceConversationId) {
       return {
         status: 'denied',
-        summary: '没有可检索的关联任务历史',
-        content: '当前对话未关联来源对话。',
+        summary: tt('chat.noHistorySummary'),
+        content: tt('chat.noHistoryContent'),
         approval: 'not-required',
       };
     }
@@ -1372,8 +1395,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       settings,
       'read',
       (request) => this.requestToolApproval(request.summary, request.detail, request.risk),
-      query ? `检索关联任务历史：${query}` : '读取关联任务的最近历史',
-      `来源：${conversation.sourceConversationTitle || conversation.sourceConversationId}\n最多返回 ${limit} 条只读片段。`,
+      query ? tt('chat.searchHistoryLabel', { query }) : tt('chat.readHistoryLatestLabel'),
+      tt('chat.historySourceDetail', { title: conversation.sourceConversationTitle || conversation.sourceConversationId, limit }),
       async () => {
         const hits: Array<{ conversationId: string; conversationTitle: string; messageId: string; role: string; createdAt: string; excerpt: string }> = [];
         const visited = new Set<string>();
@@ -1395,10 +1418,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         }
         return {
           status: 'success',
-          summary: `找到 ${hits.length} 条关联任务历史`,
+          summary: tt('chat.historyHits', { count: hits.length }),
           content: hits.length
             ? JSON.stringify({ query: query || null, searchedConversations: [...visited], hits }, null, 2)
-            : `未在关联任务历史中找到${query ? `“${query}”` : '可用'}记录。`,
+            : tt('chat.historyMiss', { query: query ? tt('chat.historyMissQuery', { query }) : tt('chat.historyMissAvailable') }),
           approval: 'not-required',
         };
       },
@@ -1408,7 +1431,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
   private async toggleArchive(id: string, archived: boolean): Promise<void> {
     if (id === this.streamingConversationId) {
-      await this.post({ type: 'toast', tone: 'warning', text: '请先停止当前任务，再归档对话。' });
+      await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusyArchive') });
       return;
     }
     await this.storage.setArchived(id, archived);
@@ -1418,22 +1441,22 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
   private async deleteConversation(id: string): Promise<void> {
     if (id === this.streamingConversationId) {
-      await this.post({ type: 'toast', tone: 'warning', text: '请先停止当前回复，再删除对话。' });
+      await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusyDelete') });
       return;
     }
     const references = (await this.storage.listConversations({ includeArchived: true }))
       .filter((conversation) => conversation.sourceConversationId === id);
     const answer = await vscode.window.showWarningMessage(
-      '删除这段对话？此操作无法撤销。',
+      tt('notice.deleteConversationTitle'),
       {
         modal: true,
         detail: references.length
-          ? `有 ${references.length} 段续接对话正在引用这段历史。删除后它们仍保留本地摘要，但无法再按需检索这段完整历史。`
+          ? tt('notice.deleteConversationDetail', { count: references.length })
           : undefined,
       },
-      '删除',
+      tt('common.delete'),
     );
-    if (answer !== '删除') {
+    if (answer !== tt('common.delete')) {
       return;
     }
     await this.storage.deleteConversation(id);
@@ -1450,14 +1473,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     }
     const destination = await vscode.window.showSaveDialog({
       filters: { JSON: ['json'] },
-      saveLabel: '导出对话',
+      saveLabel: tt('notice.exportSaveLabel'),
       defaultUri: vscode.Uri.file(`HWChat-${new Date().toISOString().slice(0, 10)}.json`),
     });
     if (!destination) {
       return;
     }
     await this.storage.writeExportFile(destination.fsPath, this.activeConversationId);
-    void vscode.window.showInformationMessage('对话已导出。');
+    void vscode.window.showInformationMessage(tt('notice.exported'));
   }
 
   private async post(message: unknown): Promise<void> {
@@ -1522,23 +1545,28 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     detail: string,
     risk: 'read' | 'write' | 'command',
   ): Promise<boolean> {
-    const title = risk === 'command' ? '允许 Agent 运行命令？' : risk === 'write' ? '允许 Agent 修改文件？' : '允许 Agent 读取文件？';
+    const title = risk === 'command' ? tt('notice.approveCommandTitle') : risk === 'write' ? tt('notice.approveWriteTitle') : tt('notice.approveReadTitle');
+    // 顺序有讲究：VS Code 模态框里第一个按钮是默认项，按回车就直接选中。
+    // 之前「允许一次」排第一，急着按回车（或手滑）就等于批准，危险命令就这么被放过去了。
+    // 现在默认项是「拒绝」：回车 / Esc 都只会保守处理，真的同意必须主动点第二个按钮。
     const answer = await vscode.window.showWarningMessage(
       title,
       { modal: true, detail: `${summary}\n\n${detail}` },
-      '允许一次',
-      '拒绝',
+      tt('notice.approveDeny'),
+      tt('notice.approveAllowOnce'),
     );
-    return answer === '允许一次';
+    return answer === tt('notice.approveAllowOnce');
   }
 
   private html(webview: vscode.Webview): string {
     const scriptNonce = nonce();
+    const lang = currentLanguage();
+    this.renderedLanguage = lang;
     const style = mediaUri(webview, this.extensionUri, 'chat.css');
     const script = mediaUri(webview, this.extensionUri, 'chat.js');
     const logo = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'logo.png'));
     return `<!doctype html>
-<html lang="zh-CN">
+<html lang="${lang === 'zh' ? 'zh-CN' : 'en'}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1548,83 +1576,85 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 </head>
 <body>
   <div id="app" class="app-shell">
-    <aside id="historyPane" class="history-pane" aria-label="对话记录">
+    <aside id="historyPane" class="history-pane" aria-label="${t(lang, 'chat.historyPane')}">
       <div class="brand-row">
         <img class="brand-mark" src="${logo}" alt="">
         <div class="brand-copy"><strong>HWChat</strong><span>DeepSeek workspace</span></div>
-        <button id="closeHistoryButton" class="icon-button mobile-only" type="button" aria-label="关闭对话记录" title="关闭">${icon('history')}</button>
+        <button id="closeHistoryButton" class="icon-button mobile-only" type="button" aria-label="${t(lang, 'chat.closeHistory')}" title="${t(lang, 'common.close')}">${icon('history')}</button>
       </div>
-      <button id="newChatButton" class="primary-command" type="button">${icon('plus')}<span>新建对话</span></button>
-      <label class="search-field"><span class="sr-only">搜索对话</span><input id="historySearch" type="search" placeholder="搜索对话"></label>
-      <button id="archiveViewButton" class="sidebar-command archive-toggle" type="button">${icon('archive')}<span>显示归档</span></button>
+      <button id="newChatButton" class="primary-command" type="button">${icon('plus')}<span>${t(lang, 'chat.newChat')}</span></button>
+      <label class="search-field"><span class="sr-only">${t(lang, 'chat.searchConversations')}</span><input id="historySearch" type="search" placeholder="${t(lang, 'chat.searchConversations')}"></label>
+      <button id="archiveViewButton" class="sidebar-command archive-toggle" type="button">${icon('archive')}<span>${t(lang, 'chat.showArchived')}</span></button>
       <div id="conversationList" class="conversation-list"></div>
-      <button id="settingsButtonSide" class="sidebar-command" type="button">${icon('settings')}<span>设置</span></button>
+      <button id="settingsButtonSide" class="sidebar-command" type="button">${icon('settings')}<span>${t(lang, 'chat.settings')}</span></button>
     </aside>
     <main class="chat-pane">
       <header class="chat-toolbar">
         <div class="toolbar-title-row">
-          <button id="historyButton" class="icon-button" type="button" aria-label="显示对话记录" title="对话记录">${icon('history')}</button>
-          <div class="conversation-heading"><strong id="conversationTitle">新对话</strong><span id="connectionState">准备就绪</span></div>
+          <button id="historyButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.showHistory')}" title="${t(lang, 'chat.history')}">${icon('history')}</button>
+          <div class="conversation-heading"><strong id="conversationTitle">${t(lang, 'common.newChat')}</strong><span id="connectionState">${t(lang, 'chat.ready')}</span></div>
         </div>
         <div class="toolbar-controls">
           <div class="control-group mode-group">
-            <label class="mode-field"><span class="sr-only">工作模式</span><select id="modeInput" aria-label="工作模式"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
+            <label class="mode-field"><span class="sr-only">${t(lang, 'chat.workspaceMode')}</span><select id="modeInput" aria-label="${t(lang, 'chat.workspaceMode')}"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
           </div>
           <div class="control-group connection-group">
-            <label class="profile-field"><span class="sr-only">API 配置</span><select id="profileInput" aria-label="API 配置"></select></label>
-            <label class="model-field"><span class="sr-only">模型</span><select id="modelInput" aria-label="模型"></select></label>
-            <button id="refreshModelsButton" class="icon-button" type="button" aria-label="从 API 刷新模型列表" title="刷新模型列表">${icon('refresh')}</button>
+            <label class="profile-field"><span class="sr-only">${t(lang, 'chat.apiProfile')}</span><select id="profileInput" aria-label="${t(lang, 'chat.apiProfile')}"></select></label>
+            <label class="model-field"><span class="sr-only">${t(lang, 'chat.model')}</span><select id="modelInput" aria-label="${t(lang, 'chat.model')}"></select></label>
+            <button id="refreshModelsButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.refreshModelsFromApi')}" title="${t(lang, 'chat.refreshModels')}">${icon('refresh')}</button>
           </div>
           <div class="control-group utility-group">
-            <button id="skillsButton" class="control-button" type="button" aria-label="选择 Skill" title="选择 Skill">${icon('skills')}<span id="skillsCount">0</span></button>
-            <button id="archiveButton" class="icon-button" type="button" aria-label="归档当前对话" title="归档">${icon('archive')}</button>
-            <button id="exportButton" class="icon-button" type="button" aria-label="导出当前对话" title="导出">${icon('export')}</button>
-            <button id="settingsButton" class="icon-button" type="button" aria-label="打开设置" title="设置">${icon('settings')}</button>
+            <button id="skillsButton" class="control-button" type="button" aria-label="${t(lang, 'chat.selectSkill')}" title="${t(lang, 'chat.selectSkill')}">${icon('skills')}<span id="skillsCount">0</span></button>
+            <button id="archiveButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.archiveCurrent')}" title="${t(lang, 'chat.archive')}">${icon('archive')}</button>
+            <button id="exportButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.exportCurrent')}" title="${t(lang, 'chat.export')}">${icon('export')}</button>
+            <button id="settingsButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.openSettings')}" title="${t(lang, 'chat.settings')}">${icon('settings')}</button>
           </div>
         </div>
-        <section id="skillsPanel" class="skills-panel" hidden aria-label="启用 Skill">
-          <div class="skills-panel-heading"><strong>本次对话使用的 Skill</strong><span id="workspaceTrustBadge">工作区状态</span></div>
+        <section id="skillsPanel" class="skills-panel" hidden aria-label="${t(lang, 'chat.enableSkill')}">
+          <div class="skills-panel-heading"><strong>${t(lang, 'chat.skillsPanelTitle')}</strong><span id="workspaceTrustBadge">${t(lang, 'chat.workspaceTrustBadge')}</span></div>
           <div id="skillsList" class="skills-list"></div>
-          <div class="skills-panel-note">“默认启用”来自本地skill快捷调用。route 模式只在命中后通过 load_skill 读取；每条回复会显示本轮实际加载的 Skill。</div>
+          <div class="skills-panel-note">${t(lang, 'chat.skillsPanelNote')}</div>
         </section>
       </header>
-      <section id="messageViewport" class="message-viewport" aria-live="polite">
-        <button id="loadOlderButton" class="load-older" type="button" hidden>加载更早消息</button>
-        <div id="emptyState" class="empty-state">
-          <img class="empty-mark" src="${logo}" alt="">
-          <h1>今天想一起解决什么？</h1>
-          <div class="suggestions">
-            <button type="button" data-prompt="解释当前选中的代码，并指出潜在问题。">解释代码</button>
-            <button type="button" data-prompt="为这个需求设计一个清晰、可执行的实现方案。">设计方案</button>
-            <button type="button" data-prompt="检查这段实现中的错误、边界条件和安全风险。">代码审查</button>
+      <div class="message-area">
+        <section id="messageViewport" class="message-viewport" aria-live="polite">
+          <button id="loadOlderButton" class="load-older" type="button" hidden>${t(lang, 'chat.loadOlder')}</button>
+          <div id="emptyState" class="empty-state">
+            <img class="empty-mark" src="${logo}" alt="">
+            <h1>${t(lang, 'chat.emptyTitle')}</h1>
+            <div class="suggestions">
+              <button type="button" data-prompt="${t(lang, 'chat.suggestion.explainPrompt')}">${t(lang, 'chat.suggestion.explain')}</button>
+              <button type="button" data-prompt="${t(lang, 'chat.suggestion.designPrompt')}">${t(lang, 'chat.suggestion.design')}</button>
+              <button type="button" data-prompt="${t(lang, 'chat.suggestion.reviewPrompt')}">${t(lang, 'chat.suggestion.review')}</button>
+            </div>
           </div>
-        </div>
-        <div id="messageList" class="message-list"></div>
-      </section>
+          <div id="messageList" class="message-list"></div>
+        </section>
+        <button id="scrollToBottomButton" class="icon-button scroll-to-bottom" type="button" aria-label="${t(lang, 'chat.scrollToBottom')}" title="${t(lang, 'chat.scrollToBottom')}" hidden>${icon('arrowDown')}</button>
+      </div>
       <footer class="composer-wrap">
         <div id="historyLinkBanner" class="history-link-banner" hidden>
           <span class="history-link-symbol" aria-hidden="true">↗</span>
-          <div><strong id="sourceHistoryTitle">任务历史</strong><small>只读摘要 + 按需检索；实际发送的摘要和片段会计入输入 Token</small></div>
-          <button id="detachHistoryButton" type="button" aria-label="解除任务历史" title="解除任务历史">×</button>
+          <div><strong id="sourceHistoryTitle">${t(lang, 'chat.taskHistory')}</strong><small>${t(lang, 'chat.taskHistoryNote')}</small></div>
+          <button id="detachHistoryButton" type="button" aria-label="${t(lang, 'chat.detachHistory')}" title="${t(lang, 'chat.detachHistory')}">×</button>
         </div>
         <div id="attachmentList" class="attachment-list"></div>
-        <div id="contextChip" class="context-chip" hidden><span id="contextLabel"></span><button id="removeContextButton" type="button" aria-label="移除代码上下文" title="移除">×</button></div>
-        <div id="agentRunState" class="agent-run-state" hidden><span class="run-indicator"></span><strong id="agentRunLabel">Agent 正在执行</strong><span id="agentRunMeta"></span></div>
-        <details id="taskTree" class="task-tree" hidden><summary><span>任务树</span><small id="taskTreeSummary"></small></summary><div id="taskTreeList" class="task-tree-list"></div></details>
+        <div id="contextChip" class="context-chip" hidden><span id="contextLabel"></span><button id="removeContextButton" type="button" aria-label="${t(lang, 'chat.removeContext')}" title="${t(lang, 'common.remove')}">×</button></div>
+        <div id="agentRunState" class="agent-run-state" hidden><span class="run-indicator"></span><strong id="agentRunLabel">${t(lang, 'chat.agentRunning')}</strong><span id="agentRunMeta"></span></div>
+        <details id="taskTree" class="task-tree" hidden><summary><span>${t(lang, 'chat.taskTree')}</span><small id="taskTreeSummary"></small></summary><div id="taskTreeList" class="task-tree-list"></div></details>
         <form id="composer" class="composer">
-          <textarea id="promptInput" rows="1" placeholder="询问代码、调试问题或实现思路…" aria-label="消息"></textarea>
+          <textarea id="promptInput" rows="1" placeholder="${t(lang, 'chat.promptPlaceholder')}" aria-label="${t(lang, 'chat.messageLabel')}"></textarea>
           <div class="composer-footer">
-            <div class="composer-runtime-controls" aria-label="本轮 Agent 设置">
-              <label class="runtime-field permission-field"><span>权限预设：</span><select id="permissionPresetInput" aria-label="权限预设">${permissionPresetOptionsHtml()}</select></label>
-              <label class="runtime-field steps-field"><span>最大步骤：</span><select id="agentMaxStepsInput" aria-label="最大执行步骤"><option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option><option value="80">80 步</option><option value="120">120 步</option></select></label>
-              <label class="runtime-field reasoning-field"><span>思考深度：</span><select id="reasoningEffortInput" aria-label="思考深度"><option value="default">默认</option><option value="none">无</option><option value="low">低</option><option value="high">高</option><option value="max">最大值</option></select></label>
+            <div class="composer-runtime-controls" aria-label="${t(lang, 'chat.agentRuntimeSettings')}">
+              <label class="runtime-field permission-field"><span>${t(lang, 'chat.permissionPresetLabel')}</span><select id="permissionPresetInput" aria-label="${t(lang, 'chat.permissionPreset')}">${permissionPresetOptionsHtml(lang)}</select></label>
+              <label class="runtime-field steps-field"><span>${t(lang, 'chat.maxStepsLabel')}</span><select id="agentMaxStepsInput" aria-label="${t(lang, 'chat.maxSteps')}">${[0, 12, 24, 40, 80, 120].map((steps) => `<option value="${steps}">${steps === 0 ? t(lang, 'chat.unlimited') : t(lang, 'chat.stepsOption', { count: steps })}</option>`).join('')}</select></label>
+              <label class="runtime-field reasoning-field"><span>${t(lang, 'chat.reasoningDepthLabel')}</span><select id="reasoningEffortInput" aria-label="${t(lang, 'chat.reasoningDepth')}">${(['default', 'none', 'low', 'high', 'max'] as const).map((effort) => `<option value="${effort}">${t(lang, `chat.reasoning.${effort}`)}</option>`).join('')}</select></label>
             </div>
             <div class="composer-actions">
-              <span id="composerHint">Enter 发送</span>
-              <button id="attachButton" class="icon-button" type="button" aria-label="添加文件" title="添加文件">${icon('attach')}</button>
-              <button id="voiceButton" class="runtime-icon-button" type="button" aria-label="语音输入" title="语音输入">${icon('mic')}</button>
-              <button id="sendButton" class="send-button" type="submit" aria-label="发送" title="发送">${icon('send')}</button>
-              <button id="stopButton" class="stop-button" type="button" aria-label="停止生成" title="停止" hidden>${icon('stop')}</button>
+              <button id="attachButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.attachFile')}" title="${t(lang, 'chat.attachFile')}">${icon('attach')}</button>
+              <button id="voiceButton" class="runtime-icon-button" type="button" aria-label="${t(lang, 'chat.voiceInput')}" title="${t(lang, 'chat.voiceInput')}">${icon('mic')}</button>
+              <button id="sendButton" class="send-button" type="submit" aria-label="${t(lang, 'chat.send')}" title="${t(lang, 'chat.send')}">${icon('send')}</button>
+              <button id="stopButton" class="stop-button" type="button" aria-label="${t(lang, 'chat.stopGenerating')}" title="${t(lang, 'chat.stop')}" hidden>${icon('stop')}</button>
             </div>
           </div>
         </form>
@@ -1632,6 +1662,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     </main>
   </div>
   <div id="toast" class="toast" role="status" hidden></div>
+  ${messageScriptTag(lang)}
   <script nonce="${scriptNonce}" src="${script}"></script>
 </body>
 </html>`;
@@ -1647,12 +1678,12 @@ function conversationHistoryToolDefinition(): ToolDefinition {
     type: 'function',
     function: {
       name: 'search_conversation_history',
-      description: '只读检索当前对话已关联的旧任务历史及其上游来源。用于确认以前做过的修改、失败方案、用户纠正和验证结果；不能读取任意其他对话，也不能修改历史。',
+      description: tt('tool.searchHistoryDescription'),
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: '要查找的文件名、错误、决策、功能或关键词；留空时返回最近记录' },
-          limit: { type: 'integer', minimum: 1, maximum: 30, description: '最多返回的历史片段数，默认 10' },
+          query: { type: 'string', description: tt('tool.searchHistoryQueryParam') },
+          limit: { type: 'integer', minimum: 1, maximum: 30, description: tt('tool.searchHistoryLimitParam') },
         },
         additionalProperties: false,
       },
@@ -1672,7 +1703,7 @@ function parseToolArguments(raw: string): Record<string, unknown> {
 }
 
 function continuationTitle(value: string): string {
-  return `继续：${value.replace(/^继续\s*[：:]\s*/u, '').trim() || '未命名任务'}`;
+  return `${tt('chat.continuationTitlePrefix')}${value.replace(/^继续\s*[：:]\s*/u, '').trim() || tt('chat.untitledTask')}`;
 }
 
 const OFFICIAL_DEEPSEEK_MODELS: ModelOption[] = [
@@ -1682,10 +1713,10 @@ const OFFICIAL_DEEPSEEK_MODELS: ModelOption[] = [
 
 const DEEPSEEK_MODEL_NAMES = new Map<string, string>([
   ...OFFICIAL_DEEPSEEK_MODELS.map((model) => [model.id, model.name] as const),
-  ['deepseek-v4-flash', 'DeepSeek-V4-Flash（兼容路由）'],
-  ['deepseek-v4-flash-vision-exp', 'DeepSeek-V4-Flash-Vision-Exp（兼容路由）'],
-  ['deepseek-chat', 'DeepSeek Chat（旧接口名）'],
-  ['deepseek-reasoner', 'DeepSeek Reasoner（旧接口名）'],
+  ['deepseek-v4-flash', 'DeepSeek-V4-Flash (compat route)'],
+  ['deepseek-v4-flash-vision-exp', 'DeepSeek-V4-Flash-Vision-Exp (compat route)'],
+  ['deepseek-chat', 'DeepSeek Chat (legacy id)'],
+  ['deepseek-reasoner', 'DeepSeek Reasoner (legacy id)'],
 ]);
 
 function modelOptionForId(id: string): ModelOption {
@@ -1727,12 +1758,12 @@ function reasoningEffortForModel(requested: ReasoningEffort, model: ModelOption 
 }
 
 function isRiskyPermissionPreset(value: PermissionPreset): boolean {
-  return value === 'autopilot' || value === 'full' || value === 'custom';
+  return value === 'autopilot' || value === 'full';
 }
 
 /** 权限预设下拉项由权限矩阵生成，保证与设置页、运行时策略同源。 */
-function permissionPresetOptionsHtml(): string {
-  return PERMISSION_PRESET_DETAILS
+function permissionPresetOptionsHtml(lang: Language): string {
+  return permissionPresetDetails(lang)
     .map((detail) => `<option value="${detail.id}" title="${escapeHtml(detail.summary)}">${escapeHtml(detail.label)}</option>`)
     .join('');
 }
@@ -1757,10 +1788,10 @@ function addUsage(total: UsageInfo | undefined, current: UsageInfo | undefined):
 function decodeBase64File(value: string): Buffer {
   const normalized = String(value ?? '').replace(/^data:[^;]+;base64,/, '').replace(/\s/g, '');
   if (!normalized || !/^[A-Za-z0-9+/]*={0,2}$/.test(normalized) || normalized.length % 4 === 1) {
-    throw new Error('剪贴板附件不是有效的 Base64 数据。');
+    throw new Error(tt('error.clipboardBase64'));
   }
   const data = Buffer.from(normalized, 'base64');
-  if (!data.byteLength) throw new Error('剪贴板附件为空。');
+  if (!data.byteLength) throw new Error(tt('error.clipboardEmpty'));
   return data;
 }
 
@@ -1787,6 +1818,6 @@ function cleanAttachmentName(value: string, fallback: string): string {
 }
 
 function decodeClipboardText(data: Buffer): string {
-  if (data.includes(0)) throw new Error('该剪贴板文件是二进制文件；图片请使用图像格式粘贴。');
+  if (data.includes(0)) throw new Error(tt('error.clipboardBinary'));
   return new TextDecoder('utf-8', { fatal: false }).decode(data);
 }

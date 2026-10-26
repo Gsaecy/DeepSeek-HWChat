@@ -10,6 +10,7 @@ import {
   ToolDefinition,
   ToolExecutionResult,
 } from '../core/types';
+import { tt } from '../core/i18n';
 
 interface SkillRecord extends SkillSummary {
   uri: vscode.Uri;
@@ -169,7 +170,7 @@ export class SkillRegistry implements vscode.Disposable {
       type: 'function',
       function: {
         name: 'load_skill',
-        description: '读取一个已由用户启用且与当前任务匹配的本地 Skill 指令。只有路由表中的 Skill 可以读取。',
+        description: tt('skill.loadDescription'),
         parameters: {
           type: 'object',
           properties: {
@@ -199,8 +200,8 @@ export class SkillRegistry implements vscode.Disposable {
       return {
         result: {
           status: 'denied',
-          summary: 'Skill 加载被拒绝',
-          content: '只能加载本次对话已启用并出现在路由表中的 Skill。',
+          summary: tt('skill.loadDenied'),
+          content: tt('skill.loadDeniedContent'),
           approval: 'not-required',
         },
       };
@@ -211,7 +212,7 @@ export class SkillRegistry implements vscode.Disposable {
       usage,
       result: {
         status: 'success',
-        summary: `加载 Skill：${skill.name}`,
+        summary: tt('skill.loaded', { name: skill.name }),
         content: skillSection(skill),
         approval: 'not-required',
       },
@@ -302,7 +303,7 @@ export class SkillRegistry implements vscode.Disposable {
     return {
       id,
       name,
-      description: description || '本地 Skill',
+      description: description || tt('skill.localSkill'),
       source: candidate.source,
       relativePath: candidate.relativePath,
       uri: candidate.uri,
