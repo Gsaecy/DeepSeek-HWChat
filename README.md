@@ -8,15 +8,13 @@ HWChat is a local-first coding agent for VS Code with a DeepSeek / OpenAI-compat
 
 It ships a compact chat surface and settings page, native streaming tool calling, local skills, file attachments, permission presets, archived history and crash-resilient chunked storage. The chat lives in the VS Code secondary sidebar, so it never takes over an editor tab.
 
-![HWChat chat panel in dark theme](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-dark.png)
+![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
 ## Interface language
 
 HWChat speaks Chinese and English. Open **Settings → General → Interface language** and pick `Auto` (follow the VS Code display language), `Chinese` or `English`. The chat panel, settings page, notifications and error messages switch immediately — no window reload needed.
 
 Command palette titles and the configuration descriptions in the VS Code Settings UI follow the editor's own display language through the standard VS Code localization (NLS) mechanism.
-
-![HWChat settings page in light theme](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/settings-light.png)
 
 ## Coding agent
 
@@ -150,10 +148,10 @@ Conversation data lives in the VS Code global storage directory and is never wri
 | `src/views/` | chat panel, settings panel, history view |
 | `src/providers/` | DeepSeek / OpenAI-compatible client |
 | `media/` | webview scripts and styles |
-| `docs/screenshots/` | screenshot build script and generated images |
+| `docs/screenshots/` | screenshot build script and the generated English screenshot |
 | `test/` | browser preview pages used for layout checks |
 
-Screenshots are generated with `node docs/screenshots/build.mjs`, which reuses the real webview CSS and the real English dictionary, so the images match the shipped UI.
+The screenshot is generated with `node docs/screenshots/build.mjs`. It reuses the real webview CSS and the real English dictionary, so the image matches the shipped UI, and it renders an empty new conversation: no conversations, messages, task list, attachments or typed input are included.
 
 ## License
 

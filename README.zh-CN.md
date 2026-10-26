@@ -8,6 +8,8 @@ HWChat 是面向 VS Code 的本地优先编码 Agent 扩展。项目仓库：<ht
 
 HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent 扩展。它提供简洁的聊天与设置界面、原生流式 tool calling、本地 Skill、文件附件、权限预设、归档历史和可恢复的分片存储。聊天固定在 VS Code 右侧辅助侧边栏，不会再占用编辑器标签页。
 
+![HWChat 聊天面板：左侧会话列表与新建对话](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
+
 ## 编码 Agent
 
 - `Agent`：读取和搜索项目、检查诊断、创建/修改/移动/删除文件、运行命令，并把工具结果继续回传模型完成多轮任务。

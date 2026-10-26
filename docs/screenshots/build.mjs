@@ -1,9 +1,13 @@
 /**
- * 生成英文界面截图。
+ * 生成 README 用的英文界面截图。
  *
- * 做法：把 develop 用的预览页（test/preview-*.html）套上真实词表里的英文文案，
+ * 做法：把 develop 用的预览页（test/preview-chat.html）套上真实词表里的英文文案，
  * 复用同一份 media/*.css 渲染，再用本机 Chrome 无头模式截图。
  * 这样截图里的布局、间距、图标与扩展里完全一致，只有语言不同。
+ *
+ * 默认只产出一张 docs/screenshots/chat-panel.png：左侧会话列表 + 新建对话欢迎页，
+ * 且画面里不含任何对话数据、消息、待办或输入内容。
+ * 需要设置页截图时加 --with-settings。
  *
  * 运行：node docs/screenshots/build.mjs
  */
@@ -259,6 +263,65 @@ function buildPage(sourceFile, replacements, targetFile) {
 }
 
 /**
+ * 把预览页改写成「全新的空对话」。
+ *
+ * README 只用这一张截图，所以画面里不能出现任何数据：
+ * 侧栏对话列表、消息、待办、任务树、待发附件和输入框文字全部清空，
+ * 只保留产品界面本身的骨架。当前对话 id 换成一个不在历史列表里的值，
+ * 与真实点「新建对话」时的状态一致。
+ */
+function toEmptyConversation(html) {
+  const patterns = [
+    // 当前对话不属于历史列表，标题回到「New chat」。
+    [/conversation: \{ id: 'c1', title: '[^']*'/, "conversation: { id: 'new', title: 'New chat'"],
+    // 侧栏不显示任何历史对话或归档记录。
+    [/      conversations: \[[\s\S]*?\n      \],\n      archivedConversations:/, '      conversations: [],\n      archivedConversations:'],
+    [/      archivedConversations: \[[\s\S]*?\],\n      messages:/, '      archivedConversations: [],\n      messages:'],
+    // 没有消息：主区显示欢迎页。
+    [/      messages: \[[\s\S]*?\n      \],\n      hasMore: true,/, '      messages: [],\n      hasMore: false,'],
+    // 没有任务：不显示任务清单与任务树。
+    [/      todos: \[[\s\S]*?\n      \],\n      settings: \{/, '      todos: [],\n      settings: {'],
+    // 输入框上方不留待发送的示例附件。
+    [/      pendingAttachments: \[\{[\s\S]*?\}\],\n      skills:/, '      pendingAttachments: [],\n      skills:'],
+    [/      taskTree: \{ active: true[\s\S]*?\n    \};/, '      taskTree: { active: false, nodes: [] },\n    };'],
+    // 空对话没有正在生成的回复。
+    ["streamingConversationId: 'c1'", 'streamingConversationId: null'],
+    // 预览页会模拟一次粘贴把示例文字写进输入框；清空，只留占位提示。
+    ['Mixed clipboard text', ''],
+    // 示例消息消失后没有工具步骤可标注分段边界，整段删掉，
+    // 否则取空数组元素会抛错并中断整个预览脚本（页面会白屏）。
+    [/    const previewReply = previewState\.messages\[1\];\n[\s\S]*?previewTools\[2\]\.contentOffset = [^\n]*\n/, ''],
+    // 没有段落可选中，给选区脚本一个游离节点兜底。
+    [
+      "const firstMessage = document.querySelector('.message-content p');",
+      "const firstMessage = document.querySelector('.message-content p') || document.createElement('p');",
+    ],
+  ];
+
+  let output = html;
+  const missed = [];
+  for (const [from, to] of patterns) {
+    if (from instanceof RegExp) {
+      if (!from.test(output)) {
+        missed.push(String(from).slice(0, 70));
+        continue;
+      }
+      output = output.replace(from, to);
+      continue;
+    }
+    if (!output.includes(from)) {
+      missed.push(from.slice(0, 70));
+      continue;
+    }
+    output = output.split(from).join(to);
+  }
+  if (missed.length) {
+    console.warn(`  空状态改写有 ${missed.length} 条未命中：${missed.join(' | ')}`);
+  }
+  return output;
+}
+
+/**
  * 主题用页面内联脚本写死，而不是靠 file:// 的查询参数——
  * 查询串在 file:// 下并不可靠（设置页两张图曾经因此完全一样）。
  */
@@ -270,7 +333,20 @@ function withTheme(html, theme) {
 }
 
 const chatHtml = buildPage('test/preview-chat.html', chatReplacements, join(OUT, 'chat.en.html'));
-const settingsHtml = buildPage('test/preview-settings.html', settingsReplacements, join(OUT, 'settings.en.html'));
+// README 只用一张「全新空对话」的截图，不含任何数据。
+const emptyChatHtml = toEmptyConversation(chatHtml);
+
+// 这两条是截图能如实反映空状态的前提：少一条就会截出带数据的画面。
+for (const marker of ['messages: []', 'todos: []', 'conversations: []', 'archivedConversations: []', "title: 'New chat'", 'active: false, nodes: []']) {
+  if (!emptyChatHtml.includes(marker)) {
+    throw new Error(`空状态改写缺少片段：${marker}（截图会带上示例数据，已中止）`);
+  }
+}
+
+// 设置页截图默认不生成（README 不放设置页图片）；需要时运行 build.mjs --with-settings。
+const settingsHtml = process.argv.includes('--with-settings')
+  ? buildPage('test/preview-settings.html', settingsReplacements, join(OUT, 'settings.en.html'))
+  : null;
 
 const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
@@ -302,8 +378,10 @@ function shot(html, fileName, output, width, height) {
   }
 }
 
-shot(withTheme(chatHtml, 'dark'), 'chat.dark.html', join(OUT, 'chat-dark.png'), 1120, 980);
-shot(withTheme(chatHtml, 'light'), 'chat.light.html', join(OUT, 'chat-light.png'), 1120, 980);
-shot(withTheme(settingsHtml, 'light'), 'settings.light.html', join(OUT, 'settings-light.png'), 1160, 900);
-shot(withTheme(settingsHtml, 'dark'), 'settings.dark.html', join(OUT, 'settings-dark.png'), 1160, 900);
+// README 只用这一张：左侧会话列表 + 新建对话欢迎页的整体界面（无任何数据）。
+shot(withTheme(emptyChatHtml, 'dark'), 'chat-panel.html', join(OUT, 'chat-panel.png'), 800, 828);
+if (settingsHtml) {
+  shot(withTheme(settingsHtml, 'light'), 'settings.light.html', join(OUT, 'settings-light.png'), 1160, 900);
+  shot(withTheme(settingsHtml, 'dark'), 'settings.dark.html', join(OUT, 'settings-dark.png'), 1160, 900);
+}
 console.log('截图完成。');
