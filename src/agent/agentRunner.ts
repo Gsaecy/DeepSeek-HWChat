@@ -10,6 +10,7 @@ import {
 } from '../core/types';
 import { DeepSeekClient } from '../providers/deepseekClient';
 import { redact } from './auditLog';
+import type { AgentTaskUpdate } from './taskQueue';
 import type { RequestApproval, ToolExecutor } from './toolExecutor';
 
 export interface AgentRunCallbacks {
@@ -17,6 +18,8 @@ export interface AgentRunCallbacks {
   onToolsChanged: (tools: ToolExecution[]) => void | Promise<void>;
   requestApproval: RequestApproval;
   onSkillUsed?: (skill: SkillUsage) => void | Promise<void>;
+  onTaskUpdate?: (update: AgentTaskUpdate) => void | Promise<void>;
+  onRoundComplete?: (usage?: UsageInfo) => void | Promise<void>;
 }
 
 export interface AgentRunResult {
@@ -42,7 +45,7 @@ export class AgentRunner {
     callbacks: AgentRunCallbacks;
     extraTools?: ToolDefinition[];
     executeExtraTool?: (call: import('../core/types').ToolCall) => Promise<{ result: ToolExecutionResult; skill?: SkillUsage } | undefined>;
-    takeTaskUpdate?: (phase: 'replan' | 'complete') => Promise<ChatRequestMessage[]> | ChatRequestMessage[];
+    takeTaskUpdate?: (phase: 'replan' | 'complete') => Promise<AgentTaskUpdate[]> | AgentTaskUpdate[];
   }): Promise<AgentRunResult> {
     const requestMessages = [...options.messages];
     const executions: ToolExecution[] = [];
@@ -54,7 +57,10 @@ export class AgentRunner {
     while (options.settings.agentMaxSteps === 0 || step < options.settings.agentMaxSteps) {
       step += 1;
       const beforeRound = await options.takeTaskUpdate?.('replan') ?? [];
-      requestMessages.push(...beforeRound);
+      for (const update of beforeRound) {
+        await options.callbacks.onTaskUpdate?.(update);
+        requestMessages.push(update.request);
+      }
       const round = await this.client.streamChat(options.settings, requestMessages, {
         signal: options.signal,
         tools: definitions,
@@ -69,6 +75,7 @@ export class AgentRunner {
         },
       });
       usage = addUsage(usage, round.usage);
+      await options.callbacks.onRoundComplete?.(round.usage);
 
       if (!round.toolCalls.length || options.mode === 'chat') {
         const guidance = await options.takeTaskUpdate?.('complete') ?? [];
@@ -78,7 +85,10 @@ export class AgentRunner {
             content: round.content,
             reasoning_content: round.reasoning || undefined,
           });
-          requestMessages.push(...guidance);
+          for (const update of guidance) {
+            await options.callbacks.onTaskUpdate?.(update);
+            requestMessages.push(update.request);
+          }
           continue;
         }
         return { content, reasoning, usage, tools: executions, stoppedByStepLimit: false };
@@ -169,7 +179,10 @@ export class AgentRunner {
             });
           }
           await options.callbacks.onToolsChanged(cloneExecutions(executions));
-          requestMessages.push(...guidance);
+          for (const update of guidance) {
+            await options.callbacks.onTaskUpdate?.(update);
+            requestMessages.push(update.request);
+          }
           break;
         }
       }
@@ -192,9 +205,12 @@ function cloneExecutions(executions: ToolExecution[]): ToolExecution[] {
 
 function toolPendingSummary(name: string): string {
   const labels: Record<string, string> = {
+    list_workspace_roots: '正在读取 VS Code 工作区根目录',
+    list_directory: '正在列出目录',
     list_files: '正在列出工作区文件',
     search_files: '正在搜索工作区',
     read_file: '正在读取文件',
+    open_file: '正在 VS Code 编辑器中打开文件',
     get_diagnostics: '正在读取诊断',
     write_file: '准备写入文件',
     replace_in_file: '准备修改文件',
@@ -202,6 +218,7 @@ function toolPendingSummary(name: string): string {
     delete_file: '准备删除文件',
     run_command: '准备运行命令',
     load_skill: '正在加载 Skill',
+    search_conversation_history: '正在检索关联的只读任务历史',
   };
   return labels[name] ?? `正在执行 ${name}`;
 }

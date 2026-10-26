@@ -3,10 +3,18 @@ import { createId, shortTitle } from '../core/ids';
 
 export type TaskRelation = 'related' | 'queued';
 
-interface PendingTask {
+export interface AgentTaskBinding {
+  userMessageId?: string;
+  assistantMessageId?: string;
+}
+
+export interface AgentTaskUpdate extends AgentTaskBinding {
   nodeId: string;
   request: ChatRequestMessage;
+  relation: TaskRelation;
 }
+
+interface PendingTask extends AgentTaskUpdate {}
 
 export class AgentTaskQueue {
   private readonly nodes: AgentTaskNode[];
@@ -59,6 +67,7 @@ export class AgentTaskQueue {
     request: ChatRequestMessage,
     classify: (currentTask: string, incomingTask: string) => Promise<{ relation: TaskRelation; usage?: UsageInfo }>,
     onChange: (state: AgentTaskTreeState) => void | Promise<void>,
+    binding: AgentTaskBinding = {},
   ): AgentTaskNode {
     if (!this.accepting) throw new Error('当前 Agent 已进入收尾阶段。');
     const node: AgentTaskNode = {
@@ -87,28 +96,28 @@ export class AgentTaskQueue {
       if (classified.relation === 'related') {
         node.parentId = this.currentNodeId;
         node.status = 'merged';
-        this.related.push({ nodeId: node.id, request });
+        this.related.push({ nodeId: node.id, request, relation: 'related', ...binding });
       } else {
         node.parentId = this.nodes[0]?.id;
         node.status = 'queued';
-        this.queued.push({ nodeId: node.id, request });
+        this.queued.push({ nodeId: node.id, request, relation: 'queued', ...binding });
       }
       await onChange(this.state());
     }).catch(async () => {
       node.relation = 'queued';
       node.status = 'queued';
-      this.queued.push({ nodeId: node.id, request });
+      this.queued.push({ nodeId: node.id, request, relation: 'queued', ...binding });
       await onChange(this.state());
     });
     return { ...node };
   }
 
-  async take(phase: 'replan' | 'complete', onChange: (state: AgentTaskTreeState) => void | Promise<void>): Promise<ChatRequestMessage[]> {
+  async take(phase: 'replan' | 'complete', onChange: (state: AgentTaskTreeState) => void | Promise<void>): Promise<AgentTaskUpdate[]> {
     await this.settleRouting();
     if (this.related.length) {
-      const tasks = this.related.splice(0);
+      const task = this.related.shift();
       await onChange(this.state());
-      return tasks.map((task) => withTaskInstruction(task.request, 'related'));
+      return task ? [{ ...task, request: withTaskInstruction(task.request, 'related') }] : [];
     }
     if (phase === 'replan') return [];
 
@@ -120,7 +129,7 @@ export class AgentTaskQueue {
       if (node) node.status = 'active';
       this.currentNodeId = next.nodeId;
       await onChange(this.state());
-      return [withTaskInstruction(next.request, 'queued')];
+      return [{ ...next, request: withTaskInstruction(next.request, 'queued') }];
     }
     this.accepting = false;
     await onChange(this.state());

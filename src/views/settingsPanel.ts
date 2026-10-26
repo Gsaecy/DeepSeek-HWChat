@@ -408,6 +408,7 @@ function validateSettings(values: Partial<ChatSettings>): Partial<ChatSettings> 
         name,
         baseUrl: url,
         models: [...new Set((profile.models ?? []).map((model) => String(model).trim()).filter(Boolean))].slice(0, 500),
+        excludedModels: [...new Set((profile.excludedModels ?? []).map((model) => String(model).trim()).filter(Boolean))].slice(0, 500),
         requestHeaders: Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
       };
     });

@@ -98,6 +98,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return chat.attachFiles(uris);
     }],
     ['hwchat.archiveConversation', () => chat.archiveActiveConversation()],
+    ['hwchat.continueConversation', (id?: unknown) => chat.continueActiveConversation(typeof id === 'string' ? id : undefined)],
     ['hwchat.rescanSkills', async () => {
       await skills.refresh();
       await chat.refresh();

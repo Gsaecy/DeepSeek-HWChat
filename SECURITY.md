@@ -8,9 +8,12 @@ HWChat sends only the following data to the configured model endpoint:
 - conversation context within the configured limits;
 - files or selections explicitly attached by the user;
 - local Skill contents actually preloaded or loaded for the current request;
+- the bounded handoff summary and history excerpts requested from a conversation explicitly linked by the user;
 - tool results required for the active Agent loop.
 
 The extension does not include telemetry. Each API profile stores its key in VS Code SecretStorage, not in settings, project files, conversation history, logs, or the VSIX package. Reinstalling or upgrading the same extension identity can continue using an existing key because VS Code preserves that SecretStorage entry until the user clears it. Conversation and audit data remain in VS Code global storage unless the configured API endpoint receives them as part of a request.
+
+Linking an old conversation is local and read-only: it does not copy or modify the source conversation. The source transcript is not sent wholesale. HWChat sends a bounded local handoff summary and, when the Agent requests missing details, only the matching excerpts. Those transmitted summaries and excerpts count as normal model input Tokens; keeping the source history on disk does not.
 
 Remote model endpoints must use HTTPS. Plain HTTP is accepted only for loopback hosts (`localhost`, `127.0.0.1`, and `::1`). Error messages are redacted before they are shown or stored.
 
@@ -28,7 +31,7 @@ Workspace files, attachments, command output, and tool results are marked as unt
 
 ## Local retention
 
-Completed task details are compacted on a timer. Reasoning text, prompt/completion Token breakdowns, tool input/output, and attachment bodies can be removed while final replies, total Token counts, Skill usage names, and durable execution summaries remain. Users can export history or delete all local conversations and audit records from the settings panel.
+Completed task details are compacted on a timer. Reasoning text, prompt/completion Token breakdowns, tool input/output, and attachment bodies can be removed while final replies, total Token counts, Skill usage names, and durable execution summaries remain. Source conversations referenced by continuation chats are protected from automatic retention and budget eviction; manually deleting a source preserves the continuation's snapshot but disables further full-history lookup. Users can export history or delete all local conversations and audit records from the settings panel.
 
 ## Reporting
 

@@ -14,11 +14,14 @@ test('merges related guidance before starting queued task branches', async () =>
     { role: 'user', content: '不要改登录接口，改为共享刷新任务' },
     async () => ({ relation: 'related', usage: { totalTokens: 3 } }),
     onChange,
+    { userMessageId: 'user-related', assistantMessageId: 'assistant-related' },
   );
   const related = await queue.take('replan', onChange);
   assert.equal(related.length, 1);
-  assert.match(String(related[0]?.content), /任务树更新：相关指导/);
-  assert.match(String(related[0]?.content), /共享刷新任务/);
+  assert.match(String(related[0]?.request.content), /任务树更新：相关指导/);
+  assert.match(String(related[0]?.request.content), /共享刷新任务/);
+  assert.equal(related[0]?.userMessageId, 'user-related');
+  assert.equal(related[0]?.assistantMessageId, 'assistant-related');
 
   queue.enqueue(
     '新增一个支付结果页面',
@@ -29,8 +32,8 @@ test('merges related guidance before starting queued task branches', async () =>
   assert.deepEqual(await queue.take('replan', onChange), []);
   const queued = await queue.take('complete', onChange);
   assert.equal(queued.length, 1);
-  assert.match(String(queued[0]?.content), /任务树分支：排队任务/);
-  assert.match(String(queued[0]?.content), /支付结果页面/);
+  assert.match(String(queued[0]?.request.content), /任务树分支：排队任务/);
+  assert.match(String(queued[0]?.request.content), /支付结果页面/);
   assert.equal(queue.state().nodes.find((node) => node.id === queue.state().currentNodeId)?.status, 'active');
   assert.equal(queue.classifierUsage()?.totalTokens, 8);
   assert.ok(states.some((statuses) => statuses.includes('merged')));

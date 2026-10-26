@@ -94,8 +94,33 @@ test('discovers model ids while preserving provider display names', async () => 
     const client = new DeepSeekClient(async () => 'test-key');
     const models = await client.listModels(settings);
     assert.deepEqual(models, [
-      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
-      { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash' },
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', reasoningSupport: 'unknown' },
+      { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash', reasoningSupport: 'unknown' },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('filters retired models and exposes provider reasoning capabilities', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    data: [
+      { id: 'retired-model', status: 'retired' },
+      { id: 'disabled-model', available: false },
+      { id: 'fixed-thinker', supports_reasoning: true, reasoning_efforts: ['high'] },
+      { id: 'flex-thinker', supports_thinking: true, supported_reasoning_efforts: ['low', 'high', 'max'] },
+      { id: 'plain-model', supports_reasoning: false },
+    ],
+  }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+
+  try {
+    const client = new DeepSeekClient(async () => 'test-key');
+    const models = await client.listModels(settings);
+    assert.deepEqual(models, [
+      { id: 'fixed-thinker', name: 'fixed-thinker', reasoningSupport: 'fixed', reasoningEfforts: ['high'] },
+      { id: 'flex-thinker', name: 'flex-thinker', reasoningSupport: 'configurable', reasoningEfforts: ['low', 'high', 'max'] },
+      { id: 'plain-model', name: 'plain-model', reasoningSupport: 'unsupported' },
     ]);
   } finally {
     globalThis.fetch = originalFetch;

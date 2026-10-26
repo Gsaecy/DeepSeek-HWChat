@@ -23,6 +23,7 @@ export function readSettings(): ChatSettings {
     name: 'DeepSeek',
     baseUrl: legacyBaseUrl,
     models: uniqueStrings([legacyModel, 'deepseek-flash', 'deepseek-v4-pro']),
+    excludedModels: [],
     requestHeaders: legacyHeaders,
   });
   const configuredProfileId = configuration.get<string>('activeApiProfileId', apiProfiles[0]!.id);
@@ -150,6 +151,7 @@ function normalizeProfiles(value: unknown, fallback: ApiProfile): ApiProfile[] {
       name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 60) : id,
       baseUrl,
       models: uniqueStrings(Array.isArray(raw.models) ? raw.models : []).slice(0, 500),
+      excludedModels: uniqueStrings(Array.isArray(raw.excludedModels) ? raw.excludedModels : []).slice(0, 500),
       requestHeaders: stringRecord(raw.requestHeaders),
     });
   }

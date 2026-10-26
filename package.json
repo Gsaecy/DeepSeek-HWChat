@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek, local skills, durable history and approval-controlled workspace tools.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -101,6 +101,12 @@
         "icon": "$(archive)"
       },
       {
+        "command": "hwchat.continueConversation",
+        "title": "HWChat: 在新对话中续接当前任务历史",
+        "category": "HWChat",
+        "icon": "$(debug-step-over)"
+      },
+      {
         "command": "hwchat.rescanSkills",
         "title": "HWChat: 重新扫描 Skills",
         "category": "HWChat",
@@ -196,6 +202,7 @@
               "name": { "type": "string" },
               "baseUrl": { "type": "string" },
               "models": { "type": "array", "items": { "type": "string" } },
+              "excludedModels": { "type": "array", "items": { "type": "string" } },
               "requestHeaders": { "type": "object", "additionalProperties": { "type": "string" } }
             }
           }

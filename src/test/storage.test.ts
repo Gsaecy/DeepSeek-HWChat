@@ -63,6 +63,34 @@ test('recovers an interrupted streaming reply without dropping partial text', as
   });
 });
 
+test('keeps inserted user questions directly paired with their assistant placeholders', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation();
+    const firstUser = await storage.appendMessage(conversation.id, { role: 'user', content: '第一个问题', status: 'complete' });
+    const firstAssistant = await storage.appendMessage(conversation.id, { role: 'assistant', content: '', status: 'streaming', replyToMessageId: firstUser.id });
+    const insertedUser = await storage.appendMessage(conversation.id, { role: 'user', content: '插入的问题', status: 'complete' });
+    const insertedAssistant = await storage.appendMessage(conversation.id, { role: 'assistant', content: '', status: 'queued', replyToMessageId: insertedUser.id });
+
+    const messages = await storage.getAllMessages(conversation.id);
+    assert.deepEqual(messages.map((message) => message.id), [firstUser.id, firstAssistant.id, insertedUser.id, insertedAssistant.id]);
+    assert.equal(messages[1]?.replyToMessageId, firstUser.id);
+    assert.equal(messages[3]?.replyToMessageId, insertedUser.id);
+  });
+});
+
+test('recovers queued assistant placeholders with a queue-specific interruption message', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation();
+    const assistant = await storage.appendMessage(conversation.id, { role: 'assistant', content: '', status: 'queued' });
+
+    const restarted = new ConversationStorage(root);
+    await restarted.initialize();
+    const recovered = (await restarted.getAllMessages(conversation.id)).find((message) => message.id === assistant.id);
+    assert.equal(recovered?.status, 'error');
+    assert.match(recovered?.content ?? '', /排队任务/);
+  });
+});
+
 test('compacts completed task cache while retaining the reply body', async () => {
   await withStorage(async (storage) => {
     const conversation = await storage.createConversation();
@@ -204,6 +232,70 @@ test('keeps archived conversations during retention and budget cleanup', async (
     });
     const conversation = await storage.getConversation(archived.id);
     assert.equal(conversation?.archived, true);
+  });
+});
+
+test('persists, searches and detaches a read-only source conversation', async () => {
+  await withStorage(async (storage, root) => {
+    const source = await storage.createConversation('大型重构任务');
+    await storage.appendMessage(source.id, {
+      role: 'assistant',
+      content: '已修复多根工作区路径判断。',
+      status: 'complete',
+      toolExecutions: [{
+        callId: 'call-history', name: 'replace_in_file', summary: '修改路径解析器',
+        output: '回归测试通过', status: 'success', approval: 'not-required', startedAt: 1, finishedAt: 2,
+        changedFiles: ['src/agent/workspacePaths.ts'], risk: 'write',
+      }],
+    });
+    const continued = await storage.createConversation('继续：大型重构任务');
+    await storage.updateConversation(continued.id, {
+      sourceConversationId: source.id,
+      sourceConversationTitle: source.title,
+      sourceHistoryDigest: '不要再次把多根工作区路径识别成外部路径。',
+      sourceLinkedAt: 123,
+    });
+
+    const restarted = new ConversationStorage(root);
+    await restarted.initialize();
+    const linked = await restarted.getConversation(continued.id);
+    assert.equal(linked?.sourceConversationId, source.id);
+    assert.match(linked?.sourceHistoryDigest ?? '', /多根工作区/);
+    const hits = await restarted.searchConversationMessages(source.id, 'workspacePaths', 5);
+    assert.equal(hits.length, 1);
+    assert.match(hits[0]?.excerpt ?? '', /workspacePaths/);
+
+    await restarted.updateConversation(continued.id, {
+      sourceConversationId: null,
+      sourceConversationTitle: null,
+      sourceHistoryDigest: null,
+      sourceLinkedAt: null,
+    });
+    assert.equal((await restarted.getConversation(continued.id))?.sourceConversationId, undefined);
+  });
+});
+
+test('keeps source history while another conversation references it', async () => {
+  await withStorage(async (storage) => {
+    const source = await storage.createConversation('来源历史');
+    await storage.appendMessage(source.id, { role: 'user', content: '需要长期保留的坑点', status: 'complete' });
+    const continued = await storage.createConversation('续接任务');
+    await storage.updateConversation(continued.id, {
+      sourceConversationId: source.id,
+      sourceConversationTitle: source.title,
+      sourceHistoryDigest: '来源摘要',
+      sourceLinkedAt: Date.now(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    await storage.cleanup({
+      historyRetentionDays: 0.0000001,
+      taskCacheRetentionHours: 24,
+      cacheBudgetMB: 100,
+      protectedConversationIds: [continued.id],
+    });
+    assert.ok(await storage.getConversation(source.id));
+    assert.ok(await storage.getConversation(continued.id));
   });
 });
 

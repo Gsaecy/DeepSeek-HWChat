@@ -1,5 +1,5 @@
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
-export type MessageStatus = 'streaming' | 'complete' | 'error';
+export type MessageStatus = 'queued' | 'streaming' | 'complete' | 'error';
 export type ConversationMode = 'chat' | 'agent' | 'plan';
 export type PermissionPolicy = 'allow' | 'ask' | 'deny';
 export type PermissionPreset = 'askAll' | 'review' | 'autopilot' | 'full' | 'custom';
@@ -10,12 +10,15 @@ export interface ApiProfile {
   name: string;
   baseUrl: string;
   models: string[];
+  excludedModels?: string[];
   requestHeaders: Record<string, string>;
 }
 
 export interface ModelOption {
   id: string;
   name: string;
+  reasoningSupport?: 'unsupported' | 'fixed' | 'configurable' | 'unknown';
+  reasoningEfforts?: ReasoningEffort[];
 }
 
 export interface UsageInfo {
@@ -74,6 +77,7 @@ export interface ChatMessage {
   toolCallId?: string;
   usedSkills?: SkillUsage[];
   consumedByAssistantId?: string;
+  replyToMessageId?: string;
 }
 
 export interface ConversationSummary {
@@ -92,6 +96,17 @@ export interface ConversationSummary {
   skillSelectionInitialized?: boolean;
   archived?: boolean;
   archivedAt?: number;
+  sourceConversationId?: string;
+  sourceConversationTitle?: string;
+  sourceHistoryDigest?: string;
+  sourceLinkedAt?: number;
+}
+
+export interface ConversationHistoryHit {
+  messageId: string;
+  role: MessageRole;
+  createdAt: number;
+  excerpt: string;
 }
 
 export interface ConversationExport {

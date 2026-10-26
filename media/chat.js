@@ -8,6 +8,7 @@
     'skillsPanel', 'skillsList', 'workspaceTrustBadge', 'messageViewport',
     'messageList', 'emptyState', 'loadOlderButton', 'attachmentList', 'contextChip',
     'contextLabel', 'removeContextButton', 'composer', 'promptInput', 'composerHint',
+    'historyLinkBanner', 'sourceHistoryTitle', 'detachHistoryButton',
     'permissionPresetInput', 'agentMaxStepsInput', 'reasoningEffortInput', 'voiceButton',
     'agentRunState', 'agentRunLabel', 'agentRunMeta', 'taskTree', 'taskTreeSummary', 'taskTreeList',
     'attachButton', 'sendButton', 'stopButton', 'toast',
@@ -17,7 +18,7 @@
     conversations: [], archivedConversations: [], conversation: null, messages: [],
     hasMore: false, sendOnEnter: true, streaming: false, streamingConversationId: null,
     search: '', pendingAttachments: [], skills: [], selectedSkillIds: [], mode: 'agent',
-    apiProfiles: [], activeApiProfileId: '', permissionPreset: 'review', agentMaxSteps: 0, reasoningEffort: 'default',
+    apiProfiles: [], activeApiProfileId: '', model: '', permissionPreset: 'review', agentMaxSteps: 0, reasoningEffort: 'default',
     modelOptionsByProfile: {},
     permissionPresetPending: false, modelLoadingProfileId: null,
     workspaceTrusted: false, agentAvailable: false, availableToolCount: 0, showArchived: false, renderTimer: null,
@@ -63,7 +64,7 @@
   }
 
   function renderAll() {
-    renderHistory(); renderHeader(); renderSkills(); renderMessages('replace'); renderAttachments(); renderTaskTree(); updateComposerState();
+    renderHistory(); renderHeader(); renderSkills(); renderMessages('replace'); renderHistoryLink(); renderAttachments(); renderTaskTree(); updateComposerState();
   }
 
   function renderHistory() {
@@ -88,18 +89,22 @@
       content.type = 'button'; content.className = 'conversation-content';
       const title = textElement('span', 'conversation-title', conversation.title);
       const tokenTotal = conversation.totalTokens ? ` · ${formatMillionTokens(conversation.totalTokens)} tokens` : '';
-      const meta = textElement('span', 'conversation-meta', `${relativeTime(conversation.updatedAt)}${tokenTotal}`);
+      const linked = conversation.sourceConversationId ? '续接 · ' : '';
+      const meta = textElement('span', 'conversation-meta', `${linked}${relativeTime(conversation.updatedAt)}${tokenTotal}`);
       const preview = textElement('span', 'conversation-preview', conversation.preview || '空对话');
       content.append(title, meta, preview);
       content.addEventListener('click', () => { post('selectConversation', { id: conversation.id }); closeMobileHistory(); });
       const actions = document.createElement('div'); actions.className = 'conversation-actions';
+      const continueTask = actionButton('在新对话中续接任务历史', '↗');
+      continueTask.disabled = state.streaming;
+      continueTask.addEventListener('click', () => { post('continueConversation', { id: conversation.id }); closeMobileHistory(); });
       const pin = actionButton(conversation.pinned ? '取消固定' : '固定', conversation.pinned ? '●' : '○');
       pin.addEventListener('click', () => post('togglePin', { id: conversation.id, pinned: !conversation.pinned }));
       const archive = actionButton(conversation.archived ? '恢复对话' : '归档', conversation.archived ? '↺' : '□');
       archive.addEventListener('click', () => post('toggleArchive', { id: conversation.id, archived: !conversation.archived }));
       const remove = actionButton('删除', '×'); remove.classList.add('danger-action');
       remove.addEventListener('click', () => post('deleteConversation', { id: conversation.id }));
-      actions.append(pin, archive, remove); row.append(content, actions); elements.conversationList.append(row);
+      actions.append(continueTask, pin, archive, remove); row.append(content, actions); elements.conversationList.append(row);
     }
   }
 
@@ -124,7 +129,7 @@
     elements.permissionPresetInput.value = state.permissionPreset;
     ensureStepOption(state.agentMaxSteps);
     elements.agentMaxStepsInput.value = String(state.agentMaxSteps);
-    elements.reasoningEffortInput.value = state.reasoningEffort;
+    syncReasoningSelector();
     const activeProfileId = state.conversation?.apiProfileId || state.activeApiProfileId;
     const modelsLoading = state.modelLoadingProfileId === activeProfileId;
     elements.refreshModelsButton.classList.toggle('loading', modelsLoading);
@@ -135,11 +140,38 @@
     const profileId = state.conversation?.apiProfileId || state.activeApiProfileId || state.apiProfiles[0]?.id || '';
     replaceSelectOptions(elements.profileInput, state.apiProfiles.map((profile) => ({ value: profile.id, label: profile.name })), profileId);
     const profile = state.apiProfiles.find((item) => item.id === profileId) || state.apiProfiles[0];
-    const model = state.conversation?.model || elements.modelInput.value || profile?.models?.[0] || 'deepseek-flash';
     const discovered = state.modelOptionsByProfile[profileId] || [];
-    const labels = new Map(discovered.map((option) => [option.id, option.name || option.id]));
-    const models = [...new Set([...(profile?.models || []), ...discovered.map((option) => option.id), model].filter(Boolean))];
-    replaceSelectOptions(elements.modelInput, models.map((value) => ({ value, label: labels.get(value) || value })), model);
+    const options = discovered.length
+      ? discovered
+      : (profile?.models || []).map((id) => ({ id, name: id, reasoningSupport: 'unknown' }));
+    const requestedModel = state.conversation?.model || state.model || options[0]?.id || 'deepseek-flash';
+    const selectedModel = options.some((option) => option.id === requestedModel) ? requestedModel : options[0]?.id || requestedModel;
+    state.model = selectedModel;
+    replaceSelectOptions(elements.modelInput, options.map((option) => ({ value: option.id, label: option.name || option.id })), selectedModel);
+    syncReasoningSelector(options.find((option) => option.id === selectedModel));
+  }
+
+  function syncReasoningSelector(option) {
+    const profileId = state.conversation?.apiProfileId || state.activeApiProfileId || state.apiProfiles[0]?.id || '';
+    const modelOption = option || (state.modelOptionsByProfile[profileId] || []).find((item) => item.id === elements.modelInput.value);
+    const support = modelOption?.reasoningSupport || 'unknown';
+    const labels = { default: '默认', none: '无', low: '低', high: '高', max: '最大值' };
+    let efforts = ['default'];
+    let title = '当前模型未声明思考深度能力';
+    if (support === 'configurable') {
+      efforts = modelOption?.reasoningEfforts?.length ? modelOption.reasoningEfforts : ['default', 'none', 'low', 'high', 'max'];
+      if (!efforts.includes('default')) efforts.unshift('default');
+      title = '当前模型支持调节思考深度';
+    } else if (support === 'unsupported') {
+      title = '当前模型不支持思考深度设置';
+    } else if (support === 'fixed') {
+      title = '当前模型的思考模式由模型固定';
+    }
+    if (!efforts.includes(state.reasoningEffort)) state.reasoningEffort = 'default';
+    const singleLabel = support === 'unsupported' ? '不支持' : support === 'fixed' ? '模型固定' : support === 'unknown' ? '能力未知' : undefined;
+    replaceSelectOptions(elements.reasoningEffortInput, efforts.map((value) => ({ value, label: singleLabel || labels[value] || value })), state.reasoningEffort);
+    elements.reasoningEffortInput.dataset.support = support;
+    elements.reasoningEffortInput.title = title;
   }
 
   function replaceSelectOptions(select, options, selected) {
@@ -281,7 +313,8 @@
     if (message.usedSkills?.length) body.append(renderSkillUsage(message.usedSkills));
     if (message.reasoning) body.append(renderReasoning(message.reasoning));
     const content = document.createElement('div'); content.className = 'message-content';
-    appendRichText(content, message.content || (message.status === 'streaming' ? '正在继续处理…' : '')); body.append(content);
+    const emptyStatusText = message.status === 'queued' ? '已加入任务队列，等待当前分支完成…' : message.status === 'streaming' ? '正在继续处理…' : '';
+    appendRichText(content, message.content || emptyStatusText); body.append(content);
     if (message.status === 'streaming') { const cursor = document.createElement('span'); cursor.className = 'stream-cursor'; cursor.setAttribute('aria-label', '生成中'); body.append(cursor); }
     if (message.usage?.totalTokens) body.append(textElement('div', 'message-usage', `${formatMillionTokens(message.usage.totalTokens)} tokens`));
     article.append(meta, body); return article;
@@ -419,6 +452,13 @@
     elements.contextChip.hidden = true;
   }
 
+  function renderHistoryLink() {
+    const sourceId = state.conversation?.sourceConversationId;
+    elements.historyLinkBanner.hidden = !sourceId;
+    if (!sourceId) return;
+    elements.sourceHistoryTitle.textContent = `任务历史：${state.conversation.sourceConversationTitle || '旧对话'}`;
+  }
+
   function updateComposerState() {
     const hasText = elements.promptInput.value.trim().length > 0 || state.pendingAttachments.length > 0; const archived = Boolean(state.conversation?.archived);
     elements.sendButton.disabled = !hasText || archived || state.permissionPresetPending; elements.sendButton.hidden = false; elements.stopButton.hidden = !state.streaming;
@@ -427,8 +467,9 @@
     elements.refreshModelsButton.disabled = state.streaming || archived || Boolean(state.modelLoadingProfileId);
     elements.permissionPresetInput.disabled = state.streaming || archived || state.permissionPresetPending;
     elements.agentMaxStepsInput.disabled = state.streaming || archived;
-    elements.reasoningEffortInput.disabled = state.streaming || archived;
+    elements.reasoningEffortInput.disabled = state.streaming || archived || elements.reasoningEffortInput.dataset.support !== 'configurable';
     elements.voiceButton.disabled = archived;
+    elements.detachHistoryButton.disabled = state.streaming || archived;
     elements.promptInput.placeholder = archived ? '该对话已归档，恢复后可继续' : state.streaming ? 'Agent 正在执行；新消息会自动合并到当前任务或加入队列…' : '询问代码、调试问题或直接交给 Agent 实现…';
     elements.composerHint.textContent = archived ? '归档对话为只读' : state.streaming ? '发送后自动判断任务关系' : state.sendOnEnter ? 'Enter 发送 · Shift+Enter 换行' : '⌘/Ctrl+Enter 发送';
   }
@@ -453,10 +494,11 @@
   elements.settingsButton.addEventListener('click', () => post('openSettings')); elements.settingsButtonSide.addEventListener('click', () => post('openSettings'));
   elements.exportButton.addEventListener('click', () => post('exportConversation'));
   elements.archiveButton.addEventListener('click', () => { if (state.conversation) post('toggleArchive', { id: state.conversation.id, archived: !state.conversation.archived }); });
+  elements.detachHistoryButton.addEventListener('click', () => post('detachConversationHistory'));
   elements.attachButton.addEventListener('click', () => post('attachFiles')); elements.removeContextButton.addEventListener('click', () => post('removeContext'));
   elements.stopButton.addEventListener('click', () => post('stop')); elements.skillsButton.addEventListener('click', () => { elements.skillsPanel.hidden = !elements.skillsPanel.hidden; });
   elements.historySearch.addEventListener('input', (event) => { state.search = event.target.value; renderHistory(); });
-  elements.modelInput.addEventListener('change', (event) => post('setModel', { model: event.target.value }));
+  elements.modelInput.addEventListener('change', (event) => { state.model = event.target.value; syncReasoningSelector(); post('setModel', { model: event.target.value }); });
   elements.profileInput.addEventListener('change', (event) => post('setProfile', { profileId: event.target.value }));
   elements.refreshModelsButton.addEventListener('click', () => post('refreshModels', { profileId: elements.profileInput.value }));
   elements.modeInput.addEventListener('change', (event) => { state.mode = event.target.value; post('setMode', { mode: state.mode }); renderHeader(); updateComposerState(); });
@@ -676,26 +718,26 @@
         const incoming = message.state; state.conversations = incoming.conversations || []; state.archivedConversations = incoming.archivedConversations || [];
         state.conversation = incoming.conversation; state.messages = incoming.messages || []; state.hasMore = Boolean(incoming.hasMore);
         state.sendOnEnter = incoming.settings?.sendOnEnter !== false; state.pendingAttachments = incoming.pendingAttachments || [];
-        state.apiProfiles = incoming.settings?.apiProfiles || []; state.activeApiProfileId = incoming.settings?.activeApiProfileId || ''; state.modelOptionsByProfile = incoming.modelOptionsByProfile || {};
+        state.apiProfiles = incoming.settings?.apiProfiles || []; state.activeApiProfileId = incoming.settings?.activeApiProfileId || ''; state.model = incoming.settings?.model || ''; state.modelOptionsByProfile = incoming.modelOptionsByProfile || {};
         state.permissionPreset = incoming.settings?.permissionPreset || 'review'; state.agentMaxSteps = Math.max(0, Math.floor(Number(incoming.settings?.agentMaxSteps) || 0)); state.reasoningEffort = incoming.settings?.reasoningEffort || 'default';
         state.permissionPresetPending = false;
         state.skills = incoming.skills || []; state.selectedSkillIds = incoming.selectedSkillIds || []; state.mode = incoming.mode || 'agent';
         state.workspaceTrusted = Boolean(incoming.workspaceTrusted); state.agentAvailable = Boolean(incoming.agentAvailable); state.availableToolCount = Number(incoming.availableToolCount) || 0; state.showArchived = Boolean(incoming.showArchived); state.taskTree = incoming.taskTree || (message.streamingConversationId ? state.taskTree : null);
-        elements.modelInput.value = incoming.settings?.model || 'deepseek-flash'; if (previousConversationId !== incoming.conversation?.id) state.autoFollow = true; setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
+        elements.modelInput.value = state.model || 'deepseek-flash'; if (previousConversationId !== incoming.conversation?.id) state.autoFollow = true; setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
       }
       case 'draft': elements.promptInput.value = message.text || ''; state.pendingAttachments = message.attachments || []; renderAttachments(); autoResize(); elements.promptInput.focus(); break;
       case 'attachments': state.pendingAttachments = message.attachments || []; renderAttachments(); break;
       case 'context': state.pendingAttachments = state.pendingAttachments.filter((item) => item.kind !== 'selection'); renderAttachments(); break;
       case 'messageStart': state.conversation = state.conversation || { id: message.conversationId, title: message.userMessage.content, mode: state.mode }; state.messages.push(message.userMessage, message.assistant); state.pendingAttachments = []; state.autoFollow = true; setStreaming(true, message.conversationId); renderMessages('bottom'); renderAttachments(); break;
-      case 'messageAdded': if (message.conversationId === state.conversation?.id) { state.messages.push(message.message); state.pendingAttachments = []; state.autoFollow = true; renderMessages('bottom'); renderAttachments(); } break;
+      case 'messageAdded': if (message.conversationId === state.conversation?.id) { state.messages.push(message.message); state.pendingAttachments = []; renderMessages(state.autoFollow ? 'bottom' : 'keep'); renderAttachments(); } break;
       case 'streamDelta': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.content = `${target.content || ''}${message.content || ''}`; target.reasoning = `${target.reasoning || ''}${message.reasoning || ''}`; scheduleMessageRender(); } break; }
       case 'toolExecutions': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.toolExecutions = message.tools || []; scheduleMessageRender(); } break; }
       case 'skillUsage': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.usedSkills = message.skills || []; scheduleMessageRender(); } break; }
       case 'messageComplete': { if (message.conversationId !== state.conversation?.id) break; if (state.renderTimer) { clearTimeout(state.renderTimer); state.renderTimer = null; } const index = state.messages.findIndex((item) => item.id === message.message.id); if (index >= 0) state.messages[index] = message.message; else state.messages.push(message.message); renderMessages('keep'); break; }
       case 'streamIdle': setStreaming(false); renderTaskTree(); elements.promptInput.focus(); break;
       case 'olderMessages': state.messages = [...message.messages, ...state.messages]; state.hasMore = Boolean(message.hasMore); renderMessages('prepend'); break;
-      case 'modelChanged': elements.modelInput.value = message.model; showToast(`已切换到 ${message.model}`); break;
-      case 'profileChanged': state.activeApiProfileId = message.profileId; elements.modelInput.value = message.model; showToast('API 配置已切换'); break;
+      case 'modelChanged': state.model = message.model; if (state.conversation) state.conversation.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; elements.modelInput.value = message.model; syncReasoningSelector(); updateComposerState(); showToast(`已切换到 ${message.model}`); break;
+      case 'profileChanged': state.activeApiProfileId = message.profileId; state.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; if (state.conversation) { state.conversation.apiProfileId = message.profileId; state.conversation.model = message.model; } elements.modelInput.value = message.model; renderHeader(); showToast('API 配置已切换'); break;
       case 'modelsLoading': state.modelLoadingProfileId = message.active ? message.profileId : state.modelLoadingProfileId === message.profileId ? null : state.modelLoadingProfileId; renderHeader(); updateComposerState(); break;
       case 'modelsChanged': {
         const profile = state.apiProfiles.find((item) => item.id === message.profileId);
@@ -704,6 +746,7 @@
         const activeProfileId = state.conversation?.apiProfileId || state.activeApiProfileId;
         if (activeProfileId === message.profileId && message.model) {
           if (state.conversation) state.conversation.model = message.model;
+          state.model = message.model;
           elements.modelInput.value = message.model;
         }
         syncConnectionSelectors();

@@ -1,4 +1,3 @@
-import { isAbsolute, relative, resolve, sep } from 'node:path';
 import * as vscode from 'vscode';
 import {
   ChatSettings,
@@ -9,8 +8,11 @@ import {
 } from '../core/types';
 import { redact } from './auditLog';
 import type { RequestApproval, ToolExecutor } from './toolExecutor';
+import { resolveWorkspacePath } from './workspacePaths';
 
 const PREFIX = 'hwchat_vscode_';
+const BUILTIN_NAMES = ['open_web_preview', 'open_text_preview', 'open_markdown_preview', 'open_diff_preview'] as const;
+type BuiltinName = typeof BUILTIN_NAMES[number];
 const EXTERNAL_TOOL_LIMIT = 100;
 const DANGEROUS_NAME = /(delete|remove|drop|destroy|reset|force|publish|deploy|release|purchase|payment|send[_-]?email|post[_-]?message)/i;
 
@@ -26,11 +28,11 @@ export class VscodeToolBridge {
 
   definitions(): ToolDefinition[] {
     const builtins = [
-      definition('open_web_preview', '在 VS Code 编辑区打开一个 HTTP(S) 网页预览，不修改工作区。', {
+      definition('open_web_preview', '直接在 VS Code 编辑区打开一个 HTTP(S) 网页预览，不修改工作区。', {
         type: 'object', properties: { url: { type: 'string', description: 'http 或 https URL' }, title: { type: 'string' } }, required: ['url'], additionalProperties: false,
       }),
-      definition('open_text_preview', '在 VS Code 编辑区打开工作区文件或临时文本预览，不写入文件。', {
-        type: 'object', properties: { path: { type: 'string', description: '工作区相对路径；与 content 二选一' }, content: { type: 'string' }, language: { type: 'string' }, title: { type: 'string' } }, additionalProperties: false,
+      definition('open_text_preview', '直接在 VS Code 编辑器中打开工作区文件或临时文本，不运行终端命令。', {
+        type: 'object', properties: { path: { type: 'string', description: '工作区相对路径、带工作区根目录名的路径，或工作区内绝对路径；与 content 二选一' }, content: { type: 'string' }, language: { type: 'string' }, title: { type: 'string' } }, additionalProperties: false,
       }),
       definition('open_markdown_preview', '在 VS Code 编辑区打开 Markdown 预览，可使用工作区文件或临时内容。', {
         type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, title: { type: 'string' } }, additionalProperties: false,
@@ -53,9 +55,8 @@ export class VscodeToolBridge {
     requestApproval: RequestApproval,
     conversationId: string,
   ): Promise<{ result: ToolExecutionResult } | undefined> {
-    if (call.function.name.startsWith(PREFIX)) {
-      const builtin = call.function.name.slice(PREFIX.length);
-      if (['open_web_preview', 'open_text_preview', 'open_markdown_preview', 'open_diff_preview'].includes(builtin)) {
+    const builtin = builtinName(call.function.name);
+    if (builtin) {
         const risk = builtin === 'open_web_preview' ? 'command' : 'read';
         const result = await this.tools.executeExternal(
           call,
@@ -69,7 +70,9 @@ export class VscodeToolBridge {
           conversationId,
         );
         return { result };
-      }
+    }
+    if (call.function.name.startsWith(PREFIX)) {
+      const externalLabel = call.function.name.slice(PREFIX.length);
       const external = this.externalTools().find((item) => externalToolId(item.name) === call.function.name);
       if (!external) {
         const result = await this.tools.executeExternal(
@@ -78,9 +81,9 @@ export class VscodeToolBridge {
           settings,
           'read',
           requestApproval,
-          `调用 VS Code 工具：${builtin}`,
+          `调用 VS Code 工具：${externalLabel}`,
           '工具已不可用。',
-          async () => denied(`未找到 VS Code 工具：${builtin}`),
+          async () => denied(`未找到 VS Code 工具：${externalLabel}`),
           conversationId,
         );
         return { result };
@@ -178,28 +181,15 @@ export class VscodeToolBridge {
 
   private workspaceUri(input: string): vscode.Uri {
     const folders = vscode.workspace.workspaceFolders ?? [];
-    if (!folders.length) throw new Error('当前没有打开的工作区。');
-    const normalized = input.trim().replaceAll('\\', '/');
-    if (isAbsolute(normalized) || normalized === '..' || normalized.startsWith('../') || normalized.includes('/../')) {
-      throw new Error('预览路径必须位于当前工作区内。');
-    }
-    let folder = folders[0]!;
-    let relativePath = normalized;
-    if (folders.length > 1) {
-      const match = folders.find((candidate) => normalized === candidate.name || normalized.startsWith(`${candidate.name}/`));
-      if (match) {
-        folder = match;
-        relativePath = normalized === match.name ? '' : normalized.slice(match.name.length + 1);
-      }
-    }
-    const uri = vscode.Uri.joinPath(folder.uri, ...relativePath.split('/').filter(Boolean));
-    const root = resolve(folder.uri.fsPath);
-    const candidate = resolve(uri.fsPath);
-    if (relative(root, candidate) !== '' && (relative(root, candidate).startsWith(`..${sep}`) || isAbsolute(relative(root, candidate)))) {
-      throw new Error('预览路径必须位于当前工作区内。');
-    }
-    return uri;
+    const resolved = resolveWorkspacePath(input, folders.map((folder) => ({ folder, name: folder.name, fsPath: folder.uri.fsPath })));
+    return vscode.Uri.file(resolved.fsPath);
   }
+}
+
+function builtinName(name: string): BuiltinName | undefined {
+  if ((BUILTIN_NAMES as readonly string[]).includes(name)) return name as BuiltinName;
+  const prefixed = name.startsWith(PREFIX) ? name.slice(PREFIX.length) : '';
+  return (BUILTIN_NAMES as readonly string[]).includes(prefixed) ? prefixed as BuiltinName : undefined;
 }
 
 function definition(name: string, description: string, parameters: Record<string, unknown>): ToolDefinition {

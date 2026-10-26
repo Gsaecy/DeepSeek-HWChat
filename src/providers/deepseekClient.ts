@@ -1,6 +1,7 @@
 import {
   ChatRequestMessage,
   ChatSettings,
+  ReasoningEffort,
   StreamDelta,
   ToolCall,
   ToolDefinition,
@@ -30,6 +31,8 @@ export interface ListModelsOptions {
 export interface DiscoveredModel {
   id: string;
   name: string;
+  reasoningSupport?: 'unsupported' | 'fixed' | 'configurable' | 'unknown';
+  reasoningEfforts?: ReasoningEffort[];
 }
 
 interface OpenAIChunk {
@@ -245,13 +248,14 @@ function assertSecureUrl(url: URL): void {
   }
 }
 
-function parseModels(payload: unknown): DiscoveredModel[] {
+export function parseModels(payload: unknown): DiscoveredModel[] {
   const candidates = modelCandidates(payload);
   const models = candidates
     .map((candidate) => {
       if (typeof candidate === 'string') return { id: candidate, name: candidate };
       if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
       const item = candidate as Record<string, unknown>;
+      if (isUnavailableModel(item)) return undefined;
       const id = [item.id, item.model, item.model_id, item.modelId, item.slug, item.name]
         .find((value): value is string => typeof value === 'string' && Boolean(value.trim()))
         ?.trim() ?? '';
@@ -259,7 +263,7 @@ function parseModels(payload: unknown): DiscoveredModel[] {
       const name = [item.display_name, item.displayName, item.label, item.title, item.name]
         .find((value): value is string => typeof value === 'string' && Boolean(value.trim()))
         ?.trim() ?? id;
-      return { id, name };
+      return { id, name, ...reasoningCapability(item) };
     })
     .filter((value): value is DiscoveredModel => Boolean(value));
   const unique = new Map<string, DiscoveredModel>();
@@ -270,6 +274,82 @@ function parseModels(payload: unknown): DiscoveredModel[] {
   return [...unique.values()]
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
     .slice(0, 500);
+}
+
+function isUnavailableModel(item: Record<string, unknown>): boolean {
+  if (booleanField(item, ['available', 'is_available', 'isAvailable', 'enabled', 'active']) === false) return true;
+  if (booleanField(item, ['retired', 'is_retired', 'isRetired', 'deprecated', 'disabled', 'deleted', 'archived']) === true) return true;
+  const lifecycle = stringField(item, ['status', 'state', 'lifecycle', 'availability']).toLocaleLowerCase().replace(/[\s-]+/g, '_');
+  if (['retired', 'deprecated', 'disabled', 'inactive', 'unavailable', 'deleted', 'archived', 'end_of_life', 'eol'].includes(lifecycle)) return true;
+  const retiredAt = stringField(item, ['retired_at', 'retiredAt', 'deprecation_date', 'deprecationDate']);
+  if (retiredAt) {
+    const timestamp = Date.parse(retiredAt);
+    if (Number.isFinite(timestamp) && timestamp <= Date.now()) return true;
+  }
+  return false;
+}
+
+function reasoningCapability(item: Record<string, unknown>): Pick<DiscoveredModel, 'reasoningSupport' | 'reasoningEfforts'> {
+  const efforts = reasoningEfforts(item);
+  const explicit = booleanField(item, [
+    'supports_reasoning', 'supportsReasoning', 'reasoning_supported', 'reasoningSupported',
+    'supports_thinking', 'supportsThinking', 'thinking_supported', 'thinkingSupported',
+  ]);
+  if (explicit === false) return { reasoningSupport: 'unsupported' };
+  const capabilities = item.capabilities;
+  if (Array.isArray(capabilities)) {
+    const normalized = capabilities.map((value) => String(value).toLocaleLowerCase());
+    if (normalized.some((value) => value.includes('reasoning') || value.includes('thinking'))) {
+      return { reasoningSupport: efforts.length > 1 ? 'configurable' : 'fixed', reasoningEfforts: efforts.length ? efforts : undefined };
+    }
+  } else if (capabilities && typeof capabilities === 'object') {
+    const capabilityObject = capabilities as Record<string, unknown>;
+    const value = capabilityObject.reasoning ?? capabilityObject.thinking;
+    if (value === false) return { reasoningSupport: 'unsupported' };
+    if (value === true || (value && typeof value === 'object')) {
+      return { reasoningSupport: efforts.length > 1 ? 'configurable' : 'fixed', reasoningEfforts: efforts.length ? efforts : undefined };
+    }
+  }
+  const mode = stringField(item, ['reasoning_mode', 'reasoningMode', 'thinking_mode', 'thinkingMode']).toLocaleLowerCase();
+  if (['none', 'disabled', 'unsupported'].includes(mode)) return { reasoningSupport: 'unsupported' };
+  if (['fixed', 'always', 'always_on', 'required'].includes(mode)) return { reasoningSupport: 'fixed', reasoningEfforts: efforts.length ? efforts : undefined };
+  if (efforts.length > 1 || ['configurable', 'optional', 'hybrid'].includes(mode)) {
+    return { reasoningSupport: 'configurable', reasoningEfforts: efforts.length ? efforts : ['default', 'none', 'low', 'high', 'max'] };
+  }
+  if (efforts.length === 1) return { reasoningSupport: 'fixed', reasoningEfforts: efforts };
+  if (explicit === true) return { reasoningSupport: 'fixed' };
+  return { reasoningSupport: 'unknown' };
+}
+
+function reasoningEfforts(item: Record<string, unknown>): ReasoningEffort[] {
+  const candidates = [
+    item.reasoning_efforts,
+    item.reasoningEfforts,
+    item.supported_reasoning_efforts,
+    item.supportedReasoningEfforts,
+    item.thinking_levels,
+    item.thinkingLevels,
+  ].find(Array.isArray) as unknown[] | undefined;
+  if (!candidates) return [];
+  const normalized = candidates
+    .map((value) => String(value).toLocaleLowerCase())
+    .map((value): ReasoningEffort | undefined => value === 'off' || value === 'disabled' ? 'none' : value === 'medium' ? 'high' : ['default', 'none', 'low', 'high', 'max'].includes(value) ? value as ReasoningEffort : undefined)
+    .filter((value): value is ReasoningEffort => Boolean(value));
+  return [...new Set(normalized)];
+}
+
+function booleanField(item: Record<string, unknown>, keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    if (typeof item[key] === 'boolean') return item[key] as boolean;
+  }
+  return undefined;
+}
+
+function stringField(item: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    if (typeof item[key] === 'string') return String(item[key]).trim();
+  }
+  return '';
 }
 
 function modelCandidates(payload: unknown): unknown[] {

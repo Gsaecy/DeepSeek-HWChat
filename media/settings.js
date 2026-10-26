@@ -51,6 +51,7 @@
   }
 
   function readForm() {
+    commitProfileEditor();
     let requestHeaders = {};
     const headerText = fields.requestHeaders.value.trim();
     if (headerText) {
@@ -66,23 +67,19 @@
         if (typeof value !== 'string') throw new Error(`请求头 ${key} 的值必须是字符串。`);
       }
     }
-    const profile = {
-      id: activeProfileId,
-      name: fields.profileName.value.trim(),
-      baseUrl: fields.baseUrl.value.trim(),
-      models: [...new Set(fields.profileModels.value.split(/[,\n]/).map((value) => value.trim()).filter(Boolean))],
-      requestHeaders,
-    };
-    const nextProfiles = profiles.map((item) => item.id === activeProfileId ? profile : item);
+    const profile = profiles.find((item) => item.id === activeProfileId);
+    const nextProfiles = profiles.map((item) => ({ ...item, models: [...(item.models || [])], excludedModels: [...(item.excludedModels || [])], requestHeaders: { ...(item.requestHeaders || {}) } }));
     if (!nextProfiles.length || nextProfiles.some((item) => !item.id || !item.name || !item.baseUrl)) {
       throw new Error('请补全每个 API 配置档的名称和接口地址。');
     }
-    if (!profile.models.length) profile.models = [fields.model.value.trim()];
+    if (!profile?.models?.length) throw new Error('当前 API 配置档至少需要一个可选模型。');
+    const selectedModel = profile.models.includes(fields.model.value.trim()) ? fields.model.value.trim() : profile.models[0];
+    fields.model.value = selectedModel;
     return {
       apiProfiles: nextProfiles,
       activeApiProfileId: activeProfileId,
       baseUrl: fields.baseUrl.value.trim(),
-      model: fields.model.value.trim(),
+      model: selectedModel,
       requestHeaders,
       requestTimeoutSeconds: numberValue(fields.requestTimeoutSeconds, 120),
       temperature: numberValue(fields.temperature, 1),
@@ -130,13 +127,16 @@
     const index = profiles.findIndex((profile) => profile.id === activeProfileId);
     if (index < 0) return;
     const models = [...new Set(fields.profileModels.value.split(/[,\n]/).map((value) => value.trim()).filter(Boolean))];
-    const defaultModel = fields.model.value.trim();
-    if (defaultModel && !models.includes(defaultModel)) models.unshift(defaultModel);
+    const previous = profiles[index];
+    const removed = (previous.models || []).filter((model) => !models.includes(model));
+    const excludedModels = [...new Set([...(previous.excludedModels || []), ...removed])].filter((model) => !models.includes(model));
+    if (models.length && !models.includes(fields.model.value.trim())) fields.model.value = models[0];
     profiles[index] = {
-      ...profiles[index],
+      ...previous,
       name: fields.profileName.value.trim(),
       baseUrl: fields.baseUrl.value.trim(),
       models,
+      excludedModels,
       requestHeaders: readRequestHeaders(),
     };
     if (fields.apiKey.value.trim()) pendingApiKeys[activeProfileId] = fields.apiKey.value.trim();
@@ -186,7 +186,7 @@
   }
 
   function populate(settings, apiKeyConfigured, stats, skills, workspaceTrusted, workspaceFolderCount, keyMap) {
-    profiles = Array.isArray(settings.apiProfiles) && settings.apiProfiles.length ? settings.apiProfiles.map((item) => ({ ...item, models: [...(item.models || [])], requestHeaders: { ...(item.requestHeaders || {}) } })) : [{ id: 'default', name: 'DeepSeek', baseUrl: settings.baseUrl, models: [settings.model], requestHeaders: settings.requestHeaders || {} }];
+    profiles = Array.isArray(settings.apiProfiles) && settings.apiProfiles.length ? settings.apiProfiles.map((item) => ({ ...item, models: [...(item.models || [])], excludedModels: [...(item.excludedModels || [])], requestHeaders: { ...(item.requestHeaders || {}) } })) : [{ id: 'default', name: 'DeepSeek', baseUrl: settings.baseUrl, models: [settings.model], excludedModels: [], requestHeaders: settings.requestHeaders || {} }];
     activeProfileId = settings.activeApiProfileId || profiles[0].id;
     fields.model.value = settings.model || profiles.find((profile) => profile.id === activeProfileId)?.models?.[0] || '';
     apiKeyConfiguredByProfile = keyMap || {};
@@ -296,7 +296,6 @@
   });
 
   elements.saveButton.addEventListener('click', () => withForm((settings) => {
-    commitProfileEditor();
     post('save', {
       settings,
       apiKeys: { ...pendingApiKeys },
@@ -324,7 +323,7 @@
   elements.addProfileButton.addEventListener('click', () => {
     try { commitProfileEditor(); } catch (error) { showToast(error.message || String(error), 'error'); return; }
     const id = `profile-${Date.now().toString(36)}`;
-    profiles.push({ id, name: '新 API', baseUrl: 'https://api.example.com/v1', models: ['model-name'], requestHeaders: {} });
+    profiles.push({ id, name: '新 API', baseUrl: 'https://api.example.com/v1', models: ['model-name'], excludedModels: [], requestHeaders: {} });
     activeProfileId = id;
     fields.model.value = 'model-name';
     loadProfileFields();

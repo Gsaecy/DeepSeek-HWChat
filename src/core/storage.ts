@@ -13,6 +13,7 @@ import {
   ChatMessage,
   CleanupOptions,
   CleanupResult,
+  ConversationHistoryHit,
   ConversationExport,
   ConversationSummary,
   StorageStats,
@@ -115,7 +116,8 @@ export class ConversationStorage {
   ): Promise<ChatMessage> {
     await this.initialize();
     const summary = this.requireSummary(conversationId);
-    const now = Date.now();
+    const now = Math.max(Date.now(), this.lastMessageTimestamp + 1);
+    this.lastMessageTimestamp = now;
     const message: ChatMessage = {
       id: input.id ?? createOrderedId('message', now),
       role: input.role,
@@ -133,6 +135,7 @@ export class ConversationStorage {
       toolCallId: input.toolCallId,
       usedSkills: input.usedSkills,
       consumedByAssistantId: input.consumedByAssistantId,
+      replyToMessageId: input.replyToMessageId,
     };
     await this.enqueueWrite(async () => {
       await writeJsonAtomic(this.messagePath(conversationId, message.id), message);
@@ -157,7 +160,7 @@ export class ConversationStorage {
   async updateMessage(
     conversationId: string,
     messageId: string,
-    patch: Partial<Pick<ChatMessage, 'content' | 'reasoning' | 'usage' | 'status' | 'model' | 'toolExecutions' | 'toolCalls' | 'usedSkills' | 'consumedByAssistantId'>>,
+    patch: Partial<Pick<ChatMessage, 'content' | 'reasoning' | 'usage' | 'status' | 'model' | 'toolExecutions' | 'toolCalls' | 'usedSkills' | 'consumedByAssistantId' | 'replyToMessageId'>>,
   ): Promise<ChatMessage> {
     await this.initialize();
     const summary = this.requireSummary(conversationId);
@@ -264,6 +267,34 @@ export class ConversationStorage {
     return messages;
   }
 
+  async searchConversationMessages(conversationId: string, query = '', limit = 12): Promise<ConversationHistoryHit[]> {
+    await this.initialize();
+    this.requireSummary(conversationId);
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const cappedLimit = Math.min(30, Math.max(1, Math.floor(limit) || 12));
+    const files = (await this.messageFiles(conversationId)).sort((a, b) => b.localeCompare(a));
+    const hits: ConversationHistoryHit[] = [];
+    for (const file of files) {
+      const message = await readJsonWithBackup<ChatMessage>(join(this.messageDirectory(conversationId), file));
+      if (!message) continue;
+      const searchable = [
+        message.content,
+        message.reasoning,
+        ...(message.toolExecutions ?? []).flatMap((tool) => [tool.summary, tool.output, ...(tool.changedFiles ?? [])]),
+        ...(message.usedSkills ?? []).flatMap((skill) => [skill.name, skill.relativePath]),
+      ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\n');
+      if (normalizedQuery && !searchable.toLocaleLowerCase().includes(normalizedQuery)) continue;
+      hits.push({
+        messageId: message.id,
+        role: message.role,
+        createdAt: message.createdAt,
+        excerpt: historyExcerpt(searchable, normalizedQuery, 1_200),
+      });
+      if (hits.length >= cappedLimit) break;
+    }
+    return hits;
+  }
+
   async setPinned(conversationId: string, pinned: boolean): Promise<ConversationSummary> {
     await this.initialize();
     const summary = this.requireSummary(conversationId);
@@ -277,7 +308,12 @@ export class ConversationStorage {
 
   async updateConversation(
     conversationId: string,
-    patch: Partial<Pick<ConversationSummary, 'title' | 'model' | 'apiProfileId' | 'mode' | 'skillIds' | 'skillSelectionInitialized'>>,
+    patch: Partial<Pick<ConversationSummary, 'title' | 'model' | 'apiProfileId' | 'mode' | 'skillIds' | 'skillSelectionInitialized'>> & {
+      sourceConversationId?: string | null;
+      sourceConversationTitle?: string | null;
+      sourceHistoryDigest?: string | null;
+      sourceLinkedAt?: number | null;
+    },
   ): Promise<ConversationSummary> {
     await this.initialize();
     const summary = this.requireSummary(conversationId);
@@ -300,6 +336,10 @@ export class ConversationStorage {
       } else if (patch.skillSelectionInitialized !== undefined) {
         summary.skillSelectionInitialized = patch.skillSelectionInitialized;
       }
+      assignOptional(summary, 'sourceConversationId', patch.sourceConversationId);
+      assignOptional(summary, 'sourceConversationTitle', patch.sourceConversationTitle);
+      assignOptional(summary, 'sourceHistoryDigest', patch.sourceHistoryDigest);
+      assignOptional(summary, 'sourceLinkedAt', patch.sourceLinkedAt);
       summary.updatedAt = Date.now();
       await this.persistManifest();
     });
@@ -400,6 +440,9 @@ export class ConversationStorage {
       const retentionMs = Math.max(0, options.taskCacheRetentionHours) * 60 * 60 * 1000;
       const historyMs = Math.max(0, options.historyRetentionDays) * 24 * 60 * 60 * 1000;
       const protectedIds = new Set(options.protectedConversationIds ?? []);
+      for (const conversation of this.manifest.conversations) {
+        if (conversation.sourceConversationId) protectedIds.add(conversation.sourceConversationId);
+      }
 
       for (const summary of [...this.manifest.conversations]) {
         const files = await this.messageFiles(summary.id);
@@ -714,11 +757,12 @@ export class ConversationStorage {
       for (const file of await this.messageFiles(conversationId)) {
         const path = join(this.messageDirectory(conversationId), file);
         const message = await readJsonWithBackup<ChatMessage>(path);
-        if (message?.status !== 'streaming') {
+        if (message?.status !== 'streaming' && message?.status !== 'queued') {
           continue;
         }
+        const previousStatus = message.status;
         message.status = 'error';
-        message.content = message.content || '上次生成被中断。';
+        message.content = message.content || (previousStatus === 'queued' ? '排队任务在上次会话结束时尚未执行。' : '上次生成被中断。');
         message.updatedAt = Date.now();
         await writeJsonAtomic(path, message);
       }
@@ -766,4 +810,29 @@ export class ConversationStorage {
     }
     return total;
   }
+}
+
+function historyExcerpt(value: string, query: string, maxChars: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  if (!query) return `${normalized.slice(0, maxChars - 1)}…`;
+  const matchIndex = normalized.toLocaleLowerCase().indexOf(query);
+  if (matchIndex < 0) return `${normalized.slice(0, maxChars - 1)}…`;
+  const context = Math.max(0, Math.floor((maxChars - query.length) / 2));
+  const start = Math.max(0, matchIndex - context);
+  const end = Math.min(normalized.length, start + maxChars);
+  return `${start > 0 ? '…' : ''}${normalized.slice(start, end)}${end < normalized.length ? '…' : ''}`;
+}
+
+function assignOptional<K extends keyof ConversationSummary>(
+  target: ConversationSummary,
+  key: K,
+  value: ConversationSummary[K] | null | undefined,
+): void {
+  if (value === undefined) return;
+  if (value === null) {
+    delete target[key];
+    return;
+  }
+  Object.assign(target, { [key]: value });
 }

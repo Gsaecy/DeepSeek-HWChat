@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.4
+
+- Added native multi-root workspace discovery, directory listing, and editor file opening. Requests such as opening a workspace Markdown file now use VS Code APIs directly instead of terminal commands, `code` CLI calls, or external Copilot tools.
+- Added read-only task-history continuation. Any conversation can start a new linked conversation with a bounded local handoff summary and an on-demand source-history search tool; referenced source histories are protected from automatic cleanup.
+- Paired every message sent during an active Agent run with its own queued or streaming assistant response, so related guidance and independent queued tasks render their answers immediately below the correct user message.
+- Improved runtime command behavior and documentation: authorized Agents can execute regular commands inside trusted workspace roots, while Workspace Trust, path isolation, sensitive-file protection, and dangerous-command confirmation remain enforced.
+- Filtered retired, disabled, unavailable, expired, and user-excluded models from direct API discovery, and prevented refresh from restoring models that were manually removed.
+- Made reasoning controls model-aware. Adjustable levels are offered only when provider metadata declares multiple supported efforts; fixed, unsupported, and unknown models use their declared/default behavior.
+- Added regression coverage for multi-root path resolution, linked-history persistence and cleanup protection, queued-response recovery, inserted-message ordering, retired-model filtering, and reasoning capability parsing.
+
 ## 0.1.3
 
 - Changed model discovery to query each configured API's `/models` endpoint directly, preserving provider display names without depending on Copilot or models registered by other VS Code extensions.

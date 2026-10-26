@@ -19,6 +19,10 @@
   --dropdown-fg: var(--vscode-dropdown-foreground, var(--surface-fg));
   --success: var(--vscode-testing-iconPassed, var(--vscode-terminal-ansiGreen, #1a7f37));
   --warning: var(--vscode-editorWarning-foreground, var(--vscode-terminal-ansiYellow, #9a6700));
+  --user-accent: var(--vscode-terminal-ansiYellow, #c65f00);
+  --user-fg: color-mix(in srgb, var(--user-accent) 78%, var(--fg));
+  --user-bg: color-mix(in srgb, var(--user-accent) 10%, var(--bg));
+  --user-border: color-mix(in srgb, var(--user-accent) 42%, var(--border));
   --danger: var(--vscode-errorForeground, #cf222e);
   --link: var(--vscode-textLink-foreground, #0969da);
   --notification-bg: var(--vscode-notifications-background, var(--surface));
@@ -138,8 +142,9 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .conversation-meta { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .conversation-preview { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
 .conversation-actions { display: none; padding-right: 4px; gap: 1px; }
-.conversation-row:hover .conversation-actions, .conversation-row:focus-within .conversation-actions { display: flex; }
+.conversation-row:hover .conversation-actions, .conversation-row:focus-within .conversation-actions, .conversation-row.active .conversation-actions { display: flex; }
 .row-action { width: 25px; height: 25px; color: var(--muted); font-size: 15px; }
+.row-action:disabled { opacity: .35; cursor: default; }
 .danger-action:hover { color: var(--danger); }
 
 .chat-pane { position: relative; display: grid; grid-template-rows: 88px minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
@@ -199,7 +204,8 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .message-copy-button:disabled { opacity: .6; cursor: default; }
 .message-body { min-width: 0; overflow-wrap: anywhere; }
 .message-body, .message-content, .reasoning-content, .tool-detail, .code-block pre { user-select: text; -webkit-user-select: text; }
-.message.user .message-body { padding: 11px 13px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
+.message.user .message-meta span { color: var(--user-accent); }
+.message.user .message-body { padding: 11px 13px; border-radius: 8px; color: var(--user-fg); background: var(--user-bg); border: 1px solid var(--user-border); }
 .message.error .message-body { border-left: 2px solid var(--danger); padding-left: 12px; }
 .message-content > :first-child, .reasoning-content > :first-child { margin-top: 0; }
 .message-content > :last-child, .reasoning-content > :last-child { margin-bottom: 0; }
@@ -272,6 +278,14 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .suggestions button:hover { background: var(--surface); }
 
 .composer-wrap { width: min(850px, calc(100% - 28px)); margin: 0 auto; padding: 0 0 14px; }
+.history-link-banner { display: grid; grid-template-columns: 20px minmax(0, 1fr) 24px; align-items: center; gap: 7px; margin: 0 2px 7px; padding: 7px 7px 7px 9px; border: 1px solid var(--border); border-radius: 7px; color: var(--fg); background: var(--surface); }
+.history-link-symbol { color: var(--accent); font: 15px var(--mono); }
+.history-link-banner > div { display: grid; min-width: 0; line-height: 1.35; }
+.history-link-banner strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.history-link-banner small { color: var(--muted); font-size: 9px; }
+.history-link-banner button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; color: var(--muted); background: transparent; cursor: pointer; }
+.history-link-banner button:hover { color: var(--surface-hover-fg); background: var(--surface-hover); }
+.history-link-banner button:disabled { opacity: .4; cursor: default; }
 .agent-run-state { display: flex; align-items: center; min-width: 0; gap: 7px; margin: 0 2px 7px; color: var(--muted); font-size: 10px; }
 .agent-run-state strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-size: 10px; }
 .agent-run-state > span:last-child { margin-left: auto; white-space: nowrap; }

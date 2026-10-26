@@ -226,7 +226,11 @@ test('replans after related runtime guidance and skips stale pending tool calls'
       if (phase !== 'replan') return [];
       replanChecks += 1;
       return replanChecks === 2
-        ? [{ role: 'user', content: '[任务树更新：相关指导]\n不要按旧方案写入，改用新方案。' }]
+        ? [{
+          nodeId: 'task-update',
+          relation: 'related' as const,
+          request: { role: 'user' as const, content: '[任务树更新：相关指导]\n不要按旧方案写入，改用新方案。' },
+        }]
         : [];
     },
     callbacks: { onDelta: () => undefined, onToolsChanged: () => undefined, requestApproval: async () => true },

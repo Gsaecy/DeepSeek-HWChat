@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, extname, resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import * as vscode from 'vscode';
 import { readSettings } from '../core/settings';
@@ -13,6 +13,7 @@ import {
   ToolExecutionResult,
 } from '../core/types';
 import { AuditLog, redact } from './auditLog';
+import { isPathWithin, resolveWorkspacePath } from './workspacePaths';
 
 export interface ToolApprovalRequest {
   callId: string;
@@ -46,6 +47,12 @@ export class ToolExecutor implements vscode.Disposable {
 
   definitions(mode: ConversationMode): ToolDefinition[] {
     const readOnly: ToolDefinition[] = [
+      this.definition('list_workspace_roots', '列出当前 VS Code 多根工作区中的全部根文件夹。询问“工作区有哪些项目”时优先使用。', {
+        type: 'object', properties: {}, additionalProperties: false,
+      }),
+      this.definition('list_directory', '列出工作区内一个目录的直接子项，不递归。支持工作区内绝对路径和多根工作区路径。', {
+        type: 'object', properties: { path: { type: 'string', description: '目录路径；默认当前首个工作区根目录' } }, additionalProperties: false,
+      }),
       this.definition('list_files', '列出工作区内匹配的文件路径，不读取文件内容。', {
         type: 'object', properties: { glob: { type: 'string', description: '相对工作区的 glob，例如 src/**/*.ts' } }, required: ['glob'], additionalProperties: false,
       }),
@@ -54,6 +61,9 @@ export class ToolExecutor implements vscode.Disposable {
       }),
       this.definition('read_file', '读取工作区内一个文本文件。敏感文件默认禁止。', {
         type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'integer' }, endLine: { type: 'integer' } }, required: ['path'], additionalProperties: false,
+      }),
+      this.definition('open_file', '直接在 VS Code 编辑器中打开工作区内文件。不运行终端命令；用户要求打开文件时优先使用。', {
+        type: 'object', properties: { path: { type: 'string', description: '工作区相对路径、带工作区根目录名的路径，或工作区内绝对路径' }, preview: { type: 'boolean', description: '是否以预览标签打开，默认 true' } }, required: ['path'], additionalProperties: false,
       }),
       this.definition('get_diagnostics', '读取 VS Code 当前已知的语法和类型诊断。', {
         type: 'object', properties: { path: { type: 'string' } }, additionalProperties: false,
@@ -131,6 +141,12 @@ export class ToolExecutor implements vscode.Disposable {
     let result: ToolExecutionResult;
     try {
       switch (name) {
+        case 'list_workspace_roots':
+          result = await this.listWorkspaceRoots();
+          break;
+        case 'list_directory':
+          result = await this.listDirectory(args, settings);
+          break;
         case 'list_files':
           result = await this.listFiles(args);
           break;
@@ -139,6 +155,9 @@ export class ToolExecutor implements vscode.Disposable {
           break;
         case 'read_file':
           result = await this.readFile(args, settings);
+          break;
+        case 'open_file':
+          result = await this.openFile(args, settings);
           break;
         case 'get_diagnostics':
           result = await this.getDiagnostics(args, settings);
@@ -272,6 +291,25 @@ export class ToolExecutor implements vscode.Disposable {
     return success(`找到 ${paths.length} 个文件`, paths.join('\n') || '没有匹配文件。');
   }
 
+  private async listWorkspaceRoots(): Promise<ToolExecutionResult> {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const lines = folders.map((folder, index) => `${index + 1}. ${folder.name}\t${folder.uri.fsPath}`);
+    return success(`找到 ${folders.length} 个工作区根目录`, lines.join('\n') || '当前没有打开的工作区。');
+  }
+
+  private async listDirectory(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
+    const resolved = await this.resolvePath(stringArg(args, 'path', '.'));
+    this.assertReadable(resolved, settings);
+    const stat = await vscode.workspace.fs.stat(resolved.uri);
+    if ((stat.type & vscode.FileType.Directory) === 0) throw new Error(`${resolved.relativePath} 不是目录。`);
+    const entries = await vscode.workspace.fs.readDirectory(resolved.uri);
+    const rows = entries
+      .sort(([leftName, leftType], [rightName, rightType]) => directoryRank(leftType) - directoryRank(rightType) || leftName.localeCompare(rightName))
+      .slice(0, 500)
+      .map(([name, type]) => `${fileTypeLabel(type)}\t${name}`);
+    return success(`列出 ${resolved.relativePath}（${rows.length} 项）`, rows.join('\n') || '目录为空。');
+  }
+
   private async searchFiles(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
     const query = stringArg(args, 'query');
     if (!query) throw new Error('query 不能为空。');
@@ -322,6 +360,16 @@ export class ToolExecutor implements vscode.Disposable {
       content: text,
       approval: 'not-required',
     };
+  }
+
+  private async openFile(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
+    const resolved = await this.resolvePath(stringArg(args, 'path'));
+    this.assertReadable(resolved, settings);
+    const stat = await vscode.workspace.fs.stat(resolved.uri);
+    if ((stat.type & vscode.FileType.File) === 0) throw new Error('open_file 只能打开文件。');
+    const document = await vscode.workspace.openTextDocument(resolved.uri);
+    await vscode.window.showTextDocument(document, { preview: args.preview !== false, preserveFocus: false });
+    return success(`已在编辑器中打开 ${resolved.relativePath}`, '文件已通过 VS Code 原生编辑器打开。');
   }
 
   private async getDiagnostics(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
@@ -434,7 +482,7 @@ export class ToolExecutor implements vscode.Disposable {
     settings: ChatSettings,
     policy: PermissionPolicy,
   ): string | undefined {
-    if (!['list_files', 'search_files', 'read_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name)) {
+    if (!['list_workspace_roots', 'list_directory', 'list_files', 'search_files', 'read_file', 'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name)) {
       return `工具 ${name} 未被允许。`;
     }
     if (policy === 'deny') return `当前权限策略禁止 ${name}。`;
@@ -456,32 +504,16 @@ export class ToolExecutor implements vscode.Disposable {
 
   private async resolvePath(input: string): Promise<ResolvedPath> {
     const folders = vscode.workspace.workspaceFolders ?? [];
-    if (folders.length === 0) throw new Error('当前没有打开的工作区。');
-    const value = input?.trim() || '.';
-    const absoluteCandidate = isAbsolute(value) ? resolve(value) : undefined;
-    const normalized = value.replaceAll('\\', '/');
-    for (let index = 0; index < folders.length; index += 1) {
-      const folder = folders[index]!;
-      const root = resolve(folder.uri.fsPath);
-      let relativeInput = value;
-      if (!absoluteCandidate && folders.length > 1) {
-        if (normalized === folder.name) relativeInput = '.';
-        else if (normalized.startsWith(`${folder.name}/`)) relativeInput = normalized.slice(folder.name.length + 1);
-        else if (index > 0) continue;
-      }
-      const candidate = absoluteCandidate ?? resolve(root, relativeInput);
-      if (!isWithin(root, candidate)) continue;
-      const actual = await safeRealpath(candidate);
-      const realRoot = await safeRealpath(root);
-      if (!isWithin(realRoot, actual)) throw new Error('路径通过符号链接离开了工作区。');
-      return {
-        uri: vscode.Uri.file(candidate),
-        fsPath: candidate,
-        relativePath: workspaceRelativePath(vscode.Uri.file(candidate)),
-        folder,
-      };
-    }
-    throw new Error('路径必须位于当前工作区内。');
+    const resolved = resolveWorkspacePath(input, folders.map((folder) => ({ folder, name: folder.name, fsPath: folder.uri.fsPath })));
+    const actual = await safeRealpath(resolved.fsPath);
+    const realRoot = await safeRealpath(resolved.root.fsPath);
+    if (!isPathWithin(realRoot, actual)) throw new Error('路径通过符号链接离开了工作区。');
+    return {
+      uri: vscode.Uri.file(resolved.fsPath),
+      fsPath: resolved.fsPath,
+      relativePath: workspaceRelativePath(vscode.Uri.file(resolved.fsPath)),
+      folder: resolved.root.folder,
+    };
   }
 
   private assertReadable(path: ResolvedPath, settings: ChatSettings): void {
@@ -590,13 +622,18 @@ function isSensitivePath(value: string): boolean {
   return SENSITIVE_NAMES.test(normalized) || SENSITIVE_PARTS.test(normalized);
 }
 
-function isWithin(root: string, candidate: string): boolean {
-  const relativePath = relative(root, candidate);
-  return relativePath === '' || (!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath));
-}
-
 function workspaceRelativePath(uri: vscode.Uri): string {
   return vscode.workspace.asRelativePath(uri, (vscode.workspace.workspaceFolders?.length ?? 0) > 1);
+}
+
+function directoryRank(type: vscode.FileType): number {
+  return (type & vscode.FileType.Directory) !== 0 ? 0 : 1;
+}
+
+function fileTypeLabel(type: vscode.FileType): string {
+  if ((type & vscode.FileType.Directory) !== 0) return '[目录]';
+  if ((type & vscode.FileType.SymbolicLink) !== 0) return '[链接]';
+  return '[文件]';
 }
 
 async function safeRealpath(value: string): Promise<string> {
