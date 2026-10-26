@@ -2,7 +2,7 @@
 
 [English](README.md) · [中文](README.zh-CN.md)
 
-Current version: **0.1.8**
+Current version: **0.1.9**
 
 HWChat is a local-first coding agent for VS Code with a DeepSeek / OpenAI-compatible backend. Repository: <https://github.com/Gsaecy/DeepSeek-HWChat>
 
@@ -104,7 +104,7 @@ See [SECURITY.md](SECURITY.md) for the full boundary description.
 Requires VS Code `1.106.0` or newer.
 
 ```bash
-code --install-extension hwchat-0.1.8.vsix
+code --install-extension hwchat-0.1.9.vsix
 ```
 
 Open the command palette and run `HWChat: Open chat panel`. On first use, open settings, create an API profile and save its API key — the key only goes into VS Code `SecretStorage`, never into `settings.json`, project files or the VSIX.
@@ -120,7 +120,7 @@ npm test
 npm run package
 ```
 
-The build output is `hwchat-0.1.8.vsix` in the project root. A version already published to the Marketplace cannot be uploaded again, so bump the version for every public build.
+The build output is `hwchat-0.1.9.vsix` in the project root. A version already published to the Marketplace cannot be uploaded again, so bump the version for every public build.
 
 The extension icon is `resources/logo.png`. Press `F5` in VS Code to launch the extension development host.
 

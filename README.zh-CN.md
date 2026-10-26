@@ -2,7 +2,7 @@
 
 [English](README.md) · 中文
 
-当前版本：**0.1.8**
+当前版本：**0.1.9**
 
 HWChat 是面向 VS Code 的本地优先编码 Agent 扩展。项目仓库：<https://github.com/Gsaecy/DeepSeek-HWChat>
 
@@ -104,7 +104,7 @@ HWChat 与“本地skill快捷调用”共享 `~/.copilot/.skill-quick-launch.js
 安装已构建的 VSIX：
 
 ```bash
-code --install-extension hwchat-0.1.8.vsix
+code --install-extension hwchat-0.1.9.vsix
 ```
 
 在 VS Code 中打开命令面板，执行 `HWChat: 打开对话面板`。首次使用时进入设置，创建一个 API 配置档并保存 API Key；密钥只会进入 VS Code SecretStorage，不会写入 `settings.json`、项目文件或 VSIX。
@@ -118,7 +118,7 @@ npm test
 npm run package
 ```
 
-构建结果为项目根目录下的 `hwchat-0.1.8.vsix`。同一扩展已发布过的版本不能覆盖上传 Marketplace，发布新构建时必须递增版本号。
+构建结果为项目根目录下的 `hwchat-0.1.9.vsix`。同一扩展已发布过的版本不能覆盖上传 Marketplace，发布新构建时必须递增版本号。
 
 扩展图标使用 `resources/logo.png`。在 VS Code 中按 `F5` 启动扩展开发主机。
 

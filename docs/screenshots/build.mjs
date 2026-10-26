@@ -33,6 +33,15 @@ const { messageTable } = await import(moduleUrl);
 const english = messageTable('en');
 const i18nTag = `<script type="application/json" id="hwchat-i18n">${JSON.stringify(english).replace(/</g, '\\u003c')}</script>`;
 
+// 截图里输入框不显示任何文字，占位提示也算文字。
+// 面板启动时会把 placeholder 设成 chat.promptPlaceholderAgent（media/chat.js），
+// 所以只能把词表里这几项置空——直接改 HTML 上的 placeholder 会被面板覆盖回去。
+const shotEnglish = { ...english };
+for (const key of ['chat.promptPlaceholder', 'chat.promptPlaceholderAgent', 'chat.promptPlaceholderStreaming', 'chat.promptPlaceholderArchived']) {
+  shotEnglish[key] = '';
+}
+const chatI18nTag = `<script type="application/json" id="hwchat-i18n">${JSON.stringify(shotEnglish).replace(/</g, '\\\\u003c')}</script>`;
+
 /** 预览页里的示例对话需要英文版，才能和英文界面连成一体。 */
 const chatReplacements = [
   ['<html lang="zh-CN">', '<html lang="en">'],
@@ -126,7 +135,10 @@ const chatReplacements = [
   ['为失败重试补一个恢复用例', 'Add a recovery test for a failed refresh'],
   ['运行 npm test 确认没有回归', 'Run npm test to confirm no regressions'],
   ['更新 README 的刷新说明', 'Update the README refresh notes'],
-  // 预览页会模拟一次粘贴，输入框里会留下这段文字
+  // 预览页会模拟一次粘贴，输入框里会留下这段文字。
+  // 样例文案改过一次（「混合剪贴板文字」→「宿主剪贴板文字」），旧替换因此静默失效，
+  // 截图里就留下了中文输入框。两种写法都保留，任一样例都能翻成英文。
+  ['宿主剪贴板文字', 'Host clipboard text'],
   ['混合剪贴板文字', 'Mixed clipboard text'],
   // usedSkills 数组里的技能名（与 skills 数组是两处独立数据）
   ["name: 'TypeScript 质量规范'", "name: 'TypeScript quality rules'"],
@@ -253,7 +265,7 @@ function buildPage(sourceFile, replacements, targetFile) {
   // 词表必须在 chat.js / settings.js 之前注入。
   const withI18n = withoutTable.replace(
     /<script src="\.\.\/media\/(chat|settings)\.js"><\/script>/,
-    `${i18nTag}\n<script src="../media/$1.js"></script>`,
+    `${sourceFile.includes('preview-chat') ? chatI18nTag : i18nTag}\n<script src="../media/$1.js"></script>`,
   );
   // 预览页放在 test/ 时 ../media 指向项目根；生成到 docs/screenshots/ 后
   // 必须多退一层，否则样式与脚本 404（曾经因此截出四张无样式的重复图）。
@@ -287,7 +299,12 @@ function toEmptyConversation(html) {
     // 空对话没有正在生成的回复。
     ["streamingConversationId: 'c1'", 'streamingConversationId: null'],
     // 预览页会模拟一次粘贴把示例文字写进输入框；清空，只留占位提示。
-    ['Mixed clipboard text', ''],
+    // 按「模拟粘贴返回什么就清空什么」处理，不依赖样例文案的具体措辞：
+    // 依赖中间产物（先译成英文再清空）时，样例一改名就会两步一起静默失效。
+    [/text: '[^']*', truncated: false/, "text: '', truncated: false"],
+    // 模拟粘贴带的 clipboardData 也要清空：只清剪贴板回读不够——
+    // 粘贴走的是事件里的 clipboardData，回读只是兜底，两处都会往输入框写字。
+    [/pasteData\.setData\('text\/plain', '[^']*'\)/, "pasteData.setData('text/plain', '')"],
     // 示例消息消失后没有工具步骤可标注分段边界，整段删掉，
     // 否则取空数组元素会抛错并中断整个预览脚本（页面会白屏）。
     [/    const previewReply = previewState\.messages\[1\];\n[\s\S]*?previewTools\[2\]\.contentOffset = [^\n]*\n/, ''],
@@ -343,6 +360,11 @@ for (const marker of ['messages: []', 'todos: []', 'conversations: []', 'archive
   }
 }
 
+// 输入框必须是空的：模拟粘贴若还返回文字，截图里就会出现一行示例输入。
+if (!emptyChatHtml.includes("text: '', truncated: false")) {
+  throw new Error('剪贴板模拟没有被清空（截图输入框会带示例文字，已中止）');
+}
+
 // 设置页截图默认不生成（README 不放设置页图片）；需要时运行 build.mjs --with-settings。
 const settingsHtml = process.argv.includes('--with-settings')
   ? buildPage('test/preview-settings.html', settingsReplacements, join(OUT, 'settings.en.html'))
@@ -350,12 +372,43 @@ const settingsHtml = process.argv.includes('--with-settings')
 
 const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
+/**
+ * 渲染后的中文残留探针。
+ *
+ * 只扫静态 HTML 不够：输入框内容是 JS 写进去的，而 <textarea> 的 textContent
+ * 不等于它的 value——上一版截图正是按可见文本查的，漏掉了 value，
+ * 于是把「宿主剪贴板文字」截进了 README。
+ * 这里在页面里等定时器跑完（模拟粘贴是异步的）再检查：innerText 覆盖真正
+ * 渲染出来的文本（不含 script / style / 隐藏节点），表单 value 与 placeholder
+ * 另外逐个检查，结果写回 <html> 的属性，再用 --dump-dom 取回来核对。
+ */
+const CN_PROBE = `<script>
+setTimeout(() => {
+  const cjk = /[\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff]/;
+  const hits = [];
+  const push = (label, value) => {
+    const text = String(value == null ? '' : value).trim();
+    if (text && cjk.test(text)) hits.push(label + ':' + text.slice(0, 40));
+  };
+  push('text', document.body.innerText);
+  for (const field of document.querySelectorAll('input, textarea')) {
+    push('value', field.value);
+    push('placeholder', field.getAttribute('placeholder'));
+  }
+  const composer = document.querySelector('#promptInput');
+  document.documentElement.setAttribute('data-composer-len', composer ? String(composer.value.length) : '-1');
+  document.documentElement.setAttribute('data-placeholder-len', composer ? String((composer.getAttribute('placeholder') || '').length) : '-1');
+  document.documentElement.setAttribute('data-cn-probe', hits.length ? hits.join(' | ') : 'CLEAN');
+}, 2000);
+</script>`;
+
 function shot(html, fileName, output, width, height) {
   const page = join(OUT, fileName);
-  writeFileSync(page, html);
+  // 探针放在 </body> 前：页面自身的定时器在同一时序里跑，探针排在它们之后。
+  writeFileSync(page, html.includes('</body>') ? html.replace('</body>', `${CN_PROBE}</body>`) : `${html}${CN_PROBE}`);
   try {
     // 用临时配置目录，避免并发/残留的 Chrome 实例抢单例导致静默失败。
-    execFileSync(chrome, [
+    const dump = execFileSync(chrome, [
       '--headless=new',
       '--disable-gpu',
       '--hide-scrollbars',
@@ -367,10 +420,34 @@ function shot(html, fileName, output, width, height) {
       `--window-size=${width},${height}`,
       // 等页面里的渲染定时器跑完再截图，否则拿到的是首帧（列表还是空的）。
       '--virtual-time-budget=3000',
+      '--dump-dom',
       `--screenshot=${output}`,
       `file://${process.cwd()}/${page}`,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
-    console.log(`已生成 ${output}`);
+    ], { stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+    const probe = /data-cn-probe="([^"]*)"/.exec(dump);
+    if (!probe) {
+      throw new Error('中文探针没有执行：--dump-dom 里找不到 data-cn-probe，无法确认画面是否为纯英文');
+    }
+    if (probe[1] !== 'CLEAN') {
+      throw new Error(`画面里仍有中文：${probe[1]}`);
+    }
+    // 输入框不显示任何文字：不是“没有中文”就够了，英文示例同样不该出现在截图里。
+    const composerLen = /data-composer-len="([^"]*)"/.exec(dump);
+    if (!composerLen) {
+      throw new Error('输入框探针没有执行：找不到 data-composer-len');
+    }
+    if (composerLen[1] !== '-1' && composerLen[1] !== '0') {
+      throw new Error(`输入框不是空的（${composerLen[1]} 个字符），截图会带上示例输入`);
+    }
+    // 占位提示同样算“文字”：输入框里什么都不显示。
+    const placeholderLen = /data-placeholder-len="([^"]*)"/.exec(dump);
+    if (!placeholderLen) {
+      throw new Error('占位文字探针没有执行：找不到 data-placeholder-len');
+    }
+    if (placeholderLen[1] !== '-1' && placeholderLen[1] !== '0') {
+      throw new Error(`输入框仍显示占位提示（${placeholderLen[1]} 个字符），截图输入框应为空白`);
+    }
+    console.log(`已生成 ${output}（画面无中文，输入框无文字与占位提示）`);
   } catch (error) {
     console.error(`截图失败：${output}`);
     console.error(String(error.stderr || error.message).slice(0, 600));
