@@ -71,7 +71,7 @@ const chatReplacements = [
   ['只读摘要 + 按需检索；实际发送的摘要和片段会计入输入 Token', english['chat.taskHistoryNote']],
   ['aria-label="解除任务历史" title="解除任务历史"', `aria-label="${english['chat.detachHistory']}" title="${english['chat.detachHistory']}"`],
   ['<span>任务树</span>', `<span>${english['chat.taskTree']}</span>`],
-  ['<strong>任务清单</strong>', `<strong>${english['todo.title']}</strong>`],
+  ['<span>任务清单</span>', `<span>${english['todo.title']}</span>`],
   ['placeholder="询问代码、调试问题或直接交给 Agent 实现…"', `placeholder="${english['chat.promptPlaceholderAgent']}"`],
   ['aria-label="本轮 Agent 设置"', `aria-label="${english['chat.agentRuntimeSettings']}"`],
   ['aria-label="添加文件" title="添加文件"', `aria-label="${english['chat.attachFile']}" title="${english['chat.attachFile']}"`],
@@ -122,6 +122,11 @@ const chatReplacements = [
   ['为失败重试补一个恢复用例', 'Add a recovery test for a failed refresh'],
   ['运行 npm test 确认没有回归', 'Run npm test to confirm no regressions'],
   ['更新 README 的刷新说明', 'Update the README refresh notes'],
+  // 预览页会模拟一次粘贴，输入框里会留下这段文字
+  ['混合剪贴板文字', 'Mixed clipboard text'],
+  // usedSkills 数组里的技能名（与 skills 数组是两处独立数据）
+  ["name: 'TypeScript 质量规范'", "name: 'TypeScript quality rules'"],
+  ["name: '项目文档同步'", "name: 'Keep project docs in sync'"],
   // 收尾修正：前面有些短串先匹配了长串的一部分，这里按替换后的实际文本补齐。
   ['执行Code review', english['chat.suggestion.review']],
   ['解除Task history', english['chat.detachHistory']],

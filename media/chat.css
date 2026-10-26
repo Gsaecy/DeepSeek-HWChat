@@ -368,18 +368,26 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .agent-run-state > span:last-child { margin-left: auto; white-space: nowrap; }
 .run-indicator { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
 /* ── 任务清单（待办）─────────────────────────────────────────────
-   位置：任务树与输入框之间。三个状态都用绿色表示“按计划推进”：
-   等待=空心圆圈，执行中=跳动三点，完成=实心圆圈+白勾。
-   绿色取固定值而不是 --success：VS Code 主题的 testing-iconPassed
-   在少数主题里偏黄偏青，勾和圆圈会看不出是绿色。 */
+   位置：任务树与输入框之间，和任务树一样是 <details>，点标题折叠/展开。
+   三个状态都用绿色表示“按计划推进”：等待=空心圆圈，执行中=跳动三点，
+   完成=实心圆圈+白勾。绿色取固定值而不是 --success：VS Code 主题的
+   testing-iconPassed 在少数主题里偏黄偏青，勾和圆圈会看不出是绿色。 */
 .todo-panel { margin: 0 2px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); overflow: hidden; --todo-green: #1a7f37; }
 :root[data-theme="dark"] .todo-panel,
 body.vscode-dark .todo-panel,
 body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
-.todo-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 28px; padding: 5px 9px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
-.todo-panel-heading strong { font-weight: 600; color: var(--fg); }
-.todo-panel-heading small { font-size: 9px; white-space: nowrap; }
-.todo-list { display: grid; gap: 1px; margin: 0; padding: 4px; list-style: none; }
+/* summary 用 flex 之后浏览器不再绘制 ::marker，箭头必须自绘（与 .reasoning 同法）。 */
+.todo-panel > summary,
+.task-tree > summary { display: flex; align-items: center; justify-content: space-between; min-height: 28px; gap: 10px; padding: 5px 9px; cursor: pointer; color: var(--muted); font-size: 10px; list-style: none; user-select: none; }
+.todo-panel > summary::-webkit-details-marker,
+.task-tree > summary::-webkit-details-marker { display: none; }
+.todo-panel > summary::before,
+.task-tree > summary::before { content: "▸"; flex: 0 0 auto; margin-right: -4px; font-size: 9px; color: color-mix(in srgb, var(--fg) 58%, transparent); }
+.todo-panel[open] > summary::before,
+.task-tree[open] > summary::before { content: "▾"; }
+.todo-panel > summary small,
+.task-tree > summary small { font-size: 9px; white-space: nowrap; }
+.todo-list { display: grid; gap: 1px; margin: 0; padding: 4px; list-style: none; border-top: 1px solid var(--border); }
 .todo-item { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 7px; min-height: 26px; padding: 3px 6px; border-radius: 5px; font-size: 11px; line-height: 1.45; }
 .todo-index { text-align: center; font: 10px var(--mono); color: var(--muted); }
 .todo-content { overflow-wrap: anywhere; }
@@ -402,8 +410,6 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 }
 
 .task-tree { margin: 0 2px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); overflow: hidden; }
-.task-tree > summary { display: flex; align-items: center; justify-content: space-between; min-height: 28px; gap: 10px; padding: 5px 9px; cursor: pointer; color: var(--muted); font-size: 10px; }
-.task-tree > summary small { font-size: 9px; }
 .task-tree-list { display: grid; border-top: 1px solid var(--border); padding: 4px; }
 .task-node { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 6px; min-height: 27px; padding: 3px 6px; border-radius: 5px; color: var(--muted); font-size: 9px; }
 .task-node.current { color: var(--fg); background: var(--surface); }

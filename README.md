@@ -53,7 +53,7 @@ When the work needs several steps, the agent writes a task list rather than leav
 | In progress | green bouncing ellipsis |
 | Completed | solid green circle with a white check |
 
-The agent keeps exactly one step in progress, updates the list after each step, and leaves the finished list in place as a record of what happened. The list is stored with the conversation, so it survives reloading the window; a single-step request never creates one. It is a tool (`update_todos`) that needs no permission, because it changes no files and runs no commands.
+Click the title to collapse or expand the list, the same way as the task tree. The agent keeps exactly one step in progress, updates the list after each step, and leaves the finished list in place as a record of what happened. The list is stored with the conversation, so it survives reloading the window; a single-step request never creates one. It is a tool (`update_todos`) that needs no permission, because it changes no files and runs no commands.
 
 ## Skills
 

@@ -109,10 +109,10 @@
         <div id="contextChip" class="context-chip" hidden><span id="contextLabel"></span><button id="removeContextButton" type="button">×</button></div>
         <div id="agentRunState" class="agent-run-state" hidden><span class="run-indicator"></span><strong id="agentRunLabel">Agent 正在执行</strong><span id="agentRunMeta"></span></div>
         <details id="taskTree" class="task-tree" hidden open><summary><span>任务树</span><small id="taskTreeSummary"></small></summary><div id="taskTreeList" class="task-tree-list"></div></details>
-        <section id="todoPanel" class="todo-panel" hidden>
-          <div class="todo-panel-heading"><strong>任务清单</strong><small id="todoSummary"></small></div>
+        <details id="todoPanel" class="todo-panel" hidden open>
+          <summary><span>任务清单</span><small id="todoSummary"></small></summary>
           <ol id="todoList" class="todo-list"></ol>
-        </section>
+        </details>
         <form id="composer" class="composer">
           <textarea id="promptInput" rows="1" placeholder="询问代码、调试问题或直接交给 Agent 实现…"></textarea>
           <div class="composer-footer">

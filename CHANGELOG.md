@@ -26,6 +26,7 @@
 - 清单随对话持久化（`ConversationSummary.todos`），重载窗口或切回该对话仍在；模型传入的内容按不可信输入处理：条数上限 40、单条压成一行并截断到 200 字符、未知状态一律降级为 `pending`、空条目丢弃，避免一条工具调用把面板和存档撑爆或渲染出没有样式的空状态。若模型给了多个 `in_progress`，工具会回一句提示让它自己纠正，而不是悄悄改写它给的状态。
 - 预览页 `test/preview-chat.html` 增加任务清单样例，「说明 → 步骤」与清单可以在浏览器里直接核对；`docs/screenshots/build.mjs` 现在会先删掉预览页自带的中文词表再注入英文词表——同一 id 下浏览器只取第一个块，不删就会截出「英文界面 + 中文文案」的图。截图命令补上 `--virtual-time-budget=3000`，等渲染定时器跑完再截，否则拿到的是首帧空列表。测试 158 → 165。
 
+- 任务清单改成可折叠：结构从 `<section>` 换成 `<details>` + `<summary>`，点标题就能收起和展开，与任务树一致。`summary` 一旦是 `display: flex`，浏览器就不再绘制 `::marker`，所以箭头改成自绘（`▸` 收起 / `▾` 展开，沿用 `.reasoning` 的写法），并给任务树补上同一个箭头——它此前同样没有可见的折叠提示。默认展开，用户收起后在同一次会话里保持收起（面板不重建就不会被重置）。实测：面板高度 173 → 30（收起）→ 173（再展开），箭头随 `open` 状态切换。
 ## 0.1.7
 
 - Added `HWChat: 查看生效权限与来源` plus an automatic log line in the `HWChat` output channel (at activation and whenever `hwchat.*` configuration changes). It prints every permission key with the value that is actually in effect and the raw value found at each scope — `文件夹: DeepSeek-HWChat="review"｜工作区: 无｜用户: "autopilot"｜默认: 无` — so “我写了 review 但危险命令还是直接跑” can be answered without reading source. The resolver already prefers the most specific scope; this makes its decision auditable in the running build. Test count 144 → 146.

@@ -1681,11 +1681,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         <div id="contextChip" class="context-chip" hidden><span id="contextLabel"></span><button id="removeContextButton" type="button" aria-label="${t(lang, 'chat.removeContext')}" title="${t(lang, 'common.remove')}">×</button></div>
         <div id="agentRunState" class="agent-run-state" hidden><span class="run-indicator"></span><strong id="agentRunLabel">${t(lang, 'chat.agentRunning')}</strong><span id="agentRunMeta"></span></div>
         <details id="taskTree" class="task-tree" hidden><summary><span>${t(lang, 'chat.taskTree')}</span><small id="taskTreeSummary"></small></summary><div id="taskTreeList" class="task-tree-list"></div></details>
-        <section id="todoPanel" class="todo-panel" hidden aria-label="${t(lang, 'todo.title')}">
-          <div class="todo-panel-heading"><strong>${t(lang, 'todo.title')}</strong><small id="todoSummary"></small></div>
+        <details id="todoPanel" class="todo-panel" hidden open>
+          <summary><span>${t(lang, 'todo.title')}</span><small id="todoSummary"></small></summary>
           <ol id="todoList" class="todo-list"></ol>
-        </section>
-        <form id="composer" class="composer">
+        </details>        <form id="composer" class="composer">
           <textarea id="promptInput" rows="1" placeholder="${t(lang, 'chat.promptPlaceholder')}" aria-label="${t(lang, 'chat.messageLabel')}"></textarea>
           <div class="composer-footer">
             <div class="composer-runtime-controls" aria-label="${t(lang, 'chat.agentRuntimeSettings')}">
