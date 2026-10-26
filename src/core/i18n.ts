@@ -667,6 +667,32 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.outputTruncated': { zh: '{result}\n… [输出已截断，原始大小 {bytes} 字节]', en: '{result}\n… [output truncated; original size {bytes} bytes]' },
   'tool.lineDelta': { zh: '{lines} 行（{delta}）', en: '{lines} lines ({delta})' },
 
+  // 待办清单（Agent 自己维护的任务清单）
+  'todo.title': { zh: '任务清单', en: 'Task list' },
+  'todo.progress': { zh: '{done}/{total} 已完成', en: '{done}/{total} done' },
+  'todo.status.pending': { zh: '等待执行', en: 'Waiting' },
+  'todo.status.in_progress': { zh: '执行中', en: 'In progress' },
+  'todo.status.completed': { zh: '已完成', en: 'Completed' },
+  'todo.updated': { zh: '任务清单已更新：{done}/{total} 已完成', en: 'Task list updated: {done}/{total} done' },
+  'todo.empty': { zh: '这次调用没有产生有效条目，任务清单保持不变。', en: 'This call produced no valid items, so the task list is unchanged.' },
+  'todo.hintSingleActive': { zh: '提示：同一时刻只应有一项处于 in_progress。', en: 'Note: only one item should be in_progress at a time.' },
+  'tool.updateTodos.description': {
+    zh: '创建或更新本轮的任务清单。当任务需要拆成多个步骤执行（例如“重构某个模块并补测试”“排查一个跨文件的问题”）时，先用它把步骤列出来，之后每完成一步就再调用一次更新状态。清单按数组顺序展示，所以顺序要与实际执行顺序一致。同一时刻只应有一项处于 in_progress；开始做某项前把它设为 in_progress，做完立刻设为 completed。全部完成后保持整份清单，不要清空。任务只有一步时不要使用这个工具。',
+    en: 'Create or update the task list for this turn. Use it when the work needs several steps (for example "refactor a module and add tests" or "debug an issue across files"): list the steps first, then call it again after each step to update the status. Items are displayed in array order, so keep that order equal to the execution order. Only one item should be in_progress at a time: mark an item in_progress before starting it and completed as soon as it is done. When everything is finished, keep the full list rather than clearing it. Do not use this tool when the task is a single step.',
+  },
+  'tool.updateTodos.todosParam': {
+    zh: '完整清单，按执行顺序排列。每次调用都要传整份清单（不是增量），这样状态更新后顺序和已完成项才不会丢。',
+    en: 'The full list, in execution order. Send the whole list on every call (not a delta) so the order and completed items survive the update.',
+  },
+  'tool.updateTodos.contentParam': {
+    zh: '这一项的待办内容，一句话说清要做什么',
+    en: 'What this item does, in one sentence',
+  },
+  'tool.updateTodos.statusParam': {
+    zh: 'pending 等待执行、in_progress 正在执行、completed 已完成',
+    en: 'pending = not started, in_progress = being worked on, completed = done',
+  },
+
   // 扩展宿主：命令与通知（补充）
   'ext.privacyCancel': { zh: '取消', en: 'Cancel' },
   'ext.exportLabel': { zh: '导出全部对话', en: 'Export all conversations' },
@@ -712,6 +738,7 @@ const DICTIONARY: Record<string, Entry> = {
   'agent.progress.run_command': { zh: '准备运行命令', en: 'Preparing to run a command' },
   'agent.progress.load_skill': { zh: '正在加载 Skill', en: 'Loading a skill' },
   'agent.progress.search_conversation_history': { zh: '正在检索关联的只读任务历史', en: 'Searching linked read-only task history' },
+  'agent.progress.update_todos': { zh: '正在更新任务清单', en: 'Updating the task list' },
   'agent.progress.generic': { zh: '正在执行 {name}', en: 'Running {name}' },
   'agent.contentOmitted': { zh: '[正文未写入历史：{bytes} 字节]', en: '[body not written to history: {bytes} bytes]' },
   'agent.valueTruncated': { zh: '{value}… [{bytes} 字节]', en: '{value}… [{bytes} bytes]' },

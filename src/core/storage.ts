@@ -17,6 +17,7 @@ import {
   ConversationExport,
   ConversationSummary,
   StorageStats,
+  TodoItem,
 } from './types';
 import { tt } from './i18n';
 
@@ -314,6 +315,7 @@ export class ConversationStorage {
       sourceConversationTitle?: string | null;
       sourceHistoryDigest?: string | null;
       sourceLinkedAt?: number | null;
+      todos?: TodoItem[] | null;
     },
   ): Promise<ConversationSummary> {
     await this.initialize();
@@ -341,6 +343,11 @@ export class ConversationStorage {
       assignOptional(summary, 'sourceConversationTitle', patch.sourceConversationTitle);
       assignOptional(summary, 'sourceHistoryDigest', patch.sourceHistoryDigest);
       assignOptional(summary, 'sourceLinkedAt', patch.sourceLinkedAt);
+      // 待办清单整体替换：模型每次传的都是完整清单，合并反而会留下过期条目。
+      if (patch.todos !== undefined) {
+        if (patch.todos && patch.todos.length) summary.todos = patch.todos.map((todo) => ({ ...todo }));
+        else delete summary.todos;
+      }
       summary.updatedAt = Date.now();
       await this.persistManifest();
     });

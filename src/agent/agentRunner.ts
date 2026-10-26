@@ -230,6 +230,7 @@ function toolPendingSummary(name: string): string {
     run_command: tt('agent.progress.run_command'),
     load_skill: tt('agent.progress.load_skill'),
     search_conversation_history: tt('agent.progress.search_conversation_history'),
+    update_todos: tt('agent.progress.update_todos'),
   };
   return labels[name] ?? tt('agent.progress.generic', { name });
 }

@@ -34,9 +34,11 @@ import {
   ToolDefinition,
   ToolExecutionResult,
   ToolExecution,
+  TodoItem,
   UsageInfo,
   WebviewConversationState,
 } from '../core/types';
+import { completedCount, hasMultipleInProgress, normalizeTodos } from '../core/todos';
 import { DeepSeekClient, RequestCancelledError } from '../providers/deepseekClient';
 import { icon, mediaUri, nonce } from './webview';
 
@@ -722,11 +724,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           signal: controller.signal,
           conversationId,
           extraTools: [
+            todoToolDefinition(),
             this.skills.toolDefinition(preparedSkills.routableIds),
             historyTool,
             ...this.vscodeTools.definitions(),
           ].filter((tool): tool is NonNullable<typeof tool> => Boolean(tool)),
           executeExtraTool: async (call) => {
+            if (call.function.name === 'update_todos') {
+              return { result: await this.updateTodos(conversationId!, call) };
+            }
             if (call.function.name === 'search_conversation_history') {
               return { result: await this.searchLinkedConversationHistory(conversationId!, call, mode, settings) };
             }
@@ -1047,8 +1053,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       agentAvailable: Boolean(vscode.workspace.workspaceFolders?.length),
       availableToolCount: this.vscodeTools.availableCount()
         + this.toolExecutor.definitions('agent').length
+        + 1
         + (conversation?.sourceConversationId ? 1 : 0),
       taskTree: conversation?.id === this.streamingConversationId ? this.activeTaskQueue?.state() : undefined,
+      todos: conversation?.todos,
       showArchived: this.showArchived,
     };
     await this.post({
@@ -1371,6 +1379,37 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     await this.post({ type: 'toast', tone: 'neutral', text: tt('chat.historyDetached') });
   }
 
+  /**
+   * `update_todos`：把模型给的整份清单落库并推给面板。
+   *
+   * 这里是清单的唯一写入口——面板不自己算状态，避免出现“界面已完成、存档还是执行中”。
+   * 每次调用都要求模型传整份清单（不是增量），所以直接整体替换即可。
+   */
+  private async updateTodos(conversationId: string, call: ToolCall): Promise<ToolExecutionResult> {
+    const args = parseToolArguments(call.function.arguments);
+    const todos = normalizeTodos(args.todos);
+    if (!todos.length) {
+      return {
+        status: 'error',
+        summary: tt('todo.title'),
+        content: tt('todo.empty'),
+        approval: 'not-required',
+      };
+    }
+    await this.storage.updateConversation(conversationId, { todos });
+    await this.post({ type: 'todos', conversationId, todos });
+    const done = completedCount(todos);
+    return {
+      status: 'success',
+      summary: tt('todo.updated', { done, total: todos.length }),
+      // 回给模型的是纯文本清单：它下一轮据此判断还剩哪几步。
+      content: todos
+        .map((todo, index) => `${index + 1}. [${todo.status}] ${todo.content}`)
+        .join('\n') + (hasMultipleInProgress(todos) ? `\n\n${tt('todo.hintSingleActive')}` : ''),
+      approval: 'not-required',
+    };
+  }
+
   private async searchLinkedConversationHistory(
     conversationId: string,
     call: ToolCall,
@@ -1642,6 +1681,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         <div id="contextChip" class="context-chip" hidden><span id="contextLabel"></span><button id="removeContextButton" type="button" aria-label="${t(lang, 'chat.removeContext')}" title="${t(lang, 'common.remove')}">×</button></div>
         <div id="agentRunState" class="agent-run-state" hidden><span class="run-indicator"></span><strong id="agentRunLabel">${t(lang, 'chat.agentRunning')}</strong><span id="agentRunMeta"></span></div>
         <details id="taskTree" class="task-tree" hidden><summary><span>${t(lang, 'chat.taskTree')}</span><small id="taskTreeSummary"></small></summary><div id="taskTreeList" class="task-tree-list"></div></details>
+        <section id="todoPanel" class="todo-panel" hidden aria-label="${t(lang, 'todo.title')}">
+          <div class="todo-panel-heading"><strong>${t(lang, 'todo.title')}</strong><small id="todoSummary"></small></div>
+          <ol id="todoList" class="todo-list"></ol>
+        </section>
         <form id="composer" class="composer">
           <textarea id="promptInput" rows="1" placeholder="${t(lang, 'chat.promptPlaceholder')}" aria-label="${t(lang, 'chat.messageLabel')}"></textarea>
           <div class="composer-footer">
@@ -1671,6 +1714,41 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
 function isConversationMode(value: unknown): value is ConversationMode {
   return value === 'chat' || value === 'agent' || value === 'plan';
+}
+
+/**
+ * 待办清单工具。
+ * 纯元数据，不读也不写工作区，所以放在 `extraTools` 里由面板直接处理，
+ * 不经过 ToolExecutor 的权限分级——否则「记一下待办」会弹出授权框。
+ */
+function todoToolDefinition(): ToolDefinition {
+  return {
+    type: 'function',
+    function: {
+      name: 'update_todos',
+      description: tt('tool.updateTodos.description'),
+      parameters: {
+        type: 'object',
+        properties: {
+          todos: {
+            type: 'array',
+            description: tt('tool.updateTodos.todosParam'),
+            items: {
+              type: 'object',
+              properties: {
+                content: { type: 'string', description: tt('tool.updateTodos.contentParam') },
+                status: { type: 'string', enum: ['pending', 'in_progress', 'completed'], description: tt('tool.updateTodos.statusParam') },
+              },
+              required: ['content', 'status'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['todos'],
+        additionalProperties: false,
+      },
+    },
+  };
 }
 
 function conversationHistoryToolDefinition(): ToolDefinition {

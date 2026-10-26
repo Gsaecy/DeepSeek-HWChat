@@ -30,6 +30,7 @@
     'historyLinkBanner', 'sourceHistoryTitle', 'detachHistoryButton',
     'permissionPresetInput', 'agentMaxStepsInput', 'reasoningEffortInput', 'voiceButton',
     'agentRunState', 'agentRunLabel', 'agentRunMeta', 'taskTree', 'taskTreeSummary', 'taskTreeList',
+    'todoPanel', 'todoList', 'todoSummary',
     'attachButton', 'sendButton', 'stopButton', 'toast',
   ].map((id) => [id, document.getElementById(id)]));
 
@@ -41,7 +42,7 @@
     modelOptionsByProfile: {},
     permissionPresetPending: false, modelLoadingProfileId: null,
     workspaceTrusted: false, agentAvailable: false, availableToolCount: 0, showArchived: false, renderTimer: null,
-    taskTree: null, autoFollow: true, renderingMessages: false, voiceRecognition: null, voiceActive: false,
+    taskTree: null, todos: [], autoFollow: true, renderingMessages: false, voiceRecognition: null, voiceActive: false,
   };
 
   const clipboardWrites = new Map();
@@ -85,7 +86,7 @@
   }
 
   function renderAll() {
-    renderHistory(); renderHeader(); renderSkills(); renderMessages('replace'); renderHistoryLink(); renderAttachments(); renderTaskTree(); updateComposerState();
+    renderHistory(); renderHeader(); renderSkills(); renderMessages('replace'); renderHistoryLink(); renderAttachments(); renderTaskTree(); renderTodos(); updateComposerState();
   }
 
   function renderHistory() {
@@ -383,6 +384,50 @@
 
   function taskStatusSymbol(status) { return status === 'complete' ? '✓' : status === 'active' ? '●' : status === 'routing' ? '…' : status === 'merged' ? '↳' : status === 'queued' ? '○' : '−'; }
   function taskStatusLabel(status) { return ({ active: t('chat.taskStatus.active'), routing: t('chat.taskStatus.routing'), merged: t('chat.taskStatus.merged'), queued: t('chat.taskStatus.queued'), complete: t('chat.taskStatus.complete'), cancelled: t('chat.taskStatus.cancelled'), error: t('chat.taskStatus.error') })[status] || status; }
+
+  /**
+   * 任务清单：按执行顺序列序号，左边写内容，右边写状态。
+   *
+   * 状态只有三种视觉，且都用绿色表示「一切按计划推进」：
+   * - pending   绿色空心圆圈
+   * - in_progress 绿色跳动的三点省略号
+   * - completed 实心绿色圆圈 + 白色对勾
+   * 圆圈的“实心/空心”靠 CSS 控制，这里只给出结构，方便动画与减少动效偏好统一处理。
+   */
+  function renderTodos() {
+    const todos = Array.isArray(state.todos) ? state.todos : [];
+    elements.todoPanel.hidden = !todos.length;
+    if (!todos.length) {
+      elements.todoList.replaceChildren();
+      if (elements.todoSummary) elements.todoSummary.textContent = '';
+      return;
+    }
+    const done = todos.filter((todo) => todo.status === 'completed').length;
+    if (elements.todoSummary) elements.todoSummary.textContent = t('todo.progress', { done, total: todos.length });
+    elements.todoList.replaceChildren();
+    todos.forEach((todo, index) => {
+      const status = todo.status === 'completed' ? 'completed' : todo.status === 'in_progress' ? 'in_progress' : 'pending';
+      const item = document.createElement('li');
+      item.className = `todo-item status-${status}`;
+
+      const order = textElement('span', 'todo-index', String(index + 1));
+      const content = textElement('span', 'todo-content', todo.content);
+      const statusNode = document.createElement('span');
+      statusNode.className = `todo-status status-${status}`;
+      const label = t(`todo.status.${status}`);
+      statusNode.title = label;
+      statusNode.setAttribute('aria-label', label);
+      if (status === 'in_progress') {
+        // 三个点各自延迟，形成“跳动”的省略号；动画在 CSS 里，减少动效时不播放。
+        for (let dot = 0; dot < 3; dot += 1) statusNode.append(document.createElement('i'));
+      } else if (status === 'completed') {
+        statusNode.textContent = '✓';
+      }
+
+      item.append(order, content, statusNode);
+      elements.todoList.append(item);
+    });
+  }
 
   function renderMessage(message) {
     const article = document.createElement('article');
@@ -1095,7 +1140,7 @@
         state.permissionPreset = incoming.settings?.permissionPreset || 'review'; state.agentMaxSteps = Math.max(0, Math.floor(Number(incoming.settings?.agentMaxSteps) || 0)); state.reasoningEffort = incoming.settings?.reasoningEffort || 'default';
         state.permissionPresetPending = false;
         state.skills = incoming.skills || []; state.selectedSkillIds = incoming.selectedSkillIds || []; state.mode = incoming.mode || 'agent';
-        state.workspaceTrusted = Boolean(incoming.workspaceTrusted); state.agentAvailable = Boolean(incoming.agentAvailable); state.availableToolCount = Number(incoming.availableToolCount) || 0; state.showArchived = Boolean(incoming.showArchived); state.taskTree = incoming.taskTree || (message.streamingConversationId ? state.taskTree : null);
+        state.workspaceTrusted = Boolean(incoming.workspaceTrusted); state.agentAvailable = Boolean(incoming.agentAvailable); state.availableToolCount = Number(incoming.availableToolCount) || 0; state.showArchived = Boolean(incoming.showArchived); state.taskTree = incoming.taskTree || (message.streamingConversationId ? state.taskTree : null); state.todos = Array.isArray(incoming.todos) ? incoming.todos : [];
         elements.modelInput.value = state.model || 'deepseek-flash'; if (previousConversationId !== incoming.conversation?.id) state.autoFollow = true; setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
       }
       case 'draft': elements.promptInput.value = message.text || ''; state.pendingAttachments = message.attachments || []; renderAttachments(); autoResize(); elements.promptInput.focus(); break;
@@ -1132,6 +1177,7 @@
       case 'agentMaxStepsChanged': state.agentMaxSteps = Math.max(0, Math.floor(Number(message.agentMaxSteps) || 0)); ensureStepOption(state.agentMaxSteps); elements.agentMaxStepsInput.value = String(state.agentMaxSteps); break;
       case 'reasoningEffortChanged': state.reasoningEffort = message.reasoningEffort || 'default'; elements.reasoningEffortInput.value = state.reasoningEffort; break;
       case 'taskTreeChanged': state.taskTree = message.taskTree || null; renderTaskTree(); updateComposerState(); break;
+      case 'todos': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.todos = Array.isArray(message.todos) ? message.todos : []; renderTodos(); break;
       case 'voiceInputAllowed': startVoiceRecognition(); break;
       case 'clipboardWriteResult': finishClipboardWrite(message.requestId, Boolean(message.ok), message.error); break;
       case 'clipboardText':

@@ -71,6 +71,7 @@ const chatReplacements = [
   ['只读摘要 + 按需检索；实际发送的摘要和片段会计入输入 Token', english['chat.taskHistoryNote']],
   ['aria-label="解除任务历史" title="解除任务历史"', `aria-label="${english['chat.detachHistory']}" title="${english['chat.detachHistory']}"`],
   ['<span>任务树</span>', `<span>${english['chat.taskTree']}</span>`],
+  ['<strong>任务清单</strong>', `<strong>${english['todo.title']}</strong>`],
   ['placeholder="询问代码、调试问题或直接交给 Agent 实现…"', `placeholder="${english['chat.promptPlaceholderAgent']}"`],
   ['aria-label="本轮 Agent 设置"', `aria-label="${english['chat.agentRuntimeSettings']}"`],
   ['aria-label="添加文件" title="添加文件"', `aria-label="${english['chat.attachFile']}" title="${english['chat.attachFile']}"`],
@@ -115,6 +116,12 @@ const chatReplacements = [
   ['<option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option>', [0, 12, 24, 40].map((steps) => `<option value="${steps}">${steps === 0 ? english['chat.unlimited'] : english['chat.stepsOption'].replace('{count}', String(steps))}</option>`).join('')],
   ['<option value="default">默认</option><option value="none">无</option><option value="low">低</option><option value="high">高</option><option value="max">最大值</option>', ['default', 'none', 'low', 'high', 'max'].map((effort) => `<option value="${effort}">${english['chat.reasoning.' + effort]}</option>`).join('')],
   ['failure-screenshot.png', 'failure-screenshot.png'],
+  // 任务清单的示例数据
+  ['读一遍认证模块，找出并发刷新的两个入口', 'Read the auth module and find both refresh entry points'],
+  ['把并发刷新合并成一个共享任务', 'Collapse concurrent refreshes into one shared task'],
+  ['为失败重试补一个恢复用例', 'Add a recovery test for a failed refresh'],
+  ['运行 npm test 确认没有回归', 'Run npm test to confirm no regressions'],
+  ['更新 README 的刷新说明', 'Update the README refresh notes'],
   // 收尾修正：前面有些短串先匹配了长串的一部分，这里按替换后的实际文本补齐。
   ['执行Code review', english['chat.suggestion.review']],
   ['解除Task history', english['chat.detachHistory']],
@@ -232,8 +239,10 @@ function buildPage(sourceFile, replacements, targetFile) {
   if (missed.length) {
     console.warn(`  ${sourceFile} 有 ${missed.length} 条示例文案未命中（不影响结构）`);
   }
+  // 预览页自带中文词表；先删掉，否则同一 id 下浏览器只会取到第一个（中文）块。
+  const withoutTable = output.replace(/<script type="application\/json" id="hwchat-i18n">[\s\S]*?<\/script>\n?/g, '');
   // 词表必须在 chat.js / settings.js 之前注入。
-  const withI18n = output.replace(
+  const withI18n = withoutTable.replace(
     /<script src="\.\.\/media\/(chat|settings)\.js"><\/script>/,
     `${i18nTag}\n<script src="../media/$1.js"></script>`,
   );
@@ -275,6 +284,8 @@ function shot(html, fileName, output, width, height) {
       `--user-data-dir=/tmp/hwchat-shot-${fileName.replace(/\W+/g, '-')}`,
       '--force-device-scale-factor=2',
       `--window-size=${width},${height}`,
+      // 等页面里的渲染定时器跑完再截图，否则拿到的是首帧（列表还是空的）。
+      '--virtual-time-budget=3000',
       `--screenshot=${output}`,
       `file://${process.cwd()}/${page}`,
     ], { stdio: ['ignore', 'pipe', 'pipe'] });

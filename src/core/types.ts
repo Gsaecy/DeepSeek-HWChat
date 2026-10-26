@@ -9,6 +9,19 @@ export type ReasoningEffort = 'default' | 'none' | 'low' | 'high' | 'max';
 import type { LanguageSetting } from './i18n';
 export type { Language, LanguageSetting } from './i18n';
 
+/** 待办条目状态：等待执行 / 执行中 / 已完成。 */
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+
+/**
+ * Agent 自己维护的待办清单。
+ * 用于把「大任务拆成若干步」显式化：面板按数组顺序展示序号，
+ * 每一项右侧带执行状态，用户不必从回复正文里推断进度。
+ */
+export interface TodoItem {
+  content: string;
+  status: TodoStatus;
+}
+
 export interface ApiProfile {
   id: string;
   name: string;
@@ -104,6 +117,8 @@ export interface ConversationSummary {
   sourceConversationTitle?: string;
   sourceHistoryDigest?: string;
   sourceLinkedAt?: number;
+  /** 本轮任务拆解出来的待办清单；随对话持久化，重开面板仍在。 */
+  todos?: TodoItem[];
 }
 
 export interface ConversationHistoryHit {
@@ -274,4 +289,5 @@ export interface WebviewConversationState {
   availableToolCount: number;
   taskTree?: AgentTaskTreeState;
   showArchived: boolean;
+  todos?: TodoItem[];
 }

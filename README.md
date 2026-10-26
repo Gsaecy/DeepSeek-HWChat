@@ -43,6 +43,18 @@ Command palette titles and the configuration descriptions in the VS Code Setting
 - Beyond the built-in workspace tools, HWChat discovers and calls every language-model tool exposed by other VS Code extensions (no longer capped at 100). Tools that need authorisation show VS Code's own confirmation only; tools that do not are called directly and HWChat adds no extra "Allow the agent…" prompt. Extensions that declare language-model tools but are not running are activated at startup, and a tool call that hits a temporarily missing tool triggers one more activation and retry. Web pages, text, Markdown and diffs preview inside the editor.
 - Continue any conversation with **Continue**, or run `HWChat: Continue current task history in a new chat`. The new conversation keeps a local read-only handover digest of the source conversation and can also search the upstream chain on demand, so previously recorded pitfalls are not repeated. The old conversation is never copied or modified. Keeping the digest is free; whatever is actually sent counts toward input tokens.
 
+## Task list
+
+When the work needs several steps, the agent writes a task list rather than leaving you to infer progress from the prose. It sits between the task tree and the composer, numbered in execution order: the step on the left, its state on the right.
+
+| State | Indicator |
+| --- | --- |
+| Waiting to run | green hollow circle |
+| In progress | green bouncing ellipsis |
+| Completed | solid green circle with a white check |
+
+The agent keeps exactly one step in progress, updates the list after each step, and leaves the finished list in place as a record of what happened. The list is stored with the conversation, so it survives reloading the window; a single-step request never creates one. It is a tool (`update_todos`) that needs no permission, because it changes no files and runs no commands.
+
 ## Skills
 
 HWChat scans these local formats:

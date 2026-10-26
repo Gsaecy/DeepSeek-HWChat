@@ -367,6 +367,40 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .agent-run-state strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-size: 10px; }
 .agent-run-state > span:last-child { margin-left: auto; white-space: nowrap; }
 .run-indicator { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
+/* ── 任务清单（待办）─────────────────────────────────────────────
+   位置：任务树与输入框之间。三个状态都用绿色表示“按计划推进”：
+   等待=空心圆圈，执行中=跳动三点，完成=实心圆圈+白勾。
+   绿色取固定值而不是 --success：VS Code 主题的 testing-iconPassed
+   在少数主题里偏黄偏青，勾和圆圈会看不出是绿色。 */
+.todo-panel { margin: 0 2px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); overflow: hidden; --todo-green: #1a7f37; }
+:root[data-theme="dark"] .todo-panel,
+body.vscode-dark .todo-panel,
+body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
+.todo-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 28px; padding: 5px 9px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
+.todo-panel-heading strong { font-weight: 600; color: var(--fg); }
+.todo-panel-heading small { font-size: 9px; white-space: nowrap; }
+.todo-list { display: grid; gap: 1px; margin: 0; padding: 4px; list-style: none; }
+.todo-item { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 7px; min-height: 26px; padding: 3px 6px; border-radius: 5px; font-size: 11px; line-height: 1.45; }
+.todo-index { text-align: center; font: 10px var(--mono); color: var(--muted); }
+.todo-content { overflow-wrap: anywhere; }
+.todo-status { display: inline-flex; align-items: center; justify-content: center; justify-self: end; flex: 0 0 auto; }
+/* 等待执行：绿色空心圆圈 */
+.todo-status.status-pending { width: 12px; height: 12px; border: 1.6px solid var(--todo-green); border-radius: 50%; }
+/* 执行中：绿色跳动的省略号 */
+.todo-status.status-in_progress { gap: 2px; width: 16px; height: 12px; }
+.todo-status.status-in_progress i { width: 3px; height: 3px; border-radius: 50%; background: var(--todo-green); animation: todo-dot 1.05s ease-in-out infinite; }
+.todo-status.status-in_progress i:nth-child(2) { animation-delay: .15s; }
+.todo-status.status-in_progress i:nth-child(3) { animation-delay: .3s; }
+@keyframes todo-dot { 0%, 80%, 100% { opacity: .28; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+/* 已完成：实心绿色圆圈 + 白色对勾 */
+.todo-status.status-completed { width: 13px; height: 13px; border-radius: 50%; background: var(--todo-green); color: #fff; font-size: 9px; line-height: 1; font-weight: 700; }
+.todo-item.status-in_progress { background: var(--surface); }
+.todo-item.status-in_progress .todo-content { color: var(--fg); font-weight: 500; }
+.todo-item.status-completed .todo-content { color: var(--muted); }
+@media (prefers-reduced-motion: reduce) {
+  .todo-status.status-in_progress i { animation: none; opacity: .85; }
+}
+
 .task-tree { margin: 0 2px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); overflow: hidden; }
 .task-tree > summary { display: flex; align-items: center; justify-content: space-between; min-height: 28px; gap: 10px; padding: 5px 9px; cursor: pointer; color: var(--muted); font-size: 10px; }
 .task-tree > summary small { font-size: 9px; }
