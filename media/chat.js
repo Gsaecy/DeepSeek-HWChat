@@ -19,6 +19,53 @@
     return template.replace(/\{(\w+)\}/g, (match, name) => (vars[name] === undefined ? match : String(vars[name])));
   }
 
+  /**
+   * 围栏解析（语言 / 位置 / 工具标注）。纯函数放在 media/code-block-meta.js，
+   * 由扩展在注入 HTML 时先加载，这样可以单独跑单元测试。
+   *
+   * 万一那个脚本没加载成功，这里退化成「只认语言」的旧行为：
+   * 代码块照旧能渲染和复制，只是不再显示位置与工具标签。
+   */
+  const codeMeta = globalThis.HWChatCodeBlockMeta || {
+    isShellLanguage: (language) => /^(bash|zsh|sh|shell|powershell|pwsh|cmd|bat|terminal|console)$/i.test(String(language || '')),
+    canonicalTool: (value) => String(value == null ? '' : value).trim().toLowerCase(),
+    normalizeLocation: (value) => String(value == null ? '' : value).trim(),
+    parseFenceInfo: (info) => ({ language: String(info == null ? '' : info).trim().split(/\s+/)[0] || '', location: '', tool: '' }),
+    matchFenceStart: (line) => {
+      const match = String(line == null ? '' : line).match(/^\s*`{3,}\s*(.*)$/);
+      return match ? match[1].trim() : null;
+    },
+    collectFenceBlock: (lines, startIndex) => {
+      const list = Array.isArray(lines) ? lines : [];
+      const info = String(list[startIndex] == null ? '' : list[startIndex]).trim().slice(3).trim();
+      const code = [];
+      let index = startIndex + 1;
+      while (index < list.length && !/^\s*`{3,}\s*$/.test(String(list[index] == null ? '' : list[index]))) {
+        code.push(String(list[index] == null ? '' : list[index]));
+        index += 1;
+      }
+      return { info, code: code.join('\n'), nextIndex: index < list.length ? index + 1 : list.length };
+    },
+    dedentCode: (text) => String(text == null ? '' : text),
+  };
+
+  /**
+   * 任务清单面板的显示状态。同样放在 media/todo-panel-state.js 里以便单测。
+   *
+   * 退化实现只是「永远不自动展开」：面板照旧能显示和点击，只是新清单不会自己弹开。
+   */
+  const todoPanelState = globalThis.HWChatTodoPanelState || {
+    todoSignature: (todos) => (Array.isArray(todos) ? todos.map((todo) => String(todo && todo.content != null ? todo.content : '')).join('\u0000') : ''),
+    shouldRevealTodoPanel: () => false,
+    capsuleRadius: (height) => Math.max(2, Math.round(Number(height) * 0.3) || 2),
+    planPanelToggle: (input) => ({ allowed: true, open: Boolean(input && input.open), collapsePeers: false, exitArchiveFocus: false }),
+    nextArchiveFocus: (input) => {
+      const clicked = String((input && input.clickedId) || '');
+      if (!clicked) return null;
+      return String((input && input.currentId) || '') === clicked ? null : clicked;
+    },
+  };
+
   const elements = Object.fromEntries([
     'app', 'historyPane', 'historyButton', 'closeHistoryButton', 'newChatButton',
     'historySearch', 'archiveViewButton', 'conversationList', 'settingsButton',
@@ -44,7 +91,8 @@
     modelOptionsByProfile: {},
     permissionPresetPending: false, modelLoadingProfileId: null,
     workspaceTrusted: false, agentAvailable: false, availableToolCount: 0, showArchived: false, renderTimer: null,
-    taskTree: null, todos: [], todoArchives: [], expandedArchiveId: null, todosInterrupted: false,
+    taskTree: null, todos: [], todoArchives: [], expandedArchiveId: null, archiveRestore: null, todosInterrupted: false,
+    todoSignature: '',
     runningConversationIds: [], pendingApprovals: [],
     autoFollow: true, renderingMessages: false, voiceRecognition: null, voiceActive: false,
   };
@@ -405,6 +453,88 @@
   function taskStatusLabel(status) { return ({ active: t('chat.taskStatus.active'), routing: t('chat.taskStatus.routing'), merged: t('chat.taskStatus.merged'), queued: t('chat.taskStatus.queued'), complete: t('chat.taskStatus.complete'), cancelled: t('chat.taskStatus.cancelled'), error: t('chat.taskStatus.error') })[status] || status; }
 
   /**
+   * 面板区（任务树 / 任务清单 / 归档快照）的互斥展开。
+   *
+   * 起因：三个 <details> 都能同时展开，内容一多就把输入框顶到窗口外；
+   * 而且点开底下胶囊里的归档清单时，上面「正在跑的」任务树和任务清单还占着版面，
+   * 看起来像两份清单同时在动。
+   *
+   * 现在的规则（对应需求）：
+   * - 同一时刻只展开一个面板：点开胶囊里的归档清单 → 另外两个收起、并锁住不让展开；
+   * - 归档清单被收起（点它自己的标题栏）或再次点同一颗胶囊 → 解锁，并还原进入前的展开状态；
+   * - 点另一颗胶囊 → 直接换到那份归档清单，仍然只有一个面板展开。
+   */
+  function isArchiveFocused() { return Boolean(state.expandedArchiveId); }
+
+  /** 锁住的任务树 / 任务清单：加 class 让 summary 变暗、光标显示不可点（提示见 togglePanel）。 */
+  function syncPanelLock() {
+    const locked = isArchiveFocused();
+    for (const key of ['taskTree', 'todoPanel']) {
+      const panel = elements[key];
+      if (!panel) continue;
+      panel.classList.toggle('panel-locked', locked);
+      if (locked) panel.setAttribute('aria-disabled', 'true');
+      else panel.removeAttribute('aria-disabled');
+    }
+  }
+
+  /** 收起另外两个面板，并记住它们原本的展开状态（退出聚焦时还原，不吞掉用户原来的视图）。 */
+  function collapsePeers() {
+    if (!state.archiveRestore) {
+      state.archiveRestore = { taskTree: Boolean(elements.taskTree.open), todoPanel: Boolean(elements.todoPanel.open) };
+    }
+    elements.taskTree.open = false;
+    elements.todoPanel.open = false;
+    syncPanelLock();
+  }
+
+  function enterArchiveFocus(archiveId) {
+    if (!archiveId) { exitArchiveFocus(); return; }
+    collapsePeers();
+    state.expandedArchiveId = archiveId;
+    renderArchivePanel();
+    renderTodoArchives();
+    // 只在真正展开的那一刻滚一次：renderAll 会反复调用 renderArchivePanel，
+    // 每次都滚会把用户正在看的位置拽走。
+    elements.todoArchivePanel.scrollIntoView({ block: 'nearest' });
+  }
+
+  function exitArchiveFocus() {
+    const restore = state.archiveRestore;
+    const hadFocus = Boolean(state.expandedArchiveId);
+    state.expandedArchiveId = null;
+    state.archiveRestore = null;
+    elements.todoArchivePanel.open = false;
+    syncPanelLock();
+    renderArchivePanel();
+    renderTodoArchives();
+    if (!hadFocus || !restore) return;
+    if (restore.taskTree && !elements.taskTree.hidden) elements.taskTree.open = true;
+    if (restore.todoPanel && !elements.todoPanel.hidden) elements.todoPanel.open = true;
+  }
+
+  /**
+   * 点面板标题栏（鼠标与键盘触发的都是 click）时的唯一入口。
+   *
+   * 一律 preventDefault 再自己设 open：`<details>` 的默认行为是先改状态再派发 toggle，
+   * 那样就没法在「锁住」的情况下拦住它（比如防止任务树被顶开）。
+   */
+  function togglePanel(key, panel) {
+    const plan = todoPanelState.planPanelToggle({ panel: key, open: !panel.open, archiveFocused: isArchiveFocused() });
+    if (!plan.allowed) {
+      showToast(t('todo.archive.lockedHint'), 'warning');
+      return;
+    }
+    if (key === 'todoArchivePanel') {
+      if (!plan.open) { exitArchiveFocus(); return; }
+      collapsePeers();
+      panel.open = true;
+      return;
+    }
+    panel.open = plan.open;
+  }
+
+  /**
    * 任务清单：按执行顺序列序号，左边写内容，右边写状态。
    *
    * 状态只有三种视觉，且都用绿色表示「一切按计划推进」：
@@ -418,6 +548,11 @@
    */
   function renderTodos() {
     const todos = Array.isArray(state.todos) ? state.todos : [];
+    // 面板是 <details>，展开状态会被浏览器记住；这里判断「是不是换了一份新清单」，
+    // 是的话强制展开，免得上一份被收起后新任务看起来像没出现。
+    const signature = todoPanelState.todoSignature(todos);
+    const reveal = todoPanelState.shouldRevealTodoPanel({ signature, previousSignature: state.todoSignature, archiveFocused: isArchiveFocused() });
+    state.todoSignature = signature;
     elements.todoPanel.hidden = !todos.length;
     if (!todos.length) {
       elements.todoPanel.classList.remove('interrupted');
@@ -425,6 +560,9 @@
       if (elements.todoSummary) elements.todoSummary.textContent = '';
       return;
     }
+    // 胶囊聚焦期间清单必须保持收起：它是被锁住的两个面板之一。
+    if (isArchiveFocused()) elements.todoPanel.open = false;
+    if (reveal) elements.todoPanel.open = true;
     const done = todos.filter((todo) => todo.status === 'completed').length;
     // 被中断的清单：后端已把「执行中」降级成待办，这里只补一个文字标记。
     // 不引入第四种状态——用户接着做时模型重新标 in_progress，全绿后照常归档。
@@ -441,6 +579,7 @@
     const archive = state.expandedArchiveId ? state.todoArchives.find((item) => item.id === state.expandedArchiveId) : null;
     elements.todoArchivePanel.hidden = !archive;
     if (!archive) {
+      elements.todoArchivePanel.open = false;
       elements.todoArchiveList.replaceChildren();
       elements.todoArchiveSummary.textContent = '';
       return;
@@ -451,6 +590,8 @@
       total: archive.total,
     });
     renderTodoItems(elements.todoArchiveList, archive.todos);
+    // 面板和胶囊是同一个状态：有展开的归档，面板就必须是展开的。
+    elements.todoArchivePanel.open = true;
   }
 
   function renderTodoItems(list, todos) {
@@ -483,9 +624,11 @@
    * 归档胶囊栏。
    *
    * 规则（对应需求）：
-   * - 每份完成的清单是一颗纯色胶囊，颜色由扩展按「越新越蓝」算好（绿 → 浅蓝 → 深蓝）；
+   * - 每份完成的清单是一颗纯色圆角矩形，颜色由扩展按「越新越深」算好（浅蓝 → 深蓝，相邻两颗连续过渡）；
+   * - 胶囊内不含任何图标或文字，也不挂 title 悬停提示：颜色深浅和左右顺序就是全部信息；
    * - 永远不换行，胶囊过多或窗口变窄时按 3:1 的比例同时缩小宽和高；
-   * - 点一颗胶囊展开/收起那份清单，展开时当前清单区域显示它的快照。
+   * - 点一颗胶囊展开/收起那份清单：展开中的那颗显示红色边框，鼠标悬停的那颗显示浅红色边框
+   *   （边框用内阴影画，不改变胶囊尺寸，见 media/chat.css）。
    */
   const CAPSULE_BASE_HEIGHT = 16;
   const CAPSULE_MIN_HEIGHT = 6;
@@ -493,15 +636,19 @@
 
   function renderTodoArchives() {
     const archives = Array.isArray(state.todoArchives) ? state.todoArchives : [];
-    const previousExpanded = state.expandedArchiveId;
-    if (!archives.length) state.expandedArchiveId = null;
-    else if (state.expandedArchiveId && !archives.some((item) => item.id === state.expandedArchiveId)) state.expandedArchiveId = null;
-    // 被展开的那份归档没了（对话被清理/删档）：连带把快照面板收起来，别留一块过期内容。
-    if (previousExpanded !== state.expandedArchiveId) renderArchivePanel();
+    // 被展开的那份归档没了（对话被清理、删档、切换对话）：立刻退出聚焦，
+    // 否则任务树和任务清单会一直锁着，用户看不到正在跑的那份。
+    if (state.expandedArchiveId && !archives.some((item) => item.id === state.expandedArchiveId)) {
+      state.expandedArchiveId = null;
+      state.archiveRestore = null;
+      elements.todoArchivePanel.open = false;
+      renderArchivePanel();
+    }
+    syncPanelLock();
     elements.todoArchiveBar.hidden = !archives.length;
     elements.todoArchiveBar.replaceChildren();
     if (!archives.length) return;
-    archives.forEach((archive, index) => {
+    archives.forEach((archive) => {
       const capsule = document.createElement('button');
       capsule.type = 'button';
       capsule.className = 'todo-capsule';
@@ -510,22 +657,14 @@
       const active = state.expandedArchiveId === archive.id;
       capsule.classList.toggle('active', active);
       capsule.setAttribute('aria-expanded', active ? 'true' : 'false');
-      const label = t('todo.archive.capsule', {
-        done: archive.completed,
-        total: archive.total,
-        preview: archive.todos.map((todo) => todo.content).join(' / ').slice(0, 160),
-      });
+      // 只留无障碍名称（读屏用），不设 title —— 鼠标悬停不再弹出任何内容。
+      const label = t('todo.archive.capsule', { done: archive.completed, total: archive.total });
       capsule.setAttribute('aria-label', `${label}。${active ? t('todo.archive.hintOpen') : t('todo.archive.hint')}`);
-      capsule.title = `${label}\n${active ? t('todo.archive.hintOpen') : t('todo.archive.hint')}`;
-      // 归档图标：一颗胶囊里只放一个极简的「归档匣」，缩到很小时自动隐藏（见 CSS）。
-      capsule.append(textElement('span', 'todo-capsule-mark', '▤'));
+      // 点同一颗 = 收起并解锁；点另一颗 = 换成那份，仍然只有一个面板展开。
       capsule.addEventListener('click', () => {
-        state.expandedArchiveId = state.expandedArchiveId === archive.id ? null : archive.id;
-        renderArchivePanel(); renderTodoArchives();
-        if (state.expandedArchiveId) {
-          elements.todoArchivePanel.open = true;
-          elements.todoArchivePanel.scrollIntoView({ block: 'nearest' });
-        }
+        const nextId = todoPanelState.nextArchiveFocus({ currentId: state.expandedArchiveId, clickedId: archive.id });
+        if (nextId) enterArchiveFocus(nextId);
+        else exitArchiveFocus();
       });
       elements.todoArchiveBar.append(capsule);
     });
@@ -556,7 +695,8 @@
     bar.style.setProperty('--capsule-h', `${height.toFixed(2)}px`);
     bar.style.setProperty('--capsule-w', `${(height * CAPSULE_RATIO).toFixed(2)}px`);
     bar.style.setProperty('--capsule-gap', `${Math.max(2, height * 0.25).toFixed(2)}px`);
-    bar.classList.toggle('compact', height < 11);
+    // 圆角矩形：半径跟着高度缩放（不是 999px 的整圆胶囊）。
+    bar.style.setProperty('--capsule-radius', `${todoPanelState.capsuleRadius(height)}px`);
   }
 
   /**
@@ -786,15 +926,11 @@
     while (index < lines.length) {
       const line = lines[index] || '';
       // 围栏代码块。流式输出时结束围栏可能还没到，先按代码块渲染，避免整段闪成正文。
-      const fence = line.match(/^\s*```\s*([^\s`]*)/);
-      if (fence) {
+      const block = codeMeta.collectFenceBlock(lines, index);
+      if (block) {
         flushParagraph();
-        const code = [];
-        const language = fence[1] || '';
-        index += 1;
-        while (index < lines.length && !/^\s*```\s*$/.test(lines[index] || '')) { code.push(lines[index] || ''); index += 1; }
-        index += 1;
-        container.append(codeBlockNode(code.join('\n'), language));
+        index = block.nextIndex;
+        container.append(codeBlockNode(block.code, block.info));
         continue;
       }
       if (!line.trim()) { flushParagraph(); index += 1; continue; }
@@ -840,24 +976,83 @@
     flushParagraph();
   }
 
-  /** 代码块：终端命令与普通代码用不同底色和标题，方便非技术读者区分「要我做什么」和「这是什么」。 */
-  function codeBlockNode(codeText, language) {
-    const shellLanguage = /^(bash|zsh|sh|shell|powershell|pwsh|cmd|bat|terminal|console)$/i.test(language) || (!language && looksLikeShell(codeText));
+  /** 位置标签：已知的两种走文案表，其余（例如 loc="GitHub runner"）原样显示。 */
+  function locationLabelOf(location) {
+    if (location === 'local') return t('chat.runLocationLocal');
+    if (location === 'server') return t('chat.runLocationServer');
+    return location;
+  }
+
+  /**
+   * 代码块：终端命令与普通代码用不同底色和标题，方便非技术读者区分「要我做什么」和「这是什么」。
+   *
+   * 需要用户自己执行的命令还会在标题栏标出「位置」和「工具」：位置决定这条命令该贴在
+   * 本地终端还是服务器终端里跑，工具决定是 cmd 还是 bash —— 贴错地方是这类操作最常见的
+   * 失败原因。复制按钮只复制代码本身，不含任何标注，粘进终端即可执行。
+   */
+  function codeBlockNode(codeText, info) {
+    const parsed = codeMeta.parseFenceInfo(info);
+    const text = codeMeta.dedentCode(codeText);
+    const language = parsed.language;
+    const shellLanguage = codeMeta.isShellLanguage(language) || (!language && looksLikeShell(text));
+    const location = shellLanguage ? parsed.location : '';
+    const tool = shellLanguage ? (parsed.tool || language || 'shell') : '';
     const wrapper = document.createElement('div');
-    wrapper.className = `code-block${shellLanguage ? ' terminal-command' : ''}`;
+    wrapper.className = `code-block${shellLanguage ? ' terminal-command' : ''}${location === 'server' ? ' is-remote' : ''}`;
     const header = document.createElement('div'); header.className = 'code-header';
     const idleLabel = shellLanguage ? t('chat.copyCommand') : t('common.copy');
     const copy = textElement('button', '', idleLabel); copy.type = 'button';
     copy.title = shellLanguage ? t('chat.copyTerminalCommand') : t('chat.copyCode');
-    copy.addEventListener('click', () => requestClipboardWrite(codeText, copy, idleLabel));
+    copy.addEventListener('click', () => requestClipboardWrite(text, copy, idleLabel));
     const pre = document.createElement('pre');
-    const codeNode = document.createElement('code'); codeNode.textContent = codeText; pre.append(codeNode);
-    header.append(textElement('span', '', shellLanguage ? t('chat.terminalCommand', { language: language || 'shell' }) : (language || 'code')), copy);
+    const codeNode = document.createElement('code'); codeNode.textContent = text; pre.append(codeNode);
+    const meta = document.createElement('span'); meta.className = 'code-meta';
+    if (shellLanguage) {
+      if (location) {
+        const label = locationLabelOf(location);
+        const chip = textElement('span', `code-chip code-chip-location${location === 'server' ? ' is-remote' : ''}`, t('chat.runLocationTag', { location: label }));
+        chip.title = t('chat.runLocationTitle', { location: label });
+        meta.append(chip);
+      }
+      const toolChip = textElement('span', 'code-chip code-chip-tool', t('chat.runToolTag', { tool }));
+      toolChip.title = t('chat.runToolTitle', { tool });
+      meta.append(toolChip);
+    } else {
+      meta.append(textElement('span', '', language || 'code'));
+    }
+    header.append(meta, copy);
     wrapper.append(header, pre);
     return wrapper;
   }
 
   function isListLine(line) { return /^\s*(?:[-*+]|\d{1,3}[.)])\s+\S/.test(String(line || '')); }
+
+  /**
+   * 列表条目正文：纯文字走行内格式，\u0000N\u0000 占位符处插入对应的代码块。
+   *
+   * 逐段 appendInline 而不是整段一次，是为了让代码块留在它原本的位置上
+   * （「位置：…／命令／预期：…」这种顺序不能被挪动）。
+   * 没有代码块的条目完全走原来的单次 appendInline，渲染结果与以前一致。
+   */
+  function appendListItemContent(li, item) {
+    const blocks = item.blocks || [];
+    const text = String(item.text || '');
+    if (!blocks.length) { appendInline(li, text); return; }
+    const parts = text.split(/\u0000(\d+)\u0000/);
+    for (let index = 0; index < parts.length; index += 1) {
+      if (index % 2 === 1) {
+        const block = blocks[Number(parts[index])];
+        if (block) li.append(codeBlockNode(block.code, block.info));
+        continue;
+      }
+      const value = parts[index].replace(/^\n+|\n+$/g, '');
+      if (!value.trim()) continue;
+      const line = document.createElement('div');
+      line.className = 'li-text';
+      appendInline(line, value);
+      li.append(line);
+    }
+  }
 
   /**
    * 列表：按缩进算出层级，缩进变深就往下挂一层。
@@ -876,6 +1071,17 @@
       }
       const match = line.match(/^(\s*)([-*+]|\d{1,3}[.)])\s+([\s\S]*)$/);
       if (!match) {
+        // 缩进的围栏（列表里的代码块）单独收成代码块，避免被当成普通续行拼进正文。
+        // 只认缩进的：顶格围栏属于列表结束，交给外层 appendRichText 渲染。
+        const nested = items.length && /^\s/.test(line) ? codeMeta.collectFenceBlock(lines, index) : null;
+        if (nested) {
+          const item = items[items.length - 1];
+          item.blocks.push({ code: nested.code, info: nested.info });
+          // 占位符记住代码块在正文里的位置，渲染时再按顺序还原。
+          item.text += `\n\u0000${item.blocks.length - 1}\u0000\n`;
+          index = nested.nextIndex;
+          continue;
+        }
         // 缩进的续行并入上一条，而不是断开列表
         if (items.length && /^\s+\S/.test(line)) { items[items.length - 1].text += `\n${line.trim()}`; index += 1; continue; }
         break;
@@ -885,6 +1091,7 @@
         ordered: /\d/.test(match[2]),
         startNumber: Number.parseInt(match[2], 10) || 1,
         text: match[3],
+        blocks: [],
       });
       index += 1;
     }
@@ -907,7 +1114,7 @@
         frame.li = null;
       }
       const li = document.createElement('li');
-      appendInline(li, item.text);
+      appendListItemContent(li, item);
       frame.list.append(li);
       frame.li = li;
     }
@@ -1070,6 +1277,17 @@
   function closeMobileHistory() { elements.app.classList.remove('history-open'); }
   function textElement(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; node.textContent = text; return node; }
 
+  // 三个面板（任务树 / 任务清单 / 归档快照）互斥展开。
+  // 鼠标点击和键盘回车/空格触发的都是 click，所以这一处就覆盖了全部展开入口。
+  for (const key of ['taskTree', 'todoPanel', 'todoArchivePanel']) {
+    const panel = elements[key];
+    const summary = panel ? panel.querySelector('summary') : null;
+    if (!summary) continue;
+    summary.addEventListener('click', (event) => {
+      event.preventDefault();
+      togglePanel(key, panel);
+    });
+  }
   elements.newChatButton.addEventListener('click', () => { post('newChat'); closeMobileHistory(); });
   elements.historyButton.addEventListener('click', () => elements.app.classList.toggle('history-open'));
   elements.closeHistoryButton.addEventListener('click', closeMobileHistory);
@@ -1338,7 +1556,7 @@
         state.todosInterrupted = Boolean(incoming.todosInterrupted);
         state.runningConversationIds = Array.isArray(incoming.runningConversationIds) ? incoming.runningConversationIds : [];
         state.pendingApprovals = Array.isArray(incoming.pendingApprovals) ? incoming.pendingApprovals : [];
-        elements.modelInput.value = state.model || 'deepseek-flash'; if (previousConversationId !== incoming.conversation?.id) state.autoFollow = true; setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
+        elements.modelInput.value = state.model || 'deepseek-flash'; if (previousConversationId !== incoming.conversation?.id) { state.autoFollow = true; state.expandedArchiveId = null; state.archiveRestore = null; } setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
       }
       case 'draft': elements.promptInput.value = message.text || ''; state.pendingAttachments = message.attachments || []; renderAttachments(); autoResize(); elements.promptInput.focus(); break;
       case 'attachments': state.pendingAttachments = message.attachments || []; renderAttachments(); break;

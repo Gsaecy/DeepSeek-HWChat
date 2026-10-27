@@ -2,11 +2,9 @@
 
 [English](README.md) · [中文](README.zh-CN.md)
 
-Current version: **0.2.1**
+HWChat is a local-first coding agent for VS Code with a DeepSeek / OpenAI-compatible backend.
 
-HWChat is a local-first coding agent for VS Code with a DeepSeek / OpenAI-compatible backend. Repository: <https://github.com/Gsaecy/DeepSeek-HWChat>
-
-It ships a compact chat surface and settings page, native streaming tool calling, local skills, file attachments, permission presets, archived history and crash-resilient chunked storage. The chat lives in the VS Code secondary sidebar, so it never takes over an editor tab.
+It ships a compact chat surface and settings page, native streaming tool calling, local skills, file attachments, permission presets, plan-tracking task lists with archived snapshots, terminal commands labelled with where they run and which shell to use, archived history and crash-resilient chunked storage. The chat lives in the VS Code secondary sidebar, so it never takes over an editor tab.
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
@@ -37,7 +35,7 @@ Command palette titles and the configuration descriptions in the VS Code Setting
 - You can scroll freely through history while the agent runs; streaming only auto-follows while you are at the bottom. During execution the send button becomes a **red highlighted stop button** (danger background, breathing halo, solid square icon) so it is obvious the task is running and how to stop it; the animation is skipped when the system requests reduced motion.
 - Paste images, screenshots and files straight into the composer; pasted images show a local thumbnail first. Images are sent as OpenAI-compatible multimodal content. When the task cache expires, attachment bodies, image Base64 and thumbnails are dropped while names, types and sizes remain.
 - Voice input is supported. HWChat only receives the transcribed text and never writes audio into the conversation cache; the text is still only sent to the API after you press send.
-- Replies are rendered as Markdown rather than one wall of text: headings (`#`–`######`), nested ordered/unordered lists, tables (with alignment and horizontal scrolling), quotes and rules, plus inline bold, `inline code`, strikethrough and `[text](link)`. Terminal commands appear as a dedicated block with one-click copy through the VS Code clipboard confirmation; tool input, results and the actual command can be copied too, and message text supports select-then-`⌘/Ctrl+C`. Step summaries read like "Process · 5 steps, 2 files changed" so non-programmers can follow along. Every "here is what I am about to do" paragraph is followed by the exact steps it triggered — what ran and how it ended — interleaved in the order things happened, so nothing has to be cross-referenced; a single-step group omits the summary heading, and older messages keep the previous "steps, then text" layout.
+- Replies are rendered as Markdown rather than one wall of text: headings (`#`–`######`), nested ordered/unordered lists, tables (with alignment and horizontal scrolling), quotes and rules, plus inline bold, `inline code`, strikethrough and `[text](link)`. Commands you have to run yourself appear as a dedicated block whose header states **where** it runs (`loc=local` local terminal, `loc=server` remote host shown in a warning colour, or `loc="custom label"`) and **with which tool** (`bash`, `zsh`, `cmd`, `powershell`…), with one-click copy through the VS Code clipboard confirmation that copies the command only and never the labels; commands written inside a list item are rendered as a block too instead of leaking as literal backticks; tool input, results and the actual command can be copied too, and message text supports select-then-`⌘/Ctrl+C`. Step summaries read like "Process · 5 steps, 2 files changed" so non-programmers can follow along. Every "here is what I am about to do" paragraph is followed by the exact steps it triggered — what ran and how it ended — interleaved in the order things happened, so nothing has to be cross-referenced; a single-step group omits the summary heading, and older messages keep the previous "steps, then text" layout.
 - The composer supports `⌘/Ctrl+V` for text, images, screenshots and files. When the clipboard carries both text and attachments, both are kept; if the webview's native paste fails, HWChat falls back to the VS Code clipboard.
 - Beyond the built-in workspace tools, HWChat discovers and calls every language-model tool exposed by other VS Code extensions (no longer capped at 100). Tools that need authorisation show VS Code's own confirmation only; tools that do not are called directly and HWChat adds no extra "Allow the agent…" prompt. Extensions that declare language-model tools but are not running are activated at startup, and a tool call that hits a temporarily missing tool triggers one more activation and retry. Web pages, text, Markdown and diffs preview inside the editor.
 - Continue any conversation with **Continue**, or run `HWChat: Continue current task history in a new chat`. The new conversation keeps a local read-only handover digest of the source conversation and can also search the upstream chain on demand, so previously recorded pitfalls are not repeated. The old conversation is never copied or modified. Keeping the digest is free; whatever is actually sent counts toward input tokens.
@@ -52,15 +50,18 @@ When the work needs several steps, the agent writes a task list rather than leav
 | In progress | green bouncing ellipsis |
 | Completed | solid green circle with a white check |
 
-Click the title to collapse or expand the list, the same way as the task tree. The agent keeps exactly one step in progress, updates the list after each step, and leaves the finished list in place as a record of what happened. The list is stored with the conversation, so it survives reloading the window; a single-step request never creates one. It is a tool (`update_todos`) that needs no permission, because it changes no files and runs no commands.
+Click the title to collapse or expand the list, the same way as the task tree. **A new list opens the panel automatically** — the collapsed state is only remembered within one list, so a list that was collapsed earlier never makes a new task look like it never started. The agent keeps exactly one step in progress, updates the list after each step, and leaves the finished list in place as a record of what happened. The list is stored with the conversation, so it survives reloading the window; a single-step request never creates one. It is a tool (`update_todos`) that needs no permission, because it changes no files and runs no commands.
 
 ### Archived capsules
 
-Once every step is **completed**, the list is archived automatically when the run ends: it leaves the composer area, the task-list disclosure disappears, and a solid-colour capsule takes its place above the input box, left-aligned.
+Once every step is **completed**, the list is archived automatically when the run ends: it leaves the composer area, the task-list disclosure disappears, and a solid-colour rounded rectangle takes its place above the input box, left-aligned.
 
+- A capsule holds **no icon and no text**, and hovering it shows nothing — the colour and the left-to-right order are the whole message. Screen readers still get "Archived task list, N/M done".
+- **The border shows the state**: the archive you have open gets a **red border**, and the capsule under the pointer gets a **light red border** so you can tell which one you are about to click (hovering never changes the capsule's own solid colour). The border is painted inside the capsule, so nothing shifts or resizes when it appears.
 - Click a capsule to expand that snapshot (title reads "Archived task list", the summary carries the archive time, the border turns dashed); click again to collapse.
-- A conversation can hold several archives; each new one appears to the right of the previous one. Colours run from green `#2ea043` through light blue `#4aa8e0` to deep blue `#1e4fd8` — one solid colour per capsule, newest bluest.
-- Capsules **never wrap** and keep a fixed **3:1** width-to-height ratio, starting at 16px tall (48px wide). When there are more capsules or the panel gets narrower they shrink in both dimensions together (down to 6px), hiding the inner glyph so only the colour shape remains.
+- **Only one panel is expanded at a time**: opening the snapshot closes and locks the task tree and the list that is still running (their titles dim, and clicking them says to collapse the archive first), so you are only ever looking at one list. Collapsing the snapshot — via its own title bar, or by clicking the same capsule again — unlocks them and restores whatever you had open before. The panel area also has a height ceiling and scrolls internally, so it can never push the composer out of the window.
+- A conversation can hold several archives; each new one appears to the right of the previous one. Colours are **one continuous ramp from light blue `#7cbef0` to deep blue `#1e4fd8`**, sampled evenly by position, so the step between any two neighbours is the same size — it reads as a gradient rather than a few jump-cuts, getting deeper towards the right.
+- Capsules **never wrap** and keep a fixed **3:1** width-to-height ratio, starting at 16px tall (48px wide). When there are more capsules or the panel gets narrower they shrink in both dimensions together (down to 6px), with the corner radius shrinking too (about 5px at 16px tall, 2px minimum) — always a rounded rectangle, never a pill.
 - A conversation keeps at most 12 archives; beyond that the oldest is dropped. Lists that were stopped or failed with unfinished items are **not** archived — see "Interrupted lists" below.
 - Archives are persisted with the conversation (`todoArchives` in the manifest), so they survive a reload; malformed entries on disk are dropped at load time without affecting the conversation.
 
@@ -173,8 +174,10 @@ See [SECURITY.md](SECURITY.md) for the full boundary description.
 Requires VS Code `1.106.0` or newer.
 
 ```bash
-code --install-extension hwchat-0.2.1.vsix
+code --install-extension "$(ls -t hwchat-*.vsix | head -n 1)"
 ```
+
+The command always installs the newest VSIX in the project root, so it never goes stale.
 
 Open the command palette and run `HWChat: Open chat panel`. On first use, open settings, create an API profile and save its API key — the key only goes into VS Code `SecretStorage`, never into `settings.json`, project files or the VSIX.
 
@@ -189,7 +192,9 @@ npm test
 npm run package
 ```
 
-The build output is `hwchat-0.2.1.vsix` in the project root. A version already published to the Marketplace cannot be uploaded again, so bump the version for every public build.
+The build output is `hwchat-<version>.vsix` in the project root, where `<version>` comes from `package.json`. A version already published to the Marketplace cannot be uploaded again, so bump the version for every public build.
+
+Nothing in this README needs editing when packaging: the Extensions view and the Marketplace read the version, repository, license and issue links from `package.json`, so they are never duplicated here. Version history lives in [CHANGELOG.md](CHANGELOG.md).
 
 The extension icon is `resources/logo.png`. Press `F5` in VS Code to launch the extension development host.
 

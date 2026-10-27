@@ -52,21 +52,42 @@ test('归档：追加保持时间顺序，超出上限丢最早的一条', () =>
   assert.equal(appendTodoArchive(list, undefined).length, MAX_TODO_ARCHIVES);
 });
 
-test('归档：颜色从绿经浅蓝到深蓝，单条时保持绿色起点', () => {
+test('归档：颜色从浅蓝到深蓝，单条时取浅蓝起点', () => {
   assert.equal(archiveColorRatio(0, 1), 0);
   assert.equal(archiveColorRatio(0, 4), 0);
   assert.equal(archiveColorRatio(3, 4), 1);
   // 首尾锚点与中间点
-  assert.equal(archiveColorHex(0), '#2ea043');
-  assert.equal(archiveColorHex(0.5), '#4aa8e0');
+  assert.equal(archiveColorHex(0), '#7cbef0');
+  assert.equal(archiveColorHex(0.5), '#4d87e4');
   assert.equal(archiveColorHex(1), '#1e4fd8');
   // 越界比例被夹住，不会算出 #NaN
-  assert.equal(archiveColorHex(-3), '#2ea043');
-  assert.equal(archiveColorHex(Number.POSITIVE_INFINITY), '#2ea043');
+  assert.equal(archiveColorHex(-3), '#7cbef0');
+  assert.equal(archiveColorHex(Number.POSITIVE_INFINITY), '#7cbef0');
   assert.equal(archiveColorHex(99), '#1e4fd8');
   for (let step = 0; step <= 10; step += 1) {
     assert.match(archiveColorHex(step / 10), /^#[0-9a-f]{6}$/);
   }
+});
+
+test('归档：胶囊是一段连续渐变，相邻两颗之间的色差相等', () => {
+  const total = 6;
+  const channels = Array.from({ length: total }, (_, index) => {
+    const hex = archiveColorHex(archiveColorRatio(index, total));
+    return [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16));
+  });
+  // 三通道都单调递减 = 从浅蓝一路变深（不再经过绿色）。
+  for (let step = 1; step < total; step += 1) {
+    for (const band of [0, 1, 2]) {
+      assert.ok(
+        channels[step]![band]! < channels[step - 1]![band]!,
+        `第 ${step + 1} 颗的第 ${band} 通道应比前一颗更深`,
+      );
+    }
+  }
+  // 相邻间距彼此相差不超过 1（四舍五入误差）：这才会看起来像一段过渡渐变，
+  // 而不是「两块绿 + 一块蓝」那种跳色。
+  const steps = channels.slice(1).map((color, at) => (channels[at]![0] ?? 0) - (color[0] ?? 0));
+  for (const value of steps) assert.ok(Math.abs(value - steps[0]!) <= 1, `相邻间距不一致：${steps.join('/')}`);
 });
 
 test('归档：磁盘上的脏数据被归一化，不会把面板打崩', () => {

@@ -17,11 +17,16 @@ export const MAX_TODO_ARCHIVES = 12;
 /** 单条归档里最多保留的条目数，与 `todos.ts` 的上限保持一致。 */
 const MAX_ARCHIVED_ITEMS = 40;
 
-/** 胶囊配色的三个锚点：绿 → 浅蓝 → 深蓝。 */
+/**
+ * 胶囊配色的两个锚点：浅蓝 → 深蓝。
+ *
+ * 颜色按「在列表里的位置」均匀取样（见 archiveColorRatio），所以相邻两颗胶囊
+ * 落在色带上的间距相等，看起来是从浅蓝到深蓝的一段连续渐变，而不是几块跳色。
+ * 只用蓝色系：底色越深 = 越新，左边最浅、右边最深。
+ */
 const COLOR_STOPS: ReadonlyArray<readonly [number, readonly [number, number, number]]> = [
-  [0, [46, 160, 67]],    // #2ea043 绿
-  [0.5, [74, 168, 224]], // #4aa8e0 浅蓝
-  [1, [30, 79, 216]],    // #1e4fd8 深蓝
+  [0, [124, 190, 240]], // #7cbef0 浅蓝
+  [1, [30, 79, 216]],   // #1e4fd8 深蓝
 ];
 
 /** 清单是否全部完成（空清单不算完成，避免把「没写过」当成「写完了」）。 */
@@ -46,7 +51,7 @@ export function createTodoArchive(todos: readonly TodoItem[] | undefined, create
 /**
  * 追加一条归档，超出上限时丢最早的那条。
  *
- * 顺序即显示顺序（最早的绿色在左，最新的深蓝在右），所以只能从头部裁剪。
+ * 顺序即显示顺序（最早的浅蓝在左，最新的深蓝在右），所以只能从头部裁剪。
  */
 export function appendTodoArchive(
   existing: readonly TodoArchive[] | undefined,
@@ -59,13 +64,13 @@ export function appendTodoArchive(
   return list.slice(-limit);
 }
 
-/** 0（最早，绿）到 1（最新，深蓝）之间的比例；只有一条时取 0，保持绿色起点。 */
+/** 0（最早，浅蓝）到 1（最新，深蓝）之间的比例；只有一条时取 0，保持浅蓝起点。 */
 export function archiveColorRatio(index: number, total: number): number {
   if (!Number.isFinite(index) || !Number.isFinite(total) || total <= 1) return 0;
   return Math.min(1, Math.max(0, index / (total - 1)));
 }
 
-/** 按比例在绿 → 浅蓝 → 深蓝之间插值，返回 `#rrggbb`。 */
+/** 按比例在浅蓝 → 深蓝之间插值，返回 `#rrggbb`。 */
 export function archiveColorHex(ratio: number): string {
   const clamped = Math.min(1, Math.max(0, Number.isFinite(ratio) ? ratio : 0));
   let upper = 1;

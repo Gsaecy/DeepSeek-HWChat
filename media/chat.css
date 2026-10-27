@@ -352,6 +352,16 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .terminal-command { border-color: color-mix(in srgb, var(--success) 32%, var(--border)); }
 .terminal-command .code-header { color: var(--success); }
 .terminal-command pre { background: color-mix(in srgb, var(--success) 5%, var(--vscode-textCodeBlock-background, var(--surface-raised))); }
+/* 需要用户自己跑的命令：标题栏标出「位置」「工具」。服务器位置用警示色，避免把远程命令贴进本地终端。 */
+.code-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.code-chip { padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; font-size: 9.5px; line-height: 1.45; }
+.code-chip-location { color: var(--success); border-color: color-mix(in srgb, var(--success) 42%, var(--border)); background: color-mix(in srgb, var(--success) 10%, transparent); }
+.code-chip-location.is-remote { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 46%, var(--border)); background: color-mix(in srgb, var(--warning) 13%, transparent); }
+.code-chip-tool { color: var(--muted); }
+.terminal-command.is-remote { border-color: color-mix(in srgb, var(--warning) 34%, var(--border)); }
+.terminal-command.is-remote .code-header { color: var(--warning); }
+.li-text { margin: 0; }
+.message-content li .code-block { margin: 6px 0; }
 
 .load-older { display: block; margin: 15px auto 0; border: 0; border-radius: 6px; padding: 6px 10px; color: var(--muted); background: var(--surface); cursor: pointer; }
 .empty-state { display: grid; place-items: center; align-content: center; min-height: 100%; padding: 36px 22px; text-align: center; }
@@ -417,7 +427,8 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 }
 
 /* ── 归档胶囊栏 ───────────────────────────────────────────────────
-   清单全部完成后压缩成一条纯色胶囊，夹在「任务清单」和输入框之间，左对齐。
+   清单全部完成后压缩成一条纯色圆角矩形，夹在「任务清单」和输入框之间，左对齐。
+   胶囊内不放图标或文字，也不挂 title 悬停提示 —— 颜色（越新越蓝）和左右顺序就是全部信息。
    三重约束（见 media/chat.js 的 layoutTodoArchives）：
    1. 永不换行 —— flex-wrap: nowrap + overflow: hidden；
    2. 宽高比恒为 3:1 —— 宽由 --capsule-h 算出来，不单独设死；
@@ -437,29 +448,34 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
   --capsule-h: 16px;
   --capsule-w: 48px;
   --capsule-gap: 4px;
+  --capsule-radius: 5px;
+  /* 展开中 = 红色边框（实红）；悬停 = 浅红边框（红色与白色混合，深色主题下也看得清）。 */
+  --capsule-border-active: var(--danger);
+  --capsule-border-hover: color-mix(in srgb, var(--danger) 55%, #fff);
 }
 .todo-capsule {
   flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
   width: var(--capsule-w);
   height: var(--capsule-h);
   min-width: 0;
-  padding: 0 2px;
+  padding: 0;
   border: 0;
-  border-radius: 999px;
-  color: #fff;
+  /* 圆角矩形：半径由脚本按高度算好（约 30% 高，最小 2px），不是整圆胶囊。 */
+  border-radius: var(--capsule-radius, 5px);
   cursor: pointer;
-  opacity: .88;
-  transition: opacity .12s ease, transform .12s ease, box-shadow .12s ease;
+  /* 用内阴影当边框：不占布局（不会因为出现边框而让胶囊变大小或跳动），
+     并且跟随 border-radius，也不会被归档条的 overflow: hidden 裁掉。 */
+  box-shadow: none;
+  transition: box-shadow .12s ease, transform .12s ease;
 }
-.todo-capsule:hover { opacity: 1; }
-.todo-capsule.active { opacity: 1; box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--fg) 45%, transparent); }
+/* 悬停：浅红边框，用来指明鼠标停在哪一颗上（不改变胶囊本身的纯色）。 */
+.todo-capsule:hover { box-shadow: inset 0 0 0 1.5px var(--capsule-border-hover); }
+/* 展开中：红色边框。放在 :hover 之后，所以展开的那颗始终是实红。 */
+.todo-capsule.active { box-shadow: inset 0 0 0 2px var(--capsule-border-active); }
 .todo-capsule:active { transform: scale(.94); }
-.todo-capsule-mark { font-size: calc(var(--capsule-h) * .52); line-height: 1; opacity: .92; }
-/* 缩到很小的时候图标会糊成一团，直接不画，只留纯色胶囊。 */
-.todo-archive-bar.compact .todo-capsule-mark { display: none; }
+/* 键盘聚焦用强调色（鼠标点击不会触发 :focus-visible，所以不干扰展开态的红色）。 */
+.todo-capsule:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); outline: none; }
 @media (prefers-reduced-motion: reduce) {
   .todo-capsule { transition: none; }
 }
@@ -472,6 +488,28 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
    不新增第四种状态色——下一步做什么仍由用户决定：接着做会重新标 in_progress，换新任务则整份覆盖。 */
 .todo-panel.interrupted { border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
 .todo-panel.interrupted > summary small { color: var(--warning); }
+
+/* ── 面板区（任务树 / 任务清单 / 归档快照）─────────────────────────
+   三个面板共用这一条可滚动区域。为什么需要它：
+   1. 不允许把输入框挤出窗口 —— 三个面板同时展开时内容会高过侧边栏，
+      以前它们是 footer 的直接子元素，footer 撑高就把输入框顶到窗口外；
+      现在内容再多也只在这一块里滚，footer 高度有上限。
+   2. 上限同时受视口和固定值约束：侧边栏被拉得很矮时 min() 会取 38vh，
+      不会出现「输入框还在、面板占满整屏」的情况。 */
+.panel-stack {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: min(38vh, 300px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+/* 胶囊聚焦期间任务树和任务清单被锁住：summary 变暗、光标显示不可点。
+   点它会有一次提示（见 media/chat.js 的 togglePanel），不会静默无反应。 */
+.panel-locked > summary { opacity: .5; cursor: not-allowed; }
+.panel-locked > summary::before { content: "▸"; }
 
 /* ── 面板内工具授权 ───────────────────────────────────────────────
    替代原来的模态框：模态框会锁住整个 VS Code 窗口（侧边栏都拖不动）。 */
