@@ -59,6 +59,16 @@ All three marks are **inline SVG icons, not font characters**: the shape and wei
 
 Click the title to collapse or expand the list, the same way as the task tree. **A new list opens the panel automatically** — the collapsed state is only remembered within one list, so a list that was collapsed earlier never makes a new task look like it never started. The agent keeps exactly one step in progress, updates the list after each step, and leaves the finished list in place as a record of what happened. The list is stored with the conversation, so it survives reloading the window; a single-step request never creates one. It is a tool (`update_todos`) that needs no permission, because it changes no files and runs no commands.
 
+### Two things the task list never contains
+
+A **push** and a **version bump** are never task-list items. Both are asked about separately once the work is finished and verified, and happen only after you say yes.
+
+This is not tidiness for its own sake. The moment a list reads `6. Commit and push`, clicking **Continue** shows you those steps and approves the work they describe — so a push you never asked for gets authorised by the list itself. And that item is usually not the agent smuggling something in; it is the plausible expansion "while I am committing, I may as well push", which is exactly the kind of line nobody re-reads.
+
+Two layers are needed, because either one alone leaks: a prompt rule that keeps these steps out when the work is broken down, and a filter before the list is stored that removes them if the model writes them anyway — plus a note in the tool result telling it to ask you afterwards.
+
+The filter is deliberately narrow and only matches real repository actions: `git push`, "push to remote / origin / branch", "push the code to origin", "bump the version to 0.2.4", `npm version patch`, "bump to 0.2.4". "Implement message push", "a toggle for push notifications" and "send a push notification to the device" are ordinary feature work, and "package as version 0.2.3" or "fix the version label" are a build step and a copy change — none of those are removed. If every item in a list is one of the excluded kinds, the list stays as it was rather than being emptied.
+
 ### After an interruption: continue or cancel
 
 When a run is cut short (process killed, stop pressed) or the model finishes without ticking the last boxes, two buttons appear at the far right of the list header: **Continue** and **Cancel task**.
@@ -90,7 +100,7 @@ When a run ends with items still open, the list does not become a capsule: it **
 
 Either way the follow-up is the same:
 
-- **Carry on**: ask the agent to continue. It reuses the same list, sets the current item back to `in_progress`, and once everything is completed the list is archived as usual. This resume instruction **binds to that list exactly once**: the panel scopes the turn to the list's unticked items instead of treating "continue the task list" as the task itself, so an unrelated request made meanwhile is queued (shown as waiting in the task tree) rather than merged into the running turn. When every item is already ticked, or there is no list at all, it does not apply.
+- **Carry on**: ask the agent to continue. It reuses the same list, sets the current item back to `in_progress`, and once everything is completed the list is archived as usual. This resume instruction **binds to that list exactly once**: the panel scopes the turn to the list's unticked items instead of treating "continue the task list" as the task itself, so an unrelated request made meanwhile is queued (shown as waiting in the task tree) rather than merged into the running turn. When every item is already ticked, or there is no list at all, it does not apply. **Continue approves that you keep doing what you already asked for — not every line of the list.** The list is the agent's plan, not a record of what you approved; if it added something you never asked for (a push, a version bump), that step needs its own yes.
 - **Start something else**: just ask for the new task. The new list the model writes **replaces** the old one wholesale — the old list is not kept and is not archived.
 
 Both flags are persisted with the conversation (`todosIncomplete` / `todosInterrupted` in the manifest) and are **mutually exclusive**: one list only ever carries one of them, and both are cleared when a new list arrives or the list is archived. Older saves without these fields are treated as unmarked.

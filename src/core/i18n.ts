@@ -737,6 +737,12 @@ const DICTIONARY: Record<string, Entry> = {
   'todo.updated': { zh: '任务清单已更新：{done}/{total} 已完成', en: 'Task list updated: {done}/{total} done' },
   'todo.empty': { zh: '这次调用没有产生有效条目，任务清单保持不变。', en: 'This call produced no valid items, so the task list is unchanged.' },
   'todo.hintSingleActive': { zh: '提示：同一时刻只应有一项处于 in_progress。', en: 'Note: only one item should be in_progress at a time.' },
+  // 推送 / 版本号不属于任务清单：拆分时就排除，完成后单独确认。
+  // 命中时要明确告诉模型「这一步没有被丢掉」，否则它会以为清单被改坏而反复重试。
+  'todo.scopeExcludedSummary': { zh: '任务清单已更新：{done}/{total} 已完成（已移出 {count} 条推送 / 版本号条目）', en: 'Task list updated: {done}/{total} done ({count} push/version item(s) moved out)' },
+  'todo.scopeExcludedNotice': { zh: '已从任务清单移出 {count} 条不属于清单的条目：{items}。推送与版本号更新不写进任务清单——工作完成并验证后，请单独用一句话征询用户确认，得到明确同意再执行；不要把它们当收尾步骤顺手做掉。', en: 'Moved {count} item(s) out of the task list because they do not belong there: {items}. A push and a version bump are not checklist work — after the work is finished and verified, ask the user separately in one short sentence and act only on an explicit yes. Do not treat them as a finishing step.' },
+  'todo.scopeExcludedOnlySummary': { zh: '任务清单未更新：这 {count} 条都是推送 / 版本号条目', en: 'Task list unchanged: all {count} item(s) were push/version steps' },
+  'todo.scopeExcludedOnlyNotice': { zh: '这次提交的 {count} 条全是推送或版本号步骤（{items}），它们不属于任务清单，所以清单保持不变。请把真正的实现步骤写进清单；推送与版本号更新在工作完成后单独征询用户确认。', en: 'All {count} item(s) this call contained were push or version steps ({items}); they do not belong in the task list, so the list is unchanged. Put the real implementation steps in the list, and ask the user separately about the push and the version bump once the work is done.' },
   // 英文不再写 ", can be resumed"：状态区宽度要固定，句尾那半句会把控件拉到 170px，
   // 整个顶栏都为它让路；「可以继续」由右侧那两个按钮本身表达，不必再写一遍。
   'todo.interrupted': { zh: '已中断，可继续', en: 'interrupted' },

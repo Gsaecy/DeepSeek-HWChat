@@ -12,6 +12,7 @@ import { VscodeToolBridge } from '../agent/vscodeTools';
 import { gitWriteAuthorization, argumentsMentionGitWrite } from '../agent/conversationScope';
 import { VERSION_RULE_PROMPT, argumentsMentionVersionBump, versionBumpAuthorization } from '../agent/releasePolicy';
 import { TODO_LIST_PROMPT } from '../agent/todoPrompt';
+import { splitTodoScope } from '../agent/todoScope';
 import { COMMAND_BLOCK_PROMPT } from '../agent/commandPrompt';
 import { NOTICE_PROMPT } from '../agent/noticePrompt';
 import { FOLLOW_UP_PROMPT } from '../agent/followUpPrompt';
@@ -1759,8 +1760,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    */
   private async updateTodos(conversationId: string, call: ToolCall): Promise<ToolExecutionResult> {
     const args = parseToolArguments(call.function.arguments);
-    const todos = normalizeTodos(args.todos);
-    if (!todos.length) {
+    const submitted = normalizeTodos(args.todos);
+    if (!submitted.length) {
       return {
         status: 'error',
         summary: tt('todo.title'),
@@ -1768,9 +1769,24 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         approval: 'not-required',
       };
     }
-    // 上一份清单已经全部完成、模型又给了新的一份：先把旧的压成胶囊，再写新的。
-    // 两步合并成一次落库，避免面板上闪过一帧「空白清单」。
-    // 上一份没完成（被停止/失败）时用户直接开了新任务：按约定直接覆盖，不归档、不追问。
+    // 推送 / 版本号不属于任务清单：正确做法是拆分任务时就排除，模型偶尔仍会写进来。
+    // 这里是最后一道兜底——清单一旦显示在面板上，用户点「继续执行」就等于认可了它，
+    // 于是用户没说过的「推送」借清单拿到了授权。宁可当场摘掉并告知模型去单独征询。
+    const { kept: todos, excluded } = splitTodoScope(submitted);
+    const excludedItems = excluded.map((entry) => entry.todo.content).join('；');
+    const excludedNotice = excluded.length
+      ? tt('todo.scopeExcludedNotice', { count: excluded.length, items: excludedItems })
+      : '';
+    if (!todos.length) {
+      // 整份清单都是推送 / 版本号：不能写空清单，否则会把正在跑的清单（以及它的进度）清掉。
+      // 返回 success 而不是 error：模型没有犯工具调用错误，它只是把任务类型判断错了。
+      return {
+        status: 'success',
+        summary: tt('todo.scopeExcludedOnlySummary', { count: excluded.length }),
+        content: tt('todo.scopeExcludedOnlyNotice', { count: excluded.length, items: excludedItems }),
+        approval: 'not-required',
+      };
+    }
     const previous = await this.storage.getConversation(conversationId);
     const archivable = allTodosCompleted(previous?.todos) ? createTodoArchive(previous?.todos) : undefined;
     const archives = archivable ? appendTodoArchive(previous?.todoArchives, archivable) : undefined;
@@ -1788,11 +1804,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const done = completedCount(todos);
     return {
       status: 'success',
-      summary: tt('todo.updated', { done, total: todos.length }),
+      summary: excluded.length
+        ? tt('todo.scopeExcludedSummary', { done, total: todos.length, count: excluded.length })
+        : tt('todo.updated', { done, total: todos.length }),
       // 回给模型的是纯文本清单：它下一轮据此判断还剩哪几步。
       content: todos
         .map((todo, index) => `${index + 1}. [${todo.status}] ${todo.content}`)
-        .join('\n') + (hasMultipleInProgress(todos) ? `\n\n${tt('todo.hintSingleActive')}` : ''),
+        .join('\n')
+        + (hasMultipleInProgress(todos) ? `\n\n${tt('todo.hintSingleActive')}` : '')
+        + (excludedNotice ? `\n\n${excludedNotice}` : ''),
       approval: 'not-required',
     };
   }

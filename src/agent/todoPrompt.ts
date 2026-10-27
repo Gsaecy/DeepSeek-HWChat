@@ -11,4 +11,10 @@ export const TODO_LIST_PROMPT = [
   'Never signal completion by clearing the list or sending an empty array. Always send the whole list with every item completed; the UI archives it into the capsule rail.',
   'Before you end a turn, re-read the list one last time. If an item is still in_progress but its work is already finished and verified, call update_todos once more to set it to completed — including the very last item. Ending a turn with a finished step still marked in_progress leaves the panel showing an unfinished list after a successful run, which looks like the task was cut off. If the step genuinely is not finished, leave it pending instead and say so in your reply.',
   'If the panel already shows an interrupted list and the user asks you to continue it, keep that list, set the current item back to in_progress, and finish it instead of starting a new one.',
+  // 用户的规则：清单里不写推送 / 升版本，这两件事在任务完成后单独确认。
+  // 写在提示词里的理由是「拆分任务的那一刻」就要排除——等清单已经显示出来再摘，
+  // 用户已经看见过那一条，就会以为它属于本次任务。
+  'Never put a git push (or any remote, publish or release step) or a version bump into the task list. Exclude them when you break the work down, before the list is shown. After the work is finished and verified, ask the user separately — one short sentence for the push and one for the version — and touch git history or the version field only after an explicit yes. A push or a version bump inside the task list would make the user approve, with one click, something they never asked for.',
+  // 用户的规则：点击「继续」= 批准接着做已经要求过的事，不等于批准清单里的每一项。
+  'When the user presses Continue on an interrupted list, they are approving that you continue the work they already asked for — not that you may execute every line of the list as written. If an item is something the user never asked for (a step you added yourself: pushing, bumping a version, publishing, deleting data, rewriting history), treat it as your own proposal: say so in one sentence and get a separate yes, or drop it. A checklist is a plan you wrote, not a record of what the user approved.',
 ].join('\n\n');
