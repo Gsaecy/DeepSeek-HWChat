@@ -47,6 +47,27 @@ export function completedCount(todos: readonly TodoItem[]): number {
 }
 
 /**
+ * 把「执行中」的条目落回「待办」。
+ *
+ * 停止、报错、关窗口之后都不会再有人推进这份清单，但存档里可能还留着 `in_progress`。
+ * 面板拿到 `in_progress` 会一直播三点跳动动画，等于谎报「还在跑」。
+ * 这里不引入「失败」状态（清单只有三种状态，成败由消息本身说明），只把 `in_progress`
+ * 降级成 `pending`：用户接着做时模型会重新标 `in_progress`，照常完成并归档。
+ *
+ * `changed` 用于调用方决定要不要落库——没有执行中的条目就不要白写一次 manifest。
+ */
+export function settleInterruptedTodos(todos: readonly TodoItem[] | undefined): { todos: TodoItem[]; changed: boolean } {
+  if (!todos?.length) return { todos: [], changed: false };
+  let changed = false;
+  const settled = todos.map((todo) => {
+    if (todo.status !== 'in_progress') return { content: todo.content, status: todo.status };
+    changed = true;
+    return { content: todo.content, status: 'pending' as const };
+  });
+  return { todos: settled, changed };
+}
+
+/**
  * 模型有时会漏掉「同一时刻只有一个执行中」这条约定。
  * 这里不做强制改写（那是模型的责任，悄悄改掉反而掩盖问题），
  * 只提供一个判定给调用方决定是否需要提示。

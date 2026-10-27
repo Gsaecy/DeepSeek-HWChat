@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeTodos, completedCount, hasMultipleInProgress } from '../core/todos';
+import { normalizeTodos, completedCount, hasMultipleInProgress, settleInterruptedTodos } from '../core/todos';
 
 test('待办：按传入顺序保留，不排序', () => {
   const todos = normalizeTodos([
@@ -72,4 +72,33 @@ test('待办：完成数与多执行中判定', () => {
     { content: 'B', status: 'in_progress' },
   ]);
   assert.equal(hasMultipleInProgress(twoActive), true);
+});
+
+test('中断归位：执行中的条目降级成待办，已完成与待办原样保留', () => {
+  const todos = normalizeTodos([
+    { content: 'A', status: 'completed' },
+    { content: 'B', status: 'in_progress' },
+    { content: 'C', status: 'pending' },
+    { content: 'D', status: 'in_progress' },
+  ]);
+  const settled = settleInterruptedTodos(todos);
+  assert.equal(settled.changed, true);
+  assert.deepEqual(settled.todos.map((todo) => todo.status), ['completed', 'pending', 'pending', 'pending']);
+  // 顺序就是执行顺序，归位不能重排。
+  assert.deepEqual(settled.todos.map((todo) => todo.content), ['A', 'B', 'C', 'D']);
+});
+
+test('中断归位：没有执行中的条目时不改动、不要求落库', () => {
+  const todos = normalizeTodos([
+    { content: 'A', status: 'completed' },
+    { content: 'B', status: 'pending' },
+  ]);
+  const settled = settleInterruptedTodos(todos);
+  assert.equal(settled.changed, false);
+  assert.deepEqual(settled.todos, todos);
+});
+
+test('中断归位：空清单与未定义输入返回空清单', () => {
+  assert.deepEqual(settleInterruptedTodos(undefined), { todos: [], changed: false });
+  assert.deepEqual(settleInterruptedTodos([]), { todos: [], changed: false });
 });

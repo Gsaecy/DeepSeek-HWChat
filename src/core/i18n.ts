@@ -370,6 +370,11 @@ const DICTIONARY: Record<string, Entry> = {
   'notice.approveReadTitle': { zh: '允许 Agent 读取文件？', en: 'Allow the agent to read files?' },
   'notice.approveDeny': { zh: '拒绝', en: 'Deny' },
   'notice.approveAllowOnce': { zh: '允许一次', en: 'Allow once' },
+  // 面板内审批：模态框会锁死整个 VS Code 窗口（连侧边栏拖拽都做不了），改成输入框上方一张卡片。
+  'approval.cardTitle': { zh: '需要你确认后继续', en: 'Needs your approval to continue' },
+  'approval.detail': { zh: '查看详情', en: 'Details' },  'approval.pending': { zh: '等待授权', en: 'Waiting for approval' },
+  'approval.otherConversation': { zh: '有对话正在等待你的授权，切回该对话即可继续。', en: 'A conversation is waiting for your approval. Switch back to it to continue.' },
+  'approval.expired': { zh: '这次授权请求已失效（任务已结束）。', en: 'This approval request expired because the task has ended.' },
 
   // 设置页：外壳与导航
   'settings.windowTitle': { zh: 'HWChat 设置', en: 'HWChat Settings' },
@@ -677,9 +682,20 @@ const DICTIONARY: Record<string, Entry> = {
   'todo.updated': { zh: '任务清单已更新：{done}/{total} 已完成', en: 'Task list updated: {done}/{total} done' },
   'todo.empty': { zh: '这次调用没有产生有效条目，任务清单保持不变。', en: 'This call produced no valid items, so the task list is unchanged.' },
   'todo.hintSingleActive': { zh: '提示：同一时刻只应有一项处于 in_progress。', en: 'Note: only one item should be in_progress at a time.' },
+  'todo.interrupted': { zh: '已中断，可继续', en: 'interrupted, can be resumed' },
+  // 任务清单归档胶囊
+  'todo.archive.title': { zh: '已归档任务清单', en: 'Archived task list' },
+  'todo.archive.summary': { zh: '已归档 · {time} · {done}/{total} 完成', en: 'Archived · {time} · {done}/{total} done' },
+  'todo.archive.capsule': { zh: '归档任务清单 {done}/{total}：{preview}', en: 'Archived task list {done}/{total}: {preview}' },
+  'todo.archive.hint': { zh: '点击展开这份已归档的任务清单', en: 'Click to expand this archived task list' },
+  'todo.archive.hintOpen': { zh: '点击收起', en: 'Click to collapse' },
+  'todo.archive.collapse': { zh: '收起归档', en: 'Collapse' },
+  'chat.running': { zh: '运行中', en: 'Running' },
+  'chat.runningInOtherShort': { zh: '另有 {count} 个对话在后台执行', en: '{count} other chat(s) running in the background' },
+  'chat.runningInOther': { zh: '另一个对话正在后台执行，可以继续在这里操作。', en: 'Another conversation is running in the background; you can keep working here.' },
   'tool.updateTodos.description': {
-    zh: '创建或更新本轮的任务清单。当任务需要拆成多个步骤执行（例如“重构某个模块并补测试”“排查一个跨文件的问题”）时，先用它把步骤列出来，之后每完成一步就再调用一次更新状态。清单按数组顺序展示，所以顺序要与实际执行顺序一致。同一时刻只应有一项处于 in_progress；开始做某项前把它设为 in_progress，做完立刻设为 completed。全部完成后保持整份清单，不要清空。任务只有一步时不要使用这个工具。',
-    en: 'Create or update the task list for this turn. Use it when the work needs several steps (for example "refactor a module and add tests" or "debug an issue across files"): list the steps first, then call it again after each step to update the status. Items are displayed in array order, so keep that order equal to the execution order. Only one item should be in_progress at a time: mark an item in_progress before starting it and completed as soon as it is done. When everything is finished, keep the full list rather than clearing it. Do not use this tool when the task is a single step.',
+    zh: '创建或更新本轮的任务清单。当任务需要拆成多个步骤执行（例如“重构某个模块并补测试”“排查一个跨文件的问题”）时，先用它把步骤列出来，之后每完成一步就再调用一次更新状态。清单按数组顺序展示，所以顺序要与实际执行顺序一致。同一时刻只应有一项处于 in_progress；开始做某项前把它设为 in_progress，做完立刻设为 completed。全部完成后保持整份清单，不要清空。任务只有一步时不要使用这个工具。如果面板上已有一份被中断的清单、而用户要继续把它做完，请沿用它并先把当前条目改回 in_progress，完成后把全部条目设为 completed，这样它会被归档。',
+    en: 'Create or update the task list for this turn. Use it when the work needs several steps (for example "refactor a module and add tests" or "debug an issue across files"): list the steps first, then call it again after each step to update the status. Items are displayed in array order, so keep that order equal to the execution order. Only one item should be in_progress at a time: mark an item in_progress before starting it and completed as soon as it is done. When everything is finished, keep the full list rather than clearing it. Do not use this tool when the task is a single step. If the panel already holds an interrupted list and the user wants to finish it, keep using that list, set the current item back to in_progress first, and mark every item completed when done so it gets archived.',
   },
   'tool.updateTodos.todosParam': {
     zh: '完整清单，按执行顺序排列。每次调用都要传整份清单（不是增量），这样状态更新后顺序和已完成项才不会丢。',

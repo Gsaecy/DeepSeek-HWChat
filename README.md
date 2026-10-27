@@ -2,7 +2,7 @@
 
 [English](README.md) · [中文](README.zh-CN.md)
 
-Current version: **0.2.0**
+Current version: **0.2.1**
 
 HWChat is a local-first coding agent for VS Code with a DeepSeek / OpenAI-compatible backend. Repository: <https://github.com/Gsaecy/DeepSeek-HWChat>
 
@@ -54,6 +54,35 @@ When the work needs several steps, the agent writes a task list rather than leav
 
 Click the title to collapse or expand the list, the same way as the task tree. The agent keeps exactly one step in progress, updates the list after each step, and leaves the finished list in place as a record of what happened. The list is stored with the conversation, so it survives reloading the window; a single-step request never creates one. It is a tool (`update_todos`) that needs no permission, because it changes no files and runs no commands.
 
+### Archived capsules
+
+Once every step is **completed**, the list is archived automatically when the run ends: it leaves the composer area, the task-list disclosure disappears, and a solid-colour capsule takes its place above the input box, left-aligned.
+
+- Click a capsule to expand that snapshot (title reads "Archived task list", the summary carries the archive time, the border turns dashed); click again to collapse.
+- A conversation can hold several archives; each new one appears to the right of the previous one. Colours run from green `#2ea043` through light blue `#4aa8e0` to deep blue `#1e4fd8` — one solid colour per capsule, newest bluest.
+- Capsules **never wrap** and keep a fixed **3:1** width-to-height ratio, starting at 16px tall (48px wide). When there are more capsules or the panel gets narrower they shrink in both dimensions together (down to 6px), hiding the inner glyph so only the colour shape remains.
+- A conversation keeps at most 12 archives; beyond that the oldest is dropped. Lists that were stopped or failed with unfinished items are **not** archived — see "Interrupted lists" below.
+- Archives are persisted with the conversation (`todoArchives` in the manifest), so they survive a reload; malformed entries on disk are dropped at load time without affecting the conversation.
+
+### Interrupted lists
+
+Stopping a run, an error, closing the window (or the process being killed) can leave a list half done. Such lists are handled conservatively and never become capsules:
+
+- The list **stays in the panel** exactly as it was, except the `in_progress` item is downgraded to **waiting** (hollow green circle) so the bouncing animation stops — nothing is advancing it, so it must not pretend to be running. The disclosure header gains an "interrupted, can be resumed" note.
+- **Carry on**: ask the agent to continue. It reuses the same list, sets the current item back to `in_progress`, and once everything is completed the list is archived as usual.
+- **Start something else**: just ask for the new task. The new list the model writes **replaces** the old one wholesale — the old list is not kept and is not archived.
+
+The interrupted flag is persisted with the conversation (`todosInterrupted` in the manifest); older saves without the field are treated as "not interrupted".
+
+## Concurrent conversations
+
+Every conversation runs its own agent thread; they do not block each other:
+
+- You can start a new chat or open another history entry while a reply is streaming — the conversation you leave keeps running in the background and is marked with a blue "running" dot in the history list.
+- Stop only stops the thread you are looking at; archive and delete only guard their own conversation.
+- Model / mode / skills / permission preset are disabled only while that conversation itself is busy, never because some other conversation is running.
+- When a background thread finishes, only the history list is refreshed, so your scroll position in the current conversation is preserved.
+
 ## Skills
 
 HWChat scans these local formats:
@@ -84,6 +113,7 @@ You can also add or remove skills for the current conversation by hand. Selected
 - Read-only commands are side-effect-free (`ls`, `git status`, `grep`…); regular commands are everyday operations (install, build, commit…); dangerous commands cover privilege escalation, destructive deletion, disk wiping, forced pushes and piping remote scripts into a shell.
 - Writes and commands are always disabled in untrusted workspaces.
 - `.env`, certificates, private keys and SSH/AWS/Kubernetes credential paths follow the sensitive-file policy: blocked by default, confirmed with the target file shown when set to "Ask every time", and only read automatically when set to "Allow".
+- Tool approvals are answered **inside the chat panel** (a card above the composer with Deny / Allow once and collapsible details) instead of a modal dialog that freezes the whole VS Code window. While an approval is pending you can still drag sashes, switch conversations and edit files. If the conversation waiting for approval is in the background, the history list marks it with an amber "waiting for approval" dot; a request is voided immediately when its task is stopped or finished.
 - Subprocess environments strip common token, secret, password and API-key variables.
 - Remote API endpoints must use HTTPS; only `localhost`, `127.0.0.1` and `::1` may use HTTP.
 - No telemetry. Conversations, skills and agent audit records stay on your machine and can be deleted from settings.
@@ -105,7 +135,7 @@ See [SECURITY.md](SECURITY.md) for the full boundary description.
 Requires VS Code `1.106.0` or newer.
 
 ```bash
-code --install-extension hwchat-0.2.0.vsix
+code --install-extension hwchat-0.2.1.vsix
 ```
 
 Open the command palette and run `HWChat: Open chat panel`. On first use, open settings, create an API profile and save its API key — the key only goes into VS Code `SecretStorage`, never into `settings.json`, project files or the VSIX.
@@ -121,7 +151,7 @@ npm test
 npm run package
 ```
 
-The build output is `hwchat-0.2.0.vsix` in the project root. A version already published to the Marketplace cannot be uploaded again, so bump the version for every public build.
+The build output is `hwchat-0.2.1.vsix` in the project root. A version already published to the Marketplace cannot be uploaded again, so bump the version for every public build.
 
 The extension icon is `resources/logo.png`. Press `F5` in VS Code to launch the extension development host.
 

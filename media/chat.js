@@ -31,6 +31,8 @@
     'permissionPresetInput', 'agentMaxStepsInput', 'reasoningEffortInput', 'voiceButton',
     'agentRunState', 'agentRunLabel', 'agentRunMeta', 'taskTree', 'taskTreeSummary', 'taskTreeList',
     'todoPanel', 'todoList', 'todoSummary',
+    'todoArchivePanel', 'todoArchiveList', 'todoArchiveSummary', 'todoArchiveBar',
+    'approvalCard', 'approvalTitle', 'approvalSummary', 'approvalDetail', 'approvalDenyButton', 'approvalAllowButton',
     'attachButton', 'sendButton', 'stopButton', 'toast',
   ].map((id) => [id, document.getElementById(id)]));
 
@@ -42,7 +44,9 @@
     modelOptionsByProfile: {},
     permissionPresetPending: false, modelLoadingProfileId: null,
     workspaceTrusted: false, agentAvailable: false, availableToolCount: 0, showArchived: false, renderTimer: null,
-    taskTree: null, todos: [], autoFollow: true, renderingMessages: false, voiceRecognition: null, voiceActive: false,
+    taskTree: null, todos: [], todoArchives: [], expandedArchiveId: null, todosInterrupted: false,
+    runningConversationIds: [], pendingApprovals: [],
+    autoFollow: true, renderingMessages: false, voiceRecognition: null, voiceActive: false,
   };
 
   const clipboardWrites = new Map();
@@ -86,7 +90,7 @@
   }
 
   function renderAll() {
-    renderHistory(); renderHeader(); renderSkills(); renderMessages('replace'); renderHistoryLink(); renderAttachments(); renderTaskTree(); renderTodos(); updateComposerState();
+    renderHistory(); renderHeader(); renderSkills(); renderMessages('replace'); renderHistoryLink(); renderAttachments(); renderTaskTree(); renderTodos(); renderArchivePanel(); renderTodoArchives(); renderApproval(); updateComposerState();
   }
 
   function renderHistory() {
@@ -109,16 +113,23 @@
       row.className = `conversation-row${state.conversation?.id === conversation.id ? ' active' : ''}`;
       const content = document.createElement('button');
       content.type = 'button'; content.className = 'conversation-content';
-      const title = textElement('span', 'conversation-title', conversation.title);
+      const titleRow = document.createElement('span'); titleRow.className = 'conversation-title-row';
+      // 多线程：这条对话在后台跑（或正在等授权）时，列表里直接标出来，不用挨个点开看。
+      const runningNow = state.runningConversationIds.includes(conversation.id);
+      const awaitingNow = state.pendingApprovals.some((item) => item.conversationId === conversation.id);
+      if (runningNow) titleRow.append(textElement('span', 'conversation-dot running', ''));
+      if (awaitingNow) titleRow.append(textElement('span', 'conversation-dot awaiting', ''));
+      titleRow.append(textElement('span', 'conversation-title', conversation.title));
+      const statusPrefix = awaitingNow ? `${t('approval.pending')} · ` : runningNow ? `${t('chat.running')} · ` : '';
       const tokenTotal = conversation.totalTokens ? ` · ${formatMillionTokens(conversation.totalTokens)} tokens` : '';
       const linked = conversation.sourceConversationId ? t('chat.continuedPrefix') : '';
-      const meta = textElement('span', 'conversation-meta', `${linked}${relativeTime(conversation.updatedAt)}${tokenTotal}`);
+      const meta = textElement('span', 'conversation-meta', `${statusPrefix}${linked}${relativeTime(conversation.updatedAt)}${tokenTotal}`);
       const preview = textElement('span', 'conversation-preview', conversation.preview || t('common.emptyConversation'));
-      content.append(title, meta, preview);
+      content.append(titleRow, meta, preview);
       content.addEventListener('click', () => { post('selectConversation', { id: conversation.id }); closeMobileHistory(); });
       const actions = document.createElement('div'); actions.className = 'conversation-actions';
       const continueTask = actionButton(t('chat.continueTaskHistory'), '↗');
-      continueTask.disabled = state.streaming;
+      continueTask.disabled = runningNow || awaitingNow;
       continueTask.addEventListener('click', () => { post('continueConversation', { id: conversation.id }); closeMobileHistory(); });
       const pin = actionButton(conversation.pinned ? t('chat.unpin') : t('chat.pin'), conversation.pinned ? '●' : '○');
       pin.addEventListener('click', () => post('togglePin', { id: conversation.id, pinned: !conversation.pinned }));
@@ -138,12 +149,20 @@
 
   function renderHeader() {
     const archived = Boolean(state.conversation?.archived);
+    // 后台线程数（不含当前对话）：用于提示「还能继续在这里操作」。
+    const otherRunning = state.runningConversationIds.filter((id) => id !== state.conversation?.id).length;
     elements.conversationTitle.textContent = state.conversation?.title || t('common.newChat');
     syncConnectionSelectors();
     elements.modeInput.value = state.mode; elements.exportButton.disabled = !state.conversation;
     elements.archiveButton.disabled = !state.conversation || state.streaming;
     elements.archiveButton.title = archived ? t('chat.restoreConversation') : t('chat.archive');
-    elements.connectionState.textContent = state.streaming ? t('chat.agentRunning') : archived ? t('chat.archivedReadOnly') : state.mode !== 'chat' && !state.workspaceTrusted ? t('chat.untrustedRestricted') : (state.availableToolCount ? t('chat.readyWithTools', { count: state.availableToolCount }) : t('chat.ready'));
+    elements.connectionState.textContent = state.streaming
+      ? t('chat.agentRunning')
+      : archived ? t('chat.archivedReadOnly')
+        : state.mode !== 'chat' && !state.workspaceTrusted ? t('chat.untrustedRestricted')
+          : otherRunning > 0 ? t('chat.runningInOtherShort', { count: otherRunning })
+            : (state.availableToolCount ? t('chat.readyWithTools', { count: state.availableToolCount }) : t('chat.ready'));
+    elements.connectionState.title = otherRunning > 0 ? t('chat.runningInOther') : '';
     elements.connectionState.classList.toggle('live', state.streaming);
     elements.connectionState.classList.toggle('restricted', !state.workspaceTrusted && state.mode !== 'chat');
     elements.skillsCount.textContent = String(state.selectedSkillIds.length);
@@ -393,18 +412,49 @@
    * - in_progress 绿色跳动的三点省略号
    * - completed 实心绿色圆圈 + 白色对勾
    * 圆圈的“实心/空心”靠 CSS 控制，这里只给出结构，方便动画与减少动效偏好统一处理。
+   *
+   * 归档后（清单全部完成）当前清单会被后端收走，面板只剩胶囊；点开某颗胶囊时，
+   * 由 `renderArchivePanel` 用独立面板显示那份快照，不会盖住正在执行的新清单。
    */
   function renderTodos() {
     const todos = Array.isArray(state.todos) ? state.todos : [];
     elements.todoPanel.hidden = !todos.length;
     if (!todos.length) {
+      elements.todoPanel.classList.remove('interrupted');
       elements.todoList.replaceChildren();
       if (elements.todoSummary) elements.todoSummary.textContent = '';
       return;
     }
     const done = todos.filter((todo) => todo.status === 'completed').length;
-    if (elements.todoSummary) elements.todoSummary.textContent = t('todo.progress', { done, total: todos.length });
-    elements.todoList.replaceChildren();
+    // 被中断的清单：后端已把「执行中」降级成待办，这里只补一个文字标记。
+    // 不引入第四种状态——用户接着做时模型重新标 in_progress，全绿后照常归档。
+    elements.todoPanel.classList.toggle('interrupted', Boolean(state.todosInterrupted));
+    if (elements.todoSummary) {
+      const progress = t('todo.progress', { done, total: todos.length });
+      elements.todoSummary.textContent = state.todosInterrupted ? `${progress} · ${t('todo.interrupted')}` : progress;
+    }
+    renderTodoItems(elements.todoList, todos);
+  }
+
+  /** 归档快照面板：只有点开胶囊时才出现，标题与汇总都标出「已归档」。 */
+  function renderArchivePanel() {
+    const archive = state.expandedArchiveId ? state.todoArchives.find((item) => item.id === state.expandedArchiveId) : null;
+    elements.todoArchivePanel.hidden = !archive;
+    if (!archive) {
+      elements.todoArchiveList.replaceChildren();
+      elements.todoArchiveSummary.textContent = '';
+      return;
+    }
+    elements.todoArchiveSummary.textContent = t('todo.archive.summary', {
+      time: formatTime(archive.createdAt),
+      done: archive.completed,
+      total: archive.total,
+    });
+    renderTodoItems(elements.todoArchiveList, archive.todos);
+  }
+
+  function renderTodoItems(list, todos) {
+    list.replaceChildren();
     todos.forEach((todo, index) => {
       const status = todo.status === 'completed' ? 'completed' : todo.status === 'in_progress' ? 'in_progress' : 'pending';
       const item = document.createElement('li');
@@ -425,8 +475,114 @@
       }
 
       item.append(order, content, statusNode);
-      elements.todoList.append(item);
+      list.append(item);
     });
+  }
+
+  /**
+   * 归档胶囊栏。
+   *
+   * 规则（对应需求）：
+   * - 每份完成的清单是一颗纯色胶囊，颜色由扩展按「越新越蓝」算好（绿 → 浅蓝 → 深蓝）；
+   * - 永远不换行，胶囊过多或窗口变窄时按 3:1 的比例同时缩小宽和高；
+   * - 点一颗胶囊展开/收起那份清单，展开时当前清单区域显示它的快照。
+   */
+  const CAPSULE_BASE_HEIGHT = 16;
+  const CAPSULE_MIN_HEIGHT = 6;
+  const CAPSULE_RATIO = 3;
+
+  function renderTodoArchives() {
+    const archives = Array.isArray(state.todoArchives) ? state.todoArchives : [];
+    const previousExpanded = state.expandedArchiveId;
+    if (!archives.length) state.expandedArchiveId = null;
+    else if (state.expandedArchiveId && !archives.some((item) => item.id === state.expandedArchiveId)) state.expandedArchiveId = null;
+    // 被展开的那份归档没了（对话被清理/删档）：连带把快照面板收起来，别留一块过期内容。
+    if (previousExpanded !== state.expandedArchiveId) renderArchivePanel();
+    elements.todoArchiveBar.hidden = !archives.length;
+    elements.todoArchiveBar.replaceChildren();
+    if (!archives.length) return;
+    archives.forEach((archive, index) => {
+      const capsule = document.createElement('button');
+      capsule.type = 'button';
+      capsule.className = 'todo-capsule';
+      capsule.dataset.archiveId = archive.id;
+      capsule.style.backgroundColor = archive.color;
+      const active = state.expandedArchiveId === archive.id;
+      capsule.classList.toggle('active', active);
+      capsule.setAttribute('aria-expanded', active ? 'true' : 'false');
+      const label = t('todo.archive.capsule', {
+        done: archive.completed,
+        total: archive.total,
+        preview: archive.todos.map((todo) => todo.content).join(' / ').slice(0, 160),
+      });
+      capsule.setAttribute('aria-label', `${label}。${active ? t('todo.archive.hintOpen') : t('todo.archive.hint')}`);
+      capsule.title = `${label}\n${active ? t('todo.archive.hintOpen') : t('todo.archive.hint')}`;
+      // 归档图标：一颗胶囊里只放一个极简的「归档匣」，缩到很小时自动隐藏（见 CSS）。
+      capsule.append(textElement('span', 'todo-capsule-mark', '▤'));
+      capsule.addEventListener('click', () => {
+        state.expandedArchiveId = state.expandedArchiveId === archive.id ? null : archive.id;
+        renderArchivePanel(); renderTodoArchives();
+        if (state.expandedArchiveId) {
+          elements.todoArchivePanel.open = true;
+          elements.todoArchivePanel.scrollIntoView({ block: 'nearest' });
+        }
+      });
+      elements.todoArchiveBar.append(capsule);
+    });
+    layoutTodoArchives();
+  }
+
+  /**
+   * 按可用宽度算胶囊尺寸：宽 = 3 × 高，间距 = 0.25 × 高。
+   * 永远不换行（CSS `flex-wrap: nowrap`），放不下就一起缩小，缩到下限仍放不下就裁掉右侧。
+   */
+  let lastCapsuleBarWidth = 0;
+  function layoutTodoArchives() {
+    const bar = elements.todoArchiveBar;
+    if (!bar || bar.hidden) return;
+    const count = bar.children.length;
+    if (!count) return;
+    const available = bar.clientWidth || 0;
+    if (!available) return;
+    lastCapsuleBarWidth = available;
+    // 总宽 = count 条 × (3h) 宽 + (count-1) 个间距，间距 = max(2px, 0.25h)（缩到很小时间距托底）。
+    // 先按未托底的公式反解；若解出来已经小到触底，再用固定 2px 间距重解一次，避免差几像素就溢出。
+    const perUnit = count * CAPSULE_RATIO + Math.max(0, count - 1) * 0.25;
+    let height = Math.min(CAPSULE_BASE_HEIGHT, available / perUnit);
+    if (height < 8) {
+      height = Math.min(height, (available - 2 * (count - 1)) / (count * CAPSULE_RATIO));
+    }
+    height = Math.max(CAPSULE_MIN_HEIGHT, height);
+    bar.style.setProperty('--capsule-h', `${height.toFixed(2)}px`);
+    bar.style.setProperty('--capsule-w', `${(height * CAPSULE_RATIO).toFixed(2)}px`);
+    bar.style.setProperty('--capsule-gap', `${Math.max(2, height * 0.25).toFixed(2)}px`);
+    bar.classList.toggle('compact', height < 11);
+  }
+
+  /**
+   * 面板内审批卡片。
+   *
+   * 只显示「属于当前对话」的那一条：另一个对话在等授权时，它自己那条线程会一直挂着，
+   * 切回去就能看到这张卡片，不会像模态框那样把整个窗口按住。
+   */
+  function currentApproval() {
+    const conversationId = state.conversation?.id;
+    if (!conversationId) return null;
+    return state.pendingApprovals.find((item) => item.conversationId === conversationId) || null;
+  }
+
+  function renderApproval() {
+    const request = currentApproval();
+    elements.approvalCard.hidden = !request;
+    if (!request) {
+      elements.approvalCard.dataset.requestId = '';
+      return;
+    }
+    elements.approvalCard.dataset.requestId = request.requestId;
+    elements.approvalCard.dataset.risk = request.risk;
+    elements.approvalTitle.textContent = request.title;
+    elements.approvalSummary.textContent = request.summary;
+    elements.approvalDetail.textContent = request.detail || '';
   }
 
   function renderMessage(message) {
@@ -895,6 +1051,21 @@
     else post('send', { text, mode: state.mode, skillIds: state.selectedSkillIds, permissionPreset: state.permissionPreset, agentMaxSteps: state.agentMaxSteps, reasoningEffort: state.reasoningEffort });
   }
   function setStreaming(value, conversationId = null) { state.streaming = value; state.streamingConversationId = value ? conversationId : null; renderHeader(); renderTaskTree(); updateComposerState(); }
+
+  /** 运行中集合的增删：后台完成的对话不该把当前对话的发送按钮变成停止按钮。 */
+  function markRunning(conversationId, running) {
+    if (!conversationId) return;
+    const set = new Set(state.runningConversationIds);
+    if (running) set.add(conversationId); else set.delete(conversationId);
+    state.runningConversationIds = [...set];
+  }
+
+  function updateStreamingFromRuns() {
+    const currentId = state.conversation?.id;
+    const running = Boolean(currentId && state.runningConversationIds.includes(currentId));
+    if (running === state.streaming) { updateComposerState(); return; }
+    setStreaming(running, currentId);
+  }
   function showToast(text, tone = 'neutral') { elements.toast.textContent = text; elements.toast.dataset.tone = tone; elements.toast.hidden = false; clearTimeout(showToast.timer); showToast.timer = setTimeout(() => { elements.toast.hidden = true; }, 4200); }
   function closeMobileHistory() { elements.app.classList.remove('history-open'); }
   function textElement(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; node.textContent = text; return node; }
@@ -909,6 +1080,28 @@
   elements.detachHistoryButton.addEventListener('click', () => post('detachConversationHistory'));
   elements.attachButton.addEventListener('click', () => post('attachFiles')); elements.removeContextButton.addEventListener('click', () => post('removeContext'));
   elements.stopButton.addEventListener('click', () => post('stop')); elements.skillsButton.addEventListener('click', () => { elements.skillsPanel.hidden = !elements.skillsPanel.hidden; });
+  elements.approvalAllowButton.addEventListener('click', () => {
+    const requestId = elements.approvalCard.dataset.requestId;
+    if (requestId) post('approvalResponse', { requestId, allow: true });
+  });
+  elements.approvalDenyButton.addEventListener('click', () => {
+    const requestId = elements.approvalCard.dataset.requestId;
+    if (requestId) post('approvalResponse', { requestId, allow: false });
+  });
+  // 胶囊尺寸跟着面板宽度走：拖动侧边栏、切换分栏都会触发，重算一次即可（不重建 DOM）。
+  let capsuleResizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(capsuleResizeTimer);
+    capsuleResizeTimer = setTimeout(() => { layoutTodoArchives(); updateScrollToBottom(); }, 60);
+  });
+  if (typeof ResizeObserver === 'function') {
+    const observer = new ResizeObserver(() => {
+      // 只看宽度：胶囊缩小会改变这一行的高度，用高度触发会自己喂自己。
+      const width = elements.todoArchiveBar.clientWidth;
+      if (width && width !== lastCapsuleBarWidth) layoutTodoArchives();
+    });
+    observer.observe(elements.todoArchiveBar);
+  }
   elements.historySearch.addEventListener('input', (event) => { state.search = event.target.value; renderHistory(); });
   elements.modelInput.addEventListener('change', (event) => { state.model = event.target.value; syncReasoningSelector(); post('setModel', { model: event.target.value }); });
   elements.profileInput.addEventListener('change', (event) => post('setProfile', { profileId: event.target.value }));
@@ -1141,18 +1334,33 @@
         state.permissionPresetPending = false;
         state.skills = incoming.skills || []; state.selectedSkillIds = incoming.selectedSkillIds || []; state.mode = incoming.mode || 'agent';
         state.workspaceTrusted = Boolean(incoming.workspaceTrusted); state.agentAvailable = Boolean(incoming.agentAvailable); state.availableToolCount = Number(incoming.availableToolCount) || 0; state.showArchived = Boolean(incoming.showArchived); state.taskTree = incoming.taskTree || (message.streamingConversationId ? state.taskTree : null); state.todos = Array.isArray(incoming.todos) ? incoming.todos : [];
+        state.todoArchives = Array.isArray(incoming.todoArchives) ? incoming.todoArchives : [];
+        state.todosInterrupted = Boolean(incoming.todosInterrupted);
+        state.runningConversationIds = Array.isArray(incoming.runningConversationIds) ? incoming.runningConversationIds : [];
+        state.pendingApprovals = Array.isArray(incoming.pendingApprovals) ? incoming.pendingApprovals : [];
         elements.modelInput.value = state.model || 'deepseek-flash'; if (previousConversationId !== incoming.conversation?.id) state.autoFollow = true; setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
       }
       case 'draft': elements.promptInput.value = message.text || ''; state.pendingAttachments = message.attachments || []; renderAttachments(); autoResize(); elements.promptInput.focus(); break;
       case 'attachments': state.pendingAttachments = message.attachments || []; renderAttachments(); break;
       case 'context': state.pendingAttachments = state.pendingAttachments.filter((item) => item.kind !== 'selection'); renderAttachments(); break;
-      case 'messageStart': state.conversation = state.conversation || { id: message.conversationId, title: message.userMessage.content, mode: state.mode }; state.messages.push(message.userMessage, message.assistant); state.pendingAttachments = []; state.autoFollow = true; setStreaming(true, message.conversationId); renderMessages('bottom'); renderAttachments(); break;
+      case 'messageStart': {
+        markRunning(message.conversationId, true);
+        // 发送准备期间用户可能已经切到别的对话：那种情况下不要把它塞进当前消息列表。
+        if (state.conversation?.id && state.conversation.id !== message.conversationId) { renderHistory(); break; }
+        state.conversation = state.conversation || { id: message.conversationId, title: message.userMessage.content, mode: state.mode };
+        state.messages.push(message.userMessage, message.assistant); state.pendingAttachments = []; state.autoFollow = true;
+        setStreaming(true, message.conversationId); renderMessages('bottom'); renderAttachments(); renderHistory(); break;
+      }
       case 'messageAdded': if (message.conversationId === state.conversation?.id) { state.messages.push(message.message); state.pendingAttachments = []; renderMessages(state.autoFollow ? 'bottom' : 'keep'); renderAttachments(); } break;
       case 'streamDelta': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.content = `${target.content || ''}${message.content || ''}`; target.reasoning = `${target.reasoning || ''}${message.reasoning || ''}`; scheduleMessageRender(); } break; }
       case 'toolExecutions': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.toolExecutions = message.tools || []; scheduleMessageRender(); } break; }
       case 'skillUsage': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.usedSkills = message.skills || []; scheduleMessageRender(); } break; }
       case 'messageComplete': { if (message.conversationId !== state.conversation?.id) break; if (state.renderTimer) { clearTimeout(state.renderTimer); state.renderTimer = null; } const index = state.messages.findIndex((item) => item.id === message.message.id); if (index >= 0) state.messages[index] = message.message; else state.messages.push(message.message); renderMessages('keep'); break; }
-      case 'streamIdle': setStreaming(false); renderTaskTree(); elements.promptInput.focus(); break;
+      case 'streamIdle': markRunning(message.conversationId, false); if (!message.conversationId || message.conversationId === state.conversation?.id) { setStreaming(false); renderTaskTree(); elements.promptInput.focus(); } renderHistory(); break;
+      case 'runs': state.runningConversationIds = Array.isArray(message.runningConversationIds) ? message.runningConversationIds : []; updateStreamingFromRuns(); renderHistory(); break;
+      case 'history': state.conversations = message.conversations || []; state.archivedConversations = message.archivedConversations || []; state.runningConversationIds = Array.isArray(message.runningConversationIds) ? message.runningConversationIds : state.runningConversationIds; renderHistory(); updateStreamingFromRuns(); break;
+      case 'approvalRequest': if (message.request) { state.pendingApprovals = [...state.pendingApprovals.filter((item) => item.requestId !== message.request.requestId), message.request]; renderApproval(); renderHistory(); updateComposerState(); } break;
+      case 'approvalResolved': state.pendingApprovals = state.pendingApprovals.filter((item) => item.requestId !== message.requestId); renderApproval(); renderHistory(); break;
       case 'olderMessages': state.messages = [...message.messages, ...state.messages]; state.hasMore = Boolean(message.hasMore); renderMessages('prepend'); break;
       case 'modelChanged': state.model = message.model; if (state.conversation) state.conversation.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; elements.modelInput.value = message.model; syncReasoningSelector(); updateComposerState(); showToast(t('chat.modelChanged', { model: message.model })); break;
       case 'profileChanged': state.activeApiProfileId = message.profileId; state.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; if (state.conversation) { state.conversation.apiProfileId = message.profileId; state.conversation.model = message.model; } elements.modelInput.value = message.model; renderHeader(); showToast(t('chat.profileChanged')); break;
@@ -1176,8 +1384,9 @@
       case 'permissionPresetChanged': state.permissionPreset = message.permissionPreset || 'review'; elements.permissionPresetInput.value = state.permissionPreset; syncPermissionHint(); break;
       case 'agentMaxStepsChanged': state.agentMaxSteps = Math.max(0, Math.floor(Number(message.agentMaxSteps) || 0)); ensureStepOption(state.agentMaxSteps); elements.agentMaxStepsInput.value = String(state.agentMaxSteps); break;
       case 'reasoningEffortChanged': state.reasoningEffort = message.reasoningEffort || 'default'; elements.reasoningEffortInput.value = state.reasoningEffort; break;
-      case 'taskTreeChanged': state.taskTree = message.taskTree || null; renderTaskTree(); updateComposerState(); break;
-      case 'todos': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.todos = Array.isArray(message.todos) ? message.todos : []; renderTodos(); break;
+      case 'taskTreeChanged': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.taskTree = message.taskTree || null; renderTaskTree(); updateComposerState(); break;
+      case 'todos': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.todos = Array.isArray(message.todos) ? message.todos : []; state.todosInterrupted = Boolean(message.interrupted); renderTodos(); break;
+      case 'todoArchives': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.todoArchives = Array.isArray(message.todoArchives) ? message.todoArchives : []; renderArchivePanel(); renderTodoArchives(); break;
       case 'voiceInputAllowed': startVoiceRecognition(); break;
       case 'clipboardWriteResult': finishClipboardWrite(message.requestId, Boolean(message.ok), message.error); break;
       case 'clipboardText':

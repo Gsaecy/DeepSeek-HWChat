@@ -140,6 +140,13 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .conversation-row.active::before { content: ""; position: absolute; left: 0; top: 9px; bottom: 9px; width: 2px; border-radius: 2px; background: var(--accent); }
 .conversation-content { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; min-width: 0; padding: 8px 4px 8px 10px; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .conversation-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 590; }
+/* 多线程：列表里标出「后台运行中」与「等你授权」，两个点都不占标题宽度 */
+.conversation-title-row { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.conversation-title-row .conversation-title { min-width: 0; }
+.conversation-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; }
+.conversation-dot.running { background: var(--accent); animation: conversation-dot 1.4s ease-in-out infinite; }
+.conversation-dot.awaiting { background: var(--warning); }
+@keyframes conversation-dot { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .conversation-meta { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .conversation-preview { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
 .conversation-actions { display: none; padding-right: 4px; gap: 1px; }
@@ -407,6 +414,95 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 .todo-item.status-completed .todo-content { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   .todo-status.status-in_progress i { animation: none; opacity: .85; }
+}
+
+/* ── 归档胶囊栏 ───────────────────────────────────────────────────
+   清单全部完成后压缩成一条纯色胶囊，夹在「任务清单」和输入框之间，左对齐。
+   三重约束（见 media/chat.js 的 layoutTodoArchives）：
+   1. 永不换行 —— flex-wrap: nowrap + overflow: hidden；
+   2. 宽高比恒为 3:1 —— 宽由 --capsule-h 算出来，不单独设死；
+   3. 放不下就一起缩 —— 尺寸由脚本按可用宽度反解，缩到 6px 高为止。
+   颜色由扩展逐颗算好（绿 → 浅蓝 → 深蓝），这里只负责形状。 */
+.todo-archive-bar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--capsule-gap, 4px);
+  width: 100%;
+  min-height: calc(var(--capsule-h, 16px) + 2px);
+  margin: 0 2px 7px;
+  padding: 0;
+  overflow: hidden;
+  --capsule-h: 16px;
+  --capsule-w: 48px;
+  --capsule-gap: 4px;
+}
+.todo-capsule {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--capsule-w);
+  height: var(--capsule-h);
+  min-width: 0;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  cursor: pointer;
+  opacity: .88;
+  transition: opacity .12s ease, transform .12s ease, box-shadow .12s ease;
+}
+.todo-capsule:hover { opacity: 1; }
+.todo-capsule.active { opacity: 1; box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--fg) 45%, transparent); }
+.todo-capsule:active { transform: scale(.94); }
+.todo-capsule-mark { font-size: calc(var(--capsule-h) * .52); line-height: 1; opacity: .92; }
+/* 缩到很小的时候图标会糊成一团，直接不画，只留纯色胶囊。 */
+.todo-archive-bar.compact .todo-capsule-mark { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .todo-capsule { transition: none; }
+}
+
+/* 展开的是归档快照：标题与配色都和「正在跑的清单」区分开。 */
+.todo-panel.archived { border-style: dashed; }
+.todo-panel.archived > summary { color: var(--muted); }
+
+/* 被中断的清单：条目已降级成「待办」（空心绿圈，不再跳动），标题上补一句「已中断」。
+   不新增第四种状态色——下一步做什么仍由用户决定：接着做会重新标 in_progress，换新任务则整份覆盖。 */
+.todo-panel.interrupted { border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
+.todo-panel.interrupted > summary small { color: var(--warning); }
+
+/* ── 面板内工具授权 ───────────────────────────────────────────────
+   替代原来的模态框：模态框会锁住整个 VS Code 窗口（侧边栏都拖不动）。 */
+.approval-card {
+  display: grid;
+  gap: 6px;
+  margin: 0 2px 7px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, var(--border));
+  border-left: 3px solid var(--warning);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--warning) 7%, var(--bg));
+}
+.approval-heading { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.approval-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.approval-badge { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--warning); animation: pulse 1.2s ease-in-out infinite; }
+.approval-summary { margin: 0; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.approval-detail > summary { cursor: pointer; color: var(--muted); font-size: 10px; list-style: none; }
+.approval-detail > summary::-webkit-details-marker { display: none; }
+.approval-detail > summary::before { content: "▸ "; font-size: 9px; }
+.approval-detail[open] > summary::before { content: "▾ "; }
+.approval-detail pre { margin: 4px 0 0; max-height: 160px; overflow: auto; padding: 6px 7px; border-radius: 5px; background: var(--surface); color: var(--muted); font: 10px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.approval-actions button { min-height: 24px; padding: 0 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); font-size: 11px; cursor: pointer; }
+.approval-actions button:hover { background: var(--surface-hover); }
+/* 「允许一次」是危险动作：默认项仍是拒绝，允许按钮用中性强调色而不是危险红。 */
+.approval-actions .approval-allow { border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); background: var(--accent); color: var(--accent-text); }
+.approval-actions .approval-allow:hover { filter: brightness(1.06); background: var(--accent); }
+.approval-card[data-risk="command"] .approval-actions .approval-allow { background: var(--danger); border-color: var(--danger); color: #fff; }
+@media (prefers-reduced-motion: reduce) {
+  .approval-badge { animation: none; }
 }
 
 .task-tree { margin: 0 2px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); overflow: hidden; }

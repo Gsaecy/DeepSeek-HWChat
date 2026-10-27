@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek, local skills, durable history and approval-controlled workspace tools.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",

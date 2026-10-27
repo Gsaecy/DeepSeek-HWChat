@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HWChat · 归档胶囊 / 面板内审批 预览</title>
+  <link rel="stylesheet" href="../media/chat.css">
+  <style>
+    /* 只用截图检查两件事：胶囊缩放的几何关系，和审批卡片的可读性。 */
+    body { padding: 14px; background: var(--bg); }
+    .preview-frame { width: 420px; max-width: 100%; margin: 0 0 18px; border: 1px dashed var(--border); border-radius: 8px; padding: 10px; }
+    .preview-label { margin: 0 0 6px; color: var(--muted); font-size: 10px; }
+    .demo-composer { width: min(850px, 100%); margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div class="preview-frame" id="frame-narrow">
+    <p class="preview-label">窄栏 + 12 颗胶囊（应当一起缩小、仍是一行、宽高比 3:1）</p>
+    <div class="demo-composer">
+      <div class="todo-archive-bar" id="bar-narrow"></div>
+    </div>
+  </div>
+
+  <div class="preview-frame" id="frame-wide">
+    <p class="preview-label">宽栏 + 3 颗胶囊（应当保持初始高度 16px）</p>
+    <div class="demo-composer">
+      <div class="todo-archive-bar" id="bar-wide"></div>
+    </div>
+  </div>
+
+  <div class="preview-frame">
+    <p class="preview-label">面板内审批卡片</p>
+    <div class="demo-composer">
+      <section class="approval-card" data-risk="write">
+        <div class="approval-heading"><span class="approval-badge" aria-hidden="true"></span><strong>允许 Agent 修改文件？</strong></div>
+        <p class="approval-summary">修改文件：src/views/chatPanel.ts</p>
+        <details class="approval-detail"><summary>查看详情</summary><pre>目标：src/views/chatPanel.ts
+精确替换：120 -> 340 字符</pre></details>
+        <div class="approval-actions">
+          <button type="button">拒绝</button>
+          <button type="button" class="approval-allow">允许一次</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="preview-frame">
+    <p class="preview-label">展开的归档清单（虚线边框 + 已归档标题）</p>
+    <div class="demo-composer">
+      <details class="todo-panel archived" open>
+        <summary><span>已归档任务清单</span><small>已归档 · 11:52 · 2/2 完成</small></summary>
+        <ol class="todo-list">
+          <li class="todo-item status-completed"><span class="todo-index">1</span><span class="todo-content">读代码</span><span class="todo-status status-completed">✓</span></li>
+          <li class="todo-item status-completed"><span class="todo-index">2</span><span class="todo-content">改实现</span><span class="todo-status status-completed">✓</span></li>
+        </ol>
+      </details>
+    </div>
+  </div>
+
+  <script>
+    // 与 media/chat.js 的 archiveColorHex 同样的锚点，仅用于截图对比。
+    const STOPS = [[0, [46, 160, 67]], [0.5, [74, 168, 224]], [1, [30, 79, 216]]];
+    function colorHex(ratio) {
+      const r = Math.min(1, Math.max(0, ratio));
+      let upper = 1;
+      while (upper < STOPS.length - 1 && r > STOPS[upper][0]) upper += 1;
+      const [fromAt, fromColor] = STOPS[upper - 1];
+      const [toAt, toColor] = STOPS[upper];
+      const local = (r - fromAt) / (toAt - fromAt);
+      const ch = (i) => Math.round(fromColor[i] + (toColor[i] - fromColor[i]) * local).toString(16).padStart(2, '0');
+      return `#${ch(0)}${ch(1)}${ch(2)}`;
+    }
+    const BASE_H = 16, MIN_H = 6, RATIO = 3;
+
+    function fill(bar, count) {
+      bar.replaceChildren();
+      for (let index = 0; index < count; index += 1) {
+        const capsule = document.createElement('button');
+        capsule.type = 'button';
+        capsule.className = 'todo-capsule';
+        capsule.style.backgroundColor = colorHex(count <= 1 ? 0 : index / (count - 1));
+        const mark = document.createElement('span');
+        mark.className = 'todo-capsule-mark';
+        mark.textContent = '▤';
+        capsule.append(mark);
+        bar.append(capsule);
+      }
+      layout(bar);
+    }
+
+    function layout(bar) {
+      const count = bar.children.length;
+      if (!count) return;
+      const available = bar.clientWidth;
+      const perUnit = count * RATIO + Math.max(0, count - 1) * 0.25;
+      let height = Math.min(BASE_H, available / perUnit);
+      if (height < 8) height = Math.min(height, (available - 2 * (count - 1)) / (count * RATIO));
+      height = Math.max(MIN_H, height);
+      bar.style.setProperty('--capsule-h', `${height.toFixed(2)}px`);
+      bar.style.setProperty('--capsule-w', `${(height * RATIO).toFixed(2)}px`);
+      bar.style.setProperty('--capsule-gap', `${Math.max(2, height * 0.25).toFixed(2)}px`);
+      bar.classList.toggle('compact', height < 11);
+    }
+
+    const narrow = document.getElementById('bar-narrow');
+    const wide = document.getElementById('bar-wide');
+    fill(narrow, 12);
+    fill(wide, 3);
+    window.addEventListener('resize', () => { layout(narrow); layout(wide); });
+  </script>
+</body>
+</html>

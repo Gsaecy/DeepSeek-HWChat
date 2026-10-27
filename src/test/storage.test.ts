@@ -359,3 +359,93 @@ test('新对话按调用方传入的模式落库，不再一律写成 agent', as
     assert.deepEqual(modes, ['agent', 'chat', 'plan']);
   });
 });
+
+test('归档任务清单随对话持久化，且能整体清空', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('archives');
+    const archive = {
+      id: 'todo-archive-1',
+      createdAt: 1_700_000_000_000,
+      todos: [
+        { content: '读代码', status: 'completed' as const },
+        { content: '改实现', status: 'completed' as const },
+      ],
+    };
+    await storage.updateConversation(conversation.id, { todos: [], todoArchives: [archive] });
+    assert.deepEqual((await storage.getConversation(conversation.id))?.todoArchives, [archive]);
+
+    // 换一个实例从磁盘重读：归档必须还在（胶囊是「历史记录」，不能只活在内存里）。
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const stored = (await reloaded.getConversation(conversation.id))?.todoArchives;
+    assert.equal(stored?.length, 1);
+    assert.equal(stored?.[0]?.todos.length, 2);
+
+    await reloaded.updateConversation(conversation.id, { todoArchives: null });
+    assert.equal((await reloaded.getConversation(conversation.id))?.todoArchives, undefined);
+  });
+});
+
+test('manifest 里被改坏的归档条目在载入时被丢掉，不影响对话本身', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('broken archives');
+    const manifestPath = join(root, 'manifest.json');
+    const raw = JSON.parse(await readFile(manifestPath, 'utf8'));
+    raw.conversations[0].todoArchives = [
+      { id: 'good', createdAt: 2, todos: [{ content: '有效', status: 'completed' }] },
+      { id: 'bad', createdAt: 3, todos: 'not-an-array' },
+    ];
+    await writeFile(manifestPath, JSON.stringify(raw), 'utf8');
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const loaded = await reloaded.getConversation(conversation.id);
+    assert.equal(loaded?.title, 'broken archives');
+    assert.equal(loaded?.todoArchives?.length, 1);
+    assert.equal(loaded?.todoArchives?.[0]?.id, 'good');
+  });
+});
+
+test('中断标记随对话持久化，换新清单后可清掉', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('interrupted');
+    await storage.updateConversation(conversation.id, {
+      todos: [
+        { content: '读代码', status: 'completed' },
+        { content: '改实现', status: 'pending' },
+      ],
+      todosInterrupted: true,
+    });
+    assert.equal((await storage.getConversation(conversation.id))?.todosInterrupted, true);
+
+    // 换实例从磁盘重读：标记和清单都要还在（重启后仍能看到「已中断」的待办）。
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const stored = await reloaded.getConversation(conversation.id);
+    assert.equal(stored?.todosInterrupted, true);
+    assert.equal(stored?.todos?.length, 2);
+    // 中断不清空清单：失败/停止后用户还要接着做。
+    assert.equal(stored?.todos?.[1]?.content, '改实现');
+
+    await reloaded.updateConversation(conversation.id, { todosInterrupted: null });
+    assert.equal((await reloaded.getConversation(conversation.id))?.todosInterrupted, undefined);
+  });
+});
+
+test('manifest 里非布尔的中断标记在载入时被丢掉', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('bad flag');
+    const manifestPath = join(root, 'manifest.json');
+    const raw = JSON.parse(await readFile(manifestPath, 'utf8'));
+    raw.conversations[0].todosInterrupted = 'yes';
+    raw.conversations[0].todos = [{ content: 'A', status: 'pending' }];
+    await writeFile(manifestPath, JSON.stringify(raw), 'utf8');
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const loaded = await reloaded.getConversation(conversation.id);
+    assert.equal(loaded?.todosInterrupted, undefined);
+    // 标记被丢弃不影响清单本身。
+    assert.equal(loaded?.todos?.length, 1);
+  });
+});

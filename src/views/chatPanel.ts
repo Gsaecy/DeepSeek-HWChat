@@ -26,8 +26,10 @@ import {
   ChatRequestMessage,
   ChatSettings,
   ConversationMode,
+  ConversationSummary,
   MessageContext,
   ModelOption,
+  PendingApprovalView,
   PermissionPreset,
   ReasoningEffort,
   SkillUsage,
@@ -35,11 +37,21 @@ import {
   ToolDefinition,
   ToolExecutionResult,
   ToolExecution,
+  TodoArchive,
   TodoItem,
   UsageInfo,
   WebviewConversationState,
 } from '../core/types';
-import { completedCount, hasMultipleInProgress, normalizeTodos } from '../core/todos';
+import { completedCount, hasMultipleInProgress, normalizeTodos, settleInterruptedTodos } from '../core/todos';
+import {
+  allTodosCompleted,
+  appendTodoArchive,
+  archiveColorHex,
+  archiveColorRatio,
+  createTodoArchive,
+  normalizeTodoArchives,
+  planTodoSettlement,
+} from '../core/todoArchives';
 import { DeepSeekClient, RequestCancelledError } from '../providers/deepseekClient';
 import { icon, mediaUri, nonce } from './webview';
 
@@ -73,6 +85,36 @@ interface ActiveResponseState {
   completed: boolean;
 }
 
+/**
+ * 一次 Agent 运行的全部状态。
+ *
+ * 以前这些字段直接挂在 `ChatPanel` 上（`activeAbortController` / `activeTaskQueue` /
+ * `activeResponses`…），只要有一个对话在跑，整个面板就被当成「忙」：点新建对话、
+ * 点历史记录都会被拦下，想边看文档边让 Agent 干活做不到。
+ * 现在按对话各存一份，同一个人可以同时跑多条线程；面板当前显示哪条由
+ * `activeConversationId` 决定，两者不再互相限制。
+ */
+interface ConversationRun {
+  conversationId: string;
+  controller: AbortController;
+  taskQueue: AgentTaskQueue;
+  settings: ChatSettings;
+  responses: Map<string, ActiveResponseState>;
+  activeResponseTaskId?: string;
+  /** 本次运行期间产生的全部工具步骤（跨多个响应节点）。 */
+  globalTools: ToolExecution[];
+  toolContentOffsets: Map<string, number>;
+  checkpointTail: Promise<void>;
+  lastCheckpointByMessage: Map<string, number>;
+}
+
+interface PendingApproval {
+  conversationId: string;
+  /** 推给 webview 的同一份数据，状态刷新时原样重发，面板重载也不会丢卡片。 */
+  request: PendingApprovalView;
+  resolve: (allowed: boolean) => void;
+}
+
 type IncomingMessage =
   | { type: 'ready' }
   | { type: 'newChat' }
@@ -82,6 +124,7 @@ type IncomingMessage =
   | { type: 'send'; text: string; mode?: ConversationMode; skillIds?: string[]; permissionPreset?: PermissionPreset; agentMaxSteps?: number; reasoningEffort?: ReasoningEffort }
   | { type: 'sendWhileRunning'; text: string }
   | { type: 'stop' }
+  | { type: 'approvalResponse'; requestId: string; allow: boolean }
   | { type: 'deleteConversation'; id: string }
   | { type: 'togglePin'; id: string; pinned: boolean }
   | { type: 'toggleArchive'; id: string; archived: boolean }
@@ -121,21 +164,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private draftModeOverride: ConversationMode | undefined;
   private activeSkillIds: string[] = [];
   private showArchived = false;
-  private sendPending = false;
-  private activeAbortController: AbortController | undefined;
-  private streamingConversationId: string | undefined;
-  private activeTaskQueue: AgentTaskQueue | undefined;
-  private activeRunSettings: ChatSettings | undefined;
-  private readonly activeResponses = new Map<string, ActiveResponseState>();
-  private activeResponseTaskId: string | undefined;
-  private activeGlobalTools: ToolExecution[] = [];
-  /**
-   * 每条步骤接在响应正文的第几个字符之后。按 callId 记：执行器每次快照都会重建
-   * 对象，不回填的话后面几次快照会把已经算好的边界覆盖掉。
-   */
-  private readonly toolContentOffsets = new Map<string, number>();
-  private checkpointTail: Promise<void> = Promise.resolve();
-  private readonly lastCheckpointByMessage = new Map<string, number>();
+  /** 正在准备发送的对话（`draft` 表示还没落库的新对话）；同一对话不允许重复提交。 */
+  private readonly pendingSends = new Set<string>();
+  /** 每个对话各自一条运行线程，互不阻塞。 */
+  private readonly runs = new Map<string, ConversationRun>();
+  /** 等待用户在面板里点「允许一次 / 拒绝」的工具授权。 */
+  private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private approvalSequence = 0;
   private voiceConsentGranted = false;
   private readonly disposables: vscode.Disposable[] = [];
   /** 上次生成 HTML 时用的语言；语言设置变化后据此触发重建。 */
@@ -216,7 +251,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   getProtectedConversationIds(): string[] {
-    return [this.activeConversationId, this.streamingConversationId].filter((id): id is string => Boolean(id));
+    return [...new Set([this.activeConversationId, ...this.runs.keys()].filter((id): id is string => Boolean(id)))];
   }
 
   async openSelection(mode: 'ask' | 'explain'): Promise<void> {
@@ -310,7 +345,29 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   isBusy(): boolean {
-    return this.sendPending || Boolean(this.activeAbortController);
+    return this.pendingSends.size > 0 || this.runs.size > 0;
+  }
+
+  /** 面板当前显示的对话是否在运行（决定发送 / 停止按钮）。 */
+  private isViewingRunningConversation(): boolean {
+    return Boolean(this.activeConversationId && this.runs.has(this.activeConversationId));
+  }
+
+  private runFor(conversationId: string | undefined): ConversationRun | undefined {
+    return conversationId ? this.runs.get(conversationId) : undefined;
+  }
+
+  /**
+   * 当前显示的对话是否「忙」（正在跑，或正在准备发送）。
+   * 只拦这条对话自己的控件（模型、模式、技能…），不影响别的对话。
+   */
+  private get viewingBusy(): boolean {
+    return this.pendingSends.has(this.activeConversationId ?? 'draft') || this.isViewingRunningConversation();
+  }
+
+  /** 当前对话的运行线程；切换对话后它自然指向另一条线程。 */
+  private get viewedRun(): ConversationRun | undefined {
+    return this.runFor(this.activeConversationId);
   }
 
   async archiveActiveConversation(): Promise<void> {
@@ -328,11 +385,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   stop(): void {
-    this.activeAbortController?.abort();
+    // 只停当前对话的线程：另一个对话在后台跑不该被这个按钮连带停掉。
+    this.viewedRun?.controller.abort();
   }
 
   dispose(): void {
-    this.activeAbortController?.abort();
+    for (const run of this.runs.values()) run.controller.abort();
+    this.settleAllApprovals();
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
@@ -345,17 +404,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           await this.sendState();
           break;
         case 'newChat':
-          if (this.activeAbortController) {
-            await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusyNewChat') });
-            break;
-          }
+          // 多线程：另一个对话在跑也允许开新对话——它继续在后台跑，这里只是把面板切到草稿。
           await this.newChat();
           break;
         case 'selectConversation':
-          if (this.activeAbortController && message.id !== this.streamingConversationId) {
-            await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusySwitch') });
-            break;
-          }
+          // 同理，随时可以切到别的对话（包括正在运行的那条，切过去就能看到它的实时输出）。
           this.activeConversationId = message.id;
           this.pendingContext = undefined;
           this.pendingAttachments = [];
@@ -374,18 +427,34 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           await this.detachConversationHistory();
           break;
         case 'send':
-          if (this.activeAbortController) {
+          if (this.isViewingRunningConversation()) {
             await this.queueRunningMessage(message.text);
           } else {
             await this.send(message.text, message.mode, message.skillIds, message.permissionPreset, message.agentMaxSteps, message.reasoningEffort);
           }
           break;
         case 'sendWhileRunning':
-          await this.queueRunningMessage(message.text);
+          // 界面以为当前对话在跑；如果其实已经结束（例如后台刚完成），按普通发送处理，别把消息吞掉。
+          if (this.isViewingRunningConversation()) {
+            await this.queueRunningMessage(message.text);
+          } else {
+            await this.send(message.text);
+          }
           break;
         case 'stop':
           this.stop();
           break;
+        case 'approvalResponse': {
+          const pending = this.pendingApprovals.get(message.requestId);
+          if (!pending) {
+            await this.post({ type: 'toast', tone: 'neutral', text: tt('approval.expired') });
+            break;
+          }
+          this.pendingApprovals.delete(message.requestId);
+          pending.resolve(Boolean(message.allow));
+          await this.post({ type: 'approvalResolved', requestId: message.requestId });
+          break;
+        }
         case 'deleteConversation':
           await this.deleteConversation(message.id);
           break;
@@ -526,15 +595,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async queueRunningMessage(text: string): Promise<void> {
-    const queue = this.activeTaskQueue;
-    const conversationId = this.streamingConversationId;
-    const settings = this.activeRunSettings;
+    const run = this.viewedRun;
     const content = text.trim();
-    if (!queue || !conversationId || !settings || !queue.isAccepting()) {
+    if (!run || !run.taskQueue.isAccepting()) {
       if (content) await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentFinishing') });
       return;
     }
     if (!content && !this.pendingAttachments.length && !this.pendingContext) return;
+    const conversationId = run.conversationId;
+    const settings = run.settings;
     const context = this.pendingContext;
     const attachments = this.pendingAttachments.map((item) => ({ ...item }));
     this.pendingContext = undefined;
@@ -556,14 +625,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     });
     const request = this.requestMessageFromParts(userMessage.content, context, attachments);
     const taskTitle = content || `${tt('notice.attachmentTaskPrefix')}${attachments.map((attachment) => attachment.label).join(tt('common.listSeparator'))}`;
-    const node = queue.enqueue(
+    const node = run.taskQueue.enqueue(
       taskTitle,
       request,
-      (currentTask, incomingTask) => classifyTaskRelation(this.client, settings, currentTask, incomingTask, this.activeAbortController?.signal ?? new AbortController().signal),
-      (state) => this.post({ type: 'taskTreeChanged', taskTree: state }),
+      (currentTask, incomingTask) => classifyTaskRelation(this.client, settings, currentTask, incomingTask, run.controller.signal),
+      (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }),
       { userMessageId: userMessage.id, assistantMessageId: assistant.id },
     );
-    this.activeResponses.set(node.id, {
+    run.responses.set(node.id, {
       taskId: node.id,
       userMessageId: userMessage.id,
       assistantMessageId: assistant.id,
@@ -571,14 +640,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       reasoning: '',
       tools: [],
       usedSkills: [],
-      toolStartIndex: this.activeGlobalTools.length,
+      toolStartIndex: run.globalTools.length,
       activated: false,
       completed: false,
     });
     this.callbacks.onHistoryChanged();
     await this.post({ type: 'messageAdded', conversationId, message: this.forWebview(userMessage), pendingAttachments: [] });
     await this.post({ type: 'messageAdded', conversationId, message: this.forWebview(assistant), pendingAttachments: [] });
-    await this.postTaskTree(queue);
+    await this.postTaskTree(run.taskQueue, conversationId);
   }
 
   private async send(
@@ -590,10 +659,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     requestedReasoningEffort?: ReasoningEffort,
   ): Promise<void> {
     const content = text.trim();
-    if ((!content && !this.pendingAttachments.length && !this.pendingContext) || this.sendPending || this.activeAbortController) {
+    const sendKey = this.activeConversationId ?? 'draft';
+    if ((!content && !this.pendingAttachments.length && !this.pendingContext) || this.pendingSends.has(sendKey)) {
       return;
     }
-    this.sendPending = true;
+    this.pendingSends.add(sendKey);
     try {
       if (!await this.callbacks.ensurePrivacyConsent()) {
         await this.post({ type: 'toast', tone: 'warning', text: tt('notice.privacyRequired') });
@@ -696,13 +766,20 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       });
       const controller = new AbortController();
       const taskQueue = new AgentTaskQueue(content || attachments.map((attachment) => attachment.label).join(tt('common.listSeparator')) || tt('notice.processAttachments'));
-      this.activeAbortController = controller;
-      this.streamingConversationId = conversationId;
-      this.activeTaskQueue = taskQueue;
-      this.activeRunSettings = settings;
-      this.activeResponses.clear();
       const rootTaskId = taskQueue.state().currentNodeId!;
-      this.activeResponses.set(rootTaskId, {
+      const run: ConversationRun = {
+        conversationId,
+        controller,
+        taskQueue,
+        settings,
+        responses: new Map(),
+        activeResponseTaskId: rootTaskId,
+        globalTools: [],
+        toolContentOffsets: new Map(),
+        checkpointTail: Promise.resolve(),
+        lastCheckpointByMessage: new Map(),
+      };
+      run.responses.set(rootTaskId, {
         taskId: rootTaskId,
         userMessageId: userMessage.id,
         assistantMessageId: assistant.id,
@@ -714,12 +791,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         activated: true,
         completed: false,
       });
-      this.activeResponseTaskId = rootTaskId;
-      this.activeGlobalTools = [];
-      this.toolContentOffsets.clear();
-      this.checkpointTail = Promise.resolve();
-      this.lastCheckpointByMessage.clear();
+      // 同一个对话不会重复进 send()（界面上按钮已禁用），覆盖写只是防御。
+      this.runs.set(conversationId, run);
       this.callbacks.onHistoryChanged();
+      await this.post({ type: 'runs', runningConversationIds: [...this.runs.keys()] });
       await this.post({
         type: 'messageStart',
         conversationId,
@@ -727,7 +802,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         assistant: this.forWebview(assistant),
         pendingAttachments: [],
       });
-      await this.postTaskTree(taskQueue);
+      await this.postTaskTree(taskQueue, conversationId);
       // 先把声明了语言模型工具的扩展激活，再生成工具定义，避免工具列表缺项。
       await this.vscodeTools.warmToolContributors();
       try {
@@ -748,7 +823,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
               return { result: await this.updateTodos(conversationId!, call) };
             }
             if (call.function.name === 'search_conversation_history') {
-              return { result: await this.searchLinkedConversationHistory(conversationId!, call, mode, settings) };
+              return { result: await this.searchLinkedConversationHistory(conversationId!, call, mode, settings, run) };
             }
             if (call.function.name === 'load_skill') {
               const loaded = await this.skills.executeLoad(call, preparedSkills.routableIds);
@@ -758,17 +833,17 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
               call,
               mode,
               settings,
-              (request) => this.requestToolApproval(request.summary, request.detail, request.risk),
+              (request) => this.requestToolApproval(request.summary, request.detail, request.risk, run),
               conversationId!,
             );
           },
-          takeTaskUpdate: (phase) => taskQueue.take(phase, (state) => this.post({ type: 'taskTreeChanged', taskTree: state })),
+          takeTaskUpdate: (phase) => taskQueue.take(phase, (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state })),
           callbacks: {
             onTaskUpdate: async (update) => {
-              await this.activateResponse(conversationId!, update);
+              await this.activateResponse(run, update);
             },
             onDelta: async (delta) => {
-              const response = this.currentActiveResponse();
+              const response = this.currentActiveResponse(run);
               if (!response) return;
               response.content += delta.content ?? '';
               response.reasoning += delta.reasoning ?? '';
@@ -780,32 +855,32 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
                 reasoning: delta.reasoning ?? '',
               });
               const now = Date.now();
-              const lastCheckpoint = this.lastCheckpointByMessage.get(response.assistantMessageId) ?? 0;
+              const lastCheckpoint = run.lastCheckpointByMessage.get(response.assistantMessageId) ?? 0;
               if (now - lastCheckpoint >= 1_500) {
-                this.lastCheckpointByMessage.set(response.assistantMessageId, now);
-                this.queueResponseCheckpoint(conversationId!, response);
+                run.lastCheckpointByMessage.set(response.assistantMessageId, now);
+                this.queueResponseCheckpoint(run, response);
               }
             },
             onToolsChanged: async (tools) => {
-              const response = this.currentActiveResponse();
+              const response = this.currentActiveResponse(run);
               // 新出现的步骤在这里钉住它的位置：此刻正文刚好写完「这一步要做什么」，
               // 后面几轮正文还会继续增长，所以边界必须现在记，事后算不回来。
               const boundary = response ? response.content.length : 0;
-              this.activeGlobalTools = tools.map((item) => {
-                let offset = this.toolContentOffsets.get(item.callId);
+              run.globalTools = tools.map((item) => {
+                let offset = run.toolContentOffsets.get(item.callId);
                 if (offset === undefined) {
                   offset = boundary;
-                  this.toolContentOffsets.set(item.callId, offset);
+                  run.toolContentOffsets.set(item.callId, offset);
                 }
                 return { ...item, contentOffset: offset };
               });
               if (!response) return;
-              response.tools = this.activeGlobalTools.slice(response.toolStartIndex).map((item) => ({ ...item }));
+              response.tools = run.globalTools.slice(response.toolStartIndex).map((item) => ({ ...item }));
               await this.post({ type: 'toolExecutions', conversationId, messageId: response.assistantMessageId, tools: response.tools });
-              this.queueResponseCheckpoint(conversationId!, response);
+              this.queueResponseCheckpoint(run, response);
             },
             onSkillUsed: async (skill) => {
-              const response = this.currentActiveResponse();
+              const response = this.currentActiveResponse(run);
               if (!response) return;
               if (!response.usedSkills.some((item) => item.id === skill.id)) response.usedSkills.push(skill);
               await this.storage.updateMessage(conversationId!, response.assistantMessageId, {
@@ -814,87 +889,89 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
               await this.post({ type: 'skillUsage', conversationId, messageId: response.assistantMessageId, skills: response.usedSkills });
             },
             onRoundComplete: (roundUsage) => {
-              const response = this.currentActiveResponse();
+              const response = this.currentActiveResponse(run);
               if (response) response.usage = addUsage(response.usage, roundUsage);
             },
-            requestApproval: (request) => this.requestToolApproval(request.summary, request.detail, request.risk),
+            requestApproval: (request) => this.requestToolApproval(request.summary, request.detail, request.risk, run),
           },
         });
-        await taskQueue.finish('complete', (state) => this.post({ type: 'taskTreeChanged', taskTree: state }));
-        const rootResponse = this.activeResponses.get(rootTaskId);
+        await taskQueue.finish('complete', (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
+        const rootResponse = run.responses.get(rootTaskId);
         if (rootResponse) rootResponse.usage = addUsage(rootResponse.usage, taskQueue.classifierUsage());
-        await this.checkpointTail;
-        for (const response of this.activeResponses.values()) {
+        await run.checkpointTail;
+        for (const response of run.responses.values()) {
           if (!response.activated) {
-            await this.completeResponse(conversationId, response, 'error', tt('chat.queuedNotExecuted'));
+            await this.completeResponse(run, response, 'error', tt('chat.queuedNotExecuted'));
           } else if (!response.completed) {
-            await this.completeResponse(conversationId, response, 'complete', tt('chat.emptyResponse'));
+            await this.completeResponse(run, response, 'complete', tt('chat.emptyResponse'));
           }
         }
       } catch (error) {
-        await this.checkpointTail;
+        await run.checkpointTail;
         const cancelled = error instanceof RequestCancelledError || controller.signal.aborted;
-        await taskQueue.finish(cancelled ? 'cancelled' : 'error', (state) => this.post({ type: 'taskTreeChanged', taskTree: state }));
-        const rootResponse = this.activeResponses.get(rootTaskId);
+        await taskQueue.finish(cancelled ? 'cancelled' : 'error', (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
+        const rootResponse = run.responses.get(rootTaskId);
         if (rootResponse) rootResponse.usage = addUsage(rootResponse.usage, taskQueue.classifierUsage());
         const errorText = error instanceof Error ? error.message : String(error);
-        for (const response of this.activeResponses.values()) {
+        for (const response of run.responses.values()) {
           if (response.completed) continue;
           const fallback = response.activated
             ? cancelled ? tt('chat.stopped') : tt('chat.requestFailed', { error: errorText })
             : cancelled ? tt('chat.stoppedBeforeRun') : tt('chat.taskNotRun', { error: errorText });
-          await this.completeResponse(conversationId, response, cancelled ? 'complete' : 'error', fallback);
+          await this.completeResponse(run, response, cancelled ? 'complete' : 'error', fallback);
         }
         if (!cancelled) {
           await this.post({ type: 'toast', tone: 'error', text: tt('chat.requestFailed', { error: errorText }) });
         }
       } finally {
-        this.activeAbortController = undefined;
-        this.streamingConversationId = undefined;
-        this.activeTaskQueue = undefined;
-        this.activeRunSettings = undefined;
-        this.activeResponses.clear();
-        this.activeResponseTaskId = undefined;
-        this.activeGlobalTools = [];
-        this.toolContentOffsets.clear();
-        this.lastCheckpointByMessage.clear();
+        // 成功 / 失败 / 被停止都走同一处结算：全绿才归档，否则把「执行中」降级成待办并标「已中断」。
+        await this.settleTodosAfterRun(conversationId);
+        this.runs.delete(conversationId);
+        this.rejectApprovalsFor(conversationId);
         this.callbacks.onHistoryChanged();
+        await this.post({ type: 'runs', runningConversationIds: [...this.runs.keys()] });
         await this.post({ type: 'streamIdle', conversationId });
-        await this.sendState();
+        // 只有用户正看着这条对话时才整体刷新；否则会把另一条对话的滚动位置重置。
+        if (this.activeConversationId === conversationId || !this.activeConversationId) {
+          await this.sendState();
+        } else {
+          // 后台线程结束了：只更新历史列表（标题/预览/运行圆点），不动当前消息区。
+          await this.postHistorySnapshot();
+        }
       }
     } finally {
-      this.sendPending = false;
+      this.pendingSends.delete(sendKey);
     }
   }
 
-  private currentActiveResponse(): ActiveResponseState | undefined {
-    return this.activeResponseTaskId ? this.activeResponses.get(this.activeResponseTaskId) : undefined;
+  private currentActiveResponse(run: ConversationRun): ActiveResponseState | undefined {
+    return run.activeResponseTaskId ? run.responses.get(run.activeResponseTaskId) : undefined;
   }
 
-  private async activateResponse(conversationId: string, update: AgentTaskUpdate): Promise<void> {
-    const next = this.activeResponses.get(update.nodeId);
+  private async activateResponse(run: ConversationRun, update: AgentTaskUpdate): Promise<void> {
+    const next = run.responses.get(update.nodeId);
     if (!next) return;
-    const current = this.currentActiveResponse();
+    const current = this.currentActiveResponse(run);
     if (current && current.taskId !== next.taskId && !current.completed) {
       const fallback = current.tools.length
         ? tt('chat.followUpDone')
         : tt('chat.followUpAdjusted');
-      await this.completeResponse(conversationId, current, 'complete', fallback);
+      await this.completeResponse(run, current, 'complete', fallback);
     }
     next.activated = true;
-    next.toolStartIndex = this.activeGlobalTools.length;
-    this.activeResponseTaskId = next.taskId;
-    const streaming = await this.storage.updateMessage(conversationId, next.assistantMessageId, {
+    next.toolStartIndex = run.globalTools.length;
+    run.activeResponseTaskId = next.taskId;
+    const streaming = await this.storage.updateMessage(run.conversationId, next.assistantMessageId, {
       status: 'streaming',
       content: next.content,
       reasoning: next.reasoning || undefined,
       toolExecutions: next.tools,
       usedSkills: next.usedSkills,
     });
-    await this.post({ type: 'messageComplete', conversationId, message: this.forWebview(streaming) });
+    await this.post({ type: 'messageComplete', conversationId: run.conversationId, message: this.forWebview(streaming) });
   }
 
-  private queueResponseCheckpoint(conversationId: string, response: ActiveResponseState): void {
+  private queueResponseCheckpoint(run: ConversationRun, response: ActiveResponseState): void {
     const snapshot = {
       content: response.content,
       reasoning: response.reasoning,
@@ -902,8 +979,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       tools: response.tools.map((item) => ({ ...item, changedFiles: item.changedFiles ? [...item.changedFiles] : undefined })),
       skills: response.usedSkills.map((item) => ({ ...item })),
     };
-    this.checkpointTail = this.checkpointTail
-      .then(() => this.storage.updateMessage(conversationId, response.assistantMessageId, {
+    run.checkpointTail = run.checkpointTail
+      .then(() => this.storage.updateMessage(run.conversationId, response.assistantMessageId, {
         content: snapshot.content,
         reasoning: snapshot.reasoning || undefined,
         usage: snapshot.usage,
@@ -916,14 +993,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async completeResponse(
-    conversationId: string,
+    run: ConversationRun,
     response: ActiveResponseState,
     status: 'complete' | 'error',
     fallback: string,
   ): Promise<void> {
     if (response.completed) return;
-    await this.checkpointTail;
-    const completed = await this.storage.updateMessage(conversationId, response.assistantMessageId, {
+    await run.checkpointTail;
+    const completed = await this.storage.updateMessage(run.conversationId, response.assistantMessageId, {
       content: response.content || fallback,
       reasoning: response.reasoning || undefined,
       usage: response.usage,
@@ -932,11 +1009,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       status,
       replyToMessageId: response.userMessageId,
     });
-    await this.storage.updateMessage(conversationId, response.userMessageId, {
+    await this.storage.updateMessage(run.conversationId, response.userMessageId, {
       consumedByAssistantId: response.assistantMessageId,
     });
     response.completed = true;
-    await this.post({ type: 'messageComplete', conversationId, message: this.forWebview(completed) });
+    await this.post({ type: 'messageComplete', conversationId: run.conversationId, message: this.forWebview(completed) });
   }
 
   private async requestMessages(
@@ -1048,6 +1125,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       draftOverride: this.draftModeOverride,
       defaultMode: settings.defaultMode,
     });
+    // 清单同样要「读的时候补齐结算」：关窗口/崩溃留下的 in_progress 在这里降级成待办。
+    const todoView = await this.viewTodos(conversation);
     const state: WebviewConversationState = {
       conversation,
       messages: page.messages.map((message) => this.forWebview(message)),
@@ -1076,14 +1155,20 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         + this.toolExecutor.definitions(activeMode).length
         + 1
         + (conversation?.sourceConversationId ? 1 : 0),
-      taskTree: conversation?.id === this.streamingConversationId ? this.activeTaskQueue?.state() : undefined,
-      todos: conversation?.todos,
+      taskTree: conversation?.id && this.runs.has(conversation.id)
+        ? this.runs.get(conversation.id)?.taskQueue.state()
+        : undefined,
+      todos: todoView.todos,
+      todosInterrupted: todoView.interrupted,
+      todoArchives: this.todoArchiveViews(conversation?.todoArchives),
+      runningConversationIds: [...this.runs.keys()],
+      pendingApprovals: [...this.pendingApprovals.values()].map((item) => item.request),
       showArchived: this.showArchived,
     };
     await this.post({
       type: 'state',
       state,
-      streamingConversationId: this.streamingConversationId,
+      streamingConversationId: this.isViewingRunningConversation() ? this.activeConversationId : undefined,
     });
     const discoveryKey = this.modelDiscoveryKey(activeProfile.id, activeProfile.baseUrl);
     if (apiKeyConfigured && !this.modelDiscoveryAttempts.has(discoveryKey) && !this.modelDiscoveryInFlight.has(discoveryKey)) {
@@ -1105,7 +1190,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async setModel(model: string): Promise<void> {
-    if (this.activeAbortController || this.sendPending) return;
+    if (this.viewingBusy) return;
     const normalized = model.trim();
     if (!normalized) {
       return;
@@ -1129,7 +1214,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async setProfile(profileId: string): Promise<void> {
-    if (this.activeAbortController || this.sendPending) return;
+    if (this.viewingBusy) return;
     const settings = readSettings();
     const profile = settings.apiProfiles.find((item) => item.id === profileId);
     if (!profile) return;
@@ -1236,7 +1321,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       await this.post({ type: 'modeChanged', mode: await this.effectiveMode() });
       return;
     }
-    if (this.activeAbortController || this.sendPending) {
+    if (this.viewingBusy) {
       // 工具集在发送那一刻就定了，运行中改模式不会生效；但必须回推真实模式，
       // 否则界面显示 Plan、实际按 Agent 跑，用户会以为设置被无视。
       await this.post({ type: 'modeChanged', mode: await this.effectiveMode() });
@@ -1254,7 +1339,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async setSkills(skillIds: string[]): Promise<void> {
-    if (this.activeAbortController || this.sendPending) return;
+    if (this.viewingBusy) return;
     const selected = [...new Set(skillIds)].filter((id) => this.skills.has(id));
     this.activeSkillIds = selected;
     if (this.activeConversationId) {
@@ -1265,7 +1350,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async setPermissionPreset(permissionPreset: PermissionPreset): Promise<void> {
-    if (!isPermissionPreset(permissionPreset) || this.activeAbortController || this.sendPending) return;
+    if (!isPermissionPreset(permissionPreset) || this.viewingBusy) return;
     const current = readSettings().permissionPreset;
     if (permissionPreset === current) {
       await this.post({ type: 'permissionPresetChanged', permissionPreset: current });
@@ -1286,14 +1371,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async setAgentMaxSteps(agentMaxSteps: number): Promise<void> {
-    if (this.activeAbortController || this.sendPending) return;
+    if (this.viewingBusy) return;
     const normalized = normalizeAgentMaxSteps(agentMaxSteps);
     await updateSettings({ agentMaxSteps: normalized });
     await this.post({ type: 'agentMaxStepsChanged', agentMaxSteps: normalized });
   }
 
   private async setReasoningEffort(reasoningEffort: ReasoningEffort): Promise<void> {
-    if (this.activeAbortController || this.sendPending) return;
+    if (this.viewingBusy) return;
     const settings = readSettings();
     const conversation = this.activeConversationId ? await this.storage.getConversation(this.activeConversationId) : undefined;
     const profile = profileFor(settings, conversation?.apiProfileId);
@@ -1321,8 +1406,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     await this.post({ type: 'voiceInputAllowed' });
   }
 
-  private async postTaskTree(queue: AgentTaskQueue): Promise<void> {
-    await this.post({ type: 'taskTreeChanged', taskTree: queue.state() });
+  private async postTaskTree(queue: AgentTaskQueue, conversationId: string): Promise<void> {
+    await this.post({ type: 'taskTreeChanged', conversationId, taskTree: queue.state() });
   }
 
   private async confirmPermissionPreset(permissionPreset: PermissionPreset): Promise<boolean> {
@@ -1368,7 +1453,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async continueFromConversation(sourceId: string): Promise<void> {
-    if (this.activeAbortController || this.sendPending) {
+    if (this.viewingBusy) {
       await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusyContinue') });
       return;
     }
@@ -1411,7 +1496,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
   private async detachConversationHistory(): Promise<void> {
     if (!this.activeConversationId) return;
-    if (this.activeAbortController || this.sendPending) {
+    if (this.viewingBusy) {
       await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusyDetach') });
       return;
     }
@@ -1445,8 +1530,22 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         approval: 'not-required',
       };
     }
-    await this.storage.updateConversation(conversationId, { todos });
-    await this.post({ type: 'todos', conversationId, todos });
+    // 上一份清单已经全部完成、模型又给了新的一份：先把旧的压成胶囊，再写新的。
+    // 两步合并成一次落库，避免面板上闪过一帧「空白清单」。
+    // 上一份没完成（被停止/失败）时用户直接开了新任务：按约定直接覆盖，不归档、不追问。
+    const previous = await this.storage.getConversation(conversationId);
+    const archivable = allTodosCompleted(previous?.todos) ? createTodoArchive(previous?.todos) : undefined;
+    const archives = archivable ? appendTodoArchive(previous?.todoArchives, archivable) : undefined;
+    await this.storage.updateConversation(conversationId, {
+      todos,
+      // 新清单是一份新任务，上一份的「已中断」标记随旧清单一起作废。
+      todosInterrupted: null,
+      ...(archives ? { todoArchives: archives } : {}),
+    });
+    await this.post({ type: 'todos', conversationId, todos, interrupted: false });
+    if (archives) {
+      await this.post({ type: 'todoArchives', conversationId, todoArchives: this.todoArchiveViews(archives) });
+    }
     const done = completedCount(todos);
     return {
       status: 'success',
@@ -1459,11 +1558,73 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     };
   }
 
+  /**
+   * 运行结束时结算清单（成功、失败、被停止都走这里）。
+   *
+   * - 全部完成 → 归档成胶囊，面板上的折叠框消失；
+   * - 没完成（失败 / 停止 / 还有待办）→ 清单留在面板上，把 `in_progress` 降级成 `pending`
+   *   并打上「已中断」标记。这样界面不会假装还在执行，用户接着做时模型重新标状态即可，
+   *   最终全部完成就照常归档。
+   *
+   * 失败与暂停在这里是同一套处理：对清单来说两者都是「没人再推进它了」。
+   */
+  private async settleTodosAfterRun(conversationId: string): Promise<void> {
+    const conversation = await this.storage.getConversation(conversationId);
+    const settlement = planTodoSettlement(conversation?.todos, conversation?.todoArchives);
+    if (settlement.action === 'archive') {
+      await this.storage.updateConversation(conversationId, {
+        todos: null,
+        todoArchives: settlement.archives,
+        todosInterrupted: null,
+      });
+      await this.post({ type: 'todos', conversationId, todos: [], interrupted: false });
+      await this.post({ type: 'todoArchives', conversationId, todoArchives: this.todoArchiveViews(settlement.archives) });
+      return;
+    }
+    if (settlement.action === 'interrupt') {
+      await this.storage.updateConversation(conversationId, { todos: settlement.todos, todosInterrupted: true });
+      await this.post({ type: 'todos', conversationId, todos: settlement.todos, interrupted: true });
+    }
+  }
+
+  /**
+   * 读清单给面板的入口：正在跑的对话照原样下发，其余情况先补齐中断结算。
+   *
+   * 关窗口 / 进程被杀时 `send()` 的 finally 没跑到，存档里可能还留着 `in_progress`；
+   * 这里补一次归位，界面才不会再出现「什么都没跑却一直跳」的假执行中。
+   */
+  private async viewTodos(conversation: ConversationSummary | null): Promise<{ todos?: TodoItem[]; interrupted: boolean }> {
+    if (!conversation?.todos?.length) return { todos: conversation?.todos, interrupted: false };
+    if (this.runs.has(conversation.id)) {
+      return { todos: conversation.todos, interrupted: Boolean(conversation.todosInterrupted) };
+    }
+    const settled = settleInterruptedTodos(conversation.todos);
+    if (!settled.changed) {
+      return { todos: settled.todos, interrupted: Boolean(conversation.todosInterrupted) };
+    }
+    await this.storage.updateConversation(conversation.id, { todos: settled.todos, todosInterrupted: true });
+    return { todos: settled.todos, interrupted: true };
+  }
+
+  /** 归档列表 → 面板数据：颜色按「越新越蓝」插值，脚本只管画。 */
+  private todoArchiveViews(archives: TodoArchive[] | undefined) {
+    const list = normalizeTodoArchives(archives);
+    return list.map((archive, index) => ({
+      id: archive.id,
+      createdAt: archive.createdAt,
+      total: archive.todos.length,
+      completed: completedCount(archive.todos),
+      color: archiveColorHex(archiveColorRatio(index, list.length)),
+      todos: archive.todos.map((todo) => ({ content: todo.content, status: todo.status })),
+    }));
+  }
+
   private async searchLinkedConversationHistory(
     conversationId: string,
     call: ToolCall,
     mode: ConversationMode,
     settings: ChatSettings,
+    run: ConversationRun,
   ): Promise<ToolExecutionResult> {
     const conversation = await this.storage.getConversation(conversationId);
     if (!conversation?.sourceConversationId) {
@@ -1482,7 +1643,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       mode,
       settings,
       'read',
-      (request) => this.requestToolApproval(request.summary, request.detail, request.risk),
+      (request) => this.requestToolApproval(request.summary, request.detail, request.risk, run),
       query ? tt('chat.searchHistoryLabel', { query }) : tt('chat.readHistoryLatestLabel'),
       tt('chat.historySourceDetail', { title: conversation.sourceConversationTitle || conversation.sourceConversationId, limit }),
       async () => {
@@ -1518,7 +1679,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async toggleArchive(id: string, archived: boolean): Promise<void> {
-    if (id === this.streamingConversationId) {
+    if (this.runs.has(id)) {
       await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusyArchive') });
       return;
     }
@@ -1528,7 +1689,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async deleteConversation(id: string): Promise<void> {
-    if (id === this.streamingConversationId) {
+    if (this.runs.has(id)) {
       await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentBusyDelete') });
       return;
     }
@@ -1575,6 +1736,22 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     if (this.view) {
       await this.view.webview.postMessage(message);
     }
+  }
+
+  /**
+   * 只刷新历史列表的轻量推送。
+   *
+   * 后台线程跑完时用它代替 `sendState()`：后者会重建当前对话的消息列表并把滚动位置拉回底部，
+   * 用户正在读另一条对话时会被打断。
+   */
+  private async postHistorySnapshot(): Promise<void> {
+    const all = await this.storage.listConversations({ includeArchived: true });
+    await this.post({
+      type: 'history',
+      conversations: all.filter((item) => !item.archived),
+      archivedConversations: all.filter((item) => item.archived),
+      runningConversationIds: [...this.runs.keys()],
+    });
   }
 
   private forWebview(message: ChatMessage): ChatMessage {
@@ -1624,24 +1801,72 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     ].filter(Boolean).join('\n\n');
   }
 
+  /**
+   * 工具授权。
+   *
+   * 以前用 `showWarningMessage({ modal: true })`：模态框会锁住整个 VS Code 窗口，
+   * 对话期间连侧边栏边框都拖不动，也没法切到别的对话看文档。现在改成面板内一张卡片，
+   * 窗口完全不被占用。只有在没有面板可见（例如视图被关掉）时才退回非模态通知。
+   */
   private async requestToolApproval(
     summary: string,
     detail: string,
     risk: 'read' | 'write' | 'command',
+    run: ConversationRun,
   ): Promise<boolean> {
+    if (run.controller.signal.aborted) return false;
     const title = risk === 'command' ? tt('notice.approveCommandTitle') : risk === 'write' ? tt('notice.approveWriteTitle') : tt('notice.approveReadTitle');
-    // 顺序有讲究：VS Code 模态框里第一个按钮是默认项，按回车就直接选中。
-    // 之前「允许一次」排第一，急着按回车（或手滑）就等于批准，危险命令就这么被放过去了。
-    // 现在默认项是「拒绝」：回车 / Esc 都只会保守处理，真的同意必须主动点第二个按钮。
-    const answer = await vscode.window.showWarningMessage(
-      title,
-      { modal: true, detail: `${summary}\n\n${detail}` },
-      tt('notice.approveDeny'),
-      tt('notice.approveAllowOnce'),
-    );
-    return answer === tt('notice.approveAllowOnce');
+    if (!this.view) {
+      // 非模态：用户可以在通知中心里处理，窗口依旧可用。
+      const answer = await vscode.window.showWarningMessage(
+        `${title}\n${summary}`,
+        { detail },
+        tt('notice.approveDeny'),
+        tt('notice.approveAllowOnce'),
+      );
+      return answer === tt('notice.approveAllowOnce');
+    }
+    const requestId = `approval-${++this.approvalSequence}`;
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (allowed: boolean): void => {
+        if (settled) return;
+        settled = true;
+        this.pendingApprovals.delete(requestId);
+        run.controller.signal.removeEventListener('abort', onAbort);
+        resolve(allowed);
+      };
+      // 任务被停止 / 出错时不能把 Promise 挂在这里，否则那条线程的 finally 永远不跑。
+      const onAbort = (): void => finish(false);
+      run.controller.signal.addEventListener('abort', onAbort, { once: true });
+      this.pendingApprovals.set(requestId, {
+        conversationId: run.conversationId,
+        request: { requestId, conversationId: run.conversationId, title, summary, detail, risk },
+        resolve: finish,
+      });
+      void this.post({
+        type: 'approvalRequest',
+        request: { requestId, conversationId: run.conversationId, title, summary, detail, risk },
+      });
+      // 用户正看着别的对话时提示一句，避免这条线程无声地卡在授权上。
+      if (this.activeConversationId !== run.conversationId) {
+        void this.post({ type: 'toast', tone: 'warning', text: tt('approval.otherConversation') });
+      }
+    });
   }
 
+  private rejectApprovalsFor(conversationId: string): void {
+    for (const pending of [...this.pendingApprovals.values()]) {
+      if (pending.conversationId !== conversationId) continue;
+      void this.post({ type: 'approvalResolved', requestId: pending.request.requestId });
+      // resolve() 内部会把自己从 pendingApprovals 里删掉。
+      pending.resolve(false);
+    }
+  }
+
+  private settleAllApprovals(): void {
+    for (const pending of [...this.pendingApprovals.values()]) pending.resolve(false);
+  }
   private html(webview: vscode.Webview): string {
     const scriptNonce = nonce();
     const lang = currentLanguage();
@@ -1729,7 +1954,22 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         <details id="todoPanel" class="todo-panel" hidden open>
           <summary><span>${t(lang, 'todo.title')}</span><small id="todoSummary"></small></summary>
           <ol id="todoList" class="todo-list"></ol>
-        </details>        <form id="composer" class="composer">
+        </details>
+        <details id="todoArchivePanel" class="todo-panel archived" hidden open>
+          <summary><span>${t(lang, 'todo.archive.title')}</span><small id="todoArchiveSummary"></small></summary>
+          <ol id="todoArchiveList" class="todo-list"></ol>
+        </details>
+        <div id="todoArchiveBar" class="todo-archive-bar" role="group" aria-label="${t(lang, 'todo.archive.title')}" hidden></div>
+        <section id="approvalCard" class="approval-card" hidden aria-live="assertive">
+          <div class="approval-heading"><span class="approval-badge" aria-hidden="true"></span><strong id="approvalTitle"></strong></div>
+          <p id="approvalSummary" class="approval-summary"></p>
+          <details class="approval-detail"><summary>${t(lang, 'approval.detail')}</summary><pre id="approvalDetail"></pre></details>
+          <div class="approval-actions">
+            <button id="approvalDenyButton" type="button">${t(lang, 'notice.approveDeny')}</button>
+            <button id="approvalAllowButton" class="approval-allow" type="button">${t(lang, 'notice.approveAllowOnce')}</button>
+          </div>
+        </section>
+        <form id="composer" class="composer">
           <textarea id="promptInput" rows="1" placeholder="${t(lang, 'chat.promptPlaceholder')}" aria-label="${t(lang, 'chat.messageLabel')}"></textarea>
           <div class="composer-footer">
             <div class="composer-runtime-controls" aria-label="${t(lang, 'chat.agentRuntimeSettings')}">

@@ -18,8 +18,10 @@ import {
   ConversationSummary,
   ConversationMode,
   StorageStats,
+  TodoArchive,
   TodoItem,
 } from './types';
+import { normalizeTodoArchives } from './todoArchives';
 import { tt } from './i18n';
 
 interface Manifest {
@@ -55,7 +57,20 @@ export class ConversationStorage {
         if (stored?.version === MANIFEST_VERSION && Array.isArray(stored.conversations)) {
           this.manifest = {
             version: MANIFEST_VERSION,
-            conversations: stored.conversations.filter((item) => Boolean(item?.id)),
+            // 归档列表来自磁盘，可能是老版本写的或被手工改过，进来就归一化一次。
+            conversations: stored.conversations.filter((item) => Boolean(item?.id)).map((item) => {
+              const todoArchives = normalizeTodoArchives(item.todoArchives);
+              const normalized: ConversationSummary = todoArchives.length
+                ? { ...item, todoArchives }
+                : (() => {
+                  const { todoArchives: _discarded, ...rest } = item;
+                  return rest as ConversationSummary;
+                })();
+              // 中断标记只认严格的 true：老存档没有这个字段，手改成字符串/数字一律当没有。
+              if (normalized.todosInterrupted === true) return { ...normalized, todosInterrupted: true };
+              const { todosInterrupted: _stale, ...withoutFlag } = normalized;
+              return withoutFlag as ConversationSummary;
+            }),
           };
         } else {
           await this.rebuildManifestFromDisk();
@@ -323,6 +338,8 @@ export class ConversationStorage {
       sourceHistoryDigest?: string | null;
       sourceLinkedAt?: number | null;
       todos?: TodoItem[] | null;
+      todoArchives?: TodoArchive[] | null;
+      todosInterrupted?: boolean | null;
     },
   ): Promise<ConversationSummary> {
     await this.initialize();
@@ -354,6 +371,23 @@ export class ConversationStorage {
       if (patch.todos !== undefined) {
         if (patch.todos && patch.todos.length) summary.todos = patch.todos.map((todo) => ({ ...todo }));
         else delete summary.todos;
+      }
+      // 归档列表同样是整体替换：调用方已经做过上限裁剪，这里只负责深拷贝落库。
+      if (patch.todoArchives !== undefined) {
+        if (patch.todoArchives && patch.todoArchives.length) {
+          summary.todoArchives = patch.todoArchives.map((archive) => ({
+            id: archive.id,
+            createdAt: archive.createdAt,
+            todos: archive.todos.map((todo) => ({ content: todo.content, status: todo.status })),
+          }));
+        } else {
+          delete summary.todoArchives;
+        }
+      }
+      // 中断标记是布尔量：写 null/false 表示「这份清单不再算中断」（归档了或换了新清单）。
+      if (patch.todosInterrupted !== undefined) {
+        if (patch.todosInterrupted) summary.todosInterrupted = true;
+        else delete summary.todosInterrupted;
       }
       summary.updatedAt = Date.now();
       await this.persistManifest();
