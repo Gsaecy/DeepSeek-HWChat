@@ -41,6 +41,21 @@ export interface ToolExecutionScope {
   gitWriteAllowed?: boolean;
   versionBumpAllowed?: boolean;
   bindProjectRoot?: (fsPath: string) => void;
+  /**
+   * 命令运行期的进度回调（每秒一次 + 停滞/超时事件）。
+   * 由面板接上后，界面才能区分「在跑」和「卡住」——没有这条回调时，
+   * 一条永久挂起的命令在界面上和正常运行长得一模一样。
+   */
+  onCommandProgress?: (progress: CommandProgress) => void;
+}
+
+/** 命令运行期的进度快照。`idleSeconds` 是「距离上次收到输出」的秒数。 */
+export interface CommandProgress {
+  phase: 'tick' | 'stall' | 'timeout';
+  elapsedSeconds: number;
+  timeoutSeconds: number;
+  idleSeconds: number;
+  outputBytes: number;
 }
 
 export interface ToolApprovalRequest {
@@ -667,7 +682,7 @@ export class ToolExecutor implements vscode.Disposable {
       return deniedResult(tt('tool.versionBumpCommandNotAuthorized', { command: versionTool }));
     }
     const timeout = Math.min(settings.maxCommandSeconds, Math.max(5, numberArg(args, 'timeoutSeconds', settings.maxCommandSeconds)));
-    const result = await spawnCommand(command, resolvedCwd.fsPath, timeout, settings.maxToolOutputBytes);
+    const result = await spawnCommand(command, resolvedCwd.fsPath, timeout, settings.maxToolOutputBytes, scope?.onCommandProgress);
     const output = redact([result.stdout, result.stderr].filter(Boolean).join('\n')).trim();
     return {
       status: result.code === 0 ? 'success' : 'error',
@@ -1060,32 +1075,148 @@ function lineDelta(before: string, after: string): string {
   return tt('tool.lineDelta', { lines: afterLines, delta: `${delta >= 0 ? '+' : ''}${delta}` });
 }
 
-function spawnCommand(command: string, cwd: string, timeoutSeconds: number, maxOutputBytes: number): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+/** 无输出超过这个秒数就认为「可能卡住」，向界面提示（但不终止命令）。 */
+const COMMAND_STALL_SECONDS = 30;
+/** 停滞提示的刷新间隔：秒数必须跟着涨，冻在 30 秒的提示看着像界面又卡了。 */
+export const COMMAND_STALL_REFRESH_SECONDS = 10;
+
+/**
+ * 是否该推一次停滞提示。
+ *
+ * 抽成纯函数是为了能在毫秒级单测里验证「秒数会涨」——
+ * 否则要真等 40 秒才能测出这条行为，只能写没有意义的静态断言。
+ */
+export function shouldReportStall(idleSeconds: number, lastReportedIdle: number): boolean {
+  if (idleSeconds < COMMAND_STALL_SECONDS) return false;
+  if (lastReportedIdle < 0) return true;
+  return idleSeconds - lastReportedIdle >= COMMAND_STALL_REFRESH_SECONDS;
+}
+/** 直接子进程退出后等 'close' 的宽限期：孙进程攥着管道时 'close' 永不触发。 */
+const COMMAND_CLOSE_GRACE_MS = 1_500;
+/** 超时并 SIGKILL 之后的硬结算上限：无论还有谁占着管道，这次调用都必须返回。 */
+const COMMAND_HARD_SETTLE_MS = 3_000;
+
+/**
+ * 执行一条命令。
+ *
+ * 这里有三条「不许永久挂起」的硬性设计，都来自真实故障：
+ * 1. `detached`：shell 成为新进程组的组长，超时按**整组**杀，不让 cargo/qlmanage
+ *    这类孙进程变成孤儿（实测：只杀 shell 时，cargo 与 tail 的父进程变成 1，命令仍在跑）。
+ * 2. stdin 显式接到 /dev/null：需要密码/确认的命令（sudo、ssh、不带 `-m` 的提交命令）
+ *    立刻读到 EOF 失败，而不是无限等待一个永远不会到来的输入。
+ * 3. 三重结算：'close' 正常结束 / 'exit' 后 1.5 秒宽限 / 超时后再 3 秒硬结算。
+ *    只监听 'close' 时，孙进程活着就会让 Promise 永不 resolve——界面上表现为
+ *    「准备运行命令」一直转，用户完全不知道发生了什么。
+ */
+export function spawnCommand(
+  command: string,
+  cwd: string,
+  timeoutSeconds: number,
+  maxOutputBytes: number,
+  onProgress?: (progress: CommandProgress) => void,
+): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, { cwd, shell: true, windowsHide: true, env: sanitizedEnvironment() });
+    const detached = process.platform !== 'win32';
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      windowsHide: true,
+      detached,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: sanitizedEnvironment(),
+    });
+    const startedAt = Date.now();
     let stdout = '';
     let stderr = '';
+    let outputBytes = 0;
+    let lastOutputAt = startedAt;
     let timedOut = false;
+    let settled = false;
+    let lastStallIdle = -1;
+    let ticker: NodeJS.Timeout | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    let closeGrace: NodeJS.Timeout | undefined;
+    let hardSettle: NodeJS.Timeout | undefined;
+
+    const elapsedSeconds = () => Math.round((Date.now() - startedAt) / 100) / 10;
+    const idleSeconds = () => Math.round((Date.now() - lastOutputAt) / 1000);
+    const report = (progress: CommandProgress) => {
+      // 通知失败绝不能影响命令本身
+      try { onProgress?.(progress); } catch { /* 忽略 */ }
+    };
+    const stopTimers = () => {
+      if (ticker) clearInterval(ticker);
+      if (timer) clearTimeout(timer);
+      if (closeGrace) clearTimeout(closeGrace);
+      if (hardSettle) clearTimeout(hardSettle);
+    };
+    const killTree = (signal: NodeJS.Signals) => {
+      const pid = child.pid;
+      if (!detached || pid === undefined) { child.kill(signal); return; }
+      try {
+        // 负 PID = 整个进程组：shell 是组长，cargo/tail/qlmanage 都在组里。
+        process.kill(-pid, signal);
+      } catch {
+        try { child.kill(signal); } catch { /* 已经退出了 */ }
+      }
+    };
+    const settle = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      stopTimers();
+      // 主动断开管道。孙进程还活着时 Node 会一直等流关闭，这是永久挂起的直接原因。
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      resolvePromise({ code, stdout, stderr, timedOut });
+    };
     const collect = (target: 'stdout' | 'stderr', chunk: Buffer | string) => {
       const text = String(chunk);
+      outputBytes += text.length;
+      lastOutputAt = Date.now();
       if (target === 'stdout') stdout = truncate(`${stdout}${text}`, maxOutputBytes);
       else stderr = truncate(`${stderr}${text}`, maxOutputBytes);
     };
     child.stdout?.on('data', (chunk) => collect('stdout', chunk));
     child.stderr?.on('data', (chunk) => collect('stderr', chunk));
-    const timer = setTimeout(() => {
+
+    if (onProgress) {
+      ticker = setInterval(() => {
+        if (settled) return;
+        const idle = idleSeconds();
+        // 停滞提示每 10 秒刷一次（30 → 40 → 50…）：数字冻住比不显示更让人怀疑界面卡了。
+        if (shouldReportStall(idle, lastStallIdle)) {
+          lastStallIdle = idle;
+          report({ phase: 'stall', elapsedSeconds: elapsedSeconds(), timeoutSeconds, idleSeconds: idle, outputBytes });
+          return;
+        }
+        if (idle >= COMMAND_STALL_SECONDS) return;
+        report({ phase: 'tick', elapsedSeconds: elapsedSeconds(), timeoutSeconds, idleSeconds: idle, outputBytes });
+      }, 1_000);
+      ticker.unref?.();
+    }
+
+    timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 1_500).unref();
+      report({ phase: 'timeout', elapsedSeconds: elapsedSeconds(), timeoutSeconds, idleSeconds: idleSeconds(), outputBytes });
+      killTree('SIGTERM');
+      setTimeout(() => killTree('SIGKILL'), 1_500).unref();
+      hardSettle = setTimeout(() => settle(null), COMMAND_CLOSE_GRACE_MS + COMMAND_HARD_SETTLE_MS);
+      hardSettle.unref?.();
     }, timeoutSeconds * 1_000);
+
     child.on('error', (error) => {
-      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      stopTimers();
       reject(error);
     });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolvePromise({ code, stdout, stderr, timedOut });
+    child.on('exit', (code) => {
+      // 直接子进程退出 ≠ 管道关闭：孙进程可能还攥着 stdout。
+      // 给 1.5 秒收尾，等不到就按已拿到的输出结算，不再无限期等待。
+      closeGrace = setTimeout(() => settle(code), COMMAND_CLOSE_GRACE_MS);
+      closeGrace.unref?.();
     });
+    child.on('close', (code) => settle(code));
   });
 }
 

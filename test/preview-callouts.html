@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>HWChat · 提醒分级预览</title>
+<!-- 复用真实样式表与真实图标集：这里只把 chat.js 造出来的 DOM 结构手写出来，
+     所以 CSS 的任何改动都会直接反映在这一页上。 -->
+<link rel="stylesheet" href="../media/chat.css">
+<style>
+  body { margin: 0; padding: 24px; background: #1b1b1f; color: #ddd; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+  h1 { font-size: 15px; font-weight: 660; margin: 0 0 6px; }
+  .lede { margin: 0 0 20px; color: #999; font-size: 12px; line-height: 1.6; }
+  .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 760px) { .panes { grid-template-columns: 1fr; } }
+  .pane { border-radius: 8px; padding: 18px 20px; }
+  .pane h2 { font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; margin: 0 0 14px; opacity: .6; }
+  /* 两种主题各给一套变量：webview 里这些来自 VS Code 注入的 --vscode-* 。 */
+  .theme-dark {
+    --bg: #1e1e23; --fg: #e6e6e6; --border: #3a3a42; --muted: #9a9aa5;
+    --accent: #0a84ff; --danger: #ff6961; --project: #d18616; --surface: #26262d;
+    background: var(--bg); color: var(--fg);
+  }
+  .theme-light {
+    --bg: #ffffff; --fg: #1f2328; --border: #d8d8de; --muted: #6b6b76;
+    --accent: #0a84ff; --danger: #cf222e; --project: #d18616; --surface: #f2f2f4;
+    background: var(--bg); color: var(--fg);
+  }
+</style>
+</head>
+<body>
+  <h1>提醒分级预览</h1>
+  <p class="lede">
+    危险 = 标题红 + 图标亮黄；重要 = 标题不变 + 图标橘黄；其余（普通段落与普通引用）完全不变。<br>
+    深浅两套主题都放在同一页，因为「亮黄在浅色背景上是否看得见」只能靠眼睛判断。
+  </p>
+
+  <div class="panes">
+    <div class="pane theme-dark">
+      <h2>深色主题</h2>
+      <div class="message-content">
+        <p>普通说明段落，没有标记，外观和以前一模一样。</p>
+        <blockquote><p>普通引用块：不受这次改动影响。</p></blockquote>
+        <div class="message-callout" data-tone="danger">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">这一步会清空数据库</span></div>
+          <div class="callout-body"><p>删除不可逆，执行前请先备份。命令会直接作用于生产库。</p></div>
+        </div>
+        <div class="message-callout" data-tone="important">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">需要你确认导出目录</span></div>
+          <div class="callout-body"><p>不会造成损失，但不确认就会卡住后续步骤。</p></div>
+        </div>
+        <div class="message-callout" data-tone="danger">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">危险</span></div>
+        </div>
+        <div class="message-callout" data-tone="important">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">重要</span></div>
+        </div>
+        <!-- 下面这一组是「用户自己把明文凭据贴进对话」时界面自动挂出的提醒，
+             由 chat.js 的 secretWarningNode 生成：只报类型与字符数，绝不回显密钥。 -->
+        <div class="message-callout" data-tone="danger">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">危险：这条消息里有明文凭据</span></div>
+          <div class="callout-body">
+            <ul><li>检测到 OpenAI 风格 API 密钥（39 个字符）</li><li>检测到 password 字段的明文值（13 个字符）</li></ul>
+            <p>这条消息已随会话保存并发送给模型服务商，风险不在本机而在对方是否留存。请立刻到服务商后台<strong>吊销并重新生成</strong>这把凭据；新值只写进环境变量或系统钥匙串，不要再贴进对话。</p>
+          </div>
+        </div>
+        <!-- 隐私类（身份证 / 银行卡 / 手机号）：建议与密钥不同，号码无法吊销。 -->
+        <div class="message-callout" data-tone="danger">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">危险：这条消息里有个人隐私信息</span></div>
+          <div class="callout-body">
+            <ul><li>检测到 身份证号（18 个字符）</li><li>检测到 银行卡号（19 个字符）</li></ul>
+            <p>这条消息已随会话保存并发送给模型服务商。身份证号、银行卡号、手机号不像密钥那样能「吊销」，发出去就是永久的：请不要把完整号码贴进任何对话；已经发出的，留意后续的异常登录、盗刷与冒名办理，必要时联系银行挂失或报警。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pane theme-light">
+      <h2>浅色主题</h2>
+      <div class="message-content">
+        <p>普通说明段落，没有标记，外观和以前一模一样。</p>
+        <blockquote><p>普通引用块：不受这次改动影响。</p></blockquote>
+        <div class="message-callout" data-tone="danger">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">这一步会清空数据库</span></div>
+          <div class="callout-body"><p>删除不可逆，执行前请先备份。命令会直接作用于生产库。</p></div>
+        </div>
+        <div class="message-callout" data-tone="important">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">需要你确认导出目录</span></div>
+          <div class="callout-body"><p>不会造成损失，但不确认就会卡住后续步骤。</p></div>
+        </div>
+        <div class="message-callout" data-tone="danger">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">危险</span></div>
+        </div>
+        <div class="message-callout" data-tone="important">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">重要</span></div>
+        </div>
+        <div class="message-callout" data-tone="danger">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">危险：这条消息里有明文凭据</span></div>
+          <div class="callout-body">
+            <ul><li>检测到 OpenAI 风格 API 密钥（39 个字符）</li><li>检测到 password 字段的明文值（13 个字符）</li></ul>
+            <p>这条消息已随会话保存并发送给模型服务商，风险不在本机而在对方是否留存。请立刻到服务商后台<strong>吊销并重新生成</strong>这把凭据；新值只写进环境变量或系统钥匙串，不要再贴进对话。</p>
+          </div>
+        </div>
+        <!-- 隐私类（身份证 / 银行卡 / 手机号）：建议与密钥不同，号码无法吊销。 -->
+        <div class="message-callout" data-tone="danger">
+          <div class="callout-head"><span class="ui-icon callout-icon" data-icon="warn"></span><span class="callout-title">危险：这条消息里有个人隐私信息</span></div>
+          <div class="callout-body">
+            <ul><li>检测到 身份证号（18 个字符）</li><li>检测到 银行卡号（19 个字符）</li></ul>
+            <p>这条消息已随会话保存并发送给模型服务商。身份证号、银行卡号、手机号不像密钥那样能「吊销」，发出去就是永久的：请不要把完整号码贴进任何对话；已经发出的，留意后续的异常登录、盗刷与冒名办理，必要时联系银行挂失或报警。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="../media/ui-icons.js"></script>
+  <script>
+    // 用真实图标集填 SVG：形状与界面里完全相同，不是另画一份。
+    const icons = globalThis.HWChatIcons;
+    for (const slot of document.querySelectorAll('.callout-icon')) {
+      const name = slot.dataset.icon;
+      if (icons && icons.markup(name)) slot.innerHTML = icons.markup(name);
+    }
+  </script>
+</body>
+</html>

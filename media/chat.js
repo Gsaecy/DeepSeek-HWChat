@@ -76,7 +76,28 @@
   const GLYPH_FALLBACK = {
     check: '✓', minus: '−', bang: '!', ellipsis: '…', dot: '●', ring: '○',
     turn: '↳', square: '□', close: '×', arrowUpRight: '↗', restore: '↺', pencil: '✎',
+    warn: '⚠',
   };
+
+  /**
+   * 提醒块分级解析。规则在 media/callout-meta.js（纯函数，可单独单测）。
+   *
+   * 退化策略：脚本没加载成功时永远返回 null，也就是所有引用块走原来的渲染 ——
+   * 少一种样式总比把 `> [!DANGER]` 那行标记渲染成正文、让人看到一堆方括号好。
+   */
+  const calloutMeta = globalThis.HWChatCalloutMeta || null;
+
+  /**
+   * 用户消息里的明文凭据识别。规则在 media/secret-scan.js（纯函数，可单独单测）。
+   *
+   * 为什么这一类不能只交给模型：用户把 API key 贴进对话时，密钥已经发出去了，
+   * 等模型在回复里提一句已经晚了；而且模型不一定会提。这里在渲染层直接认出来，
+   * 不依赖模型自觉。
+   *
+   * 退化策略：脚本没加载成功时永远返回空数组，也就是不显示提醒 ——
+   * 宁可少一条提示，也不要因为探测失败把每条消息都标红。
+   */
+  const secretScan = globalThis.HWChatSecretScan || null;
 
   /**
    * 造一个图标节点。
@@ -102,6 +123,87 @@
     }
     wrapper.textContent = GLYPH_FALLBACK[name] || '';
     return wrapper;
+  }
+
+  /**
+   * 造一个分级提醒块。
+   *
+   * 正文渲染走回调而不是直接调 appendRichText：appendRichText 是递归函数，
+   * 直接引用会让这段代码无法单独切出来跑（test/check-callout-dom.mjs 就是这么测的）。
+   * 有了回调，这里只负责「结构 + 标题 + 图标」，正文怎么排交给调用方。
+   *
+   * 分级只决定两件事（与需求一一对应）：
+   *   - data-tone 交给 CSS：danger 的标题取红色，important 的标题不动；
+   *   - 图标颜色：danger 取亮黄，important 取橘黄。
+   * 标题缺失时用文案表里的默认名，避免出现「一个图标下面什么都没有」。
+   */
+  function calloutNode(plan, renderBody) {
+    const box = document.createElement('div');
+    box.className = 'message-callout';
+    box.dataset.tone = plan.tone;
+    const head = document.createElement('div');
+    head.className = 'callout-head';
+    const icon = iconNode('warn');
+    icon.classList.add('callout-icon');
+    const title = document.createElement('span');
+    title.className = 'callout-title';
+    title.textContent = plan.title || t(plan.tone === 'danger' ? 'chat.calloutDanger' : 'chat.calloutImportant');
+    head.append(icon, title);
+    box.append(head);
+    if (plan.body && typeof renderBody === 'function') {
+      const body = document.createElement('div');
+      body.className = 'callout-body';
+      renderBody(body);
+      box.append(body);
+    }
+    return box;
+  }
+
+  /**
+   * 用户消息里检测到明文凭据时，紧跟这条消息显示一条危险提醒。
+   *
+   * 两条硬要求：
+   *   1. 走 danger 级别（红色标题 + 亮黄图标），与「会造成损失」的分级口径一致；
+   *   2. **绝不回显凭据原文**，只说类型与长度 —— 提醒本身再把密钥打印一遍
+   *      就是在这个已经有泄漏风险的会话里做二次泄漏。
+   *
+   * 返回 null 表示没有命中，调用方不需要自己判断。
+   */
+  function secretWarningNode(text) {
+    if (!secretScan) return null;
+    let findings = [];
+    try {
+      findings = secretScan.scanSecrets(text) || [];
+    } catch {
+      // 正则异常不该拖垮整条消息的渲染：退化成不提醒即可。
+      return null;
+    }
+    if (!findings.length) return null;
+    const isPrivacy = (finding) => finding.category === 'privacy';
+    const credentials = findings.filter((finding) => !isPrivacy(finding));
+    const privacy = findings.filter(isPrivacy);
+    const linesFor = (items) => items.map((finding) => {
+      // 赋值类没有"有名的格式"，改用字段名（如 password / api_key）让用户能定位。
+      if (finding.kind === 'credentialAssignment') {
+        return `- ${t('chat.secretWarnFieldItem', { field: finding.field, length: finding.length })}`;
+      }
+      const kind = t(`chat.secretKind.${finding.kind}`);
+      return `- ${t('chat.secretWarnItem', { kind, length: finding.length })}`;
+    });
+    // 两类分开成段：处置方式完全不同 —— 密钥要吊销并轮换，身份证 / 银行卡要挂失、
+    // 关注盗刷。混成一张列表会让人照着「吊销密钥」的建议去处理身份证。
+    const blocks = [];
+    if (credentials.length) blocks.push([...linesFor(credentials), '', t('chat.secretWarnBody')].join('\n'));
+    if (privacy.length) blocks.push([...linesFor(privacy), '', t('chat.secretWarnPrivacyBody')].join('\n'));
+    const titleKey = credentials.length && privacy.length
+      ? 'chat.secretWarnMixedTitle'
+      : privacy.length
+        ? 'chat.secretWarnPrivacyTitle'
+        : 'chat.secretWarnTitle';
+    const bodyText = blocks.join('\n\n');
+    return calloutNode({ tone: 'danger', title: t(titleKey), body: bodyText }, (node) => {
+      appendRichText(node, bodyText);
+    });
   }
 
   /**
@@ -178,6 +280,8 @@
     taskTree: null, todos: [], todoArchives: [], expandedArchiveId: null, archiveRestore: null, todosInterrupted: false, todosIncomplete: false,
     todoSignature: '',
     runningConversationIds: [], pendingApprovals: [],
+    /** 每个对话各自的输入框草稿，键是对话 id（还没落库的新对话用 'draft'）。 */
+    drafts: {},
     autoFollow: true, renderingMessages: false, voiceRecognition: null, voiceActive: false,
   };
 
@@ -940,6 +1044,12 @@
     if (message.usedSkills?.length) body.append(renderSkillUsage(message.usedSkills));
     if (message.reasoning) body.append(renderReasoning(message.reasoning, message.status === 'streaming'));
     appendMessageFlow(body, message);
+    // 用户自己贴进来的明文凭据：在界面层直接认出来，不等模型提醒。
+    // 放在消息正文之后，顺序上与「你说的话 → 系统的警告」一致。
+    if (message.role === 'user') {
+      const warning = secretWarningNode(message.content || '');
+      if (warning) body.append(warning);
+    }
     // 只换助手的输出：用户自己打的 emoji 是他输入的内容，不该被我们改写。
     if (message.role !== 'user') flattenEmojiIcons(body);
     if (message.status === 'streaming') { const cursor = document.createElement('span'); cursor.className = 'stream-cursor'; cursor.setAttribute('aria-label', t('chat.generating')); body.append(cursor); }
@@ -1049,17 +1159,32 @@
       details.dataset.detailKey = `tool:${tool.callId || index}`;
       details.dataset.defaultOpen = tool.status === 'pending' ? '1' : '0';
       if (tool.status === 'pending') details.open = true;
+      // 「在跑」和「已结束」必须分开：只有运行中才需要实时计时与停滞提示。
+      const running = tool.status === 'pending' && !tool.finishedAt;
+      if (running) {
+        details.dataset.running = '1';
+        details.dataset.startedAt = String(tool.startedAt || 0);
+        details.dataset.riskLabel = riskLabelOf(tool);
+        if (tool.stallHint) details.dataset.stallHint = tool.stallHint;
+      }
+      if (running && tool.stallHint) details.classList.add('stalled');
       const summary = document.createElement('summary');
       const statusBadge = textElement('span', 'tool-status', '');
       statusBadge.append(iconNode(statusIconName(tool.status)));
-      summary.append(statusBadge, textElement('span', 'tool-summary', tool.summary || tool.name), textElement('small', '', toolMeta(tool)));
+      const meta = textElement('small', '', '');
+      meta.textContent = running ? runningToolMeta(details) : toolMeta(tool);
+      summary.append(statusBadge, textElement('span', 'tool-summary', tool.summary || tool.name), meta);
       const detail = document.createElement('div'); detail.className = 'tool-detail';
+      // 停滞提示同时放进卡片正文：窄窗口下 summary 里的小字会被媒体查询隐藏，
+      // 而 pending 卡片默认是展开的，正文这一行在任何宽度下都看得见。
+      if (running && tool.stallHint) detail.append(textElement('p', 'tool-stall', tool.stallHint));
       if (tool.changedFiles?.length) detail.append(textElement('div', 'tool-files', t('chat.toolFiles', { files: tool.changedFiles.join(t('common.listSeparator')) })));
       if (tool.input) detail.append(detailBlock(t('chat.toolInput'), tool.input, tool.risk === 'command' ? commandText(tool.input) : undefined));
       if (tool.output) detail.append(detailBlock(t('chat.toolOutput'), tool.output));
       if (!tool.input && !tool.output) detail.append(textElement('p', 'tool-cleaned', tool.finishedAt ? t('chat.toolCleaned') : t('chat.toolWaiting')));
       details.append(summary, detail); section.append(details);
     }
+    scheduleToolTicker();
     return section;
   }
 
@@ -1085,10 +1210,49 @@
 
   /** 工具执行结果 → 图标名。pending 落在省略号上，表示「还没结束」。 */
   function statusIconName(status) { return status === 'success' ? 'check' : status === 'denied' ? 'minus' : status === 'error' ? 'bang' : 'ellipsis'; }
-  function toolMeta(tool) {
+  function riskLabelOf(tool) {
     const labels = { read: t('chat.risk.read'), write: t('chat.risk.write'), command: t('chat.risk.command') };
+    return labels[tool.risk] || tool.name;
+  }
+  function toolMeta(tool) {
     const duration = tool.finishedAt && tool.startedAt ? ` · ${formatDuration(tool.finishedAt - tool.startedAt)}` : '';
-    return `${labels[tool.risk] || tool.name}${duration}`;
+    return `${riskLabelOf(tool)}${duration}`;
+  }
+
+  /**
+   * 运行中的卡片文字：`命令 · 已运行 12.3 秒 [· 已 45 秒无输出…]`。
+   * 结束时间未知，只能用「已经跑了多久」证明它还在动——
+   * 没有这个数字时，正常运行和彻底卡死在界面上完全一样。
+   */
+  function runningToolMeta(node) {
+    const parts = [];
+    if (node.dataset.riskLabel) parts.push(node.dataset.riskLabel);
+    const startedAt = Number(node.dataset.startedAt || 0);
+    const seconds = startedAt ? Math.max(0, (Date.now() - startedAt) / 1000) : 0;
+    parts.push(t('chat.toolRunningSeconds', { seconds: seconds.toFixed(1) }));
+    if (node.dataset.stallHint) parts.push(node.dataset.stallHint);
+    return parts.join(' · ');
+  }
+
+  let toolTicker = null;
+  function scheduleToolTicker() {
+    // 本轮渲染的节点此刻还没插进文档，等一拍再扫描，否则一个都找不到。
+    setTimeout(() => {
+      paintRunningToolMeta();
+      if (!toolTicker) toolTicker = setInterval(paintRunningToolMeta, 1000);
+    }, 0);
+  }
+  function paintRunningToolMeta() {
+    const nodes = document.querySelectorAll('.tool-execution[data-running="1"]');
+    if (!nodes.length) {
+      if (toolTicker) { clearInterval(toolTicker); toolTicker = null; }
+      return;
+    }
+    for (const node of nodes) {
+      const summary = node.querySelector('summary');
+      const meta = summary ? summary.querySelector('small') : null;
+      if (meta) meta.textContent = runningToolMeta(node);
+    }
   }
 
   function renderReasoning(reasoning, streaming) {
@@ -1165,6 +1329,13 @@
           if (/^\s{0,3}>/.test(current)) { quoted.push(current.replace(/^\s{0,3}>\s?/, '')); index += 1; continue; }
           if (!current.trim() && /^\s{0,3}>/.test(lines[index + 1] || '')) { quoted.push(''); index += 1; continue; }
           break;
+        }
+        // 提醒块：首行是 [!DANGER] / [!IMPORTANT] 才走分级渲染；
+        // 解析不出来（普通引用、没登记的标记）继续走下面的引用块，外观完全不变。
+        const callout = calloutMeta ? calloutMeta.parseCallout(quoted) : null;
+        if (callout) {
+          container.append(calloutNode(callout, (body) => appendRichText(body, callout.body)));
+          continue;
         }
         const node = document.createElement('blockquote');
         appendRichText(node, quoted.join('\n'));
@@ -1453,10 +1624,31 @@
   }
 
   function autoResize() { elements.promptInput.style.height = 'auto'; elements.promptInput.style.height = `${Math.min(elements.promptInput.scrollHeight, 180)}px`; updateComposerState(); }
+
+  /**
+   * 输入框草稿按对话分开存。
+   *
+   * 以前输入框是**面板级共享**的：在 A 里敲了半句没发，切到 B，那半句就原样躺在 B 的输入框里，
+   * 顺手一回车就发到了错的对话。这里给每个对话一个草稿槽（还没落库的新对话用 'draft' 键），
+   * 切走时存下来、切回来时贴回去。
+   */
+  function draftKey(conversationId) { return conversationId || 'draft'; }
+  /** 把输入框当前内容存进该对话的草稿槽；空串视为「没有草稿」，直接删掉。 */
+  function saveDraft(conversationId) {
+    const key = draftKey(conversationId);
+    if (elements.promptInput.value) state.drafts[key] = elements.promptInput.value;
+    else delete state.drafts[key];
+  }
+  /** 把该对话的草稿贴回输入框；没有草稿就清空。 */
+  function restoreDraft(conversationId) {
+    const value = state.drafts[draftKey(conversationId)];
+    elements.promptInput.value = typeof value === 'string' ? value : '';
+  }
+
   function submit() {
     const text = elements.promptInput.value.trim();
     if ((!text && !state.pendingAttachments.length) || state.conversation?.archived || state.permissionPresetPending) return;
-    elements.promptInput.value = ''; state.autoFollow = true; autoResize();
+    elements.promptInput.value = ''; saveDraft(state.conversation?.id); state.autoFollow = true; autoResize();
     if (state.streaming) post('sendWhileRunning', { text });
     else post('send', { text, mode: state.mode, skillIds: state.selectedSkillIds, permissionPreset: state.permissionPreset, agentMaxSteps: state.agentMaxSteps, reasoningEffort: state.reasoningEffort });
   }
@@ -1776,6 +1968,8 @@
     switch (message.type) {
       case 'state': {
         const previousConversationId = state.conversation?.id;
+        // 切对话之前先把 A 的输入存进 A 的草稿槽，否则它会跟着人跑到 B 的输入框里。
+        if (previousConversationId !== message.state?.conversation?.id) saveDraft(previousConversationId);
         const incoming = message.state; state.conversations = incoming.conversations || []; state.archivedConversations = incoming.archivedConversations || [];
         state.conversation = incoming.conversation; state.messages = incoming.messages || []; state.hasMore = Boolean(incoming.hasMore);
         state.sendOnEnter = incoming.settings?.sendOnEnter !== false; state.pendingAttachments = incoming.pendingAttachments || [];
@@ -1792,9 +1986,16 @@
         state.todosIncomplete = Boolean(incoming.todosIncomplete);
         state.runningConversationIds = Array.isArray(incoming.runningConversationIds) ? incoming.runningConversationIds : [];
         state.pendingApprovals = Array.isArray(incoming.pendingApprovals) ? incoming.pendingApprovals : [];
-        elements.modelInput.value = state.model || 'deepseek-flash'; if (previousConversationId !== incoming.conversation?.id) { state.autoFollow = true; state.expandedArchiveId = null; state.archiveRestore = null; if (state.titleEditing) finishTitleEdit(false); } setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
+        elements.modelInput.value = state.model || 'deepseek-flash';
+        if (previousConversationId !== incoming.conversation?.id) {
+          state.autoFollow = true; state.expandedArchiveId = null; state.archiveRestore = null;
+          if (state.titleEditing) finishTitleEdit(false);
+          // 切过来了：贴回这条对话自己的草稿（没有就是空的），并让输入框重新量一次高度。
+          restoreDraft(incoming.conversation?.id); autoResize();
+        }
+        setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
       }
-      case 'draft': elements.promptInput.value = message.text || ''; state.pendingAttachments = message.attachments || []; renderAttachments(); autoResize(); elements.promptInput.focus(); break;
+      case 'draft': elements.promptInput.value = message.text || ''; saveDraft(state.conversation?.id); state.pendingAttachments = message.attachments || []; renderAttachments(); autoResize(); elements.promptInput.focus(); break;
       case 'attachments': state.pendingAttachments = message.attachments || []; renderAttachments(); break;
       case 'context': state.pendingAttachments = state.pendingAttachments.filter((item) => item.kind !== 'selection'); renderAttachments(); break;
       case 'messageStart': {

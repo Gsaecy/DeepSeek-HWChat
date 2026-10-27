@@ -621,3 +621,81 @@ test('title: the customized flag survives a reload', async () => {
     assert.equal(loaded?.titleCustomized, true);
   });
 });
+
+test('history order: newest created conversation first', async () => {
+  await withStorage(async (storage) => {
+    const first = await storage.createConversation('最早建的');
+    const second = await storage.createConversation('中间建的');
+    const third = await storage.createConversation('最新建的');
+
+    const ids = (await storage.listConversations()).map((item) => item.id);
+    assert.deepEqual(ids, [third.id, second.id, first.id]);
+  });
+});
+
+test('history order: new messages and model switches do not reshuffle the list', async () => {
+  await withStorage(async (storage) => {
+    const older = await storage.createConversation('先建的');
+    const newer = await storage.createConversation('后建的');
+    const before = (await storage.listConversations()).map((item) => item.id);
+    assert.deepEqual(before, [newer.id, older.id]);
+
+    // 关键回归点：以前按 updatedAt 排序，在旧对话里接着聊一句、
+    // 或者只是换个模型，它就会窜到最上面 —— 位置随使用不停跳动。
+    await storage.appendMessage(older.id, { role: 'user', content: '接着聊一句', status: 'complete' });
+    await storage.updateConversation(older.id, { model: 'deepseek-reasoner' });
+    await storage.appendMessage(older.id, { role: 'assistant', content: '好的', status: 'complete' });
+
+    const after = (await storage.listConversations()).map((item) => item.id);
+    assert.deepEqual(after, [newer.id, older.id], '对话位置只由新建时间决定，不能被后发消息顶上去');
+
+    // 反过来：更新的一条也不能把新建的更晚的对话挤下去。
+    await storage.appendMessage(newer.id, { role: 'user', content: '这条也聊两句', status: 'complete' });
+    const again = (await storage.listConversations()).map((item) => item.id);
+    assert.deepEqual(again, [newer.id, older.id]);
+  });
+});
+
+test('history order: pinned still floats to the top and archived still sinks', async () => {
+  await withStorage(async (storage) => {
+    const oldest = await storage.createConversation('最早的');
+    const middle = await storage.createConversation('中间的');
+    const newest = await storage.createConversation('最新的');
+
+    await storage.setPinned(oldest.id, true);
+    // 置顶优先于新建时间：即使它是最早建的，也要排在最前。
+    assert.deepEqual(
+      (await storage.listConversations()).map((item) => item.id),
+      [oldest.id, newest.id, middle.id],
+    );
+
+    await storage.setArchived(middle.id, true);
+    // 归档的沉底。注意 listConversations() 不带参数时**包含**归档项
+    // （过滤器在 archived === undefined 时直接放行），要排除得显式传 archived: false。
+    assert.deepEqual(
+      (await storage.listConversations({ archived: false })).map((item) => item.id),
+      [oldest.id, newest.id],
+    );
+    assert.deepEqual(
+      (await storage.listConversations({ includeArchived: true })).map((item) => item.id),
+      [oldest.id, newest.id, middle.id],
+    );
+  });
+});
+
+test('history order: createdAt order is stable across a reload', async () => {
+  await withStorage(async (storage, root) => {
+    const first = await storage.createConversation('第一条');
+    const second = await storage.createConversation('第二条');
+    // 让第一条的 updatedAt 变成最新，再存盘：重启后的顺序不能因此翻转。
+    await storage.appendMessage(first.id, { role: 'user', content: '更新的内容', status: 'complete' });
+    await storage.flush();
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    assert.deepEqual(
+      (await reloaded.listConversations()).map((item) => item.id),
+      [second.id, first.id],
+    );
+  });
+});

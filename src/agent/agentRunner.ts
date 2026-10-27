@@ -21,6 +21,12 @@ export interface AgentRunCallbacks {
   onSkillUsed?: (skill: SkillUsage) => void | Promise<void>;
   onTaskUpdate?: (update: AgentTaskUpdate) => void | Promise<void>;
   onRoundComplete?: (usage?: UsageInfo) => void | Promise<void>;
+  /**
+   * 命令长时间无输出时的主动提醒（每条命令只触发一次）。
+   * 存在的理由：卡住的命令在界面上和正常运行的命令长得一样，
+   * 只靠工具卡片变色不足以让用户注意到。
+   */
+  onCommandStall?: (info: { callId: string; idleSeconds: number; timeoutSeconds: number; summary: string }) => void | Promise<void>;
 }
 
 export interface AgentRunResult {
@@ -128,6 +134,37 @@ export class AgentRunner {
         executions.push(execution);
         await options.callbacks.onToolsChanged(cloneExecutions(executions));
 
+        // 把本次调用接到进度回调上：命令卡住时卡片必须立刻说话。
+        // 关键点在于「卡住的命令永远不会结束」，所以提示只能靠运行期推送，
+        // 不能指望结束事件——那正是这次故障里永远不会到来的那个事件。
+        // 卡片上的秒数每 10 秒刷新一次，但 toast 只弹一次：
+        // 弹窗每次重弹会变成噪音，用户会学会无视它。
+        let stallToastSent = false;
+        const callScope: ToolExecutionScope = {
+          ...(options.scope ?? {}),
+          onCommandProgress: (progress) => {
+            if (execution.finishedAt) return;
+            if (progress.phase === 'timeout') {
+              execution.stallHint = tt('tool.commandTimeoutRunning', { seconds: progress.timeoutSeconds });
+              void options.callbacks.onToolsChanged(cloneExecutions(executions));
+              return;
+            }
+            if (progress.phase !== 'stall') return;
+            execution.stallHint = tt('tool.commandStallHint', { seconds: progress.idleSeconds });
+            void options.callbacks.onToolsChanged(cloneExecutions(executions));
+            // 卡片文字每次刷新都更新，toast 只补一次：它要传达的是「你得动手了」，
+            // 不是那个每秒都在变的秒数。
+            if (stallToastSent) return;
+            stallToastSent = true;
+            void options.callbacks.onCommandStall?.({
+              callId: call.id,
+              idleSeconds: progress.idleSeconds,
+              timeoutSeconds: progress.timeoutSeconds,
+              summary: execution.summary,
+            });
+          },
+        };
+
         const extra = options.executeExtraTool ? await options.executeExtraTool(call) : undefined;
         const result = extra?.result ?? await this.tools.execute(
             call,
@@ -141,7 +178,7 @@ export class AgentRunner {
               return options.callbacks.requestApproval(request);
             },
             options.conversationId,
-            options.scope,
+            callScope,
           );
         if (extra?.skill) {
           await options.callbacks.onSkillUsed?.(extra.skill);
@@ -151,6 +188,8 @@ export class AgentRunner {
         execution.output = truncateLocal(result.content);
         execution.approval = result.approval;
         execution.changedFiles = result.changedFiles;
+        // 结果落定后清掉运行期提示，避免「超时，正在结束进程…」留在最终卡片上。
+        execution.stallHint = undefined;
         execution.finishedAt = Date.now();
         await options.callbacks.onToolsChanged(cloneExecutions(executions));
         requestMessages.push({

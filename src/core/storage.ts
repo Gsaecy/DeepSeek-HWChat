@@ -655,6 +655,16 @@ export class ConversationStorage {
     await this.writeTail;
   }
 
+  /**
+   * 历史列表的顺序：按 **新建时间** 倒序（新的在上、旧的在下）。
+   *
+   * 以前按 `updatedAt` 排，而 `updatedAt` 会随「新发一条消息」「换了模型」「置顶」变化，
+   * 于是在一条旧对话里接着聊一句，它就窜到列表最上面 —— 位置随使用不断跳动。
+   * 按 `createdAt` 定序后，每条对话的位置在建好的那一刻就固定了，只有新建的才插到最上面。
+   *
+   * 两个既有优先级原样保留：归档的始终沉底、置顶的始终浮顶。
+   * `createdAt` 撞车时退化为比 `updatedAt`，纯粹为了让结果稳定（同毫秒建两条时也不会乱序）。
+   */
   private sortedSummaries(): ConversationSummary[] {
     return [...this.manifest.conversations].sort((a, b) => {
       if (Boolean(a.archived) !== Boolean(b.archived)) {
@@ -662,6 +672,9 @@ export class ConversationStorage {
       }
       if (a.pinned !== b.pinned) {
         return a.pinned ? -1 : 1;
+      }
+      if (a.createdAt !== b.createdAt) {
+        return b.createdAt - a.createdAt;
       }
       return b.updatedAt - a.updatedAt;
     });

@@ -326,6 +326,11 @@ export interface ToolExecution {
    * 旧数据没有这个字段，渲染时退回「步骤块 + 正文」的旧排法。
    */
   contentOffset?: number;
+  /**
+   * 运行期的停滞提示（长时间没有输出、或已超时正在结束进程）。
+   * 只在还「没结束」时有意义：结果落定后会清掉，不进入存档语义。
+   */
+  stallHint?: string;
 }
 
 export interface ToolExecutionResult {
