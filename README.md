@@ -2,7 +2,7 @@
 
 [English](README.md) · [中文](README.zh-CN.md)
 
-Current version: **0.1.9**
+Current version: **0.2.0**
 
 HWChat is a local-first coding agent for VS Code with a DeepSeek / OpenAI-compatible backend. Repository: <https://github.com/Gsaecy/DeepSeek-HWChat>
 
@@ -21,6 +21,7 @@ Command palette titles and the configuration descriptions in the VS Code Setting
 - **Agent** — reads and searches the project, checks diagnostics, creates/edits/moves/deletes files, runs commands, and feeds tool results back to the model for multi-step work.
 - **Plan** — read-only tools only: analyse code and produce a plan without touching the workspace.
 - **Chat** — no workspace tools at all; only the conversation and the context you explicitly attach.
+- The active mode comes from the composer dropdown and, for new conversations, from `hwchat.defaultMode`: switching in the dropdown is written to the current conversation immediately and stays in force for every later request. Each request also states the mode explicitly in the system prompt (and marks it authoritative for that turn), so continuing a conversation after a switch never rides on the previous mode's assumptions. The tool list, the permission gate and the prompt all read the same resolved mode.
 - Understands single-root and multi-root VS Code workspaces natively: list workspace roots, browse directories, read files, and open them in the editor through `open_file` — no detouring through a terminal, the `code` CLI or another extension. Tools bridged from other VS Code extensions obey the same path isolation as the built-in ones, and their parameter descriptions state that file arguments must be absolute paths inside the workspace.
 - In a trusted workspace, and when the active permission preset allows it, the agent runs commands inside the workspace on its own. Commands are graded in three tiers: read-only (`ls`, `git status`, `grep`…), regular (install, build, commit…) and dangerous (privilege escalation, destructive deletion, disk wiping, forced pushes, piping remote scripts into a shell…). `Ask every time` confirms everything and denies dangerous commands outright; `Ask on risky actions` and `Autopilot` run read-only and regular commands automatically and ask for dangerous ones; `Full access` even runs dangerous commands but still confirms before reading sensitive files. Untrusted workspaces and path isolation outside the workspace always apply. `sed`/`grep` pattern or script arguments (such as `sed -n '/a/,/^b/p'`) are treated as patterns and not mistaken for escaping paths, while real file arguments are still validated one by one — including direct filesystem-root targets like `rm -rf /`, which are rejected.
 - Every execution step is collapsed by default and shows a result summary; expanding it reveals tool input, output, approval state, elapsed time and touched files. The expand/collapse state belongs to you: re-rendering during streaming no longer collapses a step you opened.
@@ -104,7 +105,7 @@ See [SECURITY.md](SECURITY.md) for the full boundary description.
 Requires VS Code `1.106.0` or newer.
 
 ```bash
-code --install-extension hwchat-0.1.9.vsix
+code --install-extension hwchat-0.2.0.vsix
 ```
 
 Open the command palette and run `HWChat: Open chat panel`. On first use, open settings, create an API profile and save its API key — the key only goes into VS Code `SecretStorage`, never into `settings.json`, project files or the VSIX.
@@ -120,7 +121,7 @@ npm test
 npm run package
 ```
 
-The build output is `hwchat-0.1.9.vsix` in the project root. A version already published to the Marketplace cannot be uploaded again, so bump the version for every public build.
+The build output is `hwchat-0.2.0.vsix` in the project root. A version already published to the Marketplace cannot be uploaded again, so bump the version for every public build.
 
 The extension icon is `resources/logo.png`. Press `F5` in VS Code to launch the extension development host.
 
@@ -129,7 +130,7 @@ The extension icon is `resources/logo.png`. Press `F5` in VS Code to launch the 
 - `hwchat.language` — interface language: `auto` (follow VS Code), `zh` or `en`.
 - `hwchat.apiProfiles` / `hwchat.activeApiProfileId` — OpenAI-compatible profiles and the active one.
 - `hwchat.baseUrl` / `hwchat.model` — legacy-compatible endpoint and current default model.
-- `hwchat.defaultMode` / `hwchat.agentMaxSteps` — default mode and per-turn tool-loop limit; `0` means unlimited.
+- `hwchat.defaultMode` / `hwchat.agentMaxSteps` — default mode and per-turn tool-loop limit; `0` means unlimited. The default mode only decides how a new conversation starts; after that the composer dropdown and the conversation's stored mode take over.
 - `hwchat.reasoningEffort` — five levels (default, none, low, high, max); endpoints without support get an automatic retry.
 - `hwchat.permissionPreset` — one of the four presets above.
 - `hwchat.fileReadPolicy` / `hwchat.fileWritePolicy` / `hwchat.commandPolicy` / `hwchat.dangerousCommandPolicy` / `hwchat.sensitiveFilePolicy` — fully derived from the preset; display-only, marked deprecated in the VS Code settings UI.

@@ -2,7 +2,7 @@
 
 [English](README.md) · 中文
 
-当前版本：**0.1.9**
+当前版本：**0.2.0**
 
 HWChat 是面向 VS Code 的本地优先编码 Agent 扩展。项目仓库：<https://github.com/Gsaecy/DeepSeek-HWChat>
 
@@ -17,6 +17,7 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 - `Agent`：读取和搜索项目、检查诊断、创建/修改/移动/删除文件、运行命令，并把工具结果继续回传模型完成多轮任务。
 - `Plan`：只开放只读工具，用于分析代码和制定方案，不修改工作区。
 - `Chat`：不开放工作区工具，仅使用对话和明确添加的上下文。
+- 工作模式以「对话工具条的下拉」和「设置里的默认模式」为准：新对话用 `hwchat.defaultMode`，在工具条里切换会立刻写进当前对话存档，之后每次请求都按它执行；每次请求还会把当前模式明确写进系统提示词（并声明以本轮为准），所以跨模式续聊不会沿用上一个模式的假设。工具清单、权限拦截和提示词三处用的是同一个模式值。
 - 原生识别 VS Code 的单根和多根工作区，可直接列出工作区根目录、浏览目录、读取文件，并通过 `open_file` 在编辑器中打开文件，不再绕行终端、`code` CLI 或其它扩展工具。由 VS Code 扩展提供的桥接工具与原生工具受同一套路径隔离约束，其说明里会标注文件类参数必须使用工作区内绝对路径。
 - 在受信任工作区和当前权限预设允许时，Agent 可自行执行工作区内命令。终端命令按风险分成三档：只读命令（`ls`、`git status`、`grep` 等）、正常命令（安装、构建、提交等）和危险命令（提权、破坏性删除、磁盘擦写、强制推送、把网络脚本管道给 shell 等）。`每次询问` 全部确认且危险命令直接拒绝；`风险操作询问` / `Autopilot` 自动执行只读与正常命令、危险命令逐次确认；`完全访问` 连危险命令也自动执行，但读取敏感文件时仍逐次确认。未受信任工作区和工作区外路径隔离始终有效。命令里 `sed` / `grep` 的模式或脚本参数（如 `sed -n '/a/,/^b/p'`）按模式处理，不会被误判成越界路径；真正的文件参数仍然逐个校验，直接指向文件系统根的写法（如 `rm -rf /`）同样会被拒绝。
 - 每个执行步骤默认折叠，只显示结果摘要；展开后可查看工具输入、输出、审批状态、耗时和涉及文件。展开/收起状态由用户决定：流式输出期间列表重新渲染也不会再自动收起，点开保持展开，再点一次才收起。
@@ -106,7 +107,7 @@ HWChat 与“本地skill快捷调用”共享 `~/.copilot/.skill-quick-launch.js
 安装已构建的 VSIX：
 
 ```bash
-code --install-extension hwchat-0.1.9.vsix
+code --install-extension hwchat-0.2.0.vsix
 ```
 
 在 VS Code 中打开命令面板，执行 `HWChat: 打开对话面板`。首次使用时进入设置，创建一个 API 配置档并保存 API Key；密钥只会进入 VS Code SecretStorage，不会写入 `settings.json`、项目文件或 VSIX。
@@ -120,7 +121,7 @@ npm test
 npm run package
 ```
 
-构建结果为项目根目录下的 `hwchat-0.1.9.vsix`。同一扩展已发布过的版本不能覆盖上传 Marketplace，发布新构建时必须递增版本号。
+构建结果为项目根目录下的 `hwchat-0.2.0.vsix`。同一扩展已发布过的版本不能覆盖上传 Marketplace，发布新构建时必须递增版本号。
 
 扩展图标使用 `resources/logo.png`。在 VS Code 中按 `F5` 启动扩展开发主机。
 
@@ -128,7 +129,7 @@ npm run package
 
 - `hwchat.apiProfiles` / `hwchat.activeApiProfileId`：OpenAI 兼容接口配置档和当前配置档。
 - `hwchat.baseUrl` / `hwchat.model`：兼容旧版配置，并保存当前默认接口和模型。
-- `hwchat.defaultMode` / `hwchat.agentMaxSteps`：默认模式和单轮工具循环上限；步骤为 `0` 时不限制。
+- `hwchat.defaultMode` / `hwchat.agentMaxSteps`：默认模式和单轮工具循环上限；步骤为 `0` 时不限制。默认模式只决定新对话的初始模式，之后在对话工具条里切换以对话存档为准。
 - `hwchat.reasoningEffort`：默认、无、低、高、最大五档思考层级；不支持该参数的兼容接口会自动降级重试。
 - `hwchat.permissionPreset`：常用权限预设（每次询问 / 风险操作询问 / Autopilot / 完全访问），四档之一。
 - `hwchat.fileReadPolicy` / `hwchat.fileWritePolicy` / `hwchat.commandPolicy` / `hwchat.dangerousCommandPolicy` / `hwchat.sensitiveFilePolicy`：这五项策略完全由预设推导，只用于设置页展示，手动写入不生效（在 VS Code 设置里已标记为弃用）。

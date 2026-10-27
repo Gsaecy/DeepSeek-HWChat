@@ -16,6 +16,7 @@ import {
   ConversationHistoryHit,
   ConversationExport,
   ConversationSummary,
+  ConversationMode,
   StorageStats,
   TodoItem,
 } from './types';
@@ -84,7 +85,13 @@ export class ConversationStorage {
     return summary ? { ...summary } : undefined;
   }
 
-  async createConversation(title = tt('storage.defaultTitle'), model?: string): Promise<ConversationSummary> {
+  /**
+   * 新建对话。
+   *
+   * `mode` 由调用方传入（面板传当前选择 / 设置默认值）：以前这里写死 `'agent'`，
+   * 建好的对话在面板 `send()` 补齐模式之前都是 Agent，任何读摘要的路径都会看到错的值。
+   */
+  async createConversation(title = tt('storage.defaultTitle'), model?: string, mode: ConversationMode = 'agent'): Promise<ConversationSummary> {
     await this.initialize();
     const now = Math.max(Date.now(), this.lastMessageTimestamp + 1);
     this.lastMessageTimestamp = now;
@@ -99,7 +106,7 @@ export class ConversationStorage {
       totalTokens: 0,
       model,
       apiProfileId: undefined,
-      mode: 'agent',
+      mode,
       skillIds: [],
       skillSelectionInitialized: false,
       archived: false,

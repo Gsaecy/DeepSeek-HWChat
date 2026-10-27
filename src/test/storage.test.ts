@@ -342,3 +342,20 @@ test('clears all local conversation data without leaving manifest entries', asyn
     assert.equal((await storage.stats()).messages, 0);
   });
 });
+
+test('新对话按调用方传入的模式落库，不再一律写成 agent', async () => {
+  await withStorage(async (storage, root) => {
+    const plan = await storage.createConversation('plan chat', undefined, 'plan');
+    const chat = await storage.createConversation('chat chat', undefined, 'chat');
+    const fallback = await storage.createConversation('default chat');
+    assert.equal((await storage.getConversation(plan.id))?.mode, 'plan');
+    assert.equal((await storage.getConversation(chat.id))?.mode, 'chat');
+    assert.equal((await storage.getConversation(fallback.id))?.mode, 'agent');
+
+    // 重新加载（读的是磁盘上的 manifest）后模式仍然一致。
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const modes = (await reloaded.listConversations()).map((item) => item.mode);
+    assert.deepEqual(modes, ['agent', 'chat', 'plan']);
+  });
+});

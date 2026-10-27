@@ -357,6 +357,7 @@ const DICTIONARY: Record<string, Entry> = {
   'notice.agentBusyDetach': { zh: 'Agent 正在执行，暂时不能解除任务历史。', en: 'The agent is running; task history cannot be detached right now.' },
   'notice.agentBusyArchive': { zh: '请先停止当前任务，再归档对话。', en: 'Stop the current task before archiving the conversation.' },
   'notice.agentBusyDelete': { zh: '请先停止当前回复，再删除对话。', en: 'Stop the current reply before deleting the conversation.' },
+  'notice.modeBusy': { zh: '当前任务还在执行，模式改动没有生效（仍按原模式运行）。', en: 'The current task is still running, so the mode change did not take effect (it keeps the mode it started with).' },
   'notice.deleteConversationTitle': { zh: '删除这段对话？此操作无法撤销。', en: 'Delete this conversation? This cannot be undone.' },
   'notice.deleteConversationDetail': {
     zh: '有 {count} 段续接对话正在引用这段历史。删除后它们仍保留本地摘要，但无法再按需检索这段完整历史。',

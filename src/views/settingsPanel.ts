@@ -3,6 +3,7 @@ import { SkillRegistry } from '../agent/skillRegistry';
 import { deleteApiKey, hasApiKey, storeApiKey } from '../core/apiKeys';
 import { PERMISSION_PRESET_IDS, permissionPresetDetails } from '../core/permissions';
 import { currentLanguage, messageScriptTag, t, tt, type Language } from '../core/i18n';
+import { isConversationMode } from '../core/modes';
 import { isPermissionPreset, profileFor, readSettings, updateSettings } from '../core/settings';
 import { ConversationStorage } from '../core/storage';
 import { ChatSettings } from '../core/types';
@@ -450,7 +451,7 @@ function validateSettings(values: Partial<ChatSettings>): Partial<ChatSettings> 
   if (values.requestHeaders !== undefined && (typeof values.requestHeaders !== 'object' || Array.isArray(values.requestHeaders))) {
     throw new Error(tt('error.headersNotObject'));
   }
-  if (values.defaultMode !== undefined && !['chat', 'agent', 'plan'].includes(values.defaultMode)) {
+  if (values.defaultMode !== undefined && !isConversationMode(values.defaultMode)) {
     throw new Error(tt('error.defaultModeInvalid'));
   }
   if (values.agentMaxSteps !== undefined && (!Number.isFinite(values.agentMaxSteps) || values.agentMaxSteps < 0)) {

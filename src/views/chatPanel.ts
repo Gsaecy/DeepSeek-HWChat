@@ -10,6 +10,7 @@ import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
 import { PERMISSION_PRESET_IDS, permissionPresetDetails } from '../core/permissions';
 import { currentLanguage, messageScriptTag, t, tt, type Language } from '../core/i18n';
+import { isConversationMode, modePromptInstruction, resolveActiveMode, resolveConversationMode } from '../core/modes';
 import {
   applyRuntimeControls,
   isPermissionPreset,
@@ -110,7 +111,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private activeConversationId: string | undefined;
   private pendingContext: PendingContext | undefined;
   private pendingAttachments: MessageContext[] = [];
-  private activeMode: ConversationMode = 'agent';
+  /**
+   * 尚未落库的新对话里，用户手动选过的模式；`undefined` 表示跟随 `hwchat.defaultMode`。
+   *
+   * 这里以前是 `private activeMode: ConversationMode = 'agent'`：面板一启动就是 Agent，
+   * 只有点「新建对话」时才去读一次设置里的默认模式。于是「设置里选 Plan / 工具条选 Plan」
+   * 界面都能显示出来，运行时却还是按 Agent 发——正是「HWChat 不认自己界面设置的模式」。
+   */
+  private draftModeOverride: ConversationMode | undefined;
   private activeSkillIds: string[] = [];
   private showArchived = false;
   private sendPending = false;
@@ -180,7 +188,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     if (conversationId && await this.storage.getConversation(conversationId)) {
       this.activeConversationId = conversationId;
       const summary = await this.storage.getConversation(conversationId);
-      this.activeMode = summary?.mode ?? readSettings().defaultMode;
+      // 模式不在这里缓存：sendState 每次都以存档里的 mode 为准，避免面板缓存与存档分叉。
       this.activeSkillIds = summary?.skillSelectionInitialized
         ? summary.skillIds ?? []
         : this.skills.defaultEnabledIds();
@@ -199,7 +207,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     this.activeConversationId = undefined;
     this.pendingContext = undefined;
     this.pendingAttachments = [];
-    this.activeMode = readSettings().defaultMode;
+    // 清掉草稿里的手动选择：「新建对话」回到设置里的当前默认模式，而不是上一次的模式。
+    this.draftModeOverride = undefined;
     await this.skills.refresh();
     this.activeSkillIds = this.skills.defaultEnabledIds();
     await this.open();
@@ -352,7 +361,6 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           this.pendingAttachments = [];
           {
             const summary = await this.storage.getConversation(message.id);
-            this.activeMode = summary?.mode ?? readSettings().defaultMode;
             this.activeSkillIds = summary?.skillSelectionInitialized
               ? summary.skillIds ?? []
               : this.skills.defaultEnabledIds();
@@ -635,17 +643,23 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         this.callbacks.openSettings();
         return;
       }
-      const mode = isConversationMode(requestedMode) ? requestedMode : this.activeMode;
+      // 界面选的模式优先；没传或传了非法值时：已落库对话沿用存档模式，草稿沿用设置默认值。
+      const mode = resolveActiveMode({
+        conversationMode: isConversationMode(requestedMode) ? requestedMode : existingConversation?.mode,
+        draftOverride: this.draftModeOverride,
+        defaultMode: configuredSettings.defaultMode,
+      });
       const skillIds = (requestedSkillIds ?? this.activeSkillIds).filter((id) => this.skills.has(id));
       if (existingConversation?.archived) {
         await this.post({ type: 'toast', tone: 'warning', text: tt('notice.archivedResume') });
         return;
       }
       if (!conversationId) {
-        conversationId = (await this.storage.createConversation(tt('common.newChat'), settings.model)).id;
+        conversationId = (await this.storage.createConversation(tt('common.newChat'), settings.model, mode)).id;
         this.activeConversationId = conversationId;
+        // 草稿已经变成真正的对话，模式随对话存档走，草稿选择不再参与。
+        this.draftModeOverride = undefined;
       }
-      this.activeMode = mode;
       this.activeSkillIds = skillIds;
       await this.storage.updateConversation(conversationId, {
         mode,
@@ -1028,6 +1042,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const visibleModel = activeOptions.some((option) => option.id === requestedModel)
       ? requestedModel
       : activeOptions[0]?.id || requestedModel;
+    // 面板显示的模式与运行时使用的模式必须同源：存档 → 草稿选择 → 设置默认值。
+    const activeMode = resolveActiveMode({
+      conversationMode: conversation?.mode,
+      draftOverride: this.draftModeOverride,
+      defaultMode: settings.defaultMode,
+    });
     const state: WebviewConversationState = {
       conversation,
       messages: page.messages.map((message) => this.forWebview(message)),
@@ -1048,11 +1068,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       archivedConversations,
       skills: this.skills.list(),
       selectedSkillIds,
-      mode: conversation?.mode ?? this.activeMode,
+      mode: activeMode,
       workspaceTrusted: vscode.workspace.isTrusted,
       agentAvailable: Boolean(vscode.workspace.workspaceFolders?.length),
-      availableToolCount: this.vscodeTools.availableCount()
-        + this.toolExecutor.definitions('agent').length
+      // Chat 模式本轮不下发任何工具，工具数必须是 0，否则状态栏会显示一个用不到的数量。
+      availableToolCount: activeMode === 'chat' ? 0 : this.vscodeTools.availableCount()
+        + this.toolExecutor.definitions(activeMode).length
         + 1
         + (conversation?.sourceConversationId ? 1 : 0),
       taskTree: conversation?.id === this.streamingConversationId ? this.activeTaskQueue?.state() : undefined,
@@ -1197,12 +1218,37 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     }
   }
 
+  /** 当前真正生效的模式，用于把真实值回推给界面（界面可能已经先本地改了下拉）。 */
+  private async effectiveMode(): Promise<ConversationMode> {
+    const conversation = this.activeConversationId
+      ? await this.storage.getConversation(this.activeConversationId)
+      : undefined;
+    return resolveActiveMode({
+      conversationMode: conversation?.mode,
+      draftOverride: this.draftModeOverride,
+      defaultMode: readSettings().defaultMode,
+    });
+  }
+
   private async setMode(mode: ConversationMode): Promise<void> {
-    if (!isConversationMode(mode) || this.activeAbortController || this.sendPending) return;
-    this.activeMode = mode;
+    if (!isConversationMode(mode)) {
+      // 界面传来非法值：把真实模式推回去，别让下拉停在一个不存在的模式上。
+      await this.post({ type: 'modeChanged', mode: await this.effectiveMode() });
+      return;
+    }
+    if (this.activeAbortController || this.sendPending) {
+      // 工具集在发送那一刻就定了，运行中改模式不会生效；但必须回推真实模式，
+      // 否则界面显示 Plan、实际按 Agent 跑，用户会以为设置被无视。
+      await this.post({ type: 'modeChanged', mode: await this.effectiveMode() });
+      await this.post({ type: 'toast', tone: 'warning', text: tt('notice.modeBusy') });
+      return;
+    }
     if (this.activeConversationId) {
       await this.storage.updateConversation(this.activeConversationId, { mode });
       this.callbacks.onHistoryChanged();
+    } else {
+      // 还没有对话：先记成草稿选择，发送时随新对话一起落库。
+      this.draftModeOverride = mode;
     }
     await this.post({ type: 'modeChanged', mode });
   }
@@ -1331,7 +1377,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const digestMessages = await this.storage.getContextMessages(source.id, 0, 8 * 1024 * 1024);
     const digest = buildConversationHistoryDigest(source, digestMessages);
     const settings = readSettings();
-    const created = await this.storage.createConversation(continuationTitle(source.title), source.model || settings.model);
+    const created = await this.storage.createConversation(
+      continuationTitle(source.title),
+      source.model || settings.model,
+      resolveConversationMode(source.mode, settings.defaultMode),
+    );
     const linked = await this.storage.updateConversation(created.id, {
       model: source.model,
       apiProfileId: source.apiProfileId,
@@ -1346,7 +1396,6 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     this.activeConversationId = linked.id;
     this.pendingContext = undefined;
     this.pendingAttachments = [];
-    this.activeMode = linked.mode ?? settings.defaultMode;
     this.activeSkillIds = linked.skillSelectionInitialized
       ? linked.skillIds ?? []
       : this.skills.defaultEnabledIds();
@@ -1556,14 +1605,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private agentSystemPrompt(mode: ConversationMode, customPrompt: string, skillPrompt: string, historyPrompt = ''): string {
-    const modeInstruction = mode === 'agent'
-      ? 'You are in Agent mode. Use workspace tools when needed to inspect, edit, diagnose, and verify the project.'
-      : mode === 'plan'
-        ? 'You are in Plan mode. Use only read-only tools. Do not edit files or run commands. Produce a concrete implementation plan.'
-        : 'You are in Chat mode. Do not call workspace tools; answer using the supplied conversation context.';
     return [
       'You are HWChat, a precise coding agent running inside VS Code.',
-      modeInstruction,
+      // 模式说明由 core/modes 统一生成：名字与界面下拉一致，并声明以本轮为准。
+      modePromptInstruction(mode),
       'Use tools for claims about the current workspace. Inspect relevant files before proposing or applying edits.',
       'Messages labeled as task-tree updates are authoritative runtime guidance. Related updates modify the current branch; queued branch messages begin only after the prior branch completes. Preserve completed work that remains valid and do not execute skipped stale steps.',
       'For workspace navigation, prefer the native list_workspace_roots, list_directory, list_files, read_file, open_file, and get_diagnostics tools. When the user asks to open a workspace file, call open_file directly. Do not use a terminal, code CLI, external Copilot file tools, or third-party preview tools when a native HWChat tool can perform the action.',
@@ -1709,10 +1754,6 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 </body>
 </html>`;
   }
-}
-
-function isConversationMode(value: unknown): value is ConversationMode {
-  return value === 'chat' || value === 'agent' || value === 'plan';
 }
 
 /**

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0
+
+- 发布版本号提升到 **0.2.0**，构建产物为 `hwchat-0.2.0.vsix`。次版本号递增而不是补丁号，因为这个包改变了运行时行为（模式的取值来源与工具集都变了），不是纯文案/样式变更。
+- 修复「HWChat 不认自己在界面里设置的工作模式」。根因有两处，都在 `ChatPanel`：`activeMode` 被写死成 `'agent'`，只在 `newChat()` / 切换会话时才去读一次 `hwchat.defaultMode`；而 `sendState()` 又用 `conversation?.mode ?? this.activeMode` 推给界面。于是面板首次打开（以及设置页改了默认模式、窗口重载后再打开视图）显示和实际执行都还是 Agent——界面明明选了 Plan/Chat，发的却是 Agent 那一套工具与提示词。现在模式的取值收敛到 `src/core/modes.ts`：`resolveActiveMode()` 定义优先级（存档模式 → 工具条里的草稿选择 → `hwchat.defaultMode` → `agent`），`sendState` / `send` / `setMode` 四处都调用它，`resolveConversationMode()` 负责单值校验，非法值不再可能悄悄落进 Agent 分支。
+- 工具条切换模式不再可能「显示新值、实际按旧值跑」：`setMode()` 在任务执行中不再静默 `return`，而是把真正生效的模式回推给界面并提示「当前任务还在执行，模式改动没有生效」；没有落库对话时的选择记为草稿模式，随新对话一起落库。
+- `createConversation()` 新增 `mode` 参数（默认仍是 `agent`），新对话在建库那一刻就带上正确模式，不再先写 Agent 等 `send()` 事后纠正——任何在建库与发送之间读摘要的路径都不会看到错的值。
+- 系统提示词里的模式说明改由 `modePromptInstruction()` 统一生成，明确写出当前模式名（与下拉文案 Agent / Plan / Chat 完全一致），并声明「以本轮为准、不要沿用历史消息里的模式假设」；此前只有一句 "You are in X mode"，同一对话里跨模式发消息时模型容易沿用旧假设。
+- 状态栏的可用工具数按当前模式统计（`toolExecutor.definitions(mode)`）；Chat 模式本轮不下发任何工具，工具数固定为 0，不再显示一个根本调不到的数量。
+- 新增 `src/test/modes.test.ts`（7 条，含「存档 > 草稿选择 > 设置默认值 > agent」的优先级用例）与 `createConversation` 模式落库、`hwchat.defaultMode` 非法值回落两条回归，测试 165 → 174。
+
 ## 0.1.9
 
 - 发布版本号提升到 0.1.9，用于重新出包上传。代码内容与 0.1.8 一致（中英文界面切换、可折叠任务清单等特性见下方 0.1.8 一节），本次只有版本号与文档变化。

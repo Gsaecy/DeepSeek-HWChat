@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ApiProfile, ChatSettings, PermissionPreset, ReasoningEffort } from './types';
 import { PERMISSION_PRESET_PROFILES } from './permissions';
 import { LanguageSetting, normalizeLanguageSetting } from './i18n';
+import { resolveConversationMode } from './modes';
 
 const SECTION = 'hwchat';
 const REASONING_FALLBACK_KEY = 'settings.reasoningEffort';
@@ -52,7 +53,7 @@ export function readSettings(): ChatSettings {
     maxMessagesInContext: Math.max(0, configuration.get<number>('maxMessagesInContext', 20)),
     requestHeaders: activeProfile.requestHeaders,
     requestTimeoutSeconds: clamp(configuration.get<number>('requestTimeoutSeconds', 120), 10, 900),
-    defaultMode: configuration.get<ChatSettings['defaultMode']>('defaultMode', 'agent'),
+    defaultMode: resolveConversationMode(configuration.get<unknown>('defaultMode'), 'agent'),
     agentMaxSteps: normalizeAgentMaxSteps(configuration.get<number>('agentMaxSteps', 0)),
     reasoningEffort: readReasoningEffort(configuration),
     permissionPreset,

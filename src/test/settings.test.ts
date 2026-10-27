@@ -121,3 +121,19 @@ test('没有任何一层声明时，报告如实标注“无”', () => {
   // review 预设下常规命令是自动允许，报告要给出真正生效值而不是配置原值。
   assert.match(formatPermissionScope(report).join('\n'), /commandPolicy → allow｜文件夹: 无/);
 });
+
+test('defaultMode 读设置，非法值回落 agent', () => {
+  roots(ROOT_A);
+  setConfiguration({ 'hwchat.defaultMode': 'plan' });
+  assert.equal(readSettings().defaultMode, 'plan');
+
+  setConfiguration({ 'hwchat.defaultMode': 'chat' });
+  assert.equal(readSettings().defaultMode, 'chat');
+
+  // 手写成非法字符串时不能把非法值一路传给运行时。
+  setConfiguration({ 'hwchat.defaultMode': 'Ask' });
+  assert.equal(readSettings().defaultMode, 'agent');
+
+  setConfiguration({});
+  assert.equal(readSettings().defaultMode, 'agent');
+});
