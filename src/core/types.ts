@@ -388,6 +388,24 @@ export interface WebviewConversationState {
    * 这个状态下 git 写操作会被拒绝，所以必须让用户看得见，而不是显示一个猜的目录名。
    */
   project: ProjectBadgeView;
+  /**
+   * 正文里文件引用的解析上下文。
+   *
+   * webview 没有文件系统，相对路径（`src/core/ids.ts`）没法自己变成绝对路径。
+   * 这里把工作区根目录和本对话的项目根一起下发，界面就能把相对路径拼完整，
+   * 右键「在系统中显示」时再把绝对路径回传。
+   *
+   * 只下发**目录**，不下发任何文件内容。
+   */
+  fileRoots: { roots: string[]; preferred?: string };
+  /**
+   * 右键菜单里那个「在 X 中显示」的 X：Finder / 资源管理器 / 文件管理器。
+   *
+   * 由扩展按 `process.platform` 决定，界面只负责查文案表——
+   * 平台判断放在一处，才不会出现「Windows 上写成 Finder」这种错位。
+   */
+  fileTarget: 'finder' | 'explorer' | 'fileManager';
+
   availableToolCount: number;
   taskTree?: AgentTaskTreeState;
   showArchived: boolean;

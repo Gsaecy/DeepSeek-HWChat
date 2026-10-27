@@ -50,6 +50,15 @@
   };
 
   /**
+   * 文件引用的识别与解析。纯函数放在 media/file-reference.js，由扩展在注入
+   * HTML 时先加载，这样可以单独跑单元测试。
+   *
+   * 万一那个脚本没加载成功，这里退化成两个空实现：正文与代码片段原样显示，
+   * 不再有任何文件引用——功能少一块，但渲染不会崩。
+   */
+  const fileRef = globalThis.HWChatFileRef || null;
+
+  /**
    * 任务清单面板的显示状态。同样放在 media/todo-panel-state.js 里以便单测。
    *
    * 退化实现只是「永远不自动展开」：面板照旧能显示和点击，只是新清单不会自己弹开。
@@ -298,6 +307,12 @@
     permissionPresetPending: false, modelLoadingProfileId: null,
     workspaceTrusted: false, agentAvailable: false, availableToolCount: 0, showArchived: false, renderTimer: null,
     project: { name: null, bound: false }, titleEditing: false,
+    /**
+     * 文件引用的上下文：工作区根目录 + 本对话的项目根 + 当前操作系统对应的
+     * 「文件管理器」名字（macOS 是 Finder，Windows 是资源管理器）。
+     * 由扩展在每次推状态时下发，前端据此把相对路径拼成绝对路径。
+     */
+    fileRoots: { roots: [], preferred: '' }, fileTarget: 'finder',
     taskTree: null, todos: [], todoArchives: [], expandedArchiveId: null, archiveRestore: null, todosInterrupted: false, todosIncomplete: false,
     todoSignature: '',
     runningConversationIds: [], pendingApprovals: [],
@@ -1619,14 +1634,181 @@
     return /^(?:\$\s*)?(?:npm|pnpm|yarn|git|cd|ls|mkdir|rm|cp|mv|curl|wget|python3?|node|npx|docker|kubectl|gradle|\.\/|swift|go|cargo|chmod|chown|brew|apt|pip3?|export|setx|powershell)\b/im.test(value.trim());
   }
 
+  /**
+   * 文件引用的渲染与右键菜单。
+   *
+   * 判断与解析都在 media/file-reference.js（纯函数、可单测），这里只负责
+   * 「把解析结果变成 DOM」以及「把用户的动作发回扩展」。
+   *
+   * 显示规则（用户明确要求）：
+   *  - 写了引用格式（反引号）→ 显示相对路径，短、好读；
+   *  - 没写引用格式（正文里裸写）→ 显示**完整绝对路径**，这样能在
+   *    VS Code 之外对着路径找到文件；
+   *  - 路径不在工作区内、无法相对化时，也只能显示完整路径。
+   * 完整路径同时挂在 title 上，任何时候悬停都能看到。
+   */
+  function fileReferenceContext() {
+    return { roots: state.fileRoots.roots, preferred: state.fileRoots.preferred };
+  }
+
+  function fileTargetLabel() {
+    return t(`chat.fileRefTarget.${state.fileTarget}`);
+  }
+
+  function fileReferencePayload(reference) {
+    return {
+      path: reference.absolute,
+      line: reference.line,
+      column: reference.column,
+      endLine: reference.endLine,
+    };
+  }
+
+  /**
+   * 造一个文件引用节点；认出不是文件时返回 null，调用方按原样渲染。
+   *
+   * @param {string|object} input 反引号里的原文，或 scanPlainText 的解析结果
+   * @param {{ compact?: boolean, allowSpaces?: boolean }} [options]
+   */
+  function fileReferenceNode(input, options = {}) {
+    if (!fileRef) return null;
+    const reference = typeof input === 'string'
+      ? fileRef.parseReference(input, { allowSpaces: options.allowSpaces })
+      : input;
+    if (!reference) return null;
+    const resolved = fileRef.resolveReference(reference, fileReferenceContext());
+    // 解析不出绝对路径（没有工作区根、又是相对路径）时退回原文，别显示一个点不开的假引用。
+    if (!resolved) return null;
+
+    const suffix = fileRef.locationSuffix(reference);
+    const label = options.compact && resolved.relative
+      ? `${resolved.relative}${suffix}`
+      : `${resolved.absolute}${suffix}`;
+
+    const node = document.createElement('span');
+    node.className = `file-ref${options.compact ? '' : ' file-ref-full'}`;
+    node.setAttribute('role', 'button');
+    node.tabIndex = 0;
+    node.title = `${resolved.absolute}${suffix}\n${t('chat.fileRefHint', { target: fileTargetLabel() })}`;
+    node.append(iconNode('file'), textElement('span', 'file-ref-label', label));
+    node.addEventListener('click', () => post('openFileReference', fileReferencePayload(resolved)));
+    node.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      post('openFileReference', fileReferencePayload(resolved));
+    });
+    node.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      openFileReferenceMenu(event, resolved);
+    });
+    return node;
+  }
+
+  /** 正文里裸写的路径：扫描出来逐个替换成引用，其余部分保持纯文本。 */
+  function appendPlainText(parent, text) {
+    if (!text) return;
+    const hits = fileRef ? fileRef.scanPlainText(text) : [];
+    if (!hits.length) { parent.append(document.createTextNode(text)); return; }
+    let cursor = 0;
+    for (const hit of hits) {
+      if (hit.index > cursor) parent.append(document.createTextNode(text.slice(cursor, hit.index)));
+      const node = fileReferenceNode(hit.reference, { compact: false });
+      if (node) parent.append(node); else parent.append(document.createTextNode(hit.text));
+      cursor = hit.index + hit.length;
+    }
+    if (cursor < text.length) parent.append(document.createTextNode(text.slice(cursor)));
+  }
+
+  /**
+   * 右键菜单（四项）：
+   *   1. 在系统文件管理器里定位（Finder / 资源管理器 / 文件管理器）；
+   *   2. 在 VS Code 资源管理器视图里定位；
+   *   3. 在编辑器里打开；
+   *   4. 复制完整路径。
+   *
+   * 前两项容易混，区别是「离开 VS Code 去系统里找」和「留在编辑器里看它在项目树的哪一层」。
+   *
+   * 自己画菜单而不是用浏览器默认菜单：webview 里默认菜单没有这些项，
+   * 也没法把命令回传给扩展。
+   */
+  let fileReferenceMenu = null;
+
+  function closeFileReferenceMenu() {
+    if (!fileReferenceMenu) return;
+    fileReferenceMenu.remove();
+    fileReferenceMenu = null;
+    document.removeEventListener('click', closeFileReferenceMenu, true);
+    document.removeEventListener('keydown', onFileMenuKeydown, true);
+    window.removeEventListener('blur', closeFileReferenceMenu);
+    window.removeEventListener('resize', closeFileReferenceMenu);
+  }
+
+  function onFileMenuKeydown(event) {
+    if (event.key === 'Escape') { event.preventDefault(); closeFileReferenceMenu(); }
+  }
+
+  function openFileReferenceMenu(event, reference) {
+    closeFileReferenceMenu();
+    const menu = document.createElement('div');
+    menu.className = 'file-ref-menu';
+    menu.setAttribute('role', 'menu');
+    const add = (label, iconName, action) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'file-ref-menu-item';
+      item.setAttribute('role', 'menuitem');
+      item.append(iconNode(iconName), textElement('span', '', label));
+      item.addEventListener('click', (clickEvent) => {
+        clickEvent.stopPropagation();
+        closeFileReferenceMenu();
+        action(item);
+      });
+      menu.append(item);
+    };
+    add(t('chat.fileRefReveal', { target: fileTargetLabel() }), 'folder', () => {
+      post('revealFile', fileReferencePayload(reference));
+    });
+    add(t('chat.fileRefRevealInExplorer'), 'tree', () => {
+      post('revealFileInExplorer', fileReferencePayload(reference));
+    });
+    add(t('chat.fileRefOpenEditor'), 'file', () => {
+      post('openFileReference', fileReferencePayload(reference));
+    });
+    const path = reference.absolute;
+    add(t('chat.fileRefCopyPath'), 'copy', (item) => {
+      requestClipboardWrite(path, item, t('chat.fileRefCopyPath'));
+    });
+    document.body.append(menu);
+
+    // 贴边时往回收，别让菜单跑出可视区。
+    const rect = menu.getBoundingClientRect();
+    const left = Math.min(event.clientX, window.innerWidth - rect.width - 6);
+    const top = Math.min(event.clientY, window.innerHeight - rect.height - 6);
+    menu.style.left = `${Math.max(6, left)}px`;
+    menu.style.top = `${Math.max(6, top)}px`;
+
+    fileReferenceMenu = menu;
+    // 捕获阶段收菜单：点菜单项自身时 stopPropagation 已经拦住了冒泡版本，
+    // 这里只处理「点别处」的情况。
+    document.addEventListener('click', closeFileReferenceMenu, true);
+    document.addEventListener('keydown', onFileMenuKeydown, true);
+    window.addEventListener('blur', closeFileReferenceMenu);
+    window.addEventListener('resize', closeFileReferenceMenu);
+  }
+
   /** 行内格式：`代码`、**加粗**、~~删除~~、[文字](链接)、裸链接。 */
   function appendInline(parent, value) {
     // 只把「目标看起来像链接」的 [文字](目标) 当链接：目标必须以 http(s)://、mailto:、# 或 / 开头，
     // 这样 [文字](javascript:…) 之类的构造连匹配都不会匹配，不会出现半个链接加一个多余的右括号。
     const pattern = /(`[^`]+`|\*\*[^*\n]+\*\*|\*[^\s*][^*\n]*\*|~~[^~\n]+~~|\[[^\]\n]+\]\((?:https?:\/\/|mailto:|#|\/)[^)\s]*\)|https?:\/\/[^\s<]+)/g; let cursor = 0;
     for (const match of value.matchAll(pattern)) {
-      const index = match.index || 0; if (index > cursor) parent.append(document.createTextNode(value.slice(cursor, index))); const token = match[0];
-      if (token.startsWith('`')) parent.append(textElement('code', '', token.slice(1, -1)));
+      const index = match.index || 0; if (index > cursor) appendPlainText(parent, value.slice(cursor, index)); const token = match[0];
+      if (token.startsWith('`')) {
+        // 反引号里是文件路径时渲染成可点的引用（悬停看完整路径、右键在 Finder/资源管理器中定位），
+        // 否则维持原来的代码片段样式。allowSpaces 只在这里打开：反引号已经界定了边界。
+        const codeText = token.slice(1, -1);
+        parent.append(fileReferenceNode(codeText, { compact: true, allowSpaces: true }) || textElement('code', '', codeText));
+      }
       else if (token.startsWith('**')) parent.append(textElement('strong', '', token.slice(2, -2)));
       else if (token.startsWith('*')) parent.append(textElement('em', '', token.slice(1, -1)));
       else if (token.startsWith('~~')) parent.append(textElement('del', '', token.slice(2, -2)));
@@ -1641,7 +1823,7 @@
       else { const link = textElement('a', '', token); link.href = token; link.target = '_blank'; link.rel = 'noreferrer'; parent.append(link); }
       cursor = index + token.length;
     }
-    if (cursor < value.length) parent.append(document.createTextNode(value.slice(cursor)));
+    if (cursor < value.length) appendPlainText(parent, value.slice(cursor));
   }
 
   function renderAttachments() {
@@ -2055,6 +2237,15 @@
         state.project = incoming.project && typeof incoming.project === 'object'
           ? { name: incoming.project.name || null, bound: Boolean(incoming.project.bound) }
           : { name: null, bound: false };
+        state.fileRoots = incoming.fileRoots && typeof incoming.fileRoots === 'object'
+          ? {
+            roots: Array.isArray(incoming.fileRoots.roots) ? incoming.fileRoots.roots.filter((value) => typeof value === 'string' && value) : [],
+            preferred: typeof incoming.fileRoots.preferred === 'string' ? incoming.fileRoots.preferred : '',
+          }
+          : { roots: [], preferred: '' };
+        state.fileTarget = incoming.fileTarget === 'explorer' || incoming.fileTarget === 'fileManager'
+          ? incoming.fileTarget
+          : 'finder';
         state.todoArchives = Array.isArray(incoming.todoArchives) ? incoming.todoArchives : [];
         state.todosInterrupted = Boolean(incoming.todosInterrupted);
         state.todosIncomplete = Boolean(incoming.todosIncomplete);

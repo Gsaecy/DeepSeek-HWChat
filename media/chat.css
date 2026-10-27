@@ -518,6 +518,74 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .code-chip-location { color: var(--success); border-color: color-mix(in srgb, var(--success) 42%, var(--border)); background: color-mix(in srgb, var(--success) 10%, transparent); }
 .code-chip-location.is-remote { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 46%, var(--border)); background: color-mix(in srgb, var(--warning) 13%, transparent); }
 .code-chip-tool { color: var(--muted); }
+/* 正文里的文件引用：像一枚可点的小标签，而不是一段死代码。
+   悬停有轻微上浮 + 阴影 + 描边转亮，指示「这里是可操作的」；
+   正文里裸写的路径（没写引用格式）带 .file-ref-full，会显示完整绝对路径，
+   所以允许换行、不省略，避免把路径截断成看不出位置的一截。 */
+.file-ref {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--link) 34%, var(--border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--link) 8%, transparent);
+  color: var(--link);
+  font: 10.5px/1.5 var(--mono);
+  cursor: pointer;
+  vertical-align: baseline;
+  transition: transform .13s ease, box-shadow .13s ease, background-color .13s ease, border-color .13s ease;
+}
+.file-ref .ui-icon { align-self: center; }
+.file-ref .ui-icon svg { width: 9px; height: 9px; }
+.file-ref-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-ref:hover {
+  transform: translateY(-1px);
+  border-color: var(--link);
+  background: color-mix(in srgb, var(--link) 16%, transparent);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--link) 26%, transparent);
+}
+.file-ref:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.file-ref:active { transform: translateY(0); box-shadow: none; }
+/* 完整路径那一种：允许折行显示全，不做省略号。 */
+.file-ref-full { max-width: none; }
+.file-ref-full .file-ref-label { overflow: visible; white-space: normal; word-break: break-all; }
+/* 用户在系统设置里关掉动效时，不再做位移与阴影，只保留颜色变化。 */
+@media (prefers-reduced-motion: reduce) {
+  .file-ref { transition: background-color .13s ease, border-color .13s ease; }
+  .file-ref:hover { transform: none; box-shadow: none; }
+}
+
+/* 文件引用的右键菜单：贴光标弹出，超出可视区时由脚本回收到窗口内。 */
+.file-ref-menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--notification-bg);
+  color: var(--notification-fg);
+  box-shadow: var(--shadow);
+}
+.file-ref-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  color: inherit;
+  background: transparent;
+  font: 11px var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+.file-ref-menu-item:hover { background: var(--surface-hover); color: var(--surface-hover-fg); }
+.file-ref-menu-item .ui-icon svg { width: 11px; height: 11px; }
+
 .terminal-command.is-remote { border-color: color-mix(in srgb, var(--warning) 34%, var(--border)); }
 .terminal-command.is-remote .code-header { color: var(--warning); }
 .li-text { margin: 0; }

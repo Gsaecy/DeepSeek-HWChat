@@ -55,6 +55,8 @@ test('中英两版必须真正不同（除专有名词外不能照抄）', () =>
     'settings.skills.title',
     'settings.apiKey.label',
     'settings.apiKey.clearPlaceholder',
+    // Finder 是 macOS 的专有名词，中文界面里也写 Finder，不译。
+    'chat.fileRefTarget.finder',
   ]);
   const identical = messageKeys().filter((key) => {
     const entry = messageEntry(key)!;

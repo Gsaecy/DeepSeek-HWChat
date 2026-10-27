@@ -3,6 +3,7 @@ import { basename, isAbsolute } from 'node:path';
 import * as vscode from 'vscode';
 import { AgentRunner } from '../agent/agentRunner';
 import { attachmentCacheName, planAttachmentOpen } from '../agent/attachmentOpen';
+import { isInsideWorkspace, normalizeFileReference, revealTargetFor } from '../agent/fileReveal';
 import { SkillRegistry } from '../agent/skillRegistry';
 import { classifyTaskRelation } from '../agent/taskRouter';
 import { AgentTaskQueue, type AgentTaskUpdate } from '../agent/taskQueue';
@@ -177,6 +178,24 @@ type IncomingMessage =
    * （`attachmentForWebview` 会把它剥掉），回传正文既慢又没必要。
    */
   | { type: 'openAttachment'; id?: string; path?: string }
+  /**
+   * 正文里被引用的文件：右键「在系统中显示」。
+   *
+   * `path` 是界面拼好的绝对路径（相对路径已经在 webview 侧按 `fileRoots` 解析完）。
+   * 扩展侧还要再过一遍 `normalizeFileReference`——模型输出驱动的路径不能直接信。
+   */
+  | { type: 'revealFile'; path?: string; line?: number; column?: number }
+  /**
+   * 正文里被引用的文件：右键「在资源管理器视图中显示」。
+   *
+   * 与 `revealFile` 分开两条消息，因为它是**另一个命令**（`revealInExplorer`，
+   * 只动 VS Code 侧边栏），而且多一道「必须落在工作区内」的判断。合成一条
+   * 再靠参数分岔，会让两种失败提示混在一起。
+   */
+  | { type: 'revealFileInExplorer'; path?: string; line?: number; column?: number }
+  /** 正文里被引用的文件：左键「在编辑器中打开」，带行号时定位过去。 */
+  | { type: 'openFileReference'; path?: string; line?: number; column?: number }
+
   | { type: 'attachFiles' }
   | { type: 'attachClipboardFiles'; files: ClipboardFile[] }
   | { type: 'copyText'; text: string; requestId?: string }
@@ -592,6 +611,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           break;
         case 'openAttachment':
           await this.openAttachment(message);
+          break;
+        case 'revealFile':
+          await this.revealFile(message);
+          break;
+        case 'revealFileInExplorer':
+          await this.revealFileInExplorer(message);
+          break;
+        case 'openFileReference':
+          await this.openFileReference(message);
           break;
         case 'attachFiles':
           await this.attachFiles();
@@ -1296,6 +1324,20 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       workspaceTrusted: vscode.workspace.isTrusted,
       agentAvailable: Boolean(vscode.workspace.workspaceFolders?.length),
       project: this.projectBadgeFor(conversation),
+      /**
+       * 文件引用的解析上下文：工作区根目录 + 本对话所属的项目根。
+       *
+       * 正文里的路径通常是相对的（`src/core/ids.ts`），webview 没有文件系统，
+       * 只能靠这两个值把相对路径拼成绝对路径。项目根优先，多根工作区里
+       * 相对路径才不会全都落到排在第一位的那个根上。
+       */
+      fileRoots: {
+        roots: (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
+        preferred: this.projectRootFor(conversation),
+      },
+      /** 右键菜单里那个「在 X 中显示」的 X：Finder / 资源管理器 / 文件管理器。 */
+      fileTarget: revealTargetFor(process.platform),
+
       // Chat 模式本轮不下发任何工具，工具数必须是 0，否则状态栏会显示一个用不到的数量。
       availableToolCount: activeMode === 'chat' ? 0 : this.vscodeTools.availableCount()
         + this.toolExecutor.definitions(activeMode).length
@@ -2209,6 +2251,17 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 任意一个根，拼错的那个会得到一个不存在的路径，点开就是空白或报错。
    */
   private absoluteAttachmentUri(input: string): vscode.Uri {
+    return this.absoluteFileUri(input);
+  }
+
+  /**
+   * 相对路径 → 绝对 Uri。
+   *
+   * 附件和正文里的文件引用共用这一处：两者的 `path` 都可能是相对工作区根的
+   * （多根工作区还带根目录名）。逐个根目录去试 `existsSync`，而不是只拼第一个根，
+   * 否则多根工作区里拼错的那个会得到一个不存在的路径。
+   */
+  private absoluteFileUri(input: string): vscode.Uri {
     if (isAbsolute(input)) return vscode.Uri.file(input);
     const folders = vscode.workspace.workspaceFolders ?? [];
     for (const folder of folders) {
@@ -2219,6 +2272,102 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     // 而工作区为空时也确实取不到——那就退回按相对路径本身构造。
     const first = folders[0];
     return first ? vscode.Uri.joinPath(first.uri, input) : vscode.Uri.file(input);
+  }
+
+  /**
+   * 在系统的文件管理器里定位文件，并让它处于选中状态。
+   *
+   * 用 `revealFileInOS` 而不是自己拼 `open -R` / `explorer /select,`：
+   * 这个命令是 VS Code 的官方入口，三平台都是「打开文件管理器并选中该文件」，
+   * 也正是右键菜单里「在系统中显示」那一项本来做的事。它只读不写，
+   * 不会移动、改名或覆盖被引用的文件。
+   */
+  private async revealFile(message: { path?: unknown; line?: unknown; column?: unknown }): Promise<void> {
+    const target = normalizeFileReference(message);
+    if (!target) return;
+    const uri = this.absoluteFileUri(target.path);
+    if (!existsSync(uri.fsPath)) {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('error.fileRefMissing', { path: uri.fsPath }) });
+      return;
+    }
+    try {
+      await vscode.commands.executeCommand('revealFileInOS', uri);
+    } catch (error) {
+      await this.post({
+        type: 'toast',
+        tone: 'error',
+        text: tt('error.fileRefRevealFailed', { error: error instanceof Error ? error.message : String(error) }),
+      });
+    }
+  }
+
+  /**
+   * 在 **VS Code 自己的资源管理器**里定位文件（不是系统的文件管理器）。
+   *
+   * 和 `revealFile` 是两件事：那个打开 Finder / 资源管理器窗口，这个只动 VS Code
+   * 的侧边栏。用户要的是「在编辑器里一眼看到这个文件在项目树的哪个位置」，
+   * 文件不需要被打开、编辑器内容也不变。
+   *
+   * 两处判断都不是多余的：
+   *  - 文件在工作区外时，`revealInExplorer` 会**静默无效**，所以先给一条提示；
+   *  - 定位之后还要把资源管理器视图调出来，否则树是折叠的或者被切走了，
+   *    「选中了但看不见」等于没做。
+   *    这里敢切视图是因为 HWChat 在 secondarySidebar（见 package.json 的
+   *    viewsContainers），资源管理器在 primarySidebar，切换不会把聊天面板挤掉。
+   */
+  private async revealFileInExplorer(message: { path?: unknown; line?: unknown; column?: unknown }): Promise<void> {
+    const target = normalizeFileReference(message);
+    if (!target) return;
+    const uri = this.absoluteFileUri(target.path);
+    if (!existsSync(uri.fsPath)) {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('error.fileRefMissing', { path: uri.fsPath }) });
+      return;
+    }
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+    if (!isInsideWorkspace(uri.fsPath, roots)) {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('error.fileRefOutsideWorkspace') });
+      return;
+    }
+    try {
+      await vscode.commands.executeCommand('revealInExplorer', uri);
+      await vscode.commands.executeCommand('workbench.view.explorer');
+    } catch (error) {
+      await this.post({
+        type: 'toast',
+        tone: 'error',
+        text: tt('error.fileRefRevealFailed', { error: error instanceof Error ? error.message : String(error) }),
+      });
+    }
+  }
+
+  /** 左键点引用 → 在编辑器里打开；带行号的定位到那一行。 */
+  private async openFileReference(message: { path?: unknown; line?: unknown; column?: unknown }): Promise<void> {
+    const target = normalizeFileReference(message);
+    if (!target) return;
+    const uri = this.absoluteFileUri(target.path);
+    if (!existsSync(uri.fsPath)) {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('error.fileRefMissing', { path: uri.fsPath }) });
+      return;
+    }
+    try {
+      const document = await vscode.workspace.openTextDocument(uri);
+      const editor = await vscode.window.showTextDocument(document, { preview: true });
+      if (!target.line) return;
+      // 行号可能已经过期（文件被改短了），一律夹到合法范围内，
+      // 否则这里会抛一个和「点了个链接」完全不相干的异常。
+      const lineIndex = Math.min(Math.max(0, target.line - 1), Math.max(0, document.lineCount - 1));
+      const text = document.lineAt(lineIndex).text;
+      const columnIndex = target.column ? Math.min(Math.max(0, target.column - 1), text.length) : 0;
+      const position = new vscode.Position(lineIndex, columnIndex);
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+    } catch (error) {
+      await this.post({
+        type: 'toast',
+        tone: 'error',
+        text: tt('error.attachmentOpenFailed', { error: error instanceof Error ? error.message : String(error) }),
+      });
+    }
   }
 
   private async openAttachmentUri(uri: vscode.Uri): Promise<void> {
@@ -2368,6 +2517,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     // 收尾清单的复选框剥离。同样必须在 chat.js 之前加载：
     // chat.js 渲染有序列表时要读 HWChatFollowUpFormat，读不到就原样显示 `[ ]`。
     const followUpFormatScript = mediaUri(webview, this.extensionUri, 'follow-up-format.js');
+    // 正文里文件引用的识别与解析。同样必须在 chat.js 之前加载：
+    // chat.js 渲染行内文本时要读 HWChatFileRef，读不到就退回「路径原样显示」。
+    const fileRefScript = mediaUri(webview, this.extensionUri, 'file-reference.js');
+
     const logo = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'logo.png'));
     return `<!doctype html>
 <html lang="${lang === 'zh' ? 'zh-CN' : 'en'}">
@@ -2500,6 +2653,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   <script nonce="${scriptNonce}" src="${secretScanScript}"></script>
   <script nonce="${scriptNonce}" src="${toastTimingScript}"></script>
   <script nonce="${scriptNonce}" src="${followUpFormatScript}"></script>
+  <script nonce="${scriptNonce}" src="${fileRefScript}"></script>
   <script nonce="${scriptNonce}" src="${script}"></script>
 </body>
 </html>`;

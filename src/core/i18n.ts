@@ -55,6 +55,24 @@ const DICTIONARY: Record<string, Entry> = {
   'common.listSeparator': { zh: '、', en: ', ' },
   'chat.clipboardAttachment': { zh: '剪贴板附件', en: 'Clipboard attachment' },
   'chat.openAttachmentHint': { zh: '点击在编辑器中查看', en: 'Click to open in the editor' },
+  /* 文件引用（正文里被提到的文件）。
+     「文件管理器」的名字随平台变：macOS 是 Finder，Windows 是资源管理器，
+     其余统一叫文件管理器。拆成独立键，句子模板才能只写一次。 */
+  'chat.fileRefTarget.finder': { zh: 'Finder', en: 'Finder' },
+  'chat.fileRefTarget.explorer': { zh: '资源管理器', en: 'Explorer' },
+  'chat.fileRefTarget.fileManager': { zh: '文件管理器', en: 'file manager' },
+  'chat.fileRefReveal': { zh: '在{target}中显示', en: 'Reveal in {target}' },
+  /* 这一项是「在 VS Code 自己的资源管理器里定位」，和上面那条「在系统文件管理器里显示」
+     是两件事。文案刻意采用 VS Code 自带右键菜单的措辞（Reveal in Explorer View），
+     顺带避开一个重名：Windows 上系统文件管理器也叫「资源管理器」，两条若同名会无法区分。 */
+  'chat.fileRefRevealInExplorer': { zh: '在资源管理器视图中显示', en: 'Reveal in Explorer View' },
+  'chat.fileRefOpenEditor': { zh: '在编辑器中打开', en: 'Open in editor' },
+  'chat.fileRefCopyPath': { zh: '复制完整路径', en: 'Copy full path' },
+  'chat.fileRefHint': { zh: '左键在编辑器中打开，右键在{target}中显示', en: 'Click to open in the editor, right-click to reveal in {target}' },
+  'error.fileRefMissing': { zh: '文件不存在：{path}', en: 'File not found: {path}' },
+  'error.fileRefRevealFailed': { zh: '无法在系统中显示该文件：{error}', en: 'Could not reveal the file: {error}' },
+  'error.fileRefOutsideWorkspace': { zh: '该文件不在当前工作区内，无法在资源管理器中显示。', en: 'The file is outside the workspace, so it cannot be shown in the Explorer.' },
+
   'notice.attachmentTaskPrefix': { zh: '处理附件：', en: 'Work with attachments: ' },
   'chat.continuationTitlePrefix': { zh: '继续：', en: 'Continue: ' },
   'chat.untitledTask': { zh: '未命名任务', en: 'Untitled task' },
