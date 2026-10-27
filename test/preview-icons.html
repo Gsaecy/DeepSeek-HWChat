@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HWChat · 界面图标预览</title>
+  <link rel="stylesheet" href="../media/chat.css">
+  <style>
+    /* 只为了截图核对：图标在真实容器里的形状、粗细、对齐，以及深浅主题下的可见度。 */
+    body { padding: 16px; background: var(--bg); font-family: var(--font); }
+    .frame { width: 430px; max-width: 100%; margin: 0 0 16px; padding: 10px; border: 1px dashed var(--border); border-radius: 8px; }
+    .frame h2 { margin: 0 0 8px; color: var(--muted); font-size: 11px; font-weight: 600; }
+    .dark { background: #1f1f1f; color: #e6e6e6; --fg: #e6e6e6; --bg: #1f1f1f; --muted: #a0a0a0; --border: #3a3a3a; --surface: #2a2a2a; --surface-hover: #333; }
+    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .size-note { color: var(--muted); font-size: 10px; }
+    .grid { display: grid; grid-template-columns: repeat(4, auto); gap: 10px 14px; align-items: center; }
+    .grid span { color: var(--muted); font-size: 10px; }
+  </style>
+</head>
+<body>
+
+<div class="frame">
+  <h2>① 工具执行结果徽标（16px 圆底）</h2>
+  <div id="tools"></div>
+</div>
+
+<div class="frame">
+  <h2>② 任务清单状态（勾 / 圆环 / 跳动点）</h2>
+  <!-- --todo-green 定义在 .todo-panel 上，必须套上这层容器，否则预览里的颜色不准。 -->
+  <div class="todo-panel">
+    <ul class="todo-list" id="todos"></ul>
+  </div>
+</div>
+
+<div class="frame">
+  <h2>③ 任务树节点状态（6 种）</h2>
+  <div id="nodes"></div>
+</div>
+
+<div class="frame">
+  <h2>④ 会话行操作按钮</h2>
+  <div class="row" id="actions"></div>
+</div>
+
+<div class="frame">
+  <h2>⑤ 折叠箭头（收起 / 展开）</h2>
+  <details class="task-tree"><summary><span>任务树</span><small>2 个节点</small></summary><div class="task-node"><span class="task-node-status"></span><span class="task-node-title">已展开的样子</span></div></details>
+  <details class="reasoning"><summary><span class="reasoning-title">思考过程</span><span class="reasoning-hint">286 字 · 点开查看</span></summary><p>内容</p></details>
+  <details class="approval-detail"><summary>展开参数</summary><p>内容</p></details>
+</div>
+
+<div class="frame dark">
+  <h2>⑥ 深色主题下的同一批图标</h2>
+  <div class="row" id="dark"></div>
+</div>
+
+<div class="frame">
+  <h2>⑦ 全部图标 × 三种尺寸（16 / 11 / 9）</h2>
+  <div class="grid" id="all"></div>
+</div>
+
+<script src="../media/ui-icons.js"></script>
+<script>
+  // 预览页直接用 media/ui-icons.js 生成图形：截图看到的、扩展里跑的是同一份形状定义。
+  const I = globalThis.HWChatIcons;
+  const svg = (name) => I.markup(name).replace('<svg ', '<svg width="100%" height="100%" ');
+  const icon = (name) => `<span class="ui-icon">${svg(name)}</span>`;
+
+  // ① 工具徽标：成功 / 拒绝 / 出错 / 未完成
+  document.getElementById('tools').innerHTML = ['success', 'denied', 'error', 'pending'].map((status) => {
+    const name = status === 'success' ? 'check' : status === 'denied' ? 'minus' : status === 'error' ? 'bang' : 'ellipsis';
+    return `<details class="tool-execution status-${status}" open><summary><span class="tool-status">${icon(name)}</span><span class="tool-summary">命令退出码 0</span><small>命令 · 49 ms</small></summary></details>`;
+  }).join('');
+
+  // ② 任务清单
+  document.getElementById('todos').innerHTML = [
+    ['completed', 'check', '定位胶囊样式与任务清单唤起逻辑'],
+    ['in_progress', '', '新建 media/todo-panel-state.js 纯函数模块'],
+    ['pending', 'ring', '改 media/chat.js 胶囊去图标'],
+  ].map(([status, name, text], index) => `<li class="todo-item status-${status}"><span class="todo-index">${index + 1}</span><span class="todo-content">${text}</span><span class="todo-status status-${status}">${status === 'in_progress' ? '<i></i><i></i><i></i>' : icon(name)}</span></li>`).join('');
+
+  // ③ 任务树
+  document.getElementById('nodes').innerHTML = [
+    ['complete', 'check', '已完成'], ['active', 'dot', '执行中'], ['routing', 'ellipsis', '判断关联性'],
+    ['merged', 'turn', '已归并'], ['queued', 'ring', '排队'], ['cancelled', 'minus', '已取消'],
+  ].map(([status, name, label]) => `<div class="task-node status-${status}"><span class="task-node-status">${icon(name)}</span><span class="task-node-title">这一轮要做什么</span><small>${label}</small></div>`).join('');
+
+  // ④ 行内操作
+  document.getElementById('actions').innerHTML = [['arrowUpRight', '继续'], ['dot', '已固定'], ['restore', '还原'], ['close', '删除']]
+    .map(([name, label]) => `<button class="row-action" title="${label}">${icon(name)}</button>`).join('');
+
+  // ⑥⑦
+  document.getElementById('dark').innerHTML = ['check', 'minus', 'bang', 'ellipsis', 'dot', 'ring', 'turn', 'square', 'close', 'arrowUpRight', 'restore'].map((n) => `<span class="tool-status" style="background:#444">${icon(n)}</span>`).join('');
+  document.getElementById('all').innerHTML = I.names().map((name) => `<span>${name}</span>
+    <span class="ui-icon" style="width:16px;height:16px">${svg(name)}</span>
+    <span class="ui-icon" style="width:11px;height:11px">${svg(name)}</span>
+    <span class="ui-icon" style="width:9px;height:9px">${svg(name)}</span>`).join('');
+</script>
+</body>
+</html>

@@ -450,6 +450,56 @@ test('manifest 里非布尔的中断标记在载入时被丢掉', async () => {
   });
 });
 
+test('「未完成」标记与「已中断」互斥，重启后仍然只有一个', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('incomplete');
+    await storage.updateConversation(conversation.id, {
+      todos: [
+        { content: '读代码', status: 'completed' },
+        { content: '改实现', status: 'pending' },
+      ],
+      todosInterrupted: true,
+    });
+    // 同一份清单改成「跑完没结清」：中断标记必须被清掉，不能两个标签同时挂着。
+    await storage.updateConversation(conversation.id, { todosIncomplete: true });
+    const afterSwap = await storage.getConversation(conversation.id);
+    assert.equal(afterSwap?.todosIncomplete, true);
+    assert.equal(afterSwap?.todosInterrupted, undefined);
+
+    // 反过来再置中断，也要把「未完成」清掉。
+    await storage.updateConversation(conversation.id, { todosInterrupted: true });
+    const afterBack = await storage.getConversation(conversation.id);
+    assert.equal(afterBack?.todosInterrupted, true);
+    assert.equal(afterBack?.todosIncomplete, undefined);
+
+    // 重启后标记仍在。
+    await storage.updateConversation(conversation.id, { todosInterrupted: null, todosIncomplete: true });
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const loaded = await reloaded.getConversation(conversation.id);
+    assert.equal(loaded?.todosIncomplete, true);
+    assert.equal(loaded?.todosInterrupted, undefined);
+  });
+});
+
+test('manifest 里两个标记同时为真时按「已中断」算，丢掉「未完成」', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('both flags');
+    const manifestPath = join(root, 'manifest.json');
+    const raw = JSON.parse(await readFile(manifestPath, 'utf8'));
+    raw.conversations[0].todosInterrupted = true;
+    raw.conversations[0].todosIncomplete = true;
+    raw.conversations[0].todos = [{ content: 'A', status: 'pending' }];
+    await writeFile(manifestPath, JSON.stringify(raw), 'utf8');
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const loaded = await reloaded.getConversation(conversation.id);
+    assert.equal(loaded?.todosInterrupted, true);
+    assert.equal(loaded?.todosIncomplete, undefined);
+  });
+});
+
 // ── 每条对话自己的项目归属与运行时设置 ──────────────────────────────────
 
 test('对话的项目根与运行时设置随 manifest 持久化', async () => {
@@ -499,5 +549,75 @@ test('manifest 里非法的项目根与运行时设置在载入时被丢掉', as
     assert.equal(loaded?.permissionPreset, undefined);
     assert.equal(loaded?.agentMaxSteps, undefined);
     assert.equal(loaded?.reasoningEffort, undefined);
+  });
+});
+
+test('title: the first user message still names an untouched conversation', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation();
+    await storage.appendMessage(conversation.id, { role: 'user', content: '帮我检查一下滚动条', status: 'complete' });
+    const loaded = await storage.getConversation(conversation.id);
+    assert.equal(loaded?.title, '帮我检查一下滚动条');
+    assert.equal(loaded?.titleCustomized, undefined);
+  });
+});
+
+test('title: a custom title is marked and survives later messages', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation();
+    const renamed = await storage.setTitle(conversation.id, '  胶囊配色  ');
+    assert.equal(renamed.title, '胶囊配色');
+    assert.equal(renamed.titleCustomized, true);
+
+    // 关键回归点：首条用户消息以前会无条件把标题改成消息内容，
+    // 用户刚改的名字会被第一句话冲掉。
+    await storage.appendMessage(conversation.id, { role: 'user', content: '这是一句很长的新任务描述', status: 'complete' });
+    const loaded = await storage.getConversation(conversation.id);
+    assert.equal(loaded?.title, '胶囊配色');
+  });
+});
+
+test('title: renaming does not count as conversation activity', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation();
+    await storage.appendMessage(conversation.id, { role: 'user', content: '第一条', status: 'complete' });
+    const before = await storage.getConversation(conversation.id);
+    const renamed = await storage.setTitle(conversation.id, '改个名字');
+    // updatedAt 一变，历史列表的顺序就会因为「改了个名字」而跳动。
+    assert.equal(renamed.updatedAt, before?.updatedAt);
+    assert.equal(renamed.title, '改个名字');
+  });
+});
+
+test('title: an empty title is ignored instead of wiping the name', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation('原来的名字');
+    const after = await storage.setTitle(conversation.id, '   ');
+    assert.equal(after.title, '原来的名字');
+    assert.equal(after.titleCustomized, undefined);
+  });
+});
+
+test('title: custom titles are capped at 48 characters like auto titles', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation();
+    const long = '长'.repeat(80);
+    const renamed = await storage.setTitle(conversation.id, long);
+    assert.equal(renamed.title.length, 48);
+    assert.ok(renamed.title.endsWith('…'));
+  });
+});
+
+test('title: the customized flag survives a reload', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation();
+    await storage.setTitle(conversation.id, '重启也还在');
+    await storage.flush();
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const loaded = await reloaded.getConversation(conversation.id);
+    assert.equal(loaded?.title, '重启也还在');
+    assert.equal(loaded?.titleCustomized, true);
   });
 });

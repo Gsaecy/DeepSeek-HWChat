@@ -11,6 +11,17 @@ import vm from 'node:vm';
 
 const CHAT_JS = readFileSync('media/chat.js', 'utf8');
 
+/**
+ * 从 chat.js 源码里取出 `const NAME = 表达式;` 的数值。
+ * 胶囊常量的唯一来源是 media/chat.js，本文件不再复制一份：
+ * 复制会让「测试通过」和「实际尺寸变了」同时成立，等于没守住。
+ */
+function numberConst(name) {
+  const match = CHAT_JS.match(new RegExp(`const ${name} = ([^;]+);`));
+  if (!match) throw new Error(`media/chat.js 里找不到 ${name}`);
+  return Function(`'use strict'; return (${match[1]});`)();
+}
+
 /* ── 最小 DOM ────────────────────────────────────────────────── */
 
 class ClassList {
@@ -145,6 +156,11 @@ const elements = {
   todoArchiveBar: (() => { const bar = new StubNode('div'); bar.hidden = true; return bar; })(),
   todoSummary: { textContent: '' },
   todoArchiveSummary: { textContent: '' },
+  // 顶栏「继续执行 / 取消任务」：renderTodos 会调 syncTodoSummaryActions 设置显隐，
+  // 这两个按钮的具体行为由 test/check-todo-actions.mjs 单独验证，这里只要有节点可写即可。
+  todoSummaryActions: (() => { const node = new StubNode('span'); node.hidden = true; return node; })(),
+  resumeTodosButton: (() => { const node = new StubNode('button'); node.hidden = true; return node; })(),
+  cancelTodosButton: (() => { const node = new StubNode('button'); node.hidden = true; return node; })(),
   toast: { textContent: '', dataset: {}, hidden: true },
 };
 elements.todoList = elements.todoPanel.list;
@@ -163,6 +179,11 @@ const toasts = [];
 const t = (key, vars) => (vars ? `${key}:${JSON.stringify(vars)}` : key);
 const showToast = (text) => { toasts.push(text); };
 const formatTime = (value) => new Date(value).toISOString().slice(11, 16);
+/**
+ * 图标桩：真实实现见 media/ui-icons.js，它的 DOM 构造由 test/check-icons-dom.mjs 单独验证。
+ * 这里只关心「清单状态有没有挂上图标」，所以返回一个带 data-icon 的占位节点。
+ */
+const iconNode = (name) => { const node = new StubNode('span'); node.className = 'ui-icon'; node.dataset.icon = name; return node; };
 
 /* ── 把抽出来的函数装进同一个作用域 ─────────────────────────── */
 
@@ -176,6 +197,7 @@ const source = [
   'exitArchiveFocus',
   'togglePanel',
   'renderTodos',
+  'syncTodoSummaryActions',
   'renderArchivePanel',
   'renderTodoArchives',
   'layoutTodoArchives',
@@ -185,16 +207,16 @@ const source = [
   + extractBlock(CHAT_JS, "  for (const key of ['taskTree', 'todoPanel', 'todoArchivePanel']) {");
 
 const factory = new Function(
-  'elements', 'state', 'document', 'todoPanelState', 't', 'showToast', 'formatTime',
-  `const CAPSULE_BASE_HEIGHT = 16;
-   const CAPSULE_MIN_HEIGHT = 6;
-   const CAPSULE_RATIO = 3;
+  'elements', 'state', 'document', 'todoPanelState', 't', 'showToast', 'formatTime', 'iconNode',
+  `const CAPSULE_BASE_HEIGHT = ${numberConst('CAPSULE_BASE_HEIGHT')};
+   const CAPSULE_MIN_HEIGHT = ${numberConst('CAPSULE_MIN_HEIGHT')};
+   const CAPSULE_RATIO = ${numberConst('CAPSULE_RATIO')};
    let lastCapsuleBarWidth = 0;
    ${source}
    return { renderTodos, renderArchivePanel, renderTodoArchives, togglePanel, enterArchiveFocus, exitArchiveFocus, state };`,
 );
 
-const ui = factory(elements, state, document, todoPanelState, t, showToast, formatTime);
+const ui = factory(elements, state, document, todoPanelState, t, showToast, formatTime, iconNode);
 
 /* ── 断言 ────────────────────────────────────────────────────── */
 
@@ -248,6 +270,21 @@ ui.renderTodos();
 let view = snapshot();
 check('起始：任务树与任务清单都展开', view.taskTree && view.todoPanel, JSON.stringify(view));
 check('起始：没有胶囊处于展开态', view.active.length === 0, JSON.stringify(view.active));
+
+// 清单状态的图形：执行中是三个跳动点，其它状态挂 SVG 图标（形状定义见 media/ui-icons.js）。
+// 这里只验证「挂上了图标节点」，图标的几何规格由 src/test/uiIcons.test.ts 覆盖。
+const inProgressStatus = elements.todoList.children[0].children[2];
+const pendingStatus = elements.todoList.children[1].children[2];
+check(
+  '清单状态：执行中仍是三个跳动点',
+  inProgressStatus.children.length === 3 && inProgressStatus.children.every((node) => node.tagName === 'I'),
+  inProgressStatus.children.map((node) => node.tagName).join(','),
+);
+check(
+  '清单状态：待办挂的是图标节点而不是文字字符',
+  pendingStatus.children.length === 1 && pendingStatus.children[0].className === 'ui-icon' && pendingStatus.children[0].dataset.icon === 'ring',
+  pendingStatus.children[0] && `${pendingStatus.children[0].className}/${pendingStatus.children[0].dataset.icon}`,
+);
 
 // 场景 2：点开第 2 颗胶囊 —— 另外两个必须被收起并锁住
 elements.todoArchiveBar.children[1].click();

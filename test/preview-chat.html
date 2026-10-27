@@ -66,23 +66,29 @@
       <header class="chat-toolbar">
         <div class="toolbar-title-row">
           <button id="historyButton" class="icon-button" type="button" aria-label="显示对话记录" title="对话记录"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg></button>
-          <div class="conversation-heading"><strong id="conversationTitle">新对话</strong><span id="connectionState">准备就绪</span></div>
+          <div class="conversation-heading">
+            <div class="conversation-title-line">
+              <strong id="conversationTitle">我发现一个很严重的问题，hwchat不能识别自己界面设置的模式</strong>
+              <input id="conversationTitleInput" class="conversation-title-input" type="text" maxlength="48" hidden aria-label="对话标题">
+              <button id="editTitleButton" class="title-action" type="button" aria-label="编辑对话标题" title="编辑对话标题"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 12.8 4 9.9 10.9 3 12.9 4.9 6 11.8Z"/><path d="M9.7 4.2 11.7 6.2"/></svg></button>
+              <button id="saveTitleButton" class="title-action save-title" type="button" hidden aria-label="保存标题" title="保存标题"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 8.4 6.2 12 13.4 4.4"/></svg></button>
+              <button id="cancelTitleButton" class="title-action cancel-title" type="button" hidden aria-label="放弃修改" title="放弃修改"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4 12 12"/><path d="M12 4 4 12"/></svg></button>
+            </div>
+            <div class="conversation-status-line">
+              <span id="connectionState">准备就绪 · 130 个工具</span>
+              <span id="projectBadge" class="project-badge bound" title="当前项目：DeepSeek-HWChat">DeepSeek-HWChat</span>
+            </div>
+          </div>
         </div>
         <div class="toolbar-controls">
-          <div class="control-group mode-group">
-            <label class="mode-field"><span class="sr-only">工作模式</span><select id="modeInput" aria-label="工作模式"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
-          </div>
-          <div class="control-group connection-group">
-            <label class="profile-field"><span class="sr-only">API 配置</span><select id="profileInput" aria-label="API 配置"></select></label>
-            <label class="model-field"><span class="sr-only">模型</span><select id="modelInput" aria-label="模型"></select></label>
-            <button id="refreshModelsButton" class="icon-button" type="button" aria-label="从 API 刷新模型列表" title="刷新模型列表"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0 2 5"/><path d="M20 4v7h-7"/></svg></button>
-          </div>
-          <div class="control-group utility-group">
-            <button id="skillsButton" class="control-button" type="button" aria-label="选择 Skill" title="选择 Skill"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 9.5 7 4 7.8l4 4-1 5.7 5-2.7 5 2.7-1-5.7 4-4L14.5 7 12 2Z"/></svg><span id="skillsCount">0</span></button>
-            <button id="archiveButton" class="icon-button" type="button" aria-label="归档当前对话" title="归档"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1zM10 12h4"/></svg></button>
-            <button id="exportButton" class="icon-button" type="button" aria-label="导出当前对话" title="导出"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="m8 8 4-4 4 4"/><path d="M4 14v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></svg></button>
-            <button id="settingsButton" class="icon-button" type="button" aria-label="打开设置" title="设置"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3v-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6V3h4v.1A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.6 1h.1v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg></button>
-          </div>
+          <label class="mode-field"><span class="sr-only">工作模式</span><select id="modeInput" aria-label="工作模式"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
+          <label class="profile-field"><span class="sr-only">API 配置</span><select id="profileInput" aria-label="API 配置"></select></label>
+          <label class="model-field"><span class="sr-only">模型</span><select id="modelInput" aria-label="模型"></select></label>
+          <button id="refreshModelsButton" class="icon-button" type="button" aria-label="从 API 刷新模型列表" title="刷新模型列表"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0 2 5"/><path d="M20 4v7h-7"/></svg></button>
+          <button id="skillsButton" class="control-button" type="button" aria-label="选择 Skill" title="选择 Skill"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 9.5 7 4 7.8l4 4-1 5.7 5-2.7 5 2.7-1-5.7 4-4L14.5 7 12 2Z"/></svg><span id="skillsCount">0</span></button>
+          <button id="archiveButton" class="icon-button" type="button" aria-label="归档当前对话" title="归档"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1zM10 12h4"/></svg></button>
+          <button id="exportButton" class="icon-button" type="button" aria-label="导出当前对话" title="导出"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="m8 8 4-4 4 4"/><path d="M4 14v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></svg></button>
+          <button id="settingsButton" class="icon-button" type="button" aria-label="打开设置" title="设置"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3v-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6V3h4v.1A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.6 1h.1v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg></button>
         </div>
         <section id="skillsPanel" class="skills-panel" hidden>
           <div class="skills-panel-heading"><strong>本次对话使用的 Skill</strong><span id="workspaceTrustBadge">工作区状态</span></div>

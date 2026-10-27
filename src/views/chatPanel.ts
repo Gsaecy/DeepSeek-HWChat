@@ -1,4 +1,4 @@
-import { basename, resolve as resolvePathName } from 'node:path';
+import { basename } from 'node:path';
 import * as vscode from 'vscode';
 import { AgentRunner } from '../agent/agentRunner';
 import { SkillRegistry } from '../agent/skillRegistry';
@@ -10,7 +10,7 @@ import { gitWriteAuthorization, argumentsMentionGitWrite } from '../agent/conver
 import { VERSION_RULE_PROMPT, argumentsMentionVersionBump, versionBumpAuthorization } from '../agent/releasePolicy';
 import { TODO_LIST_PROMPT } from '../agent/todoPrompt';
 import { COMMAND_BLOCK_PROMPT } from '../agent/commandPrompt';
-import { isPathWithin } from '../agent/workspacePaths';
+import { chooseProjectRoot, projectNameOf } from '../agent/workspacePaths';
 import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
 import { isReasoningEffort, resolveConversationControls, type ConversationControls } from '../core/conversationControls';
@@ -38,6 +38,7 @@ import {
   PendingApprovalView,
   PermissionPreset,
   ReasoningEffort,
+  ProjectBadgeView,
   SkillUsage,
   ToolCall,
   ToolDefinition,
@@ -48,7 +49,7 @@ import {
   UsageInfo,
   WebviewConversationState,
 } from '../core/types';
-import { completedCount, hasMultipleInProgress, normalizeTodos, settleInterruptedTodos } from '../core/todos';
+import { clearedTodoState, completedCount, hasMultipleInProgress, isResumableTodos, normalizeTodos, settleInterruptedTodos } from '../core/todos';
 import {
   allTodosCompleted,
   appendTodoArchive,
@@ -57,6 +58,7 @@ import {
   createTodoArchive,
   normalizeTodoArchives,
   planTodoSettlement,
+  TodoRunOutcome,
 } from '../core/todoArchives';
 import { DeepSeekClient, RequestCancelledError } from '../providers/deepseekClient';
 import { icon, mediaUri, nonce } from './webview';
@@ -132,9 +134,12 @@ type IncomingMessage =
   | { type: 'send'; text: string; mode?: ConversationMode; skillIds?: string[]; permissionPreset?: PermissionPreset; agentMaxSteps?: number; reasoningEffort?: ReasoningEffort }
   | { type: 'sendWhileRunning'; text: string }
   | { type: 'stop' }
+  | { type: 'resumeTodos' }
+  | { type: 'cancelTodos' }
   | { type: 'approvalResponse'; requestId: string; allow: boolean }
   | { type: 'deleteConversation'; id: string }
   | { type: 'togglePin'; id: string; pinned: boolean }
+  | { type: 'renameConversation'; id?: string; title: string }
   | { type: 'toggleArchive'; id: string; archived: boolean }
   | { type: 'showArchived'; value: boolean }
   | { type: 'setModel'; model: string }
@@ -459,6 +464,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         case 'stop':
           this.stop();
           break;
+        case 'resumeTodos':
+          await this.resumeTodos();
+          break;
+        case 'cancelTodos':
+          await this.cancelTodos();
+          break;
         case 'approvalResponse': {
           const pending = this.pendingApprovals.get(message.requestId);
           if (!pending) {
@@ -477,6 +488,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           await this.storage.setPinned(message.id, message.pinned);
           this.callbacks.onHistoryChanged();
           await this.sendState();
+          break;
+        case 'renameConversation':
+          await this.renameConversation(message.id || this.activeConversationId, message.title);
           break;
         case 'toggleArchive':
           await this.toggleArchive(message.id, message.archived);
@@ -839,6 +853,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       await this.postTaskTree(taskQueue, conversationId);
       // 先把声明了语言模型工具的扩展激活，再生成工具定义，避免工具列表缺项。
       await this.vscodeTools.warmToolContributors();
+      // 本轮是怎么结束的：结算清单时要靠它区分「跑完没结清」和「被掐断」。
+      // 默认按失败算，只有真正走到正常收尾才改写成 completed。
+      let runOutcome: TodoRunOutcome = 'failed';
       try {
         await this.agentRunner.run({
           settings,
@@ -939,6 +956,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
             requestApproval: (request) => this.requestToolApproval(request.summary, request.detail, request.risk, run),
           },
         });
+        // 走到这里说明 Agent 循环没有抛错也没被停止：清单上再有没打勾的项，
+        // 那是模型漏了收尾，不是中断。
+        runOutcome = 'completed';
         await taskQueue.finish('complete', (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
         const rootResponse = run.responses.get(rootTaskId);
         if (rootResponse) rootResponse.usage = addUsage(rootResponse.usage, taskQueue.classifierUsage());
@@ -953,6 +973,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       } catch (error) {
         await run.checkpointTail;
         const cancelled = error instanceof RequestCancelledError || controller.signal.aborted;
+        runOutcome = cancelled ? 'stopped' : 'failed';
         await taskQueue.finish(cancelled ? 'cancelled' : 'error', (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
         const rootResponse = run.responses.get(rootTaskId);
         if (rootResponse) rootResponse.usage = addUsage(rootResponse.usage, taskQueue.classifierUsage());
@@ -968,8 +989,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           await this.post({ type: 'toast', tone: 'error', text: tt('chat.requestFailed', { error: errorText }) });
         }
       } finally {
-        // 成功 / 失败 / 被停止都走同一处结算：全绿才归档，否则把「执行中」降级成待办并标「已中断」。
-        await this.settleTodosAfterRun(conversationId);
+        // 成功 / 失败 / 被停止都走同一处结算：全绿才归档；没跑完的留给用户决定，
+        // 但「正常跑完」与「被掐断」要分开标，不能一律说成中断。
+        await this.settleTodosAfterRun(conversationId, runOutcome);
         this.runs.delete(conversationId);
         this.rejectApprovalsFor(conversationId);
         this.callbacks.onHistoryChanged();
@@ -1196,6 +1218,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       mode: activeMode,
       workspaceTrusted: vscode.workspace.isTrusted,
       agentAvailable: Boolean(vscode.workspace.workspaceFolders?.length),
+      project: this.projectBadgeFor(conversation),
       // Chat 模式本轮不下发任何工具，工具数必须是 0，否则状态栏会显示一个用不到的数量。
       availableToolCount: activeMode === 'chat' ? 0 : this.vscodeTools.availableCount()
         + this.toolExecutor.definitions(activeMode).length
@@ -1206,6 +1229,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         : undefined,
       todos: todoView.todos,
       todosInterrupted: todoView.interrupted,
+      todosIncomplete: todoView.incomplete,
       todoArchives: this.todoArchiveViews(conversation?.todoArchives),
       runningConversationIds: [...this.runs.keys()],
       pendingApprovals: [...this.pendingApprovals.values()].map((item) => item.request),
@@ -1393,21 +1417,40 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 都确定不了就返回 undefined：此时相对路径仍按旧行为落到第一个根，
    * 但 git 写操作会被拒绝（宁可要求用户说清项目，也不能提交错项目）。
    */
-  private projectRootFor(conversation?: ConversationSummary): string | undefined {
-    const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
-    if (!roots.length) return undefined;
-    const stored = conversation?.projectRoot;
-    if (stored && roots.some((root) => resolvePathName(root) === resolvePathName(stored))) return stored;
-    const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath;
-    const activeRoot = activeFile ? roots.find((root) => isPathWithin(root, activeFile)) : undefined;
-    if (activeRoot) return activeRoot;
-    return roots.length === 1 ? roots[0] : undefined;
+  private projectRootFor(conversation?: ConversationSummary | null): string | undefined {
+    return chooseProjectRoot({
+      roots: (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
+      stored: conversation?.projectRoot,
+      activeFile: vscode.window.activeTextEditor?.document.uri.fsPath,
+    });
+  }
+
+  /** 标题旁的项目徽标。绑定不上就显示「项目待建立」，不猜一个目录名糊弄过去。 */
+  private projectBadgeFor(conversation?: ConversationSummary | null): ProjectBadgeView {
+    const root = this.projectRootFor(conversation);
+    return { name: projectNameOf(root), bound: Boolean(root) };
+  }
+
+  /** 用户改标题：写库后回推状态，让标题栏与历史列表同时更新。 */
+  private async renameConversation(conversationId: string | undefined, title: string): Promise<void> {
+    if (!conversationId) {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('chat.titleEditLocked') });
+      return;
+    }
+    await this.storage.setTitle(conversationId, title);
+    this.callbacks.onHistoryChanged();
+    await this.sendState();
+    await this.post({ type: 'toast', tone: 'neutral', text: tt('chat.titleSaved') });
   }
 
   /** 首次确定项目归属时写回存档；只写一次，后续读操作不会改写它。 */
   private bindProjectRoot(conversationId: string, fsPath: string): void {
     void this.storage.updateConversation(conversationId, { projectRoot: fsPath })
-      .then(() => this.callbacks.onHistoryChanged())
+      .then(() => {
+        this.callbacks.onHistoryChanged();
+        // 项目徽标要从「项目待建立」变成文件夹名，所以绑定成功后补推一次状态。
+        return this.sendState();
+      })
       .catch(() => undefined);
   }
 
@@ -1657,11 +1700,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const archives = archivable ? appendTodoArchive(previous?.todoArchives, archivable) : undefined;
     await this.storage.updateConversation(conversationId, {
       todos,
-      // 新清单是一份新任务，上一份的「已中断」标记随旧清单一起作废。
+      // 新清单是一份新任务，上一份的「已中断 / 未完成」标记随旧清单一起作废。
       todosInterrupted: null,
+      todosIncomplete: null,
       ...(archives ? { todoArchives: archives } : {}),
     });
-    await this.post({ type: 'todos', conversationId, todos, interrupted: false });
+    await this.post({ type: 'todos', conversationId, todos, interrupted: false, incomplete: false });
     if (archives) {
       await this.post({ type: 'todoArchives', conversationId, todoArchives: this.todoArchiveViews(archives) });
     }
@@ -1681,28 +1725,117 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 运行结束时结算清单（成功、失败、被停止都走这里）。
    *
    * - 全部完成 → 归档成胶囊，面板上的折叠框消失；
-   * - 没完成（失败 / 停止 / 还有待办）→ 清单留在面板上，把 `in_progress` 降级成 `pending`
-   *   并打上「已中断」标记。这样界面不会假装还在执行，用户接着做时模型重新标状态即可，
-   *   最终全部完成就照常归档。
+   * - 正常跑完但有没打勾的项 → 清单留在面板上，标「未完成」（不是「已中断」）；
+   * - 被停止 / 报错 → 清单留在面板上，标「已中断」。
    *
-   * 失败与暂停在这里是同一套处理：对清单来说两者都是「没人再推进它了」。
+   * 三种情况都会把 `in_progress` 降级成 `pending`：不会再有人推进它，留着会让面板
+   * 一直播跳动动画、谎报「还在跑」。界面不会假装完成，用户接着做时模型重新标状态即可，
+   * 最终全部完成就照常归档。
    */
-  private async settleTodosAfterRun(conversationId: string): Promise<void> {
+  private async settleTodosAfterRun(conversationId: string, outcome: TodoRunOutcome): Promise<void> {
     const conversation = await this.storage.getConversation(conversationId);
-    const settlement = planTodoSettlement(conversation?.todos, conversation?.todoArchives);
+    const settlement = planTodoSettlement(conversation?.todos, conversation?.todoArchives, Date.now(), outcome);
     if (settlement.action === 'archive') {
       await this.storage.updateConversation(conversationId, {
         todos: null,
         todoArchives: settlement.archives,
         todosInterrupted: null,
+        todosIncomplete: null,
       });
-      await this.post({ type: 'todos', conversationId, todos: [], interrupted: false });
+      await this.post({ type: 'todos', conversationId, todos: [], interrupted: false, incomplete: false });
       await this.post({ type: 'todoArchives', conversationId, todoArchives: this.todoArchiveViews(settlement.archives) });
       return;
     }
+    if (settlement.action === 'incomplete') {
+      await this.storage.updateConversation(conversationId, {
+        todos: settlement.todos,
+        todosInterrupted: null,
+        todosIncomplete: true,
+      });
+      await this.post({ type: 'todos', conversationId, todos: settlement.todos, interrupted: false, incomplete: true });
+      return;
+    }
     if (settlement.action === 'interrupt') {
-      await this.storage.updateConversation(conversationId, { todos: settlement.todos, todosInterrupted: true });
-      await this.post({ type: 'todos', conversationId, todos: settlement.todos, interrupted: true });
+      await this.storage.updateConversation(conversationId, {
+        todos: settlement.todos,
+        todosInterrupted: true,
+        todosIncomplete: null,
+      });
+      await this.post({ type: 'todos', conversationId, todos: settlement.todos, interrupted: true, incomplete: false });
+    }
+  }
+
+  /**
+   * 「继续执行」：把中断的清单接着跑完。
+   *
+   * 续跑不引入新的执行通道，直接复用 `send()`：`requestMessages()` 是从存档重建上下文的，
+   * 模型因此能看到自己写下的清单、以及中断前每一步的工具结果，天然就能接着做。
+   *
+   * 代价是消息区会多一条用户气泡——这是事实记录（用户确实按了这个按钮），
+   * 不做隐藏：悄悄让模型动起来反而更难解释。
+   */
+  private async resumeTodos(): Promise<void> {
+    const conversationId = this.activeConversationId;
+    if (!conversationId) return;
+    if (this.runs.has(conversationId) || this.isViewingRunningConversation()) {
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('chat.running') });
+      return;
+    }
+    const view = await this.viewTodos(await this.storage.getConversation(conversationId) ?? null);
+    if (!isResumableTodos(view.todos, view.interrupted, view.incomplete)) {
+      // 按钮只在该出现时出现；这里兜住「面板还没刷新就点了」的过期点击。
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('todo.cancelNoActive') });
+      await this.sendState();
+      return;
+    }
+    // 先撤掉中断标记：马上要真跑了，面板不该继续挂着「已中断」。
+    await this.storage.updateConversation(conversationId, { todosInterrupted: null, todosIncomplete: null });
+    await this.post({ type: 'todos', conversationId, todos: view.todos ?? [], interrupted: false, incomplete: false });
+    await this.send(tt('todo.resumeInstruction'));
+    // 兜底：上面已经把中断标记清掉了，但这一轮有可能**根本没跑起来**
+    // （权限同意被拒、发送被 pendingSends 挡住、发送前就抛错），
+    // 那些路径都不会走到 `settleTodosAfterRun`，标记也就不会有人补回来——
+    // 结果是一份永远继续不了的清单：按钮没了，状态还停在半路。
+    // 判定依据是「结算过就该至少有一个标记」，两个都没有说明结算没发生。
+    const after = await this.storage.getConversation(conversationId);
+    const unfinished = (after?.todos ?? []).some((todo) => todo.status !== 'completed');
+    if (unfinished && !after?.todosInterrupted && !after?.todosIncomplete) {
+      await this.storage.updateConversation(conversationId, { todosInterrupted: true, todosIncomplete: null });
+      await this.post({ type: 'todos', conversationId, todos: after?.todos ?? [], interrupted: true, incomplete: false });
+    }
+  }
+
+  /**
+   * 「取消任务」：清空清单，不归档、不留胶囊。
+   *
+   * 正在跑的时候必须先停再清：`send()` 的 finally 会做一次中断结算并回写清单，
+   * 如果先清后停，结算会把刚清掉的清单原样写回来。
+   * 所以这里 abort 之后要等这一轮真正退出（`runs` 里删掉自己）再落库。
+   */
+  private async cancelTodos(): Promise<void> {
+    const conversationId = this.activeConversationId;
+    if (!conversationId) return;
+    if (this.runs.has(conversationId)) {
+      this.runs.get(conversationId)?.controller.abort();
+      await this.waitForRunToLeave(conversationId);
+    }
+    await this.storage.updateConversation(conversationId, clearedTodoState());
+    await this.post({ type: 'todos', conversationId, todos: [], interrupted: false, incomplete: false });
+    await this.post({ type: 'toast', tone: 'neutral', text: tt('todo.cancelled') });
+  }
+
+  /**
+   * 等某个对话的运行从 `runs` 里退出（`finally` 已经跑完结算）。
+   *
+   * 有上限：正常运行 abort 后很快退出，但网络请求可能卡住。等到超时也照样往下走——
+   * 清空清单是用户的明确意图，不能因为一轮请求挂在半空就一直没反应；
+   * 那种情况下最坏结果只是结算晚一步把清单写回来，用户再点一次即可。
+   */
+  private async waitForRunToLeave(conversationId: string, timeoutMs = 8_000): Promise<void> {
+    const step = 100;
+    for (let waited = 0; waited < timeoutMs; waited += step) {
+      if (!this.runs.has(conversationId)) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, step));
     }
   }
 
@@ -1712,17 +1845,21 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 关窗口 / 进程被杀时 `send()` 的 finally 没跑到，存档里可能还留着 `in_progress`；
    * 这里补一次归位，界面才不会再出现「什么都没跑却一直跳」的假执行中。
    */
-  private async viewTodos(conversation: ConversationSummary | null): Promise<{ todos?: TodoItem[]; interrupted: boolean }> {
-    if (!conversation?.todos?.length) return { todos: conversation?.todos, interrupted: false };
+  private async viewTodos(conversation: ConversationSummary | null): Promise<{ todos?: TodoItem[]; interrupted: boolean; incomplete: boolean }> {
+    if (!conversation?.todos?.length) return { todos: conversation?.todos, interrupted: false, incomplete: false };
+    const interrupted = Boolean(conversation.todosInterrupted);
+    const incomplete = Boolean(conversation.todosIncomplete);
     if (this.runs.has(conversation.id)) {
-      return { todos: conversation.todos, interrupted: Boolean(conversation.todosInterrupted) };
+      return { todos: conversation.todos, interrupted, incomplete };
     }
     const settled = settleInterruptedTodos(conversation.todos);
     if (!settled.changed) {
-      return { todos: settled.todos, interrupted: Boolean(conversation.todosInterrupted) };
+      return { todos: settled.todos, interrupted, incomplete };
     }
-    await this.storage.updateConversation(conversation.id, { todos: settled.todos, todosInterrupted: true });
-    return { todos: settled.todos, interrupted: true };
+    // 还有人标着「执行中」，但这个对话并没有在跑 —— 只可能是进程被杀 / 窗口关掉，
+    // 属于真正的中断，按中断结算最贴近事实。
+    await this.storage.updateConversation(conversation.id, { todos: settled.todos, todosInterrupted: true, todosIncomplete: null });
+    return { todos: settled.todos, interrupted: true, incomplete: false };
   }
 
   /** 归档列表 → 面板数据：颜色按「越新越蓝」插值，脚本只管画。 */
@@ -2006,6 +2143,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const metaScript = mediaUri(webview, this.extensionUri, 'code-block-meta.js');
     // 任务清单面板的展开规则（新清单要自动展开）。同样先加载再跑 chat.js。
     const todoScript = mediaUri(webview, this.extensionUri, 'todo-panel-state.js');
+    // 界面图标的形状定义。chat.js 只负责把 SVG 放进 DOM，形状全在这里，才好单测和统一改。
+    const iconScript = mediaUri(webview, this.extensionUri, 'ui-icons.js');
     const logo = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'logo.png'));
     return `<!doctype html>
 <html lang="${lang === 'zh' ? 'zh-CN' : 'en'}">
@@ -2034,23 +2173,29 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       <header class="chat-toolbar">
         <div class="toolbar-title-row">
           <button id="historyButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.showHistory')}" title="${t(lang, 'chat.history')}">${icon('history')}</button>
-          <div class="conversation-heading"><strong id="conversationTitle">${t(lang, 'common.newChat')}</strong><span id="connectionState">${t(lang, 'chat.ready')}</span></div>
+          <div class="conversation-heading">
+            <div class="conversation-title-line">
+              <strong id="conversationTitle">${t(lang, 'common.newChat')}</strong>
+              <input id="conversationTitleInput" class="conversation-title-input" type="text" maxlength="48" hidden aria-label="${t(lang, 'chat.titleInputLabel')}">
+              <button id="editTitleButton" class="title-action" type="button" aria-label="${t(lang, 'chat.editTitle')}" title="${t(lang, 'chat.editTitle')}"></button>
+              <button id="saveTitleButton" class="title-action save-title" type="button" hidden aria-label="${t(lang, 'chat.saveTitle')}" title="${t(lang, 'chat.saveTitle')}"></button>
+              <button id="cancelTitleButton" class="title-action cancel-title" type="button" hidden aria-label="${t(lang, 'chat.cancelTitleEdit')}" title="${t(lang, 'chat.cancelTitleEdit')}"></button>
+            </div>
+            <div class="conversation-status-line">
+              <span id="connectionState">${t(lang, 'chat.ready')}</span>
+              <span id="projectBadge" class="project-badge" hidden></span>
+            </div>
+          </div>
         </div>
         <div class="toolbar-controls">
-          <div class="control-group mode-group">
-            <label class="mode-field"><span class="sr-only">${t(lang, 'chat.workspaceMode')}</span><select id="modeInput" aria-label="${t(lang, 'chat.workspaceMode')}"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
-          </div>
-          <div class="control-group connection-group">
-            <label class="profile-field"><span class="sr-only">${t(lang, 'chat.apiProfile')}</span><select id="profileInput" aria-label="${t(lang, 'chat.apiProfile')}"></select></label>
-            <label class="model-field"><span class="sr-only">${t(lang, 'chat.model')}</span><select id="modelInput" aria-label="${t(lang, 'chat.model')}"></select></label>
-            <button id="refreshModelsButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.refreshModelsFromApi')}" title="${t(lang, 'chat.refreshModels')}">${icon('refresh')}</button>
-          </div>
-          <div class="control-group utility-group">
-            <button id="skillsButton" class="control-button" type="button" aria-label="${t(lang, 'chat.selectSkill')}" title="${t(lang, 'chat.selectSkill')}">${icon('skills')}<span id="skillsCount">0</span></button>
-            <button id="archiveButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.archiveCurrent')}" title="${t(lang, 'chat.archive')}">${icon('archive')}</button>
-            <button id="exportButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.exportCurrent')}" title="${t(lang, 'chat.export')}">${icon('export')}</button>
-            <button id="settingsButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.openSettings')}" title="${t(lang, 'chat.settings')}">${icon('settings')}</button>
-          </div>
+          <label class="mode-field"><span class="sr-only">${t(lang, 'chat.workspaceMode')}</span><select id="modeInput" aria-label="${t(lang, 'chat.workspaceMode')}"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
+          <label class="profile-field"><span class="sr-only">${t(lang, 'chat.apiProfile')}</span><select id="profileInput" aria-label="${t(lang, 'chat.apiProfile')}"></select></label>
+          <label class="model-field"><span class="sr-only">${t(lang, 'chat.model')}</span><select id="modelInput" aria-label="${t(lang, 'chat.model')}"></select></label>
+          <button id="refreshModelsButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.refreshModelsFromApi')}" title="${t(lang, 'chat.refreshModels')}">${icon('refresh')}</button>
+          <button id="skillsButton" class="control-button" type="button" aria-label="${t(lang, 'chat.selectSkill')}" title="${t(lang, 'chat.selectSkill')}">${icon('skills')}<span id="skillsCount">0</span></button>
+          <button id="archiveButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.archiveCurrent')}" title="${t(lang, 'chat.archive')}">${icon('archive')}</button>
+          <button id="exportButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.exportCurrent')}" title="${t(lang, 'chat.export')}">${icon('export')}</button>
+          <button id="settingsButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.openSettings')}" title="${t(lang, 'chat.settings')}">${icon('settings')}</button>
         </div>
         <section id="skillsPanel" class="skills-panel" hidden aria-label="${t(lang, 'chat.enableSkill')}">
           <div class="skills-panel-heading"><strong>${t(lang, 'chat.skillsPanelTitle')}</strong><span id="workspaceTrustBadge">${t(lang, 'chat.workspaceTrustBadge')}</span></div>
@@ -2084,13 +2229,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         <div id="contextChip" class="context-chip" hidden><span id="contextLabel"></span><button id="removeContextButton" type="button" aria-label="${t(lang, 'chat.removeContext')}" title="${t(lang, 'common.remove')}">×</button></div>
         <div id="agentRunState" class="agent-run-state" hidden><span class="run-indicator"></span><strong id="agentRunLabel">${t(lang, 'chat.agentRunning')}</strong><span id="agentRunMeta"></span></div>
         <div id="panelStack" class="panel-stack">
-        <details id="taskTree" class="task-tree" hidden><summary><span>${t(lang, 'chat.taskTree')}</span><small id="taskTreeSummary"></small></summary><div id="taskTreeList" class="task-tree-list"></div></details>
+        <details id="taskTree" class="task-tree" hidden><summary><span class="panel-summary-title">${t(lang, 'chat.taskTree')}</span><small id="taskTreeSummary" class="panel-summary-state"></small></summary><div id="taskTreeList" class="task-tree-list"></div></details>
         <details id="todoPanel" class="todo-panel" hidden open>
-          <summary><span>${t(lang, 'todo.title')}</span><small id="todoSummary"></small></summary>
+          <summary><span class="panel-summary-title">${t(lang, 'todo.title')}</span><small id="todoSummary" class="panel-summary-state"></small><span id="todoSummaryActions" class="panel-summary-actions" hidden><button id="resumeTodosButton" type="button" class="panel-action" title="${t(lang, 'todo.resumeHint')}" hidden>${t(lang, 'todo.resume')}</button><button id="cancelTodosButton" type="button" class="panel-action danger" title="${t(lang, 'todo.cancelHint')}" hidden>${t(lang, 'todo.cancel')}</button></span></summary>
           <ol id="todoList" class="todo-list"></ol>
         </details>
         <details id="todoArchivePanel" class="todo-panel archived" hidden open>
-          <summary><span>${t(lang, 'todo.archive.title')}</span><small id="todoArchiveSummary"></small></summary>
+          <summary><span class="panel-summary-title">${t(lang, 'todo.archive.title')}</span><small id="todoArchiveSummary" class="panel-summary-state"></small></summary>
           <ol id="todoArchiveList" class="todo-list"></ol>
         </details>
         </div>
@@ -2127,6 +2272,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   ${messageScriptTag(lang)}
   <script nonce="${scriptNonce}" src="${metaScript}"></script>
   <script nonce="${scriptNonce}" src="${todoScript}"></script>
+  <script nonce="${scriptNonce}" src="${iconScript}"></script>
   <script nonce="${scriptNonce}" src="${script}"></script>
 </body>
 </html>`;

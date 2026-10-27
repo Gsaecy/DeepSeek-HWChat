@@ -28,7 +28,9 @@ Command palette titles and the configuration descriptions in the VS Code Setting
 - Model selection does not depend on Copilot or any other extension. HWChat calls the profile's `/models` endpoint, filters models the API marks as retired, expired or unavailable, and remembers models you excluded. Before the first refresh, the official DeepSeek endpoint falls back to `deepseek-flash` and `deepseek-v4-pro`.
 - Reasoning depth follows the current model's declared capability: the selector is only enabled when `/models` metadata advertises adjustable effort. Unsupported, fixed or unknown models are never dressed up as adjustable, and compatible endpoints that reject the parameter get a retry with it removed.
 - Each finished assistant reply shows its own token usage normalised to millions (`M tokens`); the conversation list shows the running total for the whole conversation.
-- The chat header keeps the title and status on the first row and puts work mode, API profile, model, refresh, plus skills/archive/export/settings on a second row that wraps instead of squeezing the title.
+- The chat header puts the title on the first row, the status text ("Ready · N tools" / running) together with the project name on the row beneath it, and work mode, API profile, model, refresh, plus skills/archive/export/settings on a separate row that wraps instead of squeezing the title. The dropdowns and the skills button keep only what carries information — text plus a chevron with a fixed gap for the three selects, the star icon alone for skills (its count moved into the tooltip) — so the header has room for the title. Each select is sized to its content and none of them grows: mode 60px, profile 82px, model 150px, so the model box never eats the whole row and turns into an oversized empty field. The row itself is **justified** (`justify-content: space-between`): the controls used to sit inside three `control-group` wrappers, so leftover width was only distributed *between* groups while each group kept its fixed 6px — which read as tight inside a group and loose between groups. The wrappers are gone from the template, so all eight controls are direct children of `.toolbar-controls` and the leftover width is split evenly between every adjacent pair: every neighbouring pair sits the same distance apart, with the first and last control flush to the row edges (`gap` stays as the minimum so they never touch when the row is nearly full).
+- The conversation title is editable: the pencil icon at the right turns the title into an underlined inline field, with a check to save and a cross to discard (Enter/Esc do the same). Custom titles are capped at 48 characters and are never overwritten by the automatic title taken from the first message. Renaming does not bump `updatedAt`, so the history order does not jump.
+- The project name sits in the status row under the title, immediately to the right of the status text (the row is left-aligned with a fixed 8px gap, so it never covers the status), so it never eats the title's width: the workspace folder this conversation is bound to, in orange. The label is **plain text** — no pill, no border, no padding. When no folder can be determined it turns red and reads **No project yet** — that state is real, because relative paths then fall back to the first root and git writes are refused, so guessing a folder name would be misleading. The label flips to orange as soon as the conversation touches a file and binds its project root. Additional project labels, if any, flow left to right after the status text; a long project name is truncated first (capped at half the row) while the status text keeps at least 45% of the width.
 - The composer is a single rounded box: the text area on top, and one bottom row holding permission preset, max steps, reasoning level plus attach, voice and send/stop. That row never wraps; as it narrows, the text prefixes disappear in the order reasoning → max steps → permission preset, leaving only the selected values. Switching presets shows that preset's risk summary and takes effect on the next send.
 - The composer stays editable while the agent runs. Related follow-ups merge into the current task and re-plan at the next tool boundary, skipping conflicting pending steps; unrelated tasks join a visible task-tree queue and continue automatically when the current branch finishes.
 - Every question you insert while the agent is running immediately gets its own queued reply slot, and the answer ends up under that question instead of being prepended to the previous reply.
@@ -50,7 +52,18 @@ When the work needs several steps, the agent writes a task list rather than leav
 | In progress | green bouncing ellipsis |
 | Completed | solid green circle with a white check |
 
+All three marks are **inline SVG icons, not font characters**: the shape and weight are identical on macOS and Windows, the colour follows the theme, and nothing depends on whether the system font happens to contain the glyph or what its metrics are. The disclosure arrows work the same way (one masked chevron rotated 90° instead of a `▸` / `▾` character). A small set of emoji in **agent output** (`🔔 📌 💡 🚀 🔍 ⚠ ✅ ❌ 📝`) is replaced with the same icon set, because system emoji are coloured and glossy and cannot be flattened with CSS; the swap happens on rendered text nodes, skips `<pre>` / `<code>`, and leaves unlisted emoji alone.
+
 Click the title to collapse or expand the list, the same way as the task tree. **A new list opens the panel automatically** — the collapsed state is only remembered within one list, so a list that was collapsed earlier never makes a new task look like it never started. The agent keeps exactly one step in progress, updates the list after each step, and leaves the finished list in place as a record of what happened. The list is stored with the conversation, so it survives reloading the window; a single-step request never creates one. It is a tool (`update_todos`) that needs no permission, because it changes no files and runs no commands.
+
+### After an interruption: continue or cancel
+
+When a run is cut short (process killed, stop pressed) or the model finishes without ticking the last boxes, two buttons appear at the far right of the list header: **Continue** and **Cancel task**.
+
+- **Continue** picks the work up from where it stopped instead of redoing finished steps. Context is rebuilt from the archive, so the model sees the list it wrote and every tool result up to the interruption. The button only appears while unticked items remain. It clears the interrupted flag before starting the run, then re-reads the archive afterwards: if the run never actually started (a denied approval, a blocked send, an error before dispatch), the flag is put back so the list cannot get stuck half-done with no way to resume.
+- **Cancel task** clears the list without archiving it and without leaving a capsule — it means "stop keeping this". If the run is still going, it is stopped first, so the end-of-run bookkeeping cannot write the cleared list back.
+
+The header is split into **fixed-width** sections (title / state / actions), each left-aligned inside its own section, so a longer or shorter state text can no longer push the title around. The task-tree header has only the title and the node count. To keep the state section at a fixed width, the English state text was also shortened from `interrupted, can be resumed` to `interrupted` — the buttons already say it.
 
 ### Archived capsules
 
@@ -59,21 +72,25 @@ Once every step is **completed**, the list is archived automatically when the ru
 - A capsule holds **no icon and no text**, and hovering it shows nothing — the colour and the left-to-right order are the whole message. Screen readers still get "Archived task list, N/M done".
 - **The border shows the state**: the archive you have open gets a **red border**, and the capsule under the pointer gets a **light red border** so you can tell which one you are about to click (hovering never changes the capsule's own solid colour). The border is painted inside the capsule, so nothing shifts or resizes when it appears.
 - Click a capsule to expand that snapshot (title reads "Archived task list", the summary carries the archive time, the border turns dashed); click again to collapse.
-- **Only one panel is expanded at a time**: opening the snapshot closes and locks the task tree and the list that is still running (their titles dim, and clicking them says to collapse the archive first), so you are only ever looking at one list. Collapsing the snapshot — via its own title bar, or by clicking the same capsule again — unlocks them and restores whatever you had open before. The panel area also has a height ceiling and scrolls internally, so it can never push the composer out of the window.
+- **Only one panel is expanded at a time**: opening the snapshot closes and locks the task tree and the list that is still running (their titles dim, and clicking them says to collapse the archive first), so you are only ever looking at one list. Collapsing the snapshot — via its own title bar, or by clicking the same capsule again — unlocks them and restores whatever you had open before. The panel area also has a height ceiling and scrolls internally (the **scrollbar is always visible**, so both the wheel and dragging work), so it can never push the composer out of the window. While a snapshot is open the other two panels collapse to their title bars, and the pane gets a taller ceiling so more rows fit at once.
 - A conversation can hold several archives; each new one appears to the right of the previous one. Colours are **one continuous ramp from light blue `#7cbef0` to deep blue `#1e4fd8`**, sampled evenly by position, so the step between any two neighbours is the same size — it reads as a gradient rather than a few jump-cuts, getting deeper towards the right.
-- Capsules **never wrap** and keep a fixed **3:1** width-to-height ratio, starting at 16px tall (48px wide). When there are more capsules or the panel gets narrower they shrink in both dimensions together (down to 6px), with the corner radius shrinking too (about 5px at 16px tall, 2px minimum) — always a rounded rectangle, never a pill.
-- A conversation keeps at most 12 archives; beyond that the oldest is dropped. Lists that were stopped or failed with unfinished items are **not** archived — see "Interrupted lists" below.
+- Capsules **never wrap** and keep a fixed **3:1** width-to-height ratio, starting at 10.67px tall (32px wide — about two thirds of the previous 16px). When there are more capsules or the panel gets narrower they shrink in both dimensions together (down to 6px), with the corner radius shrinking too (about 3px at full size, 2px minimum) — always a rounded rectangle, never a pill.
+- A conversation keeps at most 12 archives; beyond that the oldest is dropped. Lists that ended with unfinished items are **not** archived — see "Unfinished lists" below.
 - Archives are persisted with the conversation (`todoArchives` in the manifest), so they survive a reload; malformed entries on disk are dropped at load time without affecting the conversation.
 
-### Interrupted lists
+### Unfinished lists (interrupted / not finished)
 
-Stopping a run, an error, closing the window (or the process being killed) can leave a list half done. Such lists are handled conservatively and never become capsules:
+When a run ends with items still open, the list does not become a capsule: it **stays in the panel** and the `in_progress` item is downgraded to **waiting** (hollow green circle) so the bouncing animation stops — nothing is advancing it, so it must not pretend to be running. The note in the disclosure header depends on **how the run ended**:
 
-- The list **stays in the panel** exactly as it was, except the `in_progress` item is downgraded to **waiting** (hollow green circle) so the bouncing animation stops — nothing is advancing it, so it must not pretend to be running. The disclosure header gains an "interrupted, can be resumed" note.
+- **interrupted, can be resumed** — you pressed stop, the request failed, or the window/process went away. The work was cut off mid-flight.
+- **not finished, can be resumed** — the agent loop finished normally but the model forgot to tick the last item. That is not an interruption, so it is labelled in a neutral colour instead of the warning amber that would make it look cut off. The engine deliberately does **not** tick it for the model: the list is the model's own statement of what is done, and auto-ticking would be fabricating progress. Prevention lives in the system prompt instead — before ending a turn the model must re-read the list and, for any item whose work is finished (including the very last one), call `update_todos` once more to mark it completed.
+
+Either way the follow-up is the same:
+
 - **Carry on**: ask the agent to continue. It reuses the same list, sets the current item back to `in_progress`, and once everything is completed the list is archived as usual.
 - **Start something else**: just ask for the new task. The new list the model writes **replaces** the old one wholesale — the old list is not kept and is not archived.
 
-The interrupted flag is persisted with the conversation (`todosInterrupted` in the manifest); older saves without the field are treated as "not interrupted".
+Both flags are persisted with the conversation (`todosIncomplete` / `todosInterrupted` in the manifest) and are **mutually exclusive**: one list only ever carries one of them, and both are cleared when a new list arrives or the list is archived. Older saves without these fields are treated as unmarked.
 
 ## Concurrent conversations
 
@@ -221,9 +238,9 @@ Conversation data lives in the VS Code global storage directory and is never wri
 | `src/agent/` | agent loop, tool executor, path isolation, project scope (git gate), version-bump gate, skills, task queue |
 | `src/views/` | chat panel, settings panel, history view |
 | `src/providers/` | DeepSeek / OpenAI-compatible client |
-| `media/` | webview scripts and styles |
+| `media/` | webview scripts and styles; `ui-icons.js` holds every interface icon shape (flat inline SVG, `currentColor` only) and is unit-tested |
 | `docs/screenshots/` | screenshot build script and the generated English screenshot |
-| `test/` | browser preview pages used for layout checks |
+| `test/` | browser preview pages and standalone DOM checks (`check-panel-exclusivity.mjs`, `check-capsule-geometry.mjs`, `check-icons-dom.mjs`, `check-todo-actions.mjs`, `check-title-editing.mjs`) |
 
 The screenshot is generated with `node docs/screenshots/build.mjs`. It reuses the real webview CSS and the real English dictionary, so the image matches the shipped UI, and it renders an empty new conversation: no conversations, messages, task list, attachments or typed input are included.
 

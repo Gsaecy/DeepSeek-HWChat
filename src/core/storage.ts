@@ -155,7 +155,7 @@ export class ConversationStorage {
       summary.totalTokens = Math.max(0, (summary.totalTokens ?? 0) + (message.usage?.totalTokens ?? 0));
       summary.updatedAt = now;
       summary.preview = previewText(message.content);
-      if (message.role === 'user' && summary.title === tt('storage.defaultTitle')) {
+      if (message.role === 'user' && !summary.titleCustomized && summary.title === tt('storage.defaultTitle')) {
         summary.title = shortTitle(message.content);
       }
       if (message.role === 'assistant' && message.toolExecutions?.length) {
@@ -318,6 +318,30 @@ export class ConversationStorage {
     return { ...summary };
   }
 
+  /**
+   * 用户自定义对话标题。
+   *
+   * 两件事和普通 `updateConversation({ title })` 不同：
+   * 1. 打上 `titleCustomized`，首条消息的自动命名从此不再覆盖它；
+   * 2. 不动 `updatedAt` —— 改个名字不算「这对话有新活动」，不该把历史列表的时序打乱。
+   *
+   * 传空串（或只有空白）视为放弃修改，保持原标题不变。
+   */
+  async setTitle(conversationId: string, title: string): Promise<ConversationSummary> {
+    await this.initialize();
+    const summary = this.requireSummary(conversationId);
+    const normalized = String(title ?? '').replace(/\s+/g, ' ').trim();
+    if (!normalized) {
+      return { ...summary };
+    }
+    await this.enqueueWrite(async () => {
+      summary.title = shortTitle(normalized);
+      summary.titleCustomized = true;
+      await this.persistManifest();
+    });
+    return { ...summary };
+  }
+
   async updateConversation(
     conversationId: string,
     patch: Partial<Pick<ConversationSummary, 'title' | 'model' | 'apiProfileId' | 'mode' | 'skillIds' | 'skillSelectionInitialized' | 'projectRoot' | 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort'>> & {
@@ -328,6 +352,7 @@ export class ConversationStorage {
       todos?: TodoItem[] | null;
       todoArchives?: TodoArchive[] | null;
       todosInterrupted?: boolean | null;
+      todosIncomplete?: boolean | null;
     },
   ): Promise<ConversationSummary> {
     await this.initialize();
@@ -374,8 +399,21 @@ export class ConversationStorage {
       }
       // 中断标记是布尔量：写 null/false 表示「这份清单不再算中断」（归档了或换了新清单）。
       if (patch.todosInterrupted !== undefined) {
-        if (patch.todosInterrupted) summary.todosInterrupted = true;
-        else delete summary.todosInterrupted;
+        if (patch.todosInterrupted) {
+          summary.todosInterrupted = true;
+          delete summary.todosIncomplete;
+        } else {
+          delete summary.todosInterrupted;
+        }
+      }
+      // 「未完成」标记同理，且与中断标记互斥：置一个就把另一个清掉，避免面板同时挂两个标签。
+      if (patch.todosIncomplete !== undefined) {
+        if (patch.todosIncomplete) {
+          summary.todosIncomplete = true;
+          delete summary.todosInterrupted;
+        } else {
+          delete summary.todosIncomplete;
+        }
       }
       // 项目归属与运行时设置：无效值一律当作「没有设置」，回落到全局默认，
       // 而不是把脏值留在存档里让运行时去猜。
@@ -902,11 +940,22 @@ function sanitizeSummary(item: ConversationSummary): ConversationSummary {
       const { todosInterrupted: _stale, ...withoutFlag } = normalized;
       return withoutFlag as ConversationSummary;
     })();
-  applyOptional(withFlag, 'projectRoot', normalizeProjectRoot(withFlag.projectRoot));
-  applyOptional(withFlag, 'permissionPreset', normalizeStoredPreset(withFlag.permissionPreset));
-  applyOptional(withFlag, 'agentMaxSteps', normalizeStoredSteps(withFlag.agentMaxSteps));
-  applyOptional(withFlag, 'reasoningEffort', normalizeStoredReasoning(withFlag.reasoningEffort));
-  return withFlag;
+  // 「未完成」标记同样只认 true；两个标记同时为真时按「已中断」算，避免出现互相矛盾的存档。
+  const withIncomplete = withFlag.todosIncomplete === true && withFlag.todosInterrupted !== true
+    ? { ...withFlag, todosIncomplete: true as const }
+    : (() => {
+      const { todosIncomplete: _staleIncomplete, ...withoutIncomplete } = withFlag;
+      return withoutIncomplete as ConversationSummary;
+    })();
+  applyOptional(withIncomplete, 'projectRoot', normalizeProjectRoot(withIncomplete.projectRoot));
+  // 「标题是用户改的」同样只认严格的 true：老存档没这个字段，手写成字符串一律当没有。
+  if (withIncomplete.titleCustomized !== true) {
+    delete withIncomplete.titleCustomized;
+  }
+  applyOptional(withIncomplete, 'permissionPreset', normalizeStoredPreset(withIncomplete.permissionPreset));
+  applyOptional(withIncomplete, 'agentMaxSteps', normalizeStoredSteps(withIncomplete.agentMaxSteps));
+  applyOptional(withIncomplete, 'reasoningEffort', normalizeStoredReasoning(withIncomplete.reasoningEffort));
+  return withIncomplete;
 }
 
 /** `undefined` = 补丁里没提这个字段；`null` = 值不合法，删掉它回落到默认。 */

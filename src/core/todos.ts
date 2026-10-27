@@ -75,3 +75,36 @@ export function settleInterruptedTodos(todos: readonly TodoItem[] | undefined): 
 export function hasMultipleInProgress(todos: readonly TodoItem[]): boolean {
   return todos.filter((todo) => todo.status === 'in_progress').length > 1;
 }
+
+/**
+ * 清单是否处于「可以接着干」的状态。
+ *
+ * 判定刻意不看有没有 `in_progress`：中断结算会把它降级成 `pending`，所以「还剩没打勾的项」
+ * 才是唯一可靠的依据。全部打勾的清单会在结算时归档、根本不会以这个状态留在面板上。
+ *
+ * `interrupted` / `incomplete` 两者都要认：前者是进程被杀 / 用户停止，后者是模型正常收尾
+ * 但漏了打勾。对用户来说「还有活没干完」是一回事，顶栏按钮应该一样给出。
+ */
+export function isResumableTodos(
+  todos: readonly TodoItem[] | undefined,
+  interrupted: boolean,
+  incomplete: boolean,
+): boolean {
+  if (!todos?.length) return false;
+  if (!interrupted && !incomplete) return false;
+  return todos.some((todo) => todo.status !== 'completed');
+}
+
+/**
+ * 「取消任务」的落库值：清空清单，**不归档**、不留任何标记。
+ *
+ * 与 `settleTodosAfterRun` 的归档路径刻意不同：归档代表「这份清单完成了历史使命」，
+ * 会变成面板底部的胶囊长期保留；用户点「取消」表达的是「别记着了」，所以连胶囊都不能留。
+ */
+export function clearedTodoState(): {
+  todos: null;
+  todosInterrupted: null;
+  todosIncomplete: null;
+} {
+  return { todos: null, todosInterrupted: null, todosIncomplete: null };
+}

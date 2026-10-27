@@ -130,16 +130,39 @@ test('运行结束：执行失败/被停止的清单不被归档，降级成待�
     { content: '改实现', status: 'in_progress' },
     { content: '补测试', status: 'pending' },
   ];
-  const settlement = planTodoSettlement(todos, [], 42);
-  assert.equal(settlement.action, 'interrupt');
-  if (settlement.action !== 'interrupt') return;
-  // 失败不清空清单：条目数、顺序都要保留，只有「执行中」被降级。
-  assert.equal(settlement.todos.length, 3);
-  assert.deepEqual(settlement.todos.map((todo) => todo.content), ['读代码', '改实现', '补测试']);
-  assert.deepEqual(settlement.todos.map((todo) => todo.status), ['completed', 'pending', 'pending']);
+  // 失败与停止都算「被掐断」，标记必须保持一致。
+  for (const outcome of ['failed', 'stopped'] as const) {
+    const settlement = planTodoSettlement(todos, [], 42, outcome);
+    assert.equal(settlement.action, 'interrupt', outcome);
+    if (settlement.action !== 'interrupt') return;
+    // 失败不清空清单：条目数、顺序都要保留，只有「执行中」被降级。
+    assert.equal(settlement.todos.length, 3);
+    assert.deepEqual(settlement.todos.map((todo) => todo.content), ['读代码', '改实现', '补测试']);
+    assert.deepEqual(settlement.todos.map((todo) => todo.status), ['completed', 'pending', 'pending']);
+  }
+});
+
+test('运行结束：正常跑完却没全打勾 → 标「未完成」而不是「已中断」', () => {
+  // 复现 0.2.2 现场：最后一步实际做完了，但模型漏了打勾，运行正常结束。
+  const todos: TodoItem[] = [
+    { content: '准备', status: 'completed' },
+    { content: '提交并推送', status: 'in_progress' },
+  ];
+  const settlement = planTodoSettlement(todos, [], 42, 'completed');
+  assert.equal(settlement.action, 'incomplete');
+  if (settlement.action !== 'incomplete') return;
+  // 引擎不替模型打勾：遗留项只降级成 pending，绝不谎报 completed。
+  assert.deepEqual(settlement.todos.map((todo) => todo.status), ['completed', 'pending']);
+  assert.deepEqual(settlement.todos.map((todo) => todo.content), ['准备', '提交并推送']);
+});
+
+test('运行结束：正常跑完且全绿仍然归档，与运行结局无关', () => {
+  const settlement = planTodoSettlement(todos('completed', 'completed'), [], 42, 'completed');
+  assert.equal(settlement.action, 'archive');
 });
 
 test('运行结束：没有清单时不做任何处置', () => {
   assert.deepEqual(planTodoSettlement(undefined, []), { action: 'none' });
   assert.deepEqual(planTodoSettlement([], []), { action: 'none' });
+  assert.deepEqual(planTodoSettlement([], [], 42, 'failed'), { action: 'none' });
 });

@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.2.3
+
+- **界面图标从「拿文字当图标」改成一套自绘的扁平 SVG**。此前状态标记直接写在代码里当字符用：`✓ ● ○ … ↳ − ! × ↗ ↺ □`，折叠箭头则用 CSS `content: "▸" / "▾"`。这三个问题都无法用 CSS 修掉：
+  - 字形由系统字体决定——同样是 9px，Windows 的 `✓` 比 macOS 细一截，同一个 16px 徽标里有时顶到边、有时缩成一小点；
+  - 基线不齐——这些字符的 ascent/descent 各不相同，`vertical-align` 要逐个调；
+  - 字重不可控——想让勾粗一点只能加 `font-weight`，结果整个字符被拉宽；字体里没有的字符还会掉成方框。
+  - 现在全部换成内联 SVG：形状、笔画、留白由规格决定，`currentColor` 跟随主题，与系统字体无关。
+- **新增 `media/ui-icons.js`**：图标形状的唯一来源（纯函数，不碰 DOM，可单测）。规格是 16 格网格 + 四周 2 格安全区 + `currentColor` + 扁平（无渐变、无阴影、无滤镜）。当前 20 个图标：`check` `minus` `bang` `ellipsis` `dot` `ring` `turn` `square` `close` `arrowUpRight` `restore` `chevronRight` `chevronDown` `pencil` `bell` `pin` `bulb` `rocket` `search` `warn`，按语义命名而不是按形状命名（调用方说「这是成功」，不关心画成勾还是别的）。
+- **描边宽度按「最小渲染尺寸」反推**，不是随手填的：最小一档是 10px（`.todo-status .ui-icon svg`），16 格网格上 2.0 的描边渲染出来是 `2/16×10 = 1.25px`，这是能看清的下限。白色对勾画在彩色圆底上要更重，单独提到 2.6（≈1.63px）；空心圆环 2.4（≈1.5px），和原来 12px 圆圈的 1.6px 边框基本一致，否则它会比旁边的勾明显发虚。
+- **折叠箭头改成「一个遮罩 + 旋转」**：`::before` 用 `mask` 加载 `chevronRight` 的 data URI，展开时 `transform: rotate(90deg)`，不再在两套字符之间切换——字符切换会让箭头大小和中心点跳动。CSS 里这条路径和 `ui-icons.js` 是同一份（测试会比对 `d=` 字符串，防止两处各画一套）。`prefers-reduced-motion` 下旋转过渡也关掉。
+- **`chat.js` 的 `statusSymbol` / `taskStatusSymbol` 换成图标节点**：`iconNode()` 用 `DOMParser` 以 `image/svg+xml` 解析后再 `importNode`（SVG 是外来命名空间，用 HTML 解析器容易走错分支）。**保留文字退路**：`ui-icons.js` 没加载成功或解析器报错时退回原来的字符——字形不好看总比徽标变成空白好。同时把会话行的操作按钮（继续 / 固定 / 归档 / 删除）和附件删除按钮也改成图标。
+- **`ui-icons.js` 必须在 `chat.js` 之前注入**（`chat.js` 启动时就要读 `HWChatIcons`）；测试会检查 `<script>` 标签的先后顺序，而不是源码里的变量声明顺序。
+- **不引入第三方图标库**：图形全部自绘，所以没有额外的许可与署名义务，也不存在上游改许可证的风险。
+- 测试 278 → 291：新增 `src/test/uiIcons.test.ts`（13 条，覆盖同 viewBox、名字唯一、未知名字不抛错、只用 `currentColor`、无硬编码颜色、不引用外部资源、坐标不越出 16 格、实心元素必须 `stroke="none"`、描边宽度下限、CSS 与 JS 路径一致、`chat.css` 不再出现 `▸`/`▾` 字符、`chat.js` 已换图标且保留退路、`<script>` 注入顺序）。
+- 新增 `test/check-icons-dom.mjs`（29 项断言）：把 `chat.js` 里那段图标代码原样切出来配最小 DOM 跑，验证每个图标名都真的产出了 `<svg>`、没有写成文字内容、脚本缺失与解析失败时正确退化。运行 `node test/check-icons-dom.mjs`。
+- `test/check-panel-exclusivity.mjs` 补了图标桩与两条断言（执行中仍是三个跳动点、待办挂的是图标节点而不是字符），互斥与还原的全部断言保持通过。
+- 新增 `test/preview-icons.html`：图标预览页（复用真实 `chat.css` 与 `ui-icons.js`），用浏览器打开即可肉眼核对各容器里的实际观感。
+- **对话标题可以自己改**。标题栏右侧出现铅笔图标，点开后在原位变成一条带下划线的输入框（不是弹窗），右侧换成对勾与叉：对勾保存、叉放弃，Enter / Esc 等价于这两个按钮。标题上限 48 字符（与自动命名的截断长度一致，由 `maxlength` 挡住输入、`shortTitle` 兜底），空标题或没改动时只退出编辑、不发请求。
+- **自定义标题不会被首条消息覆盖**。原来的自动命名靠「标题是否仍是『新对话』」判断，用户改完名字后若第一句还没发出，那句话会把他刚起的名字替换掉。现在新增 `titleCustomized` 标记（存档里持久化，归一化时只认严格的 `true`），改名后永久让位给用户的选择。
+- **改名不算「对话有新活动」**：`setTitle` 不更新 `updatedAt`，否则历史列表的时序会因为「改了个名字」而跳动。
+- **标题旁显示本次对话所属的项目**：已绑定到某个工作区文件夹时用橘黄色显示文件夹名（`--project`，优先取主题的图表橙）；绑定不上时用红色显示「项目待建立」。这个状态是真实的、必须让用户看见的——`projectRootFor` 返回 `undefined` 时相对路径会落到第一个根目录、且 git 写操作会被拒绝，显示一个猜出来的目录名会让人误以为已经绑定好了。首次写入文件（`bindProjectRoot`）后补推一次状态，徽标随即从红字变成橘黄。
+  - 判定规则抽成纯函数 `chooseProjectRoot` / `projectNameOf`（`src/agent/workspacePaths.ts`），行为与原 `projectRootFor` 完全一致：存档绑定 → 当前编辑器所在项目 → 单根工作区的唯一根 → 否则未绑定。抽出来是为了能单测（原方法依赖 `vscode.window.activeTextEditor`）。
+  - **项目标签的位置与样式**：从标题行下移到状态行（`.conversation-status-line`），与「准备就绪 · N 个工具」同处一行。早期版本用 `margin-left: auto` 把它推到右端，又套了圆角边框 + 半透明底色，看起来像个可点的徽标按钮；现在改成**纯文字 + 左对齐**：`margin: 0`，`padding` / `border` / `border-radius` 全部归零，`background: none`，紧跟状态文字右侧、中间固定隔 8px（整行 `justify-content: flex-start`）。两个信息在同一行上是连续的阅读流，中间不再隔着一大片空白。过窄时**先省略项目名**（`max-width: 55%` + `text-overflow: ellipsis`），状态文字因此至少保留 45% 宽度——和以前正好相反，以前是先砍状态文字。项目标签若有多个，同样从状态文字右侧按从左到右排列。`test/check-title-editing.mjs` 加了结构断言（读 `chatPanel.ts` 模板与 `chat.css`），锁住「标签在状态行」「纯文字无底色边框」「左对齐」「间距固定 8px」，防止以后调版式时把它挪回标题行或改回色块。
+- **标题区腾出空间的控件收窄**：
+  - 三个下拉框（Agent 模式 / AI 供应商 / AI 模型）去掉边框和底板，只留文字与下拉箭头；箭头用 `--chevron-down` 遮罩绘制（路径与 `ui-icons.js` 的 `chevronDown` 是同一份，测试比对 `d=`），到文字的间距由固定的 `padding-right: 19px` + `right: 5px` 决定，控件变宽变窄都不变。宽度同时收紧：模式 92→68px、供应商 96→84px、模型 132→118px。
+  - skills 按钮从「星形图标 + 数量」的方形按键改成纯图标按钮（与刷新按钮同宽 30px）。数量没有丢：移到 `title` 与 `aria-label`（`选择 Skill · 3`），由新增的 `syncSkillsButton` 统一同步，勾选变化时也走同一个函数。
+  - 已经是纯图标的按钮（刷新、设置、归档、导出、历史）没有改动。
+  - **三个下拉框按内容定宽，谁也不吸收剩余宽度**：模型框原来是 `flex: 1 1 auto`，会把整行剩余宽度全部吸走——宽面板上它变成一个远宽于内容的空盒子，下拉箭头被推到右端、离文字很远。现在三个控件都是 `flex: 0 1 auto` + 固定宽度：模式 60px（`Agent` 5 字符 ≈ 30px + 内边距 25px ≈ 55px）、供应商 82px（`DeepSeek` 8 字符 ≈ 73px）、模型 150px（`DeepSeek-V4.1-Flash` 19 字符 ≈ 139px）。宽度是按等宽字体的字符宽算出来的，不是试出来的；保留 `flex-shrink: 1` 是为了极窄面板下先压窄控件，而不是硬溢出。
+  - **控件行改成两端对齐（`justify-content: space-between`），并为此把分组包装去掉**：间距本来写的是 6px，但视觉上并不相等。原因有两层——`.connection-group` 曾是 `flex: 1 1 240px`，把剩余宽度吸进组内，在刷新按钮后面留下一大块空白；`.utility-group` 又有 `margin-left: auto`，把自己推到最右端。把这两个「自动空隙」取消后，间距确实只剩一个来源，但控件之间仍然**不均匀地分散**：用户要的是等间距的两端对齐。只加 `space-between` 不够——三个 `control-group` 还在时，剩余宽度只会在**组与组之间**分配，组内仍是固定的 `--control-gap`，于是又变成「组内 6px、组间一大段」的两种间距，只是换了个位置复现同一个问题。所以把模板里的三个包装层直接删掉：`chat.js` 从不引用这些分组类（已核对），八个控件因此都是 `.toolbar-controls` 的直接 flex 子项，剩余宽度被平均分到每两个相邻控件之间，任意相邻两个控件的距离恒等，首尾分别贴住左右两端。`gap` 仍然保留作**最小间距**兜底：控件几乎填满整行时靠它避免贴在一起。CSS 里 `.mode-group` / `.connection-group` / `.utility-group` / `.control-group` 四条规则与窄屏那条 `.connection-group { flex: 0 0 auto }` 一并删除，`test/preview-chat.html` 的头部结构同步扁平化。`test/check-title-editing.mjs` 的版式断言随之改写：锁住「控件行是 `space-between`」「CSS 里不再有分组规则」「`chatPanel.ts` 的控件行没有 `control-group` 包装」「间距只来自 `--control-gap`」「控件行没有 `margin-left: auto`」。
+- 测试 292 → 305：新增「自定义标题带标记且不被后续消息覆盖」「改名不改 `updatedAt`」「空标题不清空」「48 字符上限」「标记重启后仍在」「首条消息仍能自动命名」「项目根判定 6 条」「徽标名取文件夹名且根目录视为无名」，并把箭头遮罩一致性测试扩展到 `chevronDown`。
+- 新增 `test/check-title-editing.mjs`（59 项断言）：把 `renderProjectBadge` / `startTitleEdit` / `finishTitleEdit` / `syncSkillsButton` 原样抽出来配最小 DOM 跑，验证徽标的绑定与未绑定两态、编辑态的显示切换、确认/放弃/未改动/空标题四条路径、草稿不允许改名、以及 skills 数量挪到提示后仍然可读；末尾另有 23 条版式断言，直接读 `src/views/chatPanel.ts` 与 `media/chat.css`，锁住「徽标在状态行、不在标题行」「状态文字可省略」「项目标签是纯文字且左对齐」「三个下拉框按内容定宽且 flex-grow 为 0」「控件行是 `space-between` 两端对齐」「CSS 与模板里都没有 `control-group` 分组包装」「间距只来自 `--control-gap` 一个变量」。运行 `node test/check-title-editing.mjs`。
+
+- **归档胶囊初始高度减少 1/3**（16px → 10.67px，即 `CAPSULE_BASE_HEIGHT = 16 * 2 / 3`）。宽高比仍是 3:1，所以宽度同步从 48px 变成 32px；圆角按高度 30% 走，从 5px 变成 3px。缩放下限 6px 不变——它是「再挤也要留住可点的方块」的底线，不是常规尺寸，跟着降会让胶囊变成一条看不清的线。`media/chat.css` 的三个兜底值（`--capsule-h` / `--capsule-w` / `--capsule-radius`）与 `min-height` 里的 16px 一并同步，避免脚本未运行时闪回旧尺寸。
+  - `test/check-capsule-geometry.mjs` 改为**从 `media/chat.js` 直接读取三个常量**，并与 `media/chat.css` 的兜底值交叉比对。此前脚本自己复制了一份 `16 / 6 / 3`，改基准高度时脚本不会跟着变，「测试全绿」和「尺寸其实变了」可以同时成立，等于没有守住；现在两边不一致会直接报错。
+
+- **任务清单顶栏新增「继续执行 / 取消任务」**（只在清单停在半路时出现：已中断、或模型收尾时漏了打勾）。此前中断只是一个只读标记，面板上没有任何恢复入口，用户只能自己再发一条消息。
+  - 「继续执行」复用 `send()`，不另开执行通道：`requestMessages()` 是从存档重建上下文的，模型因此能看到自己写下的清单与中断前每一步的工具结果，天然能接着做；发出去的是专门的续跑指令（`todo.resumeInstruction`），并先用 `update_todos` 把下一项标成 `in_progress`。发之前先撤掉 `todosInterrupted` / `todosIncomplete`，面板不会一边真跑一边还挂着「已中断」。代价是消息区会多一条用户气泡——那是事实记录，不做隐藏，悄悄让模型动起来更难解释。
+  - 「取消任务」清空清单、**不归档、不留胶囊**（`clearedTodoState()`：`todos` 与两个标记一起置空）。正在跑的时候**必须先停再清**：`send()` 的 `finally` 会做一次中断结算并回写清单，先清后停会把刚清掉的清单原样写回来。所以先 abort，再 `waitForRunToLeave()` 等这一轮真正退出（上限 8 秒，网络卡住也照样往下走——清空是用户的明确意图，不能因为一轮请求挂在半空就没反应）；那种极端情况下再点一次即可。
+  - 判定抽成 `isResumableTodos()`：刻意不看有没有 `in_progress`（中断结算会把它降级成 `pending`），只认「还剩没打勾的项」。
+  - **续跑没跑起来时必须把中断态补回来**。`resumeTodos()` 的顺序是「先清两个标记 → 再 `send()`」，可这一轮有几种情况根本不会真正跑起来：权限同意被拒、发送被 `pendingSends` 挡住、发送前就抛错。这些路径都不会走到 `settleTodosAfterRun`，于是没人把标记写回去，结果是**一份永远继续不了的清单**——按钮消失、状态还停在半路，用户只能自己再打一条消息。现在 `send()` 之后重新读一次存档：若仍有没打勾的项、且两个标记都是空的（说明结算确实没发生过），就恢复成 `interrupted`。判定依据是「结算过就一定会留下至少一个标记」，不靠猜哪条路径失败。
+  - 两个按钮包在 `<summary>` 里，所以点击时显式 `preventDefault` + `stopPropagation`，否则会顺带把面板折叠掉。
+- **顶栏三段（标题 / 状态 / 动作）改为固定宽度、各自左对齐**。此前的状态区是 `flex: 0 1 118px`，**能被压缩**：清单一切到中断态，状态文字一变长就把标题往左顶，字数变回去又把布局晃回来，看着很乱。现在：
+  - 状态区 `flex: 0 0 132px`（不涨不缩），宽度按 9px 字号量过中英文最长的一条——中文「0/6 已完成 · 已中断，可继续」约 114px，英文归档行的「Archived · 12:34 · 6/6 done」约 115px，留余量防止字体渲染差异把它挤成省略号；
+  - 标题与状态区的文字都 `text-align: left`，永远贴左起第一格；
+  - 动作区用 `margin-left: auto` 贴最右。两个按钮宽度固定、且一起显隐，贴右不会产生跳动；
+  - 任务树顶栏没有动作区，也不该有。
+  - **英文状态文案同步缩短**：`interrupted, can be resumed` / `not finished, can be resumed` 会把状态区撑到 170px，整个顶栏都得为它让路；「可以继续」已经由右侧按钮本身表达，不必再写一遍，于是改回 `interrupted` / `not finished`。
+- **助手输出里的 emoji 换成同一套扁平图标**。此前正文里的 `🔔 ✅ ⚠️` 是系统 emoji 字体画的：彩色、带立体高光、大小不一致，和这套单色扁平界面完全不是一回事，而且「扁平/单色」由 emoji 字体决定，CSS 改不动。现在 `ui-icons.js` 再多 7 个图形（`bell` `pin` `bulb` `rocket` `search` `warn`，共 20 个），`chat.js` 新增 `flattenEmojiIcons()` 在渲染后把正文里的 emoji 换成内联 SVG。
+  - **在 DOM 上换、不在字符串上换**：正文里可能有代码块，`echo 🔔` 里的 emoji 是内容本身，字符串替换会把别人的代码改错。所以走文本节点，遇到 `<pre>` / `<code>` 直接跳过。
+  - **只换登记过的 9 个**（`🔔 📌 💡 🚀 🔍 ⚠ ✅ ❌ 📝`），其余 emoji 原样保留——把用户自己打的 🎉 换成某个我们画的图形只会更奇怪。
+  - **只对助手输出生效**（`message.role !== 'user'`）：用户打的 emoji 是他输入的内容，不该被改写。
+  - 变体选择符 U+FE0F 先归一化：`⚠️` 与 `⚠` 是同一个符号的两种写法，不处理会漏掉一半。
+  - 图标尺寸用 `1em` 而不是固定的 11px（14px 正文旁边挂 11px 图形会显得小一圈），`vertical-align: -.14em` 让 SVG 盒子随基线微微下沉，不至于浮在字上方。
+
+- 测试 305 → 309：新增「可继续判定（中断 / 未完成 / 全完成 / 空清单）」「取消状态真的清空三项且不留归档」。新增 `test/check-todo-actions.mjs`（31 项断言）：把 `syncTodoSummaryActions` 与 `bindSummaryAction` 原样抽出来配最小 DOM 跑，验证按钮的显隐、点击发出 `resumeTodos` / `cancelTodos` 且不折叠面板，并静态核对模板（两个按钮在清单 `summary` 内、任务树顶栏没有）、后端（两个消息都被接住、取消走 `clearedTodoState`、落库前先等运行退出）、CSS（状态区 `flex: 0 0 132px`、动作区 `margin-left: auto`、文字左对齐）。末尾还有一条**宽度实算**：从 `src/core/i18n.ts` 读中英文状态文案，按 9px 字号算出最长一条，超过 132px 直接报错——文案被改长时状态区会静默截断，这种错误在截图上极难发现。运行 `node test/check-todo-actions.mjs`。
+- `test/check-icons-dom.mjs` 从 43 项扩到 60 项：新增 emoji 映射表逐条校验（每一对都必须指向真实存在的图标）、变体选择符归一化、未登记 emoji 返回空，以及 `flattenEmojiIcons` 的实际行为（正文 emoji 换成图标节点、中文原样保留、`<code>` / `<pre>` 内不动）。
+- `test/check-panel-exclusivity.mjs` 补上 `syncTodoSummaryActions` 与三个新元素的桩，并把胶囊常量改成从 `media/chat.js` 读取，不再在本文件里复制一份。
+
+- 发布版本号推进到 **0.2.3**，构建产物为 `hwchat-0.2.3.vsix`。0.2.2 已发布，同一个版本号传不上去，所以这次修复以补丁号发出。
+- **修复「面板区有滚动条却滚不动、内容被截断」**。上一条改动给 `.panel-stack` 加了 `max-height` + `overflow-y: auto`，但滚动实际上从未生效，根因是 **flex 把面板压扁了**：
+  - 三个面板是 `.panel-stack` 的 flex 子项，默认 `flex-shrink: 1`；而 `.todo-panel` / `.task-tree` 都设了 `overflow: hidden`，按 Flexbox 规范这类子项的自动最小尺寸会归零，于是总高超过 `max-height` 时浏览器把面板**压缩**到刚好塞进容器；
+  - 多出来的条目被面板自己的 `overflow: hidden` 裁掉，**容器因此从不溢出**，`overflow-y: auto` 不生成滚动条，滚轮也就没有滚动对象——看到的不是「滚走了」，而是「被裁掉了」，滚不回来。
+  - 现在给 `.panel-stack > *` 加 `flex: 0 0 auto`，三个面板固定为内容高度，容器才真正溢出、滚动才生效。三个面板一视同仁，**归档清单和正在执行的清单都能滚**（它们共用同一个 `.todo-list` 样式，本来就没有单独的 `max-height`）。
+- **滚动条改为常显**。macOS 的覆盖式滚动条不滚动就完全不可见，用户会以为「不能滚」——这也正是「明明有滚动却感觉没有」的直接原因。现在显式设置 `.panel-stack::-webkit-scrollbar`（10px 轨道 + 圆角滑块，悬停加深），滚动条常驻，同时兼作「下面还有内容」的提示。
+- **面板区高度上限上调**：常规态 `min(38vh, 300px)` → `min(44vh, 360px)`；展开某份归档的聚焦态另给 `min(58vh, 470px)`——那时任务树和清单都被锁着只剩 28px 标题栏，有空间可用。按每条约 26px 计，常规态可容纳约 13 条、聚焦态约 17 条不再需要滚动（此前 10 条就会截断）。
+- **不把清单内部做成独立滚动容器**：`.todo-list` 保持无 `max-height` / 无 `overflow`，全仓库只有一个滚动容器（`.panel-stack`），避免嵌套滚动（滚到底时滚轮先滚内层再滚外层、容易卡住）。
+- 测试 276 → 278：新增「面板不许被 flex 压扁（断言 `flex: 0 0 auto` 存在、`.todo-list` 无 `max-height` 与 `overflow-y: auto|scroll`、`::-webkit-scrollbar` 存在）」「聚焦态上限必须高于常规态（按数值比较，不是硬编码）」，并把原来写死 `min(38vh, 300px)` 的断言改为 `min(44vh, 360px)`。运行 `npm test` 可复现。
+
 ## 0.2.2
 
 - 发布版本号定为 **0.2.2**，构建产物为 `hwchat-0.2.2.vsix`。本版把「面板互斥展开、归档胶囊配色与状态边框、任务清单唤起修复」和「命令块的位置/工具标注、列表内围栏不再漏成纯文本」合并为同一个发布。
@@ -29,6 +97,10 @@
 - 围栏解析抽成 `media/code-block-meta.js`（纯函数、不碰 DOM）：`parseFenceInfo` / `normalizeLocation` / `collectFenceBlock` / `dedentCode` / `matchFenceStart` / `isShellLanguage`。由 `chatPanel` 在 `chat.js` **之前**注入，脚本没加载成功时 `chat.js` 退化为「只认语言」的旧行为，代码块照旧能渲染和复制。代码块还会去掉列表缩进（`dedentCode` 只删公共前缀，保留 YAML / Python 的相对层级），复制出去的命令不会带前导空格。
 - `COMMAND_BLOCK_PROMPT`（`src/agent/commandPrompt.ts`）：要求模型把命令写成真正的围栏块、用 `loc=` 标明本地还是服务器、用 `tool=` 写明 cmd / powershell / bash / zsh，列表里缩进两格但围栏单独成行，且不得把位置说明或 `$` / `>` 提示符写进代码里。
 - 测试 240 → 254：新增 `src/test/codeBlockMeta.test.ts`（14 条：语言-only 旧行为、位置/工具解析、引号内的自定义位置、`where` / `host` / `pwsh` 别名与未知键、本地与服务器的中英文写法、工具归一、围栏开头识别（含 4 个反引号）、列表内缩进围栏整块收集、流式未闭合、公共缩进去除且保留相对层级、提示词示例能被解析器认出、以及防止前端被改回旧写法的静态断言）。
+- **修复「任务明明做完了，清单却显示已中断」**：结算发生在 `send()` 的 `finally` 里，而它只看清单是否全绿，**从不看这一轮是怎么结束的**，于是「模型漏了给最后一项打勾」和「用户点了停止 / 请求报错」被归成同一件事，一律标成「已中断，可继续」。现在按运行结局区分：`planTodoSettlement` 新增第 4 个参数 `outcome`（`completed` / `stopped` / `failed`），正常跑完却还有没打勾的项 → `action: 'incomplete'`，界面标「**未完成**，可继续」（中性色，不用警告黄）；被停止或报错才标「已中断」。运行结局由 `send()` 里的 `runOutcome` 记录：Agent 循环正常返回后置 `completed`，`catch` 里按 `cancelled` 置 `stopped` 或 `failed`。
+- 存档新增 `todosIncomplete` 字段，与 `todosInterrupted` **互斥**：置任一标记都会清掉另一个；`sanitizeSummary` 在存档里两个同时为真时按「已中断」算，避免面板同时挂两个标签、也避免出现互相矛盾的存档。换新清单、归档时两个标记一起清空。
+- **引擎刻意不替模型打勾**：遗留的 `in_progress` 只降级成 `pending`，绝不自动改成 `completed`——清单是模型对「做完了没」的陈述，引擎代打勾等于伪造进度。真正的预防放在提示词：`TODO_LIST_PROMPT` 增加硬规则，要求**结束本轮前再读一遍清单**，某项工作已经完成并验证过却还标着 `in_progress` 时必须补一次 `update_todos` 把它置为 `completed`（**包括最后一项**）；确实没做完则留成 `pending` 并在正文里说明。
+- 测试 272 → 276：新增「正常跑完却没全打勾 → `incomplete` 且遗留项只降级成 `pending`、不谎报 `completed`」「正常跑完全绿仍归档」「失败与停止都算 `interrupt`」「没有清单时任何结局都 `none`」，以及存档层「两个标记互斥（双向）+ 重启后仍在」「存档里两个标记同时为真时按已中断算」。运行 `npm test` 可复现。
 
 ## 0.2.1
 

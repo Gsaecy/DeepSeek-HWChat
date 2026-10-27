@@ -141,6 +141,18 @@ const DICTIONARY: Record<string, Entry> = {
   'chat.exportCurrent': { zh: '导出当前对话', en: 'Export this conversation' },
   'chat.export': { zh: '导出', en: 'Export' },
   'chat.openSettings': { zh: '打开设置', en: 'Open settings' },
+  'chat.editTitle': { zh: '编辑对话标题', en: 'Edit conversation title' },
+  'chat.titleInputLabel': { zh: '对话标题', en: 'Conversation title' },
+  'chat.saveTitle': { zh: '保存标题', en: 'Save title' },
+  'chat.cancelTitleEdit': { zh: '放弃本次编辑', en: 'Discard changes' },
+  'chat.titleSaved': { zh: '标题已更新。', en: 'Title updated.' },
+  'chat.titleEditLocked': { zh: '发出第一条消息后才能改标题。', en: 'Send the first message before renaming.' },
+  'chat.projectLabel': { zh: '本次对话所属项目：{name}', en: 'Project for this conversation: {name}' },
+  'chat.projectPending': { zh: '项目待建立', en: 'No project yet' },
+  'chat.projectPendingHint': {
+    zh: '这条对话还没有落到任何工作区文件夹，git 写操作会被拒绝；等它开始改文件（或指定项目）就会自动绑定。',
+    en: 'This conversation is not bound to a workspace folder yet, so git writes are refused. It binds automatically once it touches files (or you name a project).',
+  },
   'chat.skillsPanelTitle': { zh: '本次对话使用的 Skill', en: 'Skills used in this conversation' },
   'chat.workspaceTrustBadge': { zh: '工作区状态', en: 'Workspace status' },
   'chat.skillsPanelNote': {
@@ -675,7 +687,7 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.approvalDeleteFile': { zh: '删除文件：{path}', en: 'Delete file: {path}' },
   'tool.approvalModifyFile': { zh: '修改文件：{path}', en: 'Modify file: {path}' },
   'tool.approvalReadData': { zh: '读取工作区数据：{name}', en: 'Read workspace data: {name}' },
-  'tool.detailSeverePrefix': { zh: '⚠️ 严重风险命令：提权、破坏性删除、磁盘擦写或不可逆操作。\n\n', en: '⚠️ Severe risk: privilege escalation, destructive deletion, disk wiping or an irreversible operation.\n\n' },
+  'tool.detailSeverePrefix': { zh: '严重风险命令：提权、破坏性删除、磁盘擦写或不可逆操作。\n\n', en: 'Severe risk: privilege escalation, destructive deletion, disk wiping or an irreversible operation.\n\n' },
   'tool.detailWriteFile': { zh: '目标：{path}\n写入内容：{chars} 字符', en: 'Target: {path}\nContent: {chars} characters' },
   'tool.detailReplaceInFile': { zh: '目标：{path}\n精确替换：{old} -> {new} 字符', en: 'Target: {path}\nExact replace: {old} -> {new} characters' },
   'tool.detailRenameFile': { zh: '来源：{from}\n目标：{to}', en: 'From: {from}\nTo: {to}' },
@@ -697,7 +709,22 @@ const DICTIONARY: Record<string, Entry> = {
   'todo.updated': { zh: '任务清单已更新：{done}/{total} 已完成', en: 'Task list updated: {done}/{total} done' },
   'todo.empty': { zh: '这次调用没有产生有效条目，任务清单保持不变。', en: 'This call produced no valid items, so the task list is unchanged.' },
   'todo.hintSingleActive': { zh: '提示：同一时刻只应有一项处于 in_progress。', en: 'Note: only one item should be in_progress at a time.' },
-  'todo.interrupted': { zh: '已中断，可继续', en: 'interrupted, can be resumed' },
+  // 英文不再写 ", can be resumed"：状态区宽度要固定，句尾那半句会把控件拉到 170px，
+  // 整个顶栏都为它让路；「可以继续」由右侧那两个按钮本身表达，不必再写一遍。
+  'todo.interrupted': { zh: '已中断，可继续', en: 'interrupted' },
+  'todo.incomplete': { zh: '未完成，可继续', en: 'not finished' },
+  // 顶栏的「继续执行 / 取消任务」，只在清单处于可继续状态时出现
+  'todo.resume': { zh: '继续执行', en: 'Continue' },
+  'todo.cancel': { zh: '取消任务', en: 'Cancel task' },
+  'todo.resumeHint': { zh: '从中断的地方接着执行这份清单', en: 'Keep running this list from where it stopped' },
+  'todo.cancelHint': { zh: '放弃这份清单，面板上的清单会消失且不归档', en: 'Discard this list; it disappears without being archived' },
+  'todo.resumeInstruction': {
+    zh: '继续执行当前任务清单里尚未完成的条目，从中断的地方接着做，不要重复已经完成的步骤。开始前先用 update_todos 把接下来要做的那一项标成 in_progress。',
+    en: 'Continue the unfinished items of the current task list from where it stopped; do not repeat steps that are already done. Mark the next item in_progress with update_todos before you start it.',
+  },
+  'todo.resumed': { zh: '已从中断处继续执行', en: 'Resumed from the interruption point' },
+  'todo.cancelled': { zh: '任务已取消，清单已清除', en: 'Task cancelled; the list was cleared' },
+  'todo.cancelNoActive': { zh: '当前没有可以取消的任务', en: 'There is no task to cancel' },
   // 任务清单归档胶囊
   'todo.archive.title': { zh: '已归档任务清单', en: 'Archived task list' },
   'todo.archive.summary': { zh: '已归档 · {time} · {done}/{total} 完成', en: 'Archived · {time} · {done}/{total} done' },

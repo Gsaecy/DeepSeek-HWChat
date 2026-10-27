@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { externalToolPathViolation, normalizeWorkspaceGlob, resolveWorkspacePath } from '../agent/workspacePaths';
+import { chooseProjectRoot, externalToolPathViolation, normalizeWorkspaceGlob, projectNameOf, resolveWorkspacePath } from '../agent/workspacePaths';
 
 const roots = [
   { name: 'Safevault_android', fsPath: '/Users/test/AI projects/Safevault_android' },
@@ -216,4 +216,50 @@ test('external tools: path arrays are checked element by element', () => {
     String(externalToolPathViolation({ files: ['MaiKer_Win/a.ts', '/etc/hosts'] }, roots)),
     /不在当前工作区内/,
   );
+});
+
+test('project root: the stored binding wins while that folder is still in the workspace', () => {
+  assert.equal(
+    chooseProjectRoot({ roots: roots.map((root) => root.fsPath), stored: roots[1]?.fsPath }),
+    roots[1]?.fsPath,
+  );
+});
+
+test('project root: an archived binding whose folder was removed is ignored', () => {
+  // 工作区根被移除后，存档里还留着旧路径。必须当作没绑定，否则徽标会显示一个不存在的项目。
+  assert.equal(
+    chooseProjectRoot({ roots: roots.map((root) => root.fsPath), stored: '/Users/test/AI projects/Gone' }),
+    undefined,
+  );
+});
+
+test('project root: the active editor decides when nothing is bound yet', () => {
+  assert.equal(
+    chooseProjectRoot({
+      roots: roots.map((root) => root.fsPath),
+      activeFile: `${roots[1]?.fsPath}/src/index.ts`,
+    }),
+    roots[1]?.fsPath,
+  );
+});
+
+test('project root: a single root needs no hint', () => {
+  assert.equal(chooseProjectRoot({ roots: ['/Users/test/only'] }), '/Users/test/only');
+});
+
+test('project root: a multi-root workspace without any hint stays unbound', () => {
+  // 这就是标题旁显示红色「项目待建立」的那种情况：不能猜一个目录名，
+  // 因为此时 git 写操作会被拒绝，界面必须如实反映「还没归属」。
+  assert.equal(chooseProjectRoot({ roots: roots.map((root) => root.fsPath) }), undefined);
+});
+
+test('project root: no workspace folders at all is unbound', () => {
+  assert.equal(chooseProjectRoot({ roots: [] }), undefined);
+});
+
+test('project badge name: uses the folder name, and the filesystem root has none', () => {
+  assert.equal(projectNameOf(roots[1]?.fsPath as string), 'MaiKer_Win');
+  assert.equal(projectNameOf(`${roots[1]?.fsPath}/`), 'MaiKer_Win');
+  assert.equal(projectNameOf(undefined), null);
+  assert.equal(projectNameOf('/'), null);
 });

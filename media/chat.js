@@ -66,10 +66,93 @@
     },
   };
 
+  /**
+   * 界面图标。形状定义在 media/ui-icons.js（纯函数，可单独单测），这里只负责变成 DOM。
+   *
+   * 退化策略：图标脚本没加载成功时回到原来的文字符号 —— 字形不好看总比徽标变成空白好，
+   * 至少「成功 / 失败」还看得懂。
+   */
+  const uiIcons = globalThis.HWChatIcons || null;
+  const GLYPH_FALLBACK = {
+    check: '✓', minus: '−', bang: '!', ellipsis: '…', dot: '●', ring: '○',
+    turn: '↳', square: '□', close: '×', arrowUpRight: '↗', restore: '↺', pencil: '✎',
+  };
+
+  /**
+   * 造一个图标节点。
+   *
+   * 用 DOMParser 而不是 innerHTML：SVG 是外来命名空间，用 HTML 解析器插入时
+   * 容易在特定上下文里走错分支；image/svg+xml 模式一定按 SVG 解析。
+   */
+  function iconNode(name) {
+    const wrapper = document.createElement('span');
+    wrapper.className = 'ui-icon';
+    const markup = uiIcons ? uiIcons.markup(name) : '';
+    if (markup) {
+      try {
+        const parsed = new DOMParser().parseFromString(markup, 'image/svg+xml');
+        const svg = parsed.documentElement;
+        if (svg && svg.tagName.toLowerCase() === 'svg') {
+          wrapper.append(document.importNode(svg, true));
+          return wrapper;
+        }
+      } catch {
+        // 解析失败就走下面的文字退路，不让一个图标拖垮整段渲染。
+      }
+    }
+    wrapper.textContent = GLYPH_FALLBACK[name] || '';
+    return wrapper;
+  }
+
+  /**
+   * 把助手输出里的少量 emoji 换成同一套扁平图标。
+   *
+   * 为什么必须在 DOM 上做、不能直接替换原始字符串：正文里可能有代码块，
+   * 代码里的 `🔔` 是内容本身，替换掉就把别人的代码改错了。
+   * 所以这里走文本节点，遇到 <pre>/<code> 直接跳过。
+   *
+   * 只替换 media/ui-icons.js 的 EMOJI 里登记过的那几个；其余 emoji 原样保留——
+   * 把用户自己打的 🎉 换成某个我们画的图形只会更奇怪。
+   */
+  function flattenEmojiIcons(root) {
+    const uiIcons = globalThis.HWChatIcons;
+    if (!uiIcons || typeof uiIcons.emojiName !== 'function') return;
+    if (typeof document.createTreeWalker !== 'function') return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    for (const node of textNodes) {
+      const parentTag = node.parentElement ? node.parentElement.tagName : '';
+      if (parentTag === 'PRE' || parentTag === 'CODE') continue;
+      const text = node.nodeValue || '';
+      if (!text) continue;
+      const pieces = [];
+      let buffer = '';
+      const chars = Array.from(text);
+      for (let index = 0; index < chars.length; index += 1) {
+        let candidate = chars[index];
+        // 变体选择符 U+FE0F 属于同一个符号，一起吞掉再查表。
+        if (chars[index + 1] === '\uFE0F') { candidate += chars[index + 1]; index += 1; }
+        const name = uiIcons.emojiName(candidate);
+        if (!name) { buffer += candidate; continue; }
+        if (buffer) { pieces.push(document.createTextNode(buffer)); buffer = ''; }
+        const icon = iconNode(name);
+        icon.classList.add('ui-icon-inline');
+        pieces.push(icon);
+      }
+      if (!pieces.length) continue;
+      if (buffer) pieces.push(document.createTextNode(buffer));
+      const fragment = document.createDocumentFragment();
+      fragment.append(...pieces);
+      node.parentNode?.replaceChild(fragment, node);
+    }
+  }
+
   const elements = Object.fromEntries([
     'app', 'historyPane', 'historyButton', 'closeHistoryButton', 'newChatButton',
     'historySearch', 'archiveViewButton', 'conversationList', 'settingsButton',
     'settingsButtonSide', 'exportButton', 'archiveButton', 'conversationTitle',
+    'conversationTitleInput', 'projectBadge', 'editTitleButton', 'saveTitleButton', 'cancelTitleButton',
     'connectionState', 'profileInput', 'modelInput', 'modeInput', 'refreshModelsButton', 'skillsButton', 'skillsCount',
     'skillsPanel', 'skillsList', 'workspaceTrustBadge', 'messageViewport',
     'messageList', 'emptyState', 'loadOlderButton', 'scrollToBottomButton', 'attachmentList', 'contextChip',
@@ -77,7 +160,7 @@
     'historyLinkBanner', 'sourceHistoryTitle', 'detachHistoryButton',
     'permissionPresetInput', 'agentMaxStepsInput', 'reasoningEffortInput', 'voiceButton',
     'agentRunState', 'agentRunLabel', 'agentRunMeta', 'taskTree', 'taskTreeSummary', 'taskTreeList',
-    'todoPanel', 'todoList', 'todoSummary',
+    'todoPanel', 'todoList', 'todoSummary', 'todoSummaryActions', 'resumeTodosButton', 'cancelTodosButton',
     'todoArchivePanel', 'todoArchiveList', 'todoArchiveSummary', 'todoArchiveBar',
     'approvalCard', 'approvalTitle', 'approvalSummary', 'approvalDetail', 'approvalDenyButton', 'approvalAllowButton',
     'attachButton', 'sendButton', 'stopButton', 'toast',
@@ -91,7 +174,8 @@
     modelOptionsByProfile: {},
     permissionPresetPending: false, modelLoadingProfileId: null,
     workspaceTrusted: false, agentAvailable: false, availableToolCount: 0, showArchived: false, renderTimer: null,
-    taskTree: null, todos: [], todoArchives: [], expandedArchiveId: null, archiveRestore: null, todosInterrupted: false,
+    project: { name: null, bound: false }, titleEditing: false,
+    taskTree: null, todos: [], todoArchives: [], expandedArchiveId: null, archiveRestore: null, todosInterrupted: false, todosIncomplete: false,
     todoSignature: '',
     runningConversationIds: [], pendingApprovals: [],
     autoFollow: true, renderingMessages: false, voiceRecognition: null, voiceActive: false,
@@ -176,22 +260,24 @@
       content.append(titleRow, meta, preview);
       content.addEventListener('click', () => { post('selectConversation', { id: conversation.id }); closeMobileHistory(); });
       const actions = document.createElement('div'); actions.className = 'conversation-actions';
-      const continueTask = actionButton(t('chat.continueTaskHistory'), '↗');
+      const continueTask = actionButton(t('chat.continueTaskHistory'), 'arrowUpRight');
       continueTask.disabled = runningNow || awaitingNow;
       continueTask.addEventListener('click', () => { post('continueConversation', { id: conversation.id }); closeMobileHistory(); });
-      const pin = actionButton(conversation.pinned ? t('chat.unpin') : t('chat.pin'), conversation.pinned ? '●' : '○');
+      const pin = actionButton(conversation.pinned ? t('chat.unpin') : t('chat.pin'), conversation.pinned ? 'dot' : 'ring');
       pin.addEventListener('click', () => post('togglePin', { id: conversation.id, pinned: !conversation.pinned }));
-      const archive = actionButton(conversation.archived ? t('chat.restoreConversation') : t('chat.archive'), conversation.archived ? '↺' : '□');
+      const archive = actionButton(conversation.archived ? t('chat.restoreConversation') : t('chat.archive'), conversation.archived ? 'restore' : 'square');
       archive.addEventListener('click', () => post('toggleArchive', { id: conversation.id, archived: !conversation.archived }));
-      const remove = actionButton(t('common.delete'), '×'); remove.classList.add('danger-action');
+      const remove = actionButton(t('common.delete'), 'close'); remove.classList.add('danger-action');
       remove.addEventListener('click', () => post('deleteConversation', { id: conversation.id }));
       actions.append(continueTask, pin, archive, remove); row.append(content, actions); elements.conversationList.append(row);
     }
   }
 
-  function actionButton(label, text) {
+  /** 行内操作按钮。形状由 media/ui-icons.js 决定，label 只用于无障碍与悬停提示。 */
+  function actionButton(label, iconName) {
     const button = document.createElement('button');
-    button.type = 'button'; button.className = 'row-action'; button.setAttribute('aria-label', label); button.title = label; button.textContent = text;
+    button.type = 'button'; button.className = 'row-action'; button.setAttribute('aria-label', label); button.title = label;
+    button.append(iconNode(iconName));
     return button;
   }
 
@@ -200,6 +286,15 @@
     // 后台线程数（不含当前对话）：用于提示「还能继续在这里操作」。
     const otherRunning = state.runningConversationIds.filter((id) => id !== state.conversation?.id).length;
     elements.conversationTitle.textContent = state.conversation?.title || t('common.newChat');
+    renderProjectBadge();
+    // 编辑中不覆盖输入框：服务端随时可能推状态（流式输出、清单更新），
+    // 那会让用户正在打的内容被旧标题冲掉。
+    const canRename = Boolean(state.conversation?.id);
+    elements.editTitleButton.disabled = !canRename;
+    elements.editTitleButton.title = canRename ? t('chat.editTitle') : t('chat.titleEditLocked');
+    if (state.titleEditing && !canRename) {
+      finishTitleEdit(false);
+    }
     syncConnectionSelectors();
     elements.modeInput.value = state.mode; elements.exportButton.disabled = !state.conversation;
     elements.archiveButton.disabled = !state.conversation || state.streaming;
@@ -213,8 +308,7 @@
     elements.connectionState.title = otherRunning > 0 ? t('chat.runningInOther') : '';
     elements.connectionState.classList.toggle('live', state.streaming);
     elements.connectionState.classList.toggle('restricted', !state.workspaceTrusted && state.mode !== 'chat');
-    elements.skillsCount.textContent = String(state.selectedSkillIds.length);
-    elements.skillsButton.classList.toggle('active', state.selectedSkillIds.length > 0);
+    syncSkillsButton();
     elements.permissionPresetInput.value = state.permissionPreset;
     syncPermissionHint();
     ensureStepOption(state.agentMaxSteps);
@@ -224,6 +318,66 @@
     const modelsLoading = state.modelLoadingProfileId === activeProfileId;
     elements.refreshModelsButton.classList.toggle('loading', modelsLoading);
     elements.refreshModelsButton.title = modelsLoading ? t('chat.refreshingModels') : t('chat.refreshModels');
+  }
+
+  /**
+   * 标题旁的项目徽标。
+   *
+   * 已绑定：橙色显示文件夹名（对话到底在操作哪个项目，一眼可见）。
+   * 未绑定：红色显示「项目待建立」——此时 git 写操作会被拒绝，必须让用户看见，
+   * 不能显示一个猜出来的目录名让用户以为已经绑定好了。
+   */
+  function renderProjectBadge() {
+    const badge = elements.projectBadge;
+    if (!badge) return;
+    const project = state.project || { name: null, bound: false };
+    if (project.bound && project.name) {
+      badge.textContent = project.name;
+      badge.classList.add('bound');
+      badge.classList.remove('missing');
+      badge.title = t('chat.projectLabel', { name: project.name });
+    } else {
+      badge.textContent = t('chat.projectPending');
+      badge.classList.add('missing');
+      badge.classList.remove('bound');
+      badge.title = t('chat.projectPendingHint');
+    }
+    badge.hidden = false;
+  }
+
+  /** 进入标题编辑：只切显示，不发请求。 */
+  function startTitleEdit() {
+    if (state.titleEditing || !state.conversation?.id) return;
+    state.titleEditing = true;
+    elements.conversationTitleInput.value = state.conversation.title || '';
+    elements.conversationTitle.hidden = true;
+    elements.conversationTitleInput.hidden = false;
+    elements.editTitleButton.hidden = true;
+    elements.saveTitleButton.hidden = false;
+    elements.cancelTitleButton.hidden = false;
+    elements.conversationTitleInput.focus();
+    elements.conversationTitleInput.select();
+  }
+
+  /**
+   * 退出标题编辑。
+   *
+   * `commit` 为真才发请求；空标题、没改动都只是退出，不打扰用户。
+   * 放弃编辑（叉号 / Esc）时输入框里的内容直接丢弃，不写 state，也不发请求。
+   */
+  function finishTitleEdit(commit) {
+    if (!state.titleEditing) return;
+    state.titleEditing = false;
+    const value = elements.conversationTitleInput.value.trim();
+    elements.conversationTitleInput.hidden = true;
+    elements.conversationTitle.hidden = false;
+    elements.editTitleButton.hidden = false;
+    elements.saveTitleButton.hidden = true;
+    elements.cancelTitleButton.hidden = true;
+    if (!commit) return;
+    const current = state.conversation?.title || '';
+    if (!value || value === current) return;
+    post('renameConversation', { id: state.conversation?.id, title: value });
   }
 
   function syncPermissionHint() {
@@ -289,6 +443,19 @@
     elements.agentMaxStepsInput.append(option);
   }
 
+  /**
+   * skills 按钮现在只显示图标（数量文字被 CSS 隐藏了），
+   * 所以数量必须挪到悬停提示和无障碍标签里，否则「已启用几个」就没有任何可见入口。
+   */
+  function syncSkillsButton() {
+    const count = state.selectedSkillIds.length;
+    const label = count ? `${t('chat.selectSkill')} · ${count}` : t('chat.selectSkill');
+    elements.skillsCount.textContent = String(count);
+    elements.skillsButton.title = label;
+    elements.skillsButton.setAttribute('aria-label', label);
+    elements.skillsButton.classList.toggle('active', count > 0);
+  }
+
   function renderSkills() {
     elements.skillsList.replaceChildren();
     elements.workspaceTrustBadge.textContent = state.workspaceTrusted ? t('settings.workspaceTrusted') : t('settings.workspaceUntrusted');
@@ -302,7 +469,7 @@
       const input = document.createElement('input'); input.type = 'checkbox'; input.checked = state.selectedSkillIds.includes(skill.id);
       input.addEventListener('change', () => {
         const selected = new Set(state.selectedSkillIds); if (input.checked) selected.add(skill.id); else selected.delete(skill.id);
-        state.selectedSkillIds = [...selected]; elements.skillsCount.textContent = String(state.selectedSkillIds.length);
+        state.selectedSkillIds = [...selected]; syncSkillsButton();
         post('setSkills', { skillIds: state.selectedSkillIds });
       });
       const copy = document.createElement('span');
@@ -444,12 +611,15 @@
       const row = document.createElement('div');
       row.className = `task-node status-${node.status}${node.id === tree.currentNodeId ? ' current' : ''}`;
       if (node.parentId && node.parentId !== rootId) row.classList.add('nested');
-      row.append(textElement('span', 'task-node-status', taskStatusSymbol(node.status)), textElement('span', 'task-node-title', node.title), textElement('small', '', taskStatusLabel(node.status)));
+      const statusCell = textElement('span', 'task-node-status', '');
+      statusCell.append(iconNode(taskStatusIconName(node.status)));
+      row.append(statusCell, textElement('span', 'task-node-title', node.title), textElement('small', '', taskStatusLabel(node.status)));
       elements.taskTreeList.append(row);
     }
   }
 
-  function taskStatusSymbol(status) { return status === 'complete' ? '✓' : status === 'active' ? '●' : status === 'routing' ? '…' : status === 'merged' ? '↳' : status === 'queued' ? '○' : '−'; }
+  /** 任务树节点的状态 → 图标名（形状定义见 media/ui-icons.js）。 */
+  function taskStatusIconName(status) { return status === 'complete' ? 'check' : status === 'active' ? 'dot' : status === 'routing' ? 'ellipsis' : status === 'merged' ? 'turn' : status === 'queued' ? 'ring' : 'minus'; }
   function taskStatusLabel(status) { return ({ active: t('chat.taskStatus.active'), routing: t('chat.taskStatus.routing'), merged: t('chat.taskStatus.merged'), queued: t('chat.taskStatus.queued'), complete: t('chat.taskStatus.complete'), cancelled: t('chat.taskStatus.cancelled'), error: t('chat.taskStatus.error') })[status] || status; }
 
   /**
@@ -556,22 +726,45 @@
     elements.todoPanel.hidden = !todos.length;
     if (!todos.length) {
       elements.todoPanel.classList.remove('interrupted');
+      elements.todoPanel.classList.remove('incomplete');
       elements.todoList.replaceChildren();
       if (elements.todoSummary) elements.todoSummary.textContent = '';
+      syncTodoSummaryActions(false);
       return;
     }
     // 胶囊聚焦期间清单必须保持收起：它是被锁住的两个面板之一。
     if (isArchiveFocused()) elements.todoPanel.open = false;
     if (reveal) elements.todoPanel.open = true;
     const done = todos.filter((todo) => todo.status === 'completed').length;
-    // 被中断的清单：后端已把「执行中」降级成待办，这里只补一个文字标记。
-    // 不引入第四种状态——用户接着做时模型重新标 in_progress，全绿后照常归档。
-    elements.todoPanel.classList.toggle('interrupted', Boolean(state.todosInterrupted));
+    // 清单没全绿时有两种来源，标题上要分开说：
+    // - 被停止 / 报错 → 「已中断」：工作被打断了；
+    // - Agent 正常跑完、只是模型漏了给最后一项打勾 → 「未完成」：别让用户误以为被腰斩。
+    // 两者都会把「执行中」降级成待办（后端已做），这里只补文字标记，不引入第四种状态。
+    const interrupted = Boolean(state.todosInterrupted);
+    const incomplete = !interrupted && Boolean(state.todosIncomplete);
+    elements.todoPanel.classList.toggle('interrupted', interrupted);
+    elements.todoPanel.classList.toggle('incomplete', incomplete);
     if (elements.todoSummary) {
       const progress = t('todo.progress', { done, total: todos.length });
-      elements.todoSummary.textContent = state.todosInterrupted ? `${progress} · ${t('todo.interrupted')}` : progress;
+      const suffix = interrupted ? ` · ${t('todo.interrupted')}` : incomplete ? ` · ${t('todo.incomplete')}` : '';
+      elements.todoSummary.textContent = `${progress}${suffix}`;
     }
     renderTodoItems(elements.todoList, todos);
+    // 「继续执行 / 取消任务」只在清单停在半路时出现：全部打勾的清单会被后端归档、
+    // 面板本身就消失了；运行中的清单要停就走输入框旁的停止按钮，不需要这两个。
+    syncTodoSummaryActions(Boolean(state.todosInterrupted || state.todosIncomplete) && !state.streaming);
+  }
+
+  /**
+   * 顶栏两个动作按钮的显隐。
+   *
+   * 动作区整体 `hidden` 而不是逐个按钮隐藏：这样清单状态文字不会因为一个隐藏的容器
+   * 多保留一段空白，左对齐的固定宽度区才站得住。
+   */
+  function syncTodoSummaryActions(visible) {
+    if (elements.todoSummaryActions) elements.todoSummaryActions.hidden = !visible;
+    if (elements.resumeTodosButton) elements.resumeTodosButton.hidden = !visible;
+    if (elements.cancelTodosButton) elements.cancelTodosButton.hidden = !visible;
   }
 
   /** 归档快照面板：只有点开胶囊时才出现，标题与汇总都标出「已归档」。 */
@@ -611,8 +804,10 @@
       if (status === 'in_progress') {
         // 三个点各自延迟，形成“跳动”的省略号；动画在 CSS 里，减少动效时不播放。
         for (let dot = 0; dot < 3; dot += 1) statusNode.append(document.createElement('i'));
-      } else if (status === 'completed') {
-        statusNode.textContent = '✓';
+      } else {
+        // 已完成是勾、待办是空心圆，两者都来自同一套 SVG：
+        // 以前勾是字体字符、圆圈是 CSS 边框，两者的粗细和大小没法统一。
+        statusNode.append(iconNode(status === 'completed' ? 'check' : 'ring'));
       }
 
       item.append(order, content, statusNode);
@@ -630,7 +825,10 @@
    * - 点一颗胶囊展开/收起那份清单：展开中的那颗显示红色边框，鼠标悬停的那颗显示浅红色边框
    *   （边框用内阴影画，不改变胶囊尺寸，见 media/chat.css）。
    */
-  const CAPSULE_BASE_HEIGHT = 16;
+  // 初始高度 10.67px = 原来 16px 的 2/3（胶囊只是一条颜色提示，不需要那么厚）。
+  // 宽高比固定 3:1，所以宽度跟着从 48px 变成 32px；下限 6px 保持不变，
+  // 它表示「再挤也要留住可点的方块」，不是常规尺寸。
+  const CAPSULE_BASE_HEIGHT = (16 * 2) / 3;
   const CAPSULE_MIN_HEIGHT = 6;
   const CAPSULE_RATIO = 3;
 
@@ -742,6 +940,8 @@
     if (message.usedSkills?.length) body.append(renderSkillUsage(message.usedSkills));
     if (message.reasoning) body.append(renderReasoning(message.reasoning, message.status === 'streaming'));
     appendMessageFlow(body, message);
+    // 只换助手的输出：用户自己打的 emoji 是他输入的内容，不该被我们改写。
+    if (message.role !== 'user') flattenEmojiIcons(body);
     if (message.status === 'streaming') { const cursor = document.createElement('span'); cursor.className = 'stream-cursor'; cursor.setAttribute('aria-label', t('chat.generating')); body.append(cursor); }
     if (message.usage?.totalTokens) body.append(textElement('div', 'message-usage', `${formatMillionTokens(message.usage.totalTokens)} tokens`));
     article.append(meta, body); return article;
@@ -850,7 +1050,9 @@
       details.dataset.defaultOpen = tool.status === 'pending' ? '1' : '0';
       if (tool.status === 'pending') details.open = true;
       const summary = document.createElement('summary');
-      summary.append(textElement('span', 'tool-status', statusSymbol(tool.status)), textElement('span', 'tool-summary', tool.summary || tool.name), textElement('small', '', toolMeta(tool)));
+      const statusBadge = textElement('span', 'tool-status', '');
+      statusBadge.append(iconNode(statusIconName(tool.status)));
+      summary.append(statusBadge, textElement('span', 'tool-summary', tool.summary || tool.name), textElement('small', '', toolMeta(tool)));
       const detail = document.createElement('div'); detail.className = 'tool-detail';
       if (tool.changedFiles?.length) detail.append(textElement('div', 'tool-files', t('chat.toolFiles', { files: tool.changedFiles.join(t('common.listSeparator')) })));
       if (tool.input) detail.append(detailBlock(t('chat.toolInput'), tool.input, tool.risk === 'command' ? commandText(tool.input) : undefined));
@@ -881,7 +1083,8 @@
     return value;
   }
 
-  function statusSymbol(status) { return status === 'success' ? '✓' : status === 'denied' ? '−' : status === 'error' ? '!' : '…'; }
+  /** 工具执行结果 → 图标名。pending 落在省略号上，表示「还没结束」。 */
+  function statusIconName(status) { return status === 'success' ? 'check' : status === 'denied' ? 'minus' : status === 'error' ? 'bang' : 'ellipsis'; }
   function toolMeta(tool) {
     const labels = { read: t('chat.risk.read'), write: t('chat.risk.write'), command: t('chat.risk.command') };
     const duration = tool.finishedAt && tool.startedAt ? ` · ${formatDuration(tool.finishedAt - tool.startedAt)}` : '';
@@ -1220,7 +1423,7 @@
       }
       const label = textElement('span', '', attachment.label); label.title = attachment.path || attachment.label;
       const size = textElement('small', '', attachment.kind === 'selection' ? t('chat.codeSelection') : formatBytes(attachment.bytes || 0));
-      const remove = textElement('button', '', '×'); remove.type = 'button'; remove.title = t('common.remove');
+      const remove = textElement('button', '', ''); remove.type = 'button'; remove.title = t('common.remove'); remove.append(iconNode('close'));
       if (attachment.kind === 'selection') remove.addEventListener('click', () => post('removeContext'));
       else { const index = fileIndex; remove.addEventListener('click', () => post('removeAttachment', { index })); fileIndex += 1; }
       chip.append(label, size, remove); elements.attachmentList.append(chip);
@@ -1279,6 +1482,22 @@
 
   // 三个面板（任务树 / 任务清单 / 归档快照）互斥展开。
   // 鼠标点击和键盘回车/空格触发的都是 click，所以这一处就覆盖了全部展开入口。
+  elements.editTitleButton.append(iconNode('pencil'));
+  elements.saveTitleButton.append(iconNode('check'));
+  elements.cancelTitleButton.append(iconNode('close'));
+  elements.editTitleButton.addEventListener('click', startTitleEdit);
+  elements.saveTitleButton.addEventListener('click', () => finishTitleEdit(true));
+  elements.cancelTitleButton.addEventListener('click', () => finishTitleEdit(false));
+  elements.conversationTitleInput.addEventListener('keydown', (event) => {
+    // Enter 确认、Esc 放弃。都不让事件冒泡：面板里还有别的 keydown 监听（输入框自动高度等）。
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      finishTitleEdit(true);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      finishTitleEdit(false);
+    }
+  });
   for (const key of ['taskTree', 'todoPanel', 'todoArchivePanel']) {
     const panel = elements[key];
     const summary = panel ? panel.querySelector('summary') : null;
@@ -1297,7 +1516,20 @@
   elements.archiveButton.addEventListener('click', () => { if (state.conversation) post('toggleArchive', { id: state.conversation.id, archived: !state.conversation.archived }); });
   elements.detachHistoryButton.addEventListener('click', () => post('detachConversationHistory'));
   elements.attachButton.addEventListener('click', () => post('attachFiles')); elements.removeContextButton.addEventListener('click', () => post('removeContext'));
-  elements.stopButton.addEventListener('click', () => post('stop')); elements.skillsButton.addEventListener('click', () => { elements.skillsPanel.hidden = !elements.skillsPanel.hidden; });
+  elements.stopButton.addEventListener('click', () => post('stop'));
+  // 按钮在 <summary> 里面：不阻止默认行为的话，点按钮会顺带把清单折叠起来。
+  // preventDefault 拦掉 <details> 的切换，stopPropagation 让内层点击不再冒泡到 summary。
+  const bindSummaryAction = (id, type) => {
+    const button = elements[id];
+    if (!button) return;
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      post(type);
+    });
+  };
+  bindSummaryAction('resumeTodosButton', 'resumeTodos');
+  bindSummaryAction('cancelTodosButton', 'cancelTodos'); elements.skillsButton.addEventListener('click', () => { elements.skillsPanel.hidden = !elements.skillsPanel.hidden; });
   elements.approvalAllowButton.addEventListener('click', () => {
     const requestId = elements.approvalCard.dataset.requestId;
     if (requestId) post('approvalResponse', { requestId, allow: true });
@@ -1552,11 +1784,15 @@
         state.permissionPresetPending = false;
         state.skills = incoming.skills || []; state.selectedSkillIds = incoming.selectedSkillIds || []; state.mode = incoming.mode || 'agent';
         state.workspaceTrusted = Boolean(incoming.workspaceTrusted); state.agentAvailable = Boolean(incoming.agentAvailable); state.availableToolCount = Number(incoming.availableToolCount) || 0; state.showArchived = Boolean(incoming.showArchived); state.taskTree = incoming.taskTree || (message.streamingConversationId ? state.taskTree : null); state.todos = Array.isArray(incoming.todos) ? incoming.todos : [];
+        state.project = incoming.project && typeof incoming.project === 'object'
+          ? { name: incoming.project.name || null, bound: Boolean(incoming.project.bound) }
+          : { name: null, bound: false };
         state.todoArchives = Array.isArray(incoming.todoArchives) ? incoming.todoArchives : [];
         state.todosInterrupted = Boolean(incoming.todosInterrupted);
+        state.todosIncomplete = Boolean(incoming.todosIncomplete);
         state.runningConversationIds = Array.isArray(incoming.runningConversationIds) ? incoming.runningConversationIds : [];
         state.pendingApprovals = Array.isArray(incoming.pendingApprovals) ? incoming.pendingApprovals : [];
-        elements.modelInput.value = state.model || 'deepseek-flash'; if (previousConversationId !== incoming.conversation?.id) { state.autoFollow = true; state.expandedArchiveId = null; state.archiveRestore = null; } setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
+        elements.modelInput.value = state.model || 'deepseek-flash'; if (previousConversationId !== incoming.conversation?.id) { state.autoFollow = true; state.expandedArchiveId = null; state.archiveRestore = null; if (state.titleEditing) finishTitleEdit(false); } setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
       }
       case 'draft': elements.promptInput.value = message.text || ''; state.pendingAttachments = message.attachments || []; renderAttachments(); autoResize(); elements.promptInput.focus(); break;
       case 'attachments': state.pendingAttachments = message.attachments || []; renderAttachments(); break;
@@ -1603,7 +1839,7 @@
       case 'agentMaxStepsChanged': state.agentMaxSteps = Math.max(0, Math.floor(Number(message.agentMaxSteps) || 0)); ensureStepOption(state.agentMaxSteps); elements.agentMaxStepsInput.value = String(state.agentMaxSteps); break;
       case 'reasoningEffortChanged': state.reasoningEffort = message.reasoningEffort || 'default'; elements.reasoningEffortInput.value = state.reasoningEffort; break;
       case 'taskTreeChanged': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.taskTree = message.taskTree || null; renderTaskTree(); updateComposerState(); break;
-      case 'todos': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.todos = Array.isArray(message.todos) ? message.todos : []; state.todosInterrupted = Boolean(message.interrupted); renderTodos(); break;
+      case 'todos': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.todos = Array.isArray(message.todos) ? message.todos : []; state.todosInterrupted = Boolean(message.interrupted); state.todosIncomplete = Boolean(message.incomplete); renderTodos(); break;
       case 'todoArchives': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.todoArchives = Array.isArray(message.todoArchives) ? message.todoArchives : []; renderArchivePanel(); renderTodoArchives(); break;
       case 'voiceInputAllowed': startVoiceRecognition(); break;
       case 'clipboardWriteResult': finishClipboardWrite(message.requestId, Boolean(message.ok), message.error); break;

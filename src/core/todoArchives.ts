@@ -111,26 +111,51 @@ export function normalizeTodoArchives(input: unknown): TodoArchive[] {
   return archives.slice(-MAX_TODO_ARCHIVES);
 }
 
+/**
+ * 一轮运行是怎么结束的。
+ *
+ * `completed` —— Agent 循环正常跑完（没抛错、没被停止）；
+ * `stopped`   —— 用户点了停止；
+ * `failed`    —— 请求报错、网络断开等异常收尾。
+ *
+ * 为什么要区分：这三种情况在旧代码里都算「清单没全绿」，于是统一标成「已中断」。
+ * 但「正常跑完、只是模型漏了给最后一项打勾」并不是中断，标成中断会让用户以为
+ * 任务被半路掐断了（0.2.2 实测复现）。
+ */
+export type TodoRunOutcome = 'completed' | 'stopped' | 'failed';
+
 /** 一轮运行结束时，清单的处置方式。 */
 export type TodoSettlement =
   | { action: 'none' }
   | { action: 'archive'; archives: TodoArchive[] }
-  | { action: 'interrupt'; todos: TodoItem[] };
+  | { action: 'interrupt'; todos: TodoItem[] }
+  | { action: 'incomplete'; todos: TodoItem[] };
 
 /**
  * 决定一份清单在运行结束时是归档还是留成待办。
  *
- * 成功、失败、被停止都走这一处判断：全部完成 → 归档成胶囊；否则 → 清单留在面板上，
- * 把 `in_progress` 降级成 `pending` 交给用户决定（接着做完 / 换新任务覆盖）。
- * 抽成纯函数是为了让「失败也不清空清单」这条规则能被单测直接钉住。
+ * 全部完成 → 归档成胶囊；否则清单留在面板上，把 `in_progress` 降级成 `pending`
+ * 交给用户决定（接着做完 / 换新任务覆盖）。剩下两种情况按运行结局区分：
+ * - 正常跑完却还有没打勾的项 → `incomplete`，界面标「未完成」，不谎称被中断；
+ * - 被停止 / 报错 → `interrupt`，界面标「已中断」。
+ *
+ * 这里刻意不把遗留的 `in_progress` 自动改成 `completed`：清单是模型对「做完了没」的
+ * 陈述，引擎替它打勾等于伪造进度。真要收尾只能由模型自己再调一次 `update_todos`
+ * （system prompt 里有对应硬规则）。
+ *
+ * 抽成纯函数是为了让这几条规则能被单测直接钉住。
  */
 export function planTodoSettlement(
   todos: readonly TodoItem[] | undefined,
   archives: readonly TodoArchive[] | undefined,
   createdAt = Date.now(),
+  outcome: TodoRunOutcome = 'completed',
 ): TodoSettlement {
   if (!todos?.length) return { action: 'none' };
   const archive = createTodoArchive(todos, createdAt);
   if (archive) return { action: 'archive', archives: appendTodoArchive(archives, archive) };
-  return { action: 'interrupt', todos: settleInterruptedTodos(todos).todos };
+  const settled = settleInterruptedTodos(todos).todos;
+  return outcome === 'completed'
+    ? { action: 'incomplete', todos: settled }
+    : { action: 'interrupt', todos: settled };
 }

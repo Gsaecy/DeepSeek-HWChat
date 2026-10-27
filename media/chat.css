@@ -25,9 +25,19 @@
   --user-bg: color-mix(in srgb, var(--user-accent) 8%, var(--bg));
   --user-border: color-mix(in srgb, var(--user-accent) 32%, var(--border));
   --danger: var(--vscode-errorForeground, #cf222e);
+  /* 项目徽标（标题右侧）的橘黄色：优先用主题的图表橙，其次给一个在深浅背景下都能读的橙。
+     不用 --warning（它默认偏暗黄），因为这里要的是「项目名」这种正向信息的强调色。 */
+  --project: var(--vscode-charts-orange, #d18616);
   --link: var(--vscode-textLink-foreground, #0969da);
   --notification-bg: var(--vscode-notifications-background, var(--surface));
   --notification-fg: var(--vscode-notifications-foreground, var(--fg));
+  /* 折叠箭头：以前用 ▸ / ▾ 两个字符，字体一变形状就变；现在统一是一个 chevron 遮罩，
+     展开时用 transform 旋转 90°，形状永远和 media/ui-icons.js 里的 chevronRight 一致。
+     遮罩只取 alpha，所以描边写死黑色；# 必须转义成 %23。 */
+  --chevron-right: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6.3 3.8 10.6 8l-4.3 4.2'/%3E%3C/svg%3E");
+  /* 下拉框的箭头：和 ui-icons.js 的 chevronDown 同一条路径（测试会比对 d=）。
+     遮罩只取 alpha，所以描边写死黑色，实际颜色由 background-color 给。 */
+  --chevron-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.8 6.3 8 10.6l4.2-4.3'/%3E%3C/svg%3E");
   --shadow: 0 16px 42px rgba(0, 0, 0, .16);
 }
 
@@ -84,6 +94,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .brand-row .mobile-only { margin-left: auto; }
 
 .icon { width: 17px; height: 17px; flex: 0 0 auto; }
+
+/* ── 界面图标（内容由 media/ui-icons.js 生成）──────────────────────
+   所有图标都是同一套 16 格 SVG，尺寸统一在这里定：
+   容器负责居中，SVG 自己按容器缩放，不依赖字号和行高。 */
+.ui-icon { display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
+.ui-icon svg { display: block; width: 11px; height: 11px; }
+.row-action .ui-icon svg { width: 13px; height: 13px; }
+.tool-status .ui-icon svg { width: 10px; height: 10px; }
+.task-node-status .ui-icon svg { width: 10px; height: 10px; }
+.todo-status .ui-icon svg { width: 10px; height: 10px; }
+.attachment-chip button .ui-icon svg { width: 10px; height: 10px; }
+/* 正文里的图标（替换 emoji 的那一批）：跟着正文字号缩放，不用固定的 11px——
+   14px 的正文旁边挂一个 11px 的图形会显得小一圈。
+   vertical-align 取负值：SVG 盒子按基线对齐，不下沉一点会像浮在字上方。 */
+.message-content .ui-icon-inline { width: 1em; height: 1em; margin: 0 .12em; vertical-align: -.14em; }
+.message-content .ui-icon-inline svg { width: 100%; height: 100%; }
 .icon-button, .row-action {
   display: grid;
   place-items: center;
@@ -168,21 +194,105 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 }
 .toolbar-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 34px; }
 .toolbar-title-row .conversation-heading { flex: 1 1 auto; }
-.toolbar-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
-.control-group { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.mode-group { flex: 0 0 auto; }
-.connection-group { flex: 1 1 240px; }
-.utility-group { flex: 0 0 auto; margin-left: auto; }
-.toolbar-controls .control-group > * { min-width: 0; }
+/* 控件行：所有控件都是 .toolbar-controls 的直接 flex 子项，靠 space-between 两端对齐。
+   相邻控件之间的距离因此恒等——剩余宽度被平均分到每两个相邻控件之间。
+   为什么必须先扁平：之前控件被 .control-group 分了三组，space-between 只会在「组与组之间」
+   分配剩余宽度，组内仍是固定的 --control-gap，于是又变成「组内 6px、组间一大段」的不等间距，
+   正是用户反馈的「间距不等」。chat.js 从不引用这些分组类，所以直接把包装去掉，
+   DOM 就是这个真实的一行，css 里也不再有 mode-group / connection-group / utility-group。
+   gap 仍然保留作最小间距：控件几乎填满整行时靠它兜底，不会贴在一起。 */
+.chat-toolbar { --control-gap: 6px; }
+.toolbar-controls {
+  display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: space-between;
+  gap: var(--control-gap); min-width: 0;
+}
 .conversation-heading { display: grid; min-width: 0; line-height: 1.2; }
 .conversation-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .conversation-heading span { margin-top: 3px; color: var(--muted); font-size: 10px; }
 .conversation-heading span.live { color: var(--accent); }
 .conversation-heading span.restricted { color: var(--warning); }
-.model-field select, .profile-field select, .mode-field select { width: 100%; height: 30px; border: 1px solid var(--border); border-radius: 6px; padding: 0 7px; color: var(--dropdown-fg); background: var(--dropdown-bg); font-family: var(--mono); font-size: 10px; }
-.mode-field { flex: 0 0 auto; width: 92px; }
-.profile-field { flex: 1 1 96px; }
-.model-field { flex: 1 1 132px; }
+/* 标题行：标题吃掉剩余宽度（超长省略），项目徽标和标题按钮固定宽度，不被长标题挤没。 */
+.conversation-title-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.conversation-title-line > strong { flex: 1 1 auto; min-width: 0; }
+/* 编辑态输入框：只有下划线，没有边框和底板，视觉上就在原位改字。 */
+.conversation-title-input {
+  flex: 1 1 auto; min-width: 0; height: 20px; padding: 0 1px 1px;
+  border: 0; border-bottom: 1px solid var(--focus); border-radius: 0;
+  background: transparent; color: var(--fg);
+  font-family: var(--font); font-size: 13px; font-weight: 700; line-height: 1.2;
+  outline: none;
+}
+.conversation-title-input:focus-visible { outline: none; }
+/* 状态行：就绪/运行状态 + 项目标签。
+   整行左对齐（justify-content: flex-start）：状态文字在最左，项目名紧跟在它右边，
+   中间固定隔 8px。以前项目名用了 margin-left: auto，会被推到最右端，
+   和状态文字之间隔着一大片空白，看不出两者是同一行的信息。
+   多个项目标签时同样从状态文字右边依次往左往右排（flex 行从左到右），不会右对齐或换列。 */
+.conversation-status-line {
+  display: flex; align-items: center; justify-content: flex-start;
+  gap: 8px; min-width: 0; margin-top: 3px;
+}
+/* 状态文字可以被压缩并省略。
+   #connectionState 是 id，特异性已经高于 `.conversation-heading span`，不用再加前缀。 */
+.conversation-status-line > #connectionState {
+  flex: 0 1 auto; min-width: 0; margin-top: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 项目标签：**纯文字**，没有色块、没有边框、没有内边距——
+   已绑定显示橘黄色文件夹名，未绑定显示红色「项目待建立」。
+   用 `.conversation-heading .project-badge` 而不是单个类名：上面 `.conversation-heading span`
+   把 color 定成了 --muted，特异性更高，只写类名会被它盖掉（标签会变成灰色）。
+   max-width 限制在 55%，保证长项目名最多占半行，状态文字至少还剩 45% 可读。 */
+.conversation-heading .project-badge {
+  flex: 0 0 auto; max-width: 55%; margin: 0;
+  padding: 0; border: 0; border-radius: 0; background: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--project); font-size: 10px; font-weight: 600; line-height: 1.6;
+}
+.conversation-heading .project-badge.missing { color: var(--danger); }
+/* 标题右侧的小图标按钮（编辑 / 对勾 / 叉）：无边框，悬停才给底色。 */
+.title-action {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0;
+  border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer;
+}
+.title-action:hover { color: var(--fg); background: var(--surface-hover); }
+.title-action:focus-visible { outline: 1px solid var(--focus); outline-offset: 1px; }
+.title-action:disabled { opacity: .45; cursor: default; background: transparent; }
+.title-action.save-title { color: var(--success); }
+.title-action.save-title:hover { color: var(--success); }
+.title-action.cancel-title:hover { color: var(--danger); }
+/* 三个下拉框只留「文字 + 下拉箭头」，去掉边框和底板：
+   标题区要留空间，这些控件不需要再各套一层框。
+   箭头到文字的间距由固定的 padding-right 决定，控件变宽变窄都不会变。 */
+.mode-field, .profile-field, .model-field { position: relative; display: inline-flex; align-items: center; min-width: 0; border-radius: 5px; }
+.mode-field::after, .profile-field::after, .model-field::after {
+  content: ''; position: absolute; right: 5px; width: 9px; height: 9px;
+  background-color: var(--dropdown-fg); opacity: .7; pointer-events: none;
+  -webkit-mask: var(--chevron-down) no-repeat center / 9px 9px;
+  mask: var(--chevron-down) no-repeat center / 9px 9px;
+}
+.model-field select, .profile-field select, .mode-field select {
+  width: 100%; height: 26px; padding: 0 19px 0 6px;
+  border: 0; border-radius: 5px;
+  color: var(--dropdown-fg); background: transparent;
+  font-family: var(--mono); font-size: 10px;
+  appearance: none; -webkit-appearance: none;
+  text-overflow: ellipsis;
+}
+/* 没有边框时，悬停底色是唯一的「这里可以点」提示。 */
+.mode-field:hover, .profile-field:hover, .model-field:hover { background: var(--surface-hover); }
+/* 宽度按「内容 + 固定内边距」算，三个控件都定宽、都不参与伸缩：
+   - 模式最长是 "Agent"（5 字符，10px 等宽约 30px）+ 内边距 25px ≈ 55px → 给 60px；
+   - 供应商 "DeepSeek"（8 字符 ≈ 48px）+ 25px ≈ 73px → 给 82px，留出更长名字的余量；
+   - 模型 "DeepSeek-V4.1-Flash"（19 字符 ≈ 114px）+ 25px ≈ 139px → 给 150px。
+   这里必须用 flex-grow: 0：一旦允许增长，控件的宽度就不再由内容决定，
+   宽面板上会出现远宽于文字的空盒子，箭头离文字很远。
+   允许收缩（flex-shrink: 1）是为了极窄面板下先压窄控件，而不是硬溢出。 */
+.mode-field { flex: 0 1 auto; width: 60px; min-width: 54px; }
+.profile-field { flex: 0 1 auto; width: 82px; min-width: 64px; }
+.model-field { flex: 0 1 auto; width: 150px; min-width: 96px; }
 .toolbar-controls .icon-button { width: 30px; height: 30px; }
 /* 兼容旧版 HTML 结构（toolbar-main / toolbar-connection）：升级瞬间若 webview 仍持有旧结构，
    也不会把控件挤成竖排；新版结构不使用这两个类，因此无副作用。 */
@@ -194,6 +304,10 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .control-button:hover, .control-button.active { color: var(--surface-hover-fg); background: var(--surface-hover); }
 .control-button span { min-width: 10px; font: 10px var(--mono); }
 .control-button:disabled { opacity: .4; cursor: default; }
+/* skills 按钮：以前是「星形图标 + 数量」塞在一个方形按键里，比旁边的纯图标按钮宽一截。
+   现在只留图标（数量挪到悬停提示 / aria-label），宽度与 #refreshModelsButton 一致。 */
+#skillsButton { width: 30px; min-width: 0; padding: 0; }
+#skillsButton span { display: none; }
 #refreshModelsButton.loading .icon { animation: spin .8s linear infinite; }
 
 .skills-panel { position: absolute; top: calc(100% + 4px); right: 10px; z-index: 9; width: min(410px, calc(100vw - 40px)); max-height: min(560px, calc(100vh - 150px)); overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); box-shadow: var(--shadow); }
@@ -329,12 +443,12 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* 思考过程默认折叠。折叠标题上直接给出「进行中 / 多少字」，不用点开就能判断值不值得看；
-   ▸/▾ 是自绘的，因为 summary 用 flex 之后浏览器自带的三角标记会消失。 */
+   summary 用 flex 之后浏览器自带的三角标记会消失，所以箭头自绘（遮罩 + 旋转，见 :root 的 --chevron-right）。 */
 .reasoning { margin: 0 0 14px; border-left: 2px solid var(--border); padding-left: 10px; color: var(--muted); }
 .reasoning summary { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--muted); font-size: 11px; user-select: none; list-style: none; }
 .reasoning summary::-webkit-details-marker { display: none; }
-.reasoning summary::before { content: "▸"; flex: 0 0 auto; color: color-mix(in srgb, var(--fg) 58%, transparent); }
-.reasoning[open] > summary::before { content: "▾"; }
+.reasoning summary::before { content: ""; flex: 0 0 auto; width: 9px; height: 9px; background-color: color-mix(in srgb, var(--fg) 58%, transparent); -webkit-mask: var(--chevron-right) center / contain no-repeat; mask: var(--chevron-right) center / contain no-repeat; transition: transform .12s ease; }
+.reasoning[open] > summary::before { transform: rotate(90deg); }
 .reasoning summary:hover { color: var(--fg); }
 .reasoning-title { font-weight: 600; color: color-mix(in srgb, var(--fg) 84%, transparent); }
 .reasoning-hint { color: var(--muted); font-size: 10px; }
@@ -393,15 +507,33 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 :root[data-theme="dark"] .todo-panel,
 body.vscode-dark .todo-panel,
 body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
-/* summary 用 flex 之后浏览器不再绘制 ::marker，箭头必须自绘（与 .reasoning 同法）。 */
+/* summary 用 flex 之后浏览器不再绘制 ::marker，箭头必须自绘（与 .reasoning 同法）。
+   顶栏分成固定宽度的几段：标题 / 状态 /（清单才有的）动作。
+   状态段以前是 `flex: 0 1 118px`——能被压缩，于是清单一断，状态文字一变长就把标题往左顶、
+   字数一变又把布局晃回去，看着很乱。现在改成不收缩的定宽，标题永远贴左起第一格。
+   动作段贴最右：两个按钮本身宽度固定、且一起显隐，贴右不会产生跳动，
+   而把「最右侧」这个位置要求交给 margin-left: auto 表达最直接。
+   窄到放不下时允许换行，宁可多一行也不要互相覆盖。 */
 .todo-panel > summary,
-.task-tree > summary { display: flex; align-items: center; justify-content: space-between; min-height: 28px; gap: 10px; padding: 5px 9px; cursor: pointer; color: var(--muted); font-size: 10px; list-style: none; user-select: none; }
+.task-tree > summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; min-height: 28px; gap: 4px 8px; padding: 5px 9px; cursor: pointer; color: var(--muted); font-size: 10px; list-style: none; user-select: none; }
+.panel-summary-title { flex: 0 0 auto; white-space: nowrap; text-align: left; }
+/* 状态区定宽 132px：按 9px 字号量过中英文最长的一条——
+   中文「0/6 已完成 · 已中断，可继续」约 114px，英文「Archived · 12:34 · 6/6 done」约 115px，
+   留一点余量防止字体渲染差异把它挤成省略号。`flex: 0 0` 表示既不涨也不缩，
+   所以状态文字长短变化不会再改变任何邻居的位置。 */
+.panel-summary-state { flex: 0 0 132px; width: 132px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.panel-summary-actions { display: flex; flex: 0 0 auto; align-items: center; justify-content: flex-start; gap: 4px; margin-left: auto; }
+.panel-summary-actions[hidden] { display: none; }
+.panel-action { flex: 0 0 auto; padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); font-size: 9px; line-height: 1.5; white-space: nowrap; cursor: pointer; }
+.panel-action:hover { background: var(--surface); }
+.panel-action.danger { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
+.panel-action.danger:hover { background: color-mix(in srgb, var(--warning) 12%, transparent); }
 .todo-panel > summary::-webkit-details-marker,
 .task-tree > summary::-webkit-details-marker { display: none; }
 .todo-panel > summary::before,
-.task-tree > summary::before { content: "▸"; flex: 0 0 auto; margin-right: -4px; font-size: 9px; color: color-mix(in srgb, var(--fg) 58%, transparent); }
+.task-tree > summary::before { content: ""; flex: 0 0 auto; width: 9px; height: 9px; background-color: color-mix(in srgb, var(--fg) 58%, transparent); -webkit-mask: var(--chevron-right) center / contain no-repeat; mask: var(--chevron-right) center / contain no-repeat; transition: transform .12s ease; }
 .todo-panel[open] > summary::before,
-.task-tree[open] > summary::before { content: "▾"; }
+.task-tree[open] > summary::before { transform: rotate(90deg); }
 .todo-panel > summary small,
 .task-tree > summary small { font-size: 9px; white-space: nowrap; }
 .todo-list { display: grid; gap: 1px; margin: 0; padding: 4px; list-style: none; border-top: 1px solid var(--border); }
@@ -409,21 +541,26 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 .todo-index { text-align: center; font: 10px var(--mono); color: var(--muted); }
 .todo-content { overflow-wrap: anywhere; }
 .todo-status { display: inline-flex; align-items: center; justify-content: center; justify-self: end; flex: 0 0 auto; }
-/* 等待执行：绿色空心圆圈 */
-.todo-status.status-pending { width: 12px; height: 12px; border: 1.6px solid var(--todo-green); border-radius: 50%; }
+/* 等待执行：绿色空心圆圈（SVG 圆环，和「已完成」的勾同一套网格，粗细与大小才能对齐） */
+.todo-status.status-pending { width: 12px; height: 12px; color: var(--todo-green); }
 /* 执行中：绿色跳动的省略号 */
 .todo-status.status-in_progress { gap: 2px; width: 16px; height: 12px; }
 .todo-status.status-in_progress i { width: 3px; height: 3px; border-radius: 50%; background: var(--todo-green); animation: todo-dot 1.05s ease-in-out infinite; }
 .todo-status.status-in_progress i:nth-child(2) { animation-delay: .15s; }
 .todo-status.status-in_progress i:nth-child(3) { animation-delay: .3s; }
 @keyframes todo-dot { 0%, 80%, 100% { opacity: .28; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
-/* 已完成：实心绿色圆圈 + 白色对勾 */
-.todo-status.status-completed { width: 13px; height: 13px; border-radius: 50%; background: var(--todo-green); color: #fff; font-size: 9px; line-height: 1; font-weight: 700; }
+/* 已完成：实心绿色圆圈 + 白色对勾（对勾是 SVG，笔画在 ui-icons.js 里单独加粗到 2.6） */
+.todo-status.status-completed { width: 13px; height: 13px; border-radius: 50%; background: var(--todo-green); color: #fff; }
 .todo-item.status-in_progress { background: var(--surface); }
 .todo-item.status-in_progress .todo-content { color: var(--fg); font-weight: 500; }
 .todo-item.status-completed .todo-content { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   .todo-status.status-in_progress i { animation: none; opacity: .85; }
+  /* 折叠箭头的旋转也去掉：直接跳到终点状态，不做过渡。 */
+  .reasoning summary::before,
+  .todo-panel > summary::before,
+  .task-tree > summary::before,
+  .approval-detail > summary::before { transition: none; }
 }
 
 /* ── 归档胶囊栏 ───────────────────────────────────────────────────
@@ -441,14 +578,16 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
   justify-content: flex-start;
   gap: var(--capsule-gap, 4px);
   width: 100%;
-  min-height: calc(var(--capsule-h, 16px) + 2px);
+  min-height: calc(var(--capsule-h, 10.67px) + 2px);
   margin: 0 2px 7px;
   padding: 0;
   overflow: hidden;
-  --capsule-h: 16px;
-  --capsule-w: 48px;
+  /* 初始 10.67px 高 = 原来 16px 的 2/3；宽按 3:1 得 32px；圆角取约 30% 高 = 3px。
+     这三个是脚本未运行时的兜底值，正常尺寸由 layoutTodoArchives 算好覆盖。 */
+  --capsule-h: 10.67px;
+  --capsule-w: 32px;
   --capsule-gap: 4px;
-  --capsule-radius: 5px;
+  --capsule-radius: 3px;
   /* 展开中 = 红色边框（实红）；悬停 = 浅红边框（红色与白色混合，深色主题下也看得清）。 */
   --capsule-border-active: var(--danger);
   --capsule-border-hover: color-mix(in srgb, var(--danger) 55%, #fff);
@@ -489,27 +628,54 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 .todo-panel.interrupted { border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
 .todo-panel.interrupted > summary small { color: var(--warning); }
 
+/* 正常跑完但清单没结清（模型漏了给最后一项打勾）：用中性色，别用「已中断」的警告黄，
+   否则用户会把「跑完了忘记打勾」误读成「任务被半路掐断」。 */
+.todo-panel.incomplete > summary small { color: var(--muted); }
+
 /* ── 面板区（任务树 / 任务清单 / 归档快照）─────────────────────────
    三个面板共用这一条可滚动区域。为什么需要它：
    1. 不允许把输入框挤出窗口 —— 三个面板同时展开时内容会高过侧边栏，
       以前它们是 footer 的直接子元素，footer 撑高就把输入框顶到窗口外；
       现在内容再多也只在这一块里滚，footer 高度有上限。
-   2. 上限同时受视口和固定值约束：侧边栏被拉得很矮时 min() 会取 38vh，
+   2. 上限同时受视口和固定值约束：侧边栏被拉得很矮时 min() 会取 44vh，
       不会出现「输入框还在、面板占满整屏」的情况。 */
 .panel-stack {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-height: min(38vh, 300px);
+  max-height: min(44vh, 360px);
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--fg) 30%, transparent) transparent;
 }
+/* 关键：面板不许被压扁。
+   三个面板是 flex 子项，默认 flex-shrink: 1；而 .todo-panel / .task-tree 都是
+   overflow: hidden —— 按规范它们的自动最小尺寸会归零，于是总高超过 max-height 时
+   浏览器把面板「压缩」到刚好塞进容器，多出来的条目被各面板自己裁掉。
+   容器因此从不溢出，overflow-y: auto 不生成滚动条，滚轮也就无事可滚。
+   把这三项固定为内容高度，容器才会真正溢出、滚动才生效。 */
+.panel-stack > * { flex: 0 0 auto; }
+/* 滚动条常显：macOS 的覆盖式滚动条不滚动就完全不可见，用户会以为「不能滚」。
+   显式设置 ::-webkit-scrollbar 会让它变成常驻样式，兼作「下面还有内容」的提示。 */
+.panel-stack::-webkit-scrollbar { width: 10px; }
+.panel-stack::-webkit-scrollbar-track { background: transparent; }
+.panel-stack::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 30%, transparent);
+  background-clip: padding-box;
+}
+.panel-stack::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--fg) 48%, transparent); background-clip: padding-box; }
+/* 聚焦某份归档时，任务树和任务清单都被锁着并收起（只占 28px 标题栏），
+   面板区里只剩一份清单，所以可以多给一些高度，减少不必要的滚动。 */
+.panel-stack:has(> .panel-locked) { max-height: min(58vh, 470px); }
 /* 胶囊聚焦期间任务树和任务清单被锁住：summary 变暗、光标显示不可点。
    点它会有一次提示（见 media/chat.js 的 togglePanel），不会静默无反应。 */
 .panel-locked > summary { opacity: .5; cursor: not-allowed; }
-.panel-locked > summary::before { content: "▸"; }
+/* 锁住的 panel 一定是收起的，箭头固定朝右（不跟随 [open] 旋转）。 */
+.panel-locked > summary::before { transform: none; }
 
 /* ── 面板内工具授权 ───────────────────────────────────────────────
    替代原来的模态框：模态框会锁住整个 VS Code 窗口（侧边栏都拖不动）。 */
@@ -529,8 +695,8 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 .approval-summary { margin: 0; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
 .approval-detail > summary { cursor: pointer; color: var(--muted); font-size: 10px; list-style: none; }
 .approval-detail > summary::-webkit-details-marker { display: none; }
-.approval-detail > summary::before { content: "▸ "; font-size: 9px; }
-.approval-detail[open] > summary::before { content: "▾ "; }
+.approval-detail > summary::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 3px; vertical-align: middle; background-color: currentColor; -webkit-mask: var(--chevron-right) center / contain no-repeat; mask: var(--chevron-right) center / contain no-repeat; transition: transform .12s ease; }
+.approval-detail[open] > summary::before { transform: rotate(90deg); }
 .approval-detail pre { margin: 4px 0 0; max-height: 160px; overflow: auto; padding: 6px 7px; border-radius: 5px; background: var(--surface); color: var(--muted); font: 10px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .approval-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .approval-actions button { min-height: 24px; padding: 0 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); font-size: 11px; cursor: pointer; }
@@ -680,15 +846,18 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
   .app-shell.history-open::after { content: ""; position: fixed; inset: 0; z-index: 7; background: rgba(0, 0, 0, .24); }
   .mobile-only { display: grid; }
   .chat-toolbar { width: 100%; max-width: 100vw; padding: 4px 8px 5px; gap: 5px; }
-  .toolbar-controls { gap: 5px 6px; }
-  .control-group { gap: 4px; }
-  .connection-group { flex: 1 1 186px; }
+  /* 窄屏沿用同一个间距变量：以前这里单独改成 gap:5px 6px / 组内 4px，
+     结果组内间距和组间间距不是一个值；现在只调宽度，不调间距。
+     分组包装已删除，这里不再需要为 .connection-group 单独写规则。 */
   .toolbar-controls #exportButton, .toolbar-controls #archiveButton { display: none; }
   .toolbar-controls #settingsButton { display: grid; width: 28px; height: 28px; }
   .toolbar-main { grid-template-columns: 28px minmax(0, 1fr) minmax(58px, 76px) 36px 28px; gap: 4px; }
   .toolbar-main #exportButton, .toolbar-main #archiveButton { display: none; }
   .toolbar-connection { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 30px; gap: 4px; }
-  .mode-field, .mode-field select { min-width: 0; width: 100%; max-width: 76px; }
+  .mode-field { width: 58px; }
+  .profile-field { width: 78px; }
+  .model-field { width: 144px; }
+  .mode-field select, .profile-field select, .model-field select { min-width: 0; }
   .control-button { min-width: 0; width: 36px; padding: 0 3px; }
   .skills-panel { top: calc(100% + 4px); right: 8px; width: min(410px, calc(100vw - 24px)); max-height: min(520px, calc(100vh - 140px)); }
   .message-viewport { width: 100%; max-width: 100vw; overflow-x: hidden; }
@@ -721,7 +890,9 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 }
 
 @media (max-width: 420px) {
-  .connection-group { flex: 1 1 152px; }
+  .mode-field { width: 56px; }
+  .profile-field { width: 70px; }
+  .model-field { width: 130px; }
   .control-button { width: 32px; }
   .toolbar-controls .icon-button { width: 28px; }
   .conversation-heading strong { font-size: 12px; }
@@ -733,7 +904,6 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 }
 
 @media (min-width: 721px) and (max-width: 980px) {
-  .connection-group { flex: 1 1 200px; }
   .toolbar-controls #exportButton, .toolbar-controls #archiveButton { display: none; }
   .toolbar-controls #settingsButton { display: grid; }
 }

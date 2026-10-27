@@ -230,10 +230,44 @@ test('chat.css 的 .panel-stack 给面板区封顶，输入框不会被挤出窗
   assert.ok(block, '必须有 .panel-stack 规则');
   const body = block![1] ?? '';
   // 上限同时受视口（vh）和固定值约束，侧边栏很矮时也不会占满整屏。
-  assert.match(body, /max-height:\s*min\(38vh,\s*300px\)/);
+  assert.match(body, /max-height:\s*min\(44vh,\s*360px\)/);
   assert.match(body, /overflow-y:\s*auto/);
   // 锁住的面板要有可见反馈。
   assert.match(css, /\.panel-locked > summary\s*\{[^}]*cursor: not-allowed/);
+});
+
+test('面板不被 flex 压扁（否则滚动容器永不溢出，滚轮无效）', () => {
+  const css = readFileSync('media/chat.css', 'utf8');
+  // 根因：面板是 flex 子项且 overflow: hidden，自动最小尺寸会归零，
+  // 总高超出时被压缩到刚好塞进容器，多出的条目被面板自己裁掉 ——
+  // 容器从不溢出，overflow-y: auto 不生成滚动条，滚轮也就没有滚动对象。
+  assert.match(
+    css,
+    /\.panel-stack > \*\s*\{[^}]*flex:\s*0 0 auto/,
+    '面板必须固定为内容高度，否则会被压扁导致滚轮失效',
+  );
+  // 清单自身不许再套一层高度限制或滚动，避免形成嵌套滚动。
+  const todoList = css.match(/\.todo-list\s*\{([^}]*)\}/);
+  assert.ok(todoList, '必须有 .todo-list 规则');
+  assert.doesNotMatch(todoList![1] ?? '', /max-height|overflow-y:\s*(auto|scroll)/);
+  // 滚动条要常显：macOS 覆盖式滚动条不滚动就不可见，用户会以为「不能滚」。
+  assert.match(css, /\.panel-stack::-webkit-scrollbar\s*\{/);
+  assert.match(css, /\.panel-stack::-webkit-scrollbar-thumb\s*\{/);
+});
+
+test('聚焦归档时面板区拿到更高上限（另两个只剩标题栏，有空间可用）', () => {
+  const css = readFileSync('media/chat.css', 'utf8');
+  const focused = css.match(/\.panel-stack:has\(> \.panel-locked\)\s*\{([^}]*)\}/);
+  assert.ok(focused, '聚焦态必须有独立的高度上限');
+  const body = focused![1] ?? '';
+  assert.match(body, /max-height:\s*min\(58vh,\s*470px\)/);
+  // 必须高于常规态，否则这条规则没有意义。
+  const normal = css.match(/\.panel-stack\s*\{[^}]*max-height:\s*min\((\d+)vh,\s*(\d+)px\)/);
+  assert.ok(normal, '常规态必须有高度上限');
+  const focusedMin = body.match(/max-height:\s*min\((\d+)vh,\s*(\d+)px\)/);
+  assert.ok(focusedMin, '聚焦态必须用 min(视口, 固定值) 双约束');
+  assert.ok(Number(focusedMin![1]) > Number(normal![1]), '聚焦态 vh 上限应更大');
+  assert.ok(Number(focusedMin![2]) > Number(normal![2]), '聚焦态像素上限应更大');
 });
 
 test('面板区容器把三个面板包在一起（否则高度上限不生效）', () => {

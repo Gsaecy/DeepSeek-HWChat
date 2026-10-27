@@ -123,6 +123,14 @@ export interface ChatMessage {
 export interface ConversationSummary {
   id: string;
   title: string;
+  /**
+   * 标题是用户手动改过的。
+   *
+   * 首条用户消息会自动给对话命名（`appendMessage` 里判断标题是否仍是「新对话」），
+   * 只靠字符串比较挡不住「用户自己就改成了『新对话』」这种巧合，所以改名时留下这个标记：
+   * 标记为真之后自动命名永久让位，用户的选择不会被后续消息覆盖。
+   */
+  titleCustomized?: boolean;
   createdAt: number;
   updatedAt: number;
   messageCount: number;
@@ -169,6 +177,13 @@ export interface ConversationSummary {
    * 用户接着做，模型重新标 `in_progress` 就能照常完成并归档；用户换新任务，新清单直接覆盖它。
    */
   todosInterrupted?: boolean;
+  /**
+   * 本轮正常跑完，但清单还有没打勾的项（模型漏了收尾）。
+   *
+   * 与 `todosInterrupted` 互斥：那个表示「被掐断」，这个表示「跑完了但没结清」。
+   * 分开存是为了界面不把「跑完忘了打勾」说成「已中断」——后者会让用户以为工作被腰斩。
+   */
+  todosIncomplete?: boolean;
 }
 
 export interface ConversationHistoryHit {
@@ -331,6 +346,12 @@ export interface PendingApprovalView {
   risk: 'read' | 'write' | 'command';
 }
 
+/** 标题旁的项目徽标：`name` 只在已绑定时有值。 */
+export interface ProjectBadgeView {
+  name: string | null;
+  bound: boolean;
+}
+
 export interface WebviewConversationState {
   conversation: ConversationSummary | null;
   messages: ChatMessage[];
@@ -346,6 +367,13 @@ export interface WebviewConversationState {
   mode: ConversationMode;
   workspaceTrusted: boolean;
   agentAvailable: boolean;
+  /**
+   * 对话标题旁的项目徽标。
+   *
+   * `bound` 为假表示这条对话还没落到任何工作区文件夹上（`projectRootFor` 返回 undefined）——
+   * 这个状态下 git 写操作会被拒绝，所以必须让用户看得见，而不是显示一个猜的目录名。
+   */
+  project: ProjectBadgeView;
   availableToolCount: number;
   taskTree?: AgentTaskTreeState;
   showArchived: boolean;
@@ -354,6 +382,8 @@ export interface WebviewConversationState {
   todoArchives?: TodoArchiveView[];
   /** 当前清单是否被中断过；界面据此在折叠框标题上标「已中断」。 */
   todosInterrupted?: boolean;
+  /** 当前清单是否「正常跑完但没结清」；界面据此标「未完成」，与「已中断」区分开。 */
+  todosIncomplete?: boolean;
   /**
    * 正在后台执行的对话 id 列表。
    *

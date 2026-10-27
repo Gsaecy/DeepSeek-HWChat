@@ -101,6 +101,46 @@ export function isPathWithin(root: string, candidate: string): boolean {
 }
 
 /**
+ * 判断这次对话落在哪个工作区根目录上。
+ *
+ * 依次尝试：存档里的绑定 → 当前编辑器所在的项目 → 单根工作区唯一的根。
+ * 都确定不了就返回 undefined —— 这个结果**是要给用户看的**（标题旁显示「项目待建立」），
+ * 因为此时 git 写操作会被拒绝，界面不能假装一切正常。
+ *
+ * 抽成纯函数是为了能单测：`projectRootFor` 依赖 `vscode.window.activeTextEditor`，
+ * 在单测里没法构造。这里的入参就是它需要的全部信息。
+ */
+export function chooseProjectRoot(input: {
+  roots: readonly string[];
+  stored?: string;
+  activeFile?: string;
+}): string | undefined {
+  const roots = input.roots.filter((root) => Boolean(root));
+  if (!roots.length) {
+    return undefined;
+  }
+  const stored = input.stored;
+  if (stored && roots.some((root) => resolve(root) === resolve(stored))) {
+    return stored;
+  }
+  const activeFile = input.activeFile;
+  const activeRoot = activeFile ? roots.find((root) => isPathWithin(root, activeFile)) : undefined;
+  if (activeRoot) {
+    return activeRoot;
+  }
+  return roots.length === 1 ? roots[0] : undefined;
+}
+
+/** 项目徽标上的名字：取文件夹名。根目录本身（`/`、`C:\`）没有名字，按未绑定处理。 */
+export function projectNameOf(projectRoot?: string): string | null {
+  if (!projectRoot) {
+    return null;
+  }
+  const name = basename(projectRoot);
+  return name && name.trim() ? name : null;
+}
+
+/**
  * 把「根目录名前缀」从 glob 里剥掉，并返回该前缀命中的根目录。
  *
  * glob 与 path 参数使用同一套约定：`DeepSeek-HWChat/src/**\/*.ts` 等价于在

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeTodos, completedCount, hasMultipleInProgress, settleInterruptedTodos } from '../core/todos';
+import { normalizeTodos, completedCount, hasMultipleInProgress, settleInterruptedTodos, isResumableTodos, clearedTodoState } from '../core/todos';
 
 test('待办：按传入顺序保留，不排序', () => {
   const todos = normalizeTodos([
@@ -101,4 +101,43 @@ test('中断归位：没有执行中的条目时不改动、不要求落库', ()
 test('中断归位：空清单与未定义输入返回空清单', () => {
   assert.deepEqual(settleInterruptedTodos(undefined), { todos: [], changed: false });
   assert.deepEqual(settleInterruptedTodos([]), { todos: [], changed: false });
+});
+
+test('可继续判定：中断或未完成、且还有没打勾的项才给按钮', () => {
+  const todos = normalizeTodos([
+    { content: 'A', status: 'completed' },
+    { content: 'B', status: 'pending' },
+  ]);
+  assert.equal(isResumableTodos(todos, true, false), true);
+  assert.equal(isResumableTodos(todos, false, true), true);
+  assert.equal(isResumableTodos(todos, true, true), true);
+});
+
+test('可继续判定：正在正常跑（无中断标记）时不给按钮', () => {
+  const todos = normalizeTodos([
+    { content: 'A', status: 'completed' },
+    { content: 'B', status: 'in_progress' },
+  ]);
+  // 运行中的清单要停走输入框旁的停止按钮；这里多给一组按钮只会让人不知道该点哪个。
+  assert.equal(isResumableTodos(todos, false, false), false);
+});
+
+test('可继续判定：全部完成、空清单、未定义都不给按钮', () => {
+  const done = normalizeTodos([
+    { content: 'A', status: 'completed' },
+    { content: 'B', status: 'completed' },
+  ]);
+  // 全绿清单会被后端归档、面板本身消失，这里再返回 true 只会让按钮闪一下。
+  assert.equal(isResumableTodos(done, true, false), false);
+  assert.equal(isResumableTodos([], true, false), false);
+  assert.equal(isResumableTodos(undefined, true, false), false);
+});
+
+test('取消任务：清空清单且不留任何标记，因此不会归档成胶囊', () => {
+  const cleared = clearedTodoState();
+  assert.equal(cleared.todos, null);
+  assert.equal(cleared.todosInterrupted, null);
+  assert.equal(cleared.todosIncomplete, null);
+  // 只允许这三个键：多一个字段就意味着「取消」偷偷留了痕迹。
+  assert.deepEqual(Object.keys(cleared).sort(), ['todos', 'todosIncomplete', 'todosInterrupted']);
 });
