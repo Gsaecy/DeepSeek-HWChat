@@ -11,7 +11,7 @@ export interface ResolvedWorkspacePath<T extends WorkspaceRootLike = WorkspaceRo
   fsPath: string;
 }
 
-export interface ResolveWorkspacePathOptions {
+export interface ResolveWorkspacePathOptions<T extends WorkspaceRootLike = WorkspaceRootLike> {
   /**
    * 可选的同步存在性探测，只用于在多根工作区里消解相对路径的歧义。
    *
@@ -20,19 +20,36 @@ export interface ResolveWorkspacePathOptions {
    * - 全部不存在时仍回退到第一个根目录，因为写入新文件依赖这一点。
    */
   exists?: (fsPath: string) => boolean;
+  /**
+   * 本次对话绑定的项目根（必须来自 `roots`）。
+   *
+   * 多根工作区里相对路径的归属只能靠推断，而「推断」以前固定收敛到第一个根目录：
+   * 在 DeepSeek-HWChat 里说「提交一下」，`cwd` 默认是 `'.'`，结果命令落到排在第一
+   * 位的另一个项目里执行。传入这次对话所属的项目根后：
+   * 1. `.` 直接解析成该项目根，而不是 `roots[0]`；
+   * 2. 多根同时存在同名文件时，优先取该项目根下的那一份；
+   * 3. 相对路径都不存在时，仍在项目根下创建，而不是落到第一个根。
+   */
+  preferredRoot?: T;
 }
 
 export function resolveWorkspacePath<T extends WorkspaceRootLike>(
   input: string,
   roots: readonly T[],
-  options: ResolveWorkspacePathOptions = {},
+  options: ResolveWorkspacePathOptions<T> = {},
 ): ResolvedWorkspacePath<T> {
   if (!roots.length) throw new Error(tt('path.noWorkspace'));
   const value = input?.trim() || '.';
   const absoluteCandidate = isAbsolute(value) ? resolve(value) : undefined;
   const normalized = value.replaceAll('\\', '/').replace(/^\.\//, '');
+  const preferred = preferredRootOf(roots, options.preferredRoot);
 
   if (!absoluteCandidate) {
+    // 0) 项目根优先：`.` 表示「本次对话所属项目」，不再是「第一个工作区根」。
+    if (preferred && normalized === '.') {
+      return { root: preferred, fsPath: resolve(preferred.fsPath) };
+    }
+
     // 1) 显式书写根目录名是最明确的意图，优先命中。
     for (const root of roots) {
       const selectedPath = workspaceRootSelector(normalized, root);
@@ -50,6 +67,9 @@ export function resolveWorkspacePath<T extends WorkspaceRootLike>(
         .filter((entry) => exists(entry.fsPath));
       if (matches.length === 1) return matches[0]!;
       if (matches.length > 1) {
+        // 多个根下都有：项目根下的那一份才是用户的意思，不是歧义。
+        const inPreferred = preferred ? matches.find((entry) => resolve(entry.root.fsPath) === resolve(preferred.fsPath)) : undefined;
+        if (inPreferred) return inPreferred;
         throw new Error(
           tt('path.ambiguous', { value, roots: matches.map((entry) => entry.root.name).join(tt('common.listSeparator')), example: `${matches[0]!.root.name}/${value}` }),
         );
@@ -57,14 +77,22 @@ export function resolveWorkspacePath<T extends WorkspaceRootLike>(
     }
   }
 
-  for (let index = 0; index < roots.length; index += 1) {
-    const root = roots[index]!;
-    if (!absoluteCandidate && index > 0) continue;
+  // 3) 项目根兜底：相对路径在项目根下不存在时优先在那里创建。
+  const ordered = preferred ? [preferred, ...roots.filter((root) => root !== preferred)] : roots;
+  for (let index = 0; index < ordered.length; index += 1) {
+    const root = ordered[index]!;
+    if (!absoluteCandidate && !preferred && index > 0) continue;
     const rootPath = resolve(root.fsPath);
     const candidate = absoluteCandidate ?? resolve(rootPath, value);
     if (isPathWithin(rootPath, candidate)) return { root, fsPath: candidate };
   }
   throw new Error(tt('path.outsideWorkspace'));
+}
+
+/** 项目根必须是 `roots` 里的一个实例，否则忽略（例如工作区根已被移除）。 */
+function preferredRootOf<T extends WorkspaceRootLike>(roots: readonly T[], preferred?: T): T | undefined {
+  if (!preferred) return undefined;
+  return roots.find((root) => resolve(root.fsPath) === resolve(preferred.fsPath));
 }
 
 export function isPathWithin(root: string, candidate: string): boolean {

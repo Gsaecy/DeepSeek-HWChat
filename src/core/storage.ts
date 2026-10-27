@@ -58,19 +58,7 @@ export class ConversationStorage {
           this.manifest = {
             version: MANIFEST_VERSION,
             // 归档列表来自磁盘，可能是老版本写的或被手工改过，进来就归一化一次。
-            conversations: stored.conversations.filter((item) => Boolean(item?.id)).map((item) => {
-              const todoArchives = normalizeTodoArchives(item.todoArchives);
-              const normalized: ConversationSummary = todoArchives.length
-                ? { ...item, todoArchives }
-                : (() => {
-                  const { todoArchives: _discarded, ...rest } = item;
-                  return rest as ConversationSummary;
-                })();
-              // 中断标记只认严格的 true：老存档没有这个字段，手改成字符串/数字一律当没有。
-              if (normalized.todosInterrupted === true) return { ...normalized, todosInterrupted: true };
-              const { todosInterrupted: _stale, ...withoutFlag } = normalized;
-              return withoutFlag as ConversationSummary;
-            }),
+            conversations: stored.conversations.filter((item) => Boolean(item?.id)).map((item) => sanitizeSummary(item)),
           };
         } else {
           await this.rebuildManifestFromDisk();
@@ -332,7 +320,7 @@ export class ConversationStorage {
 
   async updateConversation(
     conversationId: string,
-    patch: Partial<Pick<ConversationSummary, 'title' | 'model' | 'apiProfileId' | 'mode' | 'skillIds' | 'skillSelectionInitialized'>> & {
+    patch: Partial<Pick<ConversationSummary, 'title' | 'model' | 'apiProfileId' | 'mode' | 'skillIds' | 'skillSelectionInitialized' | 'projectRoot' | 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort'>> & {
       sourceConversationId?: string | null;
       sourceConversationTitle?: string | null;
       sourceHistoryDigest?: string | null;
@@ -389,6 +377,12 @@ export class ConversationStorage {
         if (patch.todosInterrupted) summary.todosInterrupted = true;
         else delete summary.todosInterrupted;
       }
+      // 项目归属与运行时设置：无效值一律当作「没有设置」，回落到全局默认，
+      // 而不是把脏值留在存档里让运行时去猜。
+      applyOptional(summary, 'projectRoot', normalizeProjectRoot(patch.projectRoot));
+      applyOptional(summary, 'permissionPreset', normalizeStoredPreset(patch.permissionPreset));
+      applyOptional(summary, 'agentMaxSteps', normalizeStoredSteps(patch.agentMaxSteps));
+      applyOptional(summary, 'reasoningEffort', normalizeStoredReasoning(patch.reasoningEffort));
       summary.updatedAt = Date.now();
       await this.persistManifest();
     });
@@ -884,4 +878,64 @@ function assignOptional<K extends keyof ConversationSummary>(
     return;
   }
   Object.assign(target, { [key]: value });
+}
+
+/**
+ * 从磁盘读到的对话摘要归一化。
+ *
+ * 手工改过的 manifest、老版本写的字段都可能带着不合法的值；这里统一处理成
+ * 「要么是明确合法值，要么干脆没有这个字段」，让运行时只需回落到默认值，
+ * 不必到处判脏数据。
+ */
+function sanitizeSummary(item: ConversationSummary): ConversationSummary {
+  const todoArchives = normalizeTodoArchives(item.todoArchives);
+  const normalized: ConversationSummary = todoArchives.length
+    ? { ...item, todoArchives }
+    : (() => {
+      const { todoArchives: _discarded, ...rest } = item;
+      return rest as ConversationSummary;
+    })();
+  // 中断标记只认严格的 true：老存档没有这个字段，手改成字符串/数字一律当没有。
+  const withFlag = normalized.todosInterrupted === true
+    ? { ...normalized, todosInterrupted: true as const }
+    : (() => {
+      const { todosInterrupted: _stale, ...withoutFlag } = normalized;
+      return withoutFlag as ConversationSummary;
+    })();
+  applyOptional(withFlag, 'projectRoot', normalizeProjectRoot(withFlag.projectRoot));
+  applyOptional(withFlag, 'permissionPreset', normalizeStoredPreset(withFlag.permissionPreset));
+  applyOptional(withFlag, 'agentMaxSteps', normalizeStoredSteps(withFlag.agentMaxSteps));
+  applyOptional(withFlag, 'reasoningEffort', normalizeStoredReasoning(withFlag.reasoningEffort));
+  return withFlag;
+}
+
+/** `undefined` = 补丁里没提这个字段；`null` = 值不合法，删掉它回落到默认。 */
+function applyOptional<K extends keyof ConversationSummary>(
+  target: ConversationSummary,
+  key: K,
+  value: ConversationSummary[K] | null | undefined,
+): void {
+  assignOptional(target, key, value);
+}
+
+function normalizeProjectRoot(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text ? text : null;
+}
+
+function normalizeStoredPreset(value: unknown): ConversationSummary['permissionPreset'] | null | undefined {
+  if (value === undefined) return undefined;
+  return value === 'askAll' || value === 'review' || value === 'autopilot' || value === 'full' ? value : null;
+}
+
+function normalizeStoredSteps(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
+  return Math.floor(value);
+}
+
+function normalizeStoredReasoning(value: unknown): ConversationSummary['reasoningEffort'] | null | undefined {
+  if (value === undefined) return undefined;
+  return value === 'default' || value === 'none' || value === 'low' || value === 'high' || value === 'max' ? value : null;
 }

@@ -136,6 +136,24 @@ export interface ConversationSummary {
   skillSelectionInitialized?: boolean;
   archived?: boolean;
   archivedAt?: number;
+  /**
+   * 本次对话绑定的项目根（某个工作区根的绝对路径）。
+   *
+   * 多根工作区里相对路径和 git 写操作都必须归属到具体项目：没有这个字段时
+   * `cwd` 默认是 `'.'`，会解析到**第一个**工作区根目录，于是「提交一下」可能
+   * 提交掉另一个项目。首次写入文件或显式指定 cwd 时绑定，之后只读不改。
+   */
+  projectRoot?: string;
+  /**
+   * 本对话自己的运行时设置。
+   *
+   * 以前这三项直接写 `hwchat.*` 全局设置，多线程对话时互相污染：在 A 调成
+   * 「完全访问」，B 立刻也跟着放宽；B 把步骤数改成 8，正在跑的 A 下一轮就被截断。
+   * 现在它们属于对话，全局设置只作为新对话的默认值。
+   */
+  permissionPreset?: PermissionPreset;
+  agentMaxSteps?: number;
+  reasoningEffort?: ReasoningEffort;
   sourceConversationId?: string;
   sourceConversationTitle?: string;
   sourceHistoryDigest?: string;

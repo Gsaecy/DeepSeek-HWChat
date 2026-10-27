@@ -83,6 +83,44 @@ Every conversation runs its own agent thread; they do not block each other:
 - Model / mode / skills / permission preset are disabled only while that conversation itself is busy, never because some other conversation is running.
 - When a background thread finishes, only the history list is refreshed, so your scroll position in the current conversation is preserved.
 
+### Per-conversation settings
+
+Mode, model, permission preset, max steps and reasoning effort belong to **the conversation itself**. The precedence is fixed: conversation record → toolbar draft choice → global default (`src/core/conversationControls.ts`, `src/core/modes.ts`).
+
+- Switching conversation A to "Full access" does not loosen the permissions of conversation B running in the background, and changing B's step limit does not truncate A's next round.
+- Global settings only seed **new** conversations. Changes made in the panel are written back to the current conversation.
+- Invalid stored values (misspelled preset, string step limit, non-string project root) are dropped on load and fall back to defaults instead of being carried into a run.
+
+## git and project scope
+
+HWChat never commits on its own. git write operations (`add`, `commit`, `push`, `tag`, `reset`, `clean`, `merge`, `rebase`, `checkout`, `restore`, `stash`) are allowed only when:
+
+1. the user explicitly asked to commit, push or tag in the current conversation (negations such as "don't commit yet" do not count), or
+2. an enabled skill rule requires committing after finishing a task — this counts as an explicit request.
+
+The system prompt states the same rule, but the boundary is enforced at runtime: `ToolExecutor` parses every command for git subcommands and refuses unauthorized ones with an explanation, and bridged VS Code tools (such as `run_in_terminal`) are checked through their JSON arguments so the rule cannot be bypassed by switching channels. Read-only inspection (`status`, `diff`, `log`, `show`) is always allowed.
+
+**Commits stay inside the project this conversation belongs to:**
+
+- Each conversation binds a project root (`projectRoot`) on its first file write or on an explicit `cwd`. Relative paths, the default command `cwd` and newly created files belong to that project instead of "the first root of the multi-root workspace".
+- Before a git write, the real repository root is read with `git rev-parse --show-toplevel` and must match the project root. A repository that also contains another workspace project is refused too, because one `git add -A` would sweep that project's changes in.
+- While the project root is undetermined, git writes only accept an explicit `cwd`; the "default lands on the first root" behavior is never treated as project ownership.
+
+## Version numbers: asked after the task, never bumped on its own
+
+HWChat **does not bump versions on its own** either. The version number is the user's decision, not a finishing step:
+
+- It must not edit the `version` field of `package.json` / `package-lock.json` / `manifest.json` and similar manifests, and must not run `npm version` / `yarn version` / `cargo set-version` / `standard-version` or create git tags.
+- It asks only when asking is due, and only once:
+  - **short tasks** — after every problem mentioned in the conversation is finished and verified;
+  - **long tasks** — at a clear phase boundary, or after the whole task is done;
+  - never mid-task, and never bundled into the middle of an unfinished step.
+- Until the user says yes, versions and git history stay untouched and the remaining work continues. An explicit request ("bump to 0.2.3") or an enabled skill rule counts as permission.
+
+The same rule is enforced at runtime (`src/agent/releasePolicy.ts`): when a write touches a version manifest, the project's own `version` field is compared and a change is refused with an instruction to ask the user first; `npm version`-style commands are refused as well, and bridged VS Code tool arguments are checked so switching channels does not bypass it. Read-only queries (`npm --version`, `git tag -l`) remain allowed.
+
+Only **project-level** version numbers count: dependency versions inside `package-lock.json`, and `version` entries in a `Cargo.toml` dependency table, are not treated as bumps. When a manifest cannot be parsed the write is not blocked — refusing to break a normal file repair matters more than catching that edge.
+
 ## Skills
 
 HWChat scans these local formats:
@@ -160,9 +198,9 @@ The extension icon is `resources/logo.png`. Press `F5` in VS Code to launch the 
 - `hwchat.language` — interface language: `auto` (follow VS Code), `zh` or `en`.
 - `hwchat.apiProfiles` / `hwchat.activeApiProfileId` — OpenAI-compatible profiles and the active one.
 - `hwchat.baseUrl` / `hwchat.model` — legacy-compatible endpoint and current default model.
-- `hwchat.defaultMode` / `hwchat.agentMaxSteps` — default mode and per-turn tool-loop limit; `0` means unlimited. The default mode only decides how a new conversation starts; after that the composer dropdown and the conversation's stored mode take over.
-- `hwchat.reasoningEffort` — five levels (default, none, low, high, max); endpoints without support get an automatic retry.
-- `hwchat.permissionPreset` — one of the four presets above.
+- `hwchat.defaultMode` / `hwchat.agentMaxSteps` — default mode and per-turn tool-loop limit; `0` means unlimited. **Both only seed new conversations**; once a conversation exists its own record wins and panel changes are written back to that conversation.
+- `hwchat.reasoningEffort` — five levels (default, none, low, high, max); endpoints without support get an automatic retry. Also only a default for new conversations.
+- `hwchat.permissionPreset` — one of the four presets above. Only a default for new conversations; switching it in the panel affects the current conversation alone.
 - `hwchat.fileReadPolicy` / `hwchat.fileWritePolicy` / `hwchat.commandPolicy` / `hwchat.dangerousCommandPolicy` / `hwchat.sensitiveFilePolicy` — fully derived from the preset; display-only, marked deprecated in the VS Code settings UI.
 - Permission settings are `resource`-scoped and may be set in a folder's `.vscode/settings.json`. Precedence is most-specific-first (workspace folder → `.code-workspace` → user), and when folders disagree the strictest value wins (`Ask every time` > `Ask on risky actions` > `Autopilot` > `Full access`).
 - `hwchat.allowSensitiveFiles` / `hwchat.allowDangerousCommands` — deprecated booleans, used only as a migration fallback when the newer settings are absent.
@@ -175,7 +213,7 @@ Conversation data lives in the VS Code global storage directory and is never wri
 | Path | Contents |
 | --- | --- |
 | `src/core/` | i18n, settings, permissions, storage, approval plans |
-| `src/agent/` | agent loop, tool executor, path isolation, skills, task queue |
+| `src/agent/` | agent loop, tool executor, path isolation, project scope (git gate), version-bump gate, skills, task queue |
 | `src/views/` | chat panel, settings panel, history view |
 | `src/providers/` | DeepSeek / OpenAI-compatible client |
 | `media/` | webview scripts and styles |

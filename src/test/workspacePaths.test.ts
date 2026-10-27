@@ -87,6 +87,49 @@ test('an explicit root prefix still wins over existence probing', () => {
   assert.equal(resolved.root.name, 'MaiKer_Win');
 });
 
+// ── 项目根（preferredRoot）：对话只能落在自己的项目里 ─────────────────────
+
+test('preferredRoot: `.` resolves to the conversation project, not the first root', () => {
+  // 真实缺陷：不传 cwd 时 `'.'` 落到第一个根，于是「提交一下」提交掉了另一个项目。
+  const resolved = resolveWorkspacePath('.', roots, { preferredRoot: roots[1]! });
+  assert.equal(resolved.root.name, 'MaiKer_Win');
+  assert.equal(resolved.fsPath, '/Users/test/AI projects/MaiKer_Win');
+});
+
+test('preferredRoot: a new file is created inside the conversation project', () => {
+  const resolved = resolveWorkspacePath('src/new-file.ts', roots, {
+    exists: probe([]),
+    preferredRoot: roots[1]!,
+  });
+  assert.equal(resolved.root.name, 'MaiKer_Win');
+  assert.equal(resolved.fsPath, '/Users/test/AI projects/MaiKer_Win/src/new-file.ts');
+});
+
+test('preferredRoot: a relative path existing in several roots resolves to the project', () => {
+  const resolved = resolveWorkspacePath('src/index.ts', roots, {
+    exists: probe([
+      '/Users/test/AI projects/Safevault_android/src/index.ts',
+      '/Users/test/AI projects/MaiKer_Win/src/index.ts',
+    ]),
+    preferredRoot: roots[1]!,
+  });
+  assert.equal(resolved.root.name, 'MaiKer_Win');
+});
+
+test('preferredRoot: a root that is no longer in the workspace is ignored', () => {
+  const stale = { name: 'Removed', fsPath: '/Users/test/AI projects/Removed' };
+  const resolved = resolveWorkspacePath('.', roots, { preferredRoot: stale });
+  // 旧绑定不能让解析整体失败，退回第一个根；git 侧另有闸门会拒绝跨项目写操作。
+  assert.equal(resolved.root.name, 'Safevault_android');
+});
+
+test('preferredRoot: an explicit root prefix still wins over the project root', () => {
+  const resolved = resolveWorkspacePath('Safevault_android/src/index.ts', roots, {
+    preferredRoot: roots[1]!,
+  });
+  assert.equal(resolved.root.name, 'Safevault_android');
+});
+
 // ── glob 的根目录名前缀必须与 path 参数同一套约定 ─────────────────────────
 test('strips a root-name prefix from a glob and reports the matched root', () => {
   const normalized = normalizeWorkspaceGlob('MaiKer_Win/src/**/*.ts', roots);

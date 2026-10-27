@@ -79,6 +79,44 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 - 模型 / 模式 / 技能 / 权限预设只在这条对话自己忙时禁用，不会因为别的对话在跑就整块锁死。
 - 后台线程结束只刷新历史列表，不打断当前正在读的对话的滚动位置。
 
+### 每条对话独立的设置
+
+模式、模型、权限预设、最大步骤、思考深度都是**这条对话自己的属性**，优先级固定为「对话存档值 → 工具条上的草稿选择 → 设置里的全局默认值」（`src/core/conversationControls.ts`、`src/core/modes.ts`）。
+
+- 在对话 A 把权限预设改成「完全访问」，正在后台跑的对话 B 不受影响；B 把最大步骤改成 8，也不会截断 A 的下一轮。
+- 全局设置只作为**新对话**的默认值。面板上的改动写回当前对话，不会改动其他人的设置。
+- 存档里的非法值（拼错的预设、字符串形式的步骤数、非字符串的项目根）在载入时丢弃并回落到默认值，不会带着脏值去运行。
+
+## git 与项目边界
+
+HWChat **不会主动提交 git**。git 写操作（`add` / `commit` / `push` / `tag` / `reset` / `clean` / `merge` / `rebase` / `checkout` / `restore` / `stash`）只在两种情况下放行：
+
+1. 用户在本轮对话里明确要求提交、推送或打标签（「不要提交 / 先别推送」这类否定写法不计入）；
+2. 已启用的技能规则要求「完成任务后提交」——这条等同于用户要求。
+
+提示词里写了同样的硬规则，但真正的边界在运行时：`ToolExecutor` 逐条解析命令里的 git 子命令，未获授权直接拒绝并说明原因；桥接的 VS Code 工具（如 `run_in_terminal`）也会检查 JSON 参数，避免换个通道绕过去。只读检查（`status` / `diff` / `log` / `show`）始终允许。
+
+**提交只落在本次对话所属的项目里**：
+
+- 每条对话首次写入文件或显式指定 `cwd` 时绑定一个项目根（`projectRoot`）。相对路径、命令的默认 `cwd`、新建文件都归属这个项目，不再落到「多根工作区里的第一个根目录」。
+- git 写操作前用 `git rev-parse --show-toplevel` 取真实仓库根，要求它与项目根一致；仓库根若还罩着另一个工作区项目，也会被拒绝（一次 `git add -A` 会把别的项目改动一起收进去）。
+- 项目根尚未确定时，git 写操作只接受显式 `cwd`，不会把「默认落到第一个根」当成项目归属。
+
+## 版本号：只在任务完成后询问
+
+HWChat **同样不会主动升版本**。版本号是用户的决定，不是收尾步骤：
+
+- 不许自己改 `package.json` / `package-lock.json` / `manifest.json` 等清单里的 `version` 字段，也不许跑 `npm version` / `yarn version` / `cargo set-version` / `standard-version` / 打 git tag。
+- 该问的时候才问，而且只问一次：
+  - **短任务**：这轮对话里提到的所有问题都做完、验证过之后，问「要不要升版本 / 要不要提交」；
+  - **长任务**：在明确的阶段边界，或整个任务做完之后问；
+  - 任务进行中不问，也不把这个问题塞进某个未完成步骤的中间。
+- 用户没有明确答应之前，版本号和 git 历史都不动，继续把剩下的活干完。用户自己要求（「升到 0.2.3」）或已启用技能要求时，视同授权。
+
+运行时也有闸门（`src/agent/releasePolicy.ts`）：写入版本清单时比较项目自身的 version 字段，变了就拒绝并说明「先去问用户」；`npm version` 一类命令同样拒绝；桥接的 VS Code 工具参数也会检查，换个通道绕不过去。只读查询（`npm --version`、`git tag -l`）始终允许。
+
+判定只看**项目级**版本号：`package-lock.json` 里依赖的版本变化、`Cargo.toml` 里依赖表写的 `version` 都不会被误判成升版本；清单解析失败时宁可不拦，也不打断正常的文件修复。
+
 ## Skills
 
 HWChat 扫描以下本地格式：
@@ -159,9 +197,9 @@ npm run package
 
 - `hwchat.apiProfiles` / `hwchat.activeApiProfileId`：OpenAI 兼容接口配置档和当前配置档。
 - `hwchat.baseUrl` / `hwchat.model`：兼容旧版配置，并保存当前默认接口和模型。
-- `hwchat.defaultMode` / `hwchat.agentMaxSteps`：默认模式和单轮工具循环上限；步骤为 `0` 时不限制。默认模式只决定新对话的初始模式，之后在对话工具条里切换以对话存档为准。
-- `hwchat.reasoningEffort`：默认、无、低、高、最大五档思考层级；不支持该参数的兼容接口会自动降级重试。
-- `hwchat.permissionPreset`：常用权限预设（每次询问 / 风险操作询问 / Autopilot / 完全访问），四档之一。
+- `hwchat.defaultMode` / `hwchat.agentMaxSteps`：默认模式和单轮工具循环上限；步骤为 `0` 时不限制。**这两项只作为新对话的初始值**，对话开始后以该对话自己的存档为准（工具条上的改动写回对话，不改全局）。
+- `hwchat.reasoningEffort`：默认、无、低、高、最大五档思考层级；不支持该参数的兼容接口会自动降级重试。同样只作为新对话的默认值。
+- `hwchat.permissionPreset`：常用权限预设（每次询问 / 风险操作询问 / Autopilot / 完全访问），四档之一。只作为新对话的默认值；在面板里切换只影响当前对话。
 - `hwchat.fileReadPolicy` / `hwchat.fileWritePolicy` / `hwchat.commandPolicy` / `hwchat.dangerousCommandPolicy` / `hwchat.sensitiveFilePolicy`：这五项策略完全由预设推导，只用于设置页展示，手动写入不生效（在 VS Code 设置里已标记为弃用）。
 - 权限类配置是 `resource` 作用域，可以写在某个根目录的 `.vscode/settings.json` 里。生效顺序为「最具体优先」：工作区文件夹 → `.code-workspace` → 用户设置；多个文件夹写了不同值时取最严格的一个（预设严格度 `每次询问` > `风险操作询问` > `Autopilot` > `完全访问`）。
 - `hwchat.allowSensitiveFiles` / `hwchat.allowDangerousCommands`：已废弃的旧布尔开关，仅在未设置上面两项新配置时用作迁移回退。

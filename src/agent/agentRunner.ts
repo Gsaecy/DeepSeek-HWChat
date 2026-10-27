@@ -11,7 +11,7 @@ import {
 import { DeepSeekClient } from '../providers/deepseekClient';
 import { redact } from './auditLog';
 import type { AgentTaskUpdate } from './taskQueue';
-import type { RequestApproval, ToolExecutor } from './toolExecutor';
+import type { RequestApproval, ToolExecutionScope, ToolExecutor } from './toolExecutor';
 import { tt } from '../core/i18n';
 
 export interface AgentRunCallbacks {
@@ -43,6 +43,8 @@ export class AgentRunner {
     mode: ConversationMode;
     signal: AbortSignal;
     conversationId: string;
+    /** 本次对话的项目边界与 git 授权；缺失时按旧行为（不额外限制）。 */
+    scope?: ToolExecutionScope;
     callbacks: AgentRunCallbacks;
     extraTools?: ToolDefinition[];
     executeExtraTool?: (call: import('../core/types').ToolCall) => Promise<{ result: ToolExecutionResult; skill?: SkillUsage } | undefined>;
@@ -139,6 +141,7 @@ export class AgentRunner {
               return options.callbacks.requestApproval(request);
             },
             options.conversationId,
+            options.scope,
           );
         if (extra?.skill) {
           await options.callbacks.onSkillUsed?.(extra.skill);

@@ -449,3 +449,55 @@ test('manifest 里非布尔的中断标记在载入时被丢掉', async () => {
     assert.equal(loaded?.todos?.length, 1);
   });
 });
+
+// ── 每条对话自己的项目归属与运行时设置 ──────────────────────────────────
+
+test('对话的项目根与运行时设置随 manifest 持久化', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('per-conversation settings');
+    await storage.updateConversation(conversation.id, {
+      projectRoot: join('workspace', 'DeepSeek-HWChat'),
+      permissionPreset: 'full',
+      agentMaxSteps: 8,
+      reasoningEffort: 'max',
+    });
+    await storage.flush();
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const loaded = await reloaded.getConversation(conversation.id);
+    assert.equal(loaded?.projectRoot, join('workspace', 'DeepSeek-HWChat'));
+    assert.equal(loaded?.permissionPreset, 'full');
+    assert.equal(loaded?.agentMaxSteps, 8);
+    assert.equal(loaded?.reasoningEffort, 'max');
+
+    // 另一条对话不受影响：这是「设置不互相污染」的落库级断言。
+    const other = await reloaded.createConversation('untouched');
+    const otherLoaded = await reloaded.getConversation(other.id);
+    assert.equal(otherLoaded?.permissionPreset, undefined);
+    assert.equal(otherLoaded?.agentMaxSteps, undefined);
+    assert.equal(otherLoaded?.reasoningEffort, undefined);
+  });
+});
+
+test('manifest 里非法的项目根与运行时设置在载入时被丢掉', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('bad controls');
+    const manifestPath = join(root, 'manifest.json');
+    const raw = JSON.parse(await readFile(manifestPath, 'utf8'));
+    raw.conversations[0].projectRoot = 42;
+    raw.conversations[0].permissionPreset = 'custom';
+    raw.conversations[0].agentMaxSteps = '99';
+    raw.conversations[0].reasoningEffort = 'ultra';
+    await writeFile(manifestPath, JSON.stringify(raw), 'utf8');
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const loaded = await reloaded.getConversation(conversation.id);
+    // 脏值一律当成「没有设置」，运行时回落到全局默认，而不是带着脏值去猜。
+    assert.equal(loaded?.projectRoot, undefined);
+    assert.equal(loaded?.permissionPreset, undefined);
+    assert.equal(loaded?.agentMaxSteps, undefined);
+    assert.equal(loaded?.reasoningEffort, undefined);
+  });
+});

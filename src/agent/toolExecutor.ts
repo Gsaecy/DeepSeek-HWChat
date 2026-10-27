@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { dirname, extname, resolve } from 'node:path';
+import { basename, dirname, extname, resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import * as vscode from 'vscode';
 import { readSettings } from '../core/settings';
@@ -18,6 +18,30 @@ import { AuditLog, redact } from './auditLog';
 import { commandPathViolation } from './commandPaths';
 import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './workspacePaths';
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
+import { gitWriteOperation } from './conversationScope';
+import { detectVersionBump, versionBumpCommand } from './releasePolicy';
+
+/**
+ * 一次工具调用所属的对话作用域。
+ *
+ * - `projectRoot`：本次对话绑定的项目根。多根工作区里它决定相对路径的归属，
+ *   也决定 git 写操作允许落在哪个仓库；未绑定时 `'.'` 仍按旧行为落到第一个根。
+ * - `gitWriteAllowed`：用户本轮**明确要求**（或已启用技能规则要求）git 写操作。
+ *   为 false 时所有 git 写操作一律拒绝——HWChat 不主动提交。
+ * - `versionBumpAllowed`：用户本轮**明确要求**（或已启用技能规则要求）升级项目版本号。
+ *   为 false 时改动版本清单里的 version 字段、以及 `npm version` 这类命令一律拒绝——
+ *   HWChat 也不主动升版本，只在任务完成后询问。
+ * - `bindProjectRoot`：首次确定项目根时回调，由面板写回对话存档。
+ *
+ * 注意：`ToolExecutor` 是跨对话共享的单例，作用域必须随调用传入，
+ * 不能存成实例字段，否则多线程对话之间会互相污染。
+ */
+export interface ToolExecutionScope {
+  projectRoot?: string;
+  gitWriteAllowed?: boolean;
+  versionBumpAllowed?: boolean;
+  bindProjectRoot?: (fsPath: string) => void;
+}
 
 export interface ToolApprovalRequest {
   callId: string;
@@ -118,6 +142,7 @@ export class ToolExecutor implements vscode.Disposable {
     settings: ChatSettings,
     requestApproval: RequestApproval,
     conversationId?: string,
+    scope?: ToolExecutionScope,
   ): Promise<ToolExecutionResult> {
     const name = call.function.name;
     let args: Record<string, unknown>;
@@ -138,7 +163,7 @@ export class ToolExecutor implements vscode.Disposable {
       ? classifyCommandTier(String(args.command ?? ''))
       : undefined;
     const policy = policyFor(risk, settings, tier);
-    const denied = this.checkAccess(name, args, mode, settings, policy, tier);
+    const denied = this.checkAccess(name, args, mode, settings, policy, tier, scope);
     if (denied) {
       const result = deniedResult(denied);
       await this.auditResult(call, result, conversationId);
@@ -157,7 +182,7 @@ export class ToolExecutor implements vscode.Disposable {
       : undefined;
 
     // 敏感文件与危险命令各自还有独立的“逐次确认 / 禁止”策略。
-    const sensitive = await this.sensitiveGuard(name, args, settings);
+    const sensitive = await this.sensitiveGuard(name, args, settings, scope);
     if (sensitive.denied) {
       const result = deniedResult(sensitive.denied);
       await this.auditResult(call, result, conversationId);
@@ -190,37 +215,37 @@ export class ToolExecutor implements vscode.Disposable {
           result = await this.listWorkspaceRoots();
           break;
         case 'list_directory':
-          result = await this.listDirectory(args, settings);
+          result = await this.listDirectory(args, settings, scope);
           break;
         case 'list_files':
           result = await this.listFiles(args);
           break;
         case 'search_files':
-          result = await this.searchFiles(args, settings);
+          result = await this.searchFiles(args, settings, scope);
           break;
         case 'read_file':
-          result = await this.readFile(args, settings);
+          result = await this.readFile(args, settings, scope);
           break;
         case 'open_file':
-          result = await this.openFile(args, settings);
+          result = await this.openFile(args, settings, scope);
           break;
         case 'get_diagnostics':
-          result = await this.getDiagnostics(args, settings);
+          result = await this.getDiagnostics(args, settings, scope);
           break;
         case 'write_file':
-          result = await this.writeFile(args, settings);
+          result = await this.writeFile(args, settings, scope);
           break;
         case 'replace_in_file':
-          result = await this.replaceInFile(args, settings);
+          result = await this.replaceInFile(args, settings, scope);
           break;
         case 'rename_file':
-          result = await this.renameFile(args, settings);
+          result = await this.renameFile(args, settings, scope);
           break;
         case 'delete_file':
-          result = await this.deleteFile(args, settings);
+          result = await this.deleteFile(args, settings, scope);
           break;
         case 'run_command':
-          result = await this.runCommand(args, settings);
+          result = await this.runCommand(args, settings, scope);
           break;
         default:
           result = deniedResult(tt('tool.unknownTool', { name }));
@@ -412,7 +437,7 @@ export class ToolExecutor implements vscode.Disposable {
     return success(tt('tool.workspaceRootsFound', { count: folders.length }), lines.join('\n') || tt('tool.noWorkspaceOpen'));
   }
 
-  private async listDirectory(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
+  private async listDirectory(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
     const requestedPath = typeof args.path === 'string' ? args.path.trim() : '';
     const folders = vscode.workspace.workspaceFolders ?? [];
     // 多根工作区里不传 path 时，静默只列第一个根会把调用方带偏（真实会话里发生过：
@@ -420,13 +445,13 @@ export class ToolExecutor implements vscode.Disposable {
     if (!requestedPath && folders.length > 1) {
       const blocks: string[] = [];
       for (const folder of folders) {
-        const folderPath = await this.resolvePath(folder.name);
+        const folderPath = await this.resolvePath(folder.name, scope);
         this.assertReadable(folderPath, settings);
         blocks.push(`## ${folder.name}${tt('tool.folderItemCountSuffix', { count: await this.directoryRowCount(folderPath) })}\n${await this.directoryRows(folderPath)}`);
       }
       return success(tt('tool.workspaceRootsListed', { count: folders.length }), blocks.join('\n\n'));
     }
-    const resolved = await this.resolvePath(requestedPath || '.');
+    const resolved = await this.resolvePath(requestedPath || '.', scope);
     this.assertReadable(resolved, settings);
     const stat = await vscode.workspace.fs.stat(resolved.uri);
     if ((stat.type & vscode.FileType.Directory) === 0) throw new Error(tt('tool.notDirectory', { path: resolved.relativePath }));
@@ -449,7 +474,7 @@ export class ToolExecutor implements vscode.Disposable {
     return rows.join('\n') || tt('tool.directoryEmpty');
   }
 
-  private async searchFiles(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
+  private async searchFiles(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
     const query = stringArg(args, 'query');
     if (!query) throw new Error(tt('tool.queryEmpty'));
     const caseSensitive = Boolean(args.caseSensitive);
@@ -464,7 +489,7 @@ export class ToolExecutor implements vscode.Disposable {
         break;
       }
       scanned += 1;
-      const resolved = await this.resolvePath(uri.fsPath);
+      const resolved = await this.resolvePath(uri.fsPath, scope);
       if (isSensitivePath(resolved.relativePath) && sensitiveFilePolicyFor(settings) !== 'allow') continue;
       const stat = await Promise.resolve(vscode.workspace.fs.stat(uri)).catch(() => undefined);
       if (!stat || stat.size > settings.maxReadBytes) continue;
@@ -494,8 +519,8 @@ export class ToolExecutor implements vscode.Disposable {
     );
   }
 
-  private async readFile(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
-    const resolved = await this.resolvePath(stringArg(args, 'path'));
+  private async readFile(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
+    const resolved = await this.resolvePath(stringArg(args, 'path'), scope);
     this.assertReadable(resolved, settings);
     const stat = await vscode.workspace.fs.stat(resolved.uri);
     if (stat.size > settings.maxReadBytes) {
@@ -517,8 +542,8 @@ export class ToolExecutor implements vscode.Disposable {
     };
   }
 
-  private async openFile(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
-    const resolved = await this.resolvePath(stringArg(args, 'path'));
+  private async openFile(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
+    const resolved = await this.resolvePath(stringArg(args, 'path'), scope);
     this.assertReadable(resolved, settings);
     const stat = await vscode.workspace.fs.stat(resolved.uri);
     if ((stat.type & vscode.FileType.File) === 0) throw new Error(tt('tool.openFileOnlyFiles'));
@@ -527,9 +552,9 @@ export class ToolExecutor implements vscode.Disposable {
     return success(tt('tool.openedInEditor', { path: resolved.relativePath }), tt('tool.openedInEditorContent'));
   }
 
-  private async getDiagnostics(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
+  private async getDiagnostics(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
     const path = args.path ? stringArg(args, 'path') : undefined;
-    const uri = path ? (await this.resolvePath(path)).uri : undefined;
+    const uri = path ? (await this.resolvePath(path, scope)).uri : undefined;
     const diagnosticEntries: Array<[vscode.Uri, vscode.Diagnostic[]]> = uri
       ? [[uri, vscode.languages.getDiagnostics(uri)]]
       : vscode.languages.getDiagnostics();
@@ -544,9 +569,10 @@ export class ToolExecutor implements vscode.Disposable {
     );
   }
 
-  private async writeFile(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
-    const resolved = await this.resolvePath(stringArg(args, 'path'));
+  private async writeFile(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
+    const resolved = await this.resolvePath(stringArg(args, 'path'), scope);
     this.assertWritable(resolved, settings);
+    this.bindProjectRoot(scope, resolved);
     const content = stringArg(args, 'content');
     const maxWriteBytes = settings.maxReadBytes * 4;
     if (Buffer.byteLength(content) > maxWriteBytes) {
@@ -557,6 +583,9 @@ export class ToolExecutor implements vscode.Disposable {
     const previous = previousStat && previousStat.size <= maxWriteBytes
       ? await Promise.resolve(vscode.workspace.fs.readFile(resolved.uri)).then(decodeText).catch(() => '')
       : '';
+    // 版本号是用户的决定：未被要求就不许改版本清单里的 version 字段。
+    const bump = versionBumpBlockReason(resolved, previous, content, scope);
+    if (bump) return bump;
     await vscode.workspace.fs.writeFile(resolved.uri, new TextEncoder().encode(content));
     const summary = previousStat
       ? previous ? tt('tool.updatedFile', { path: resolved.relativePath, delta: lineDelta(previous, content) }) : tt('tool.updatedFileNoDelta', { path: resolved.relativePath })
@@ -564,9 +593,10 @@ export class ToolExecutor implements vscode.Disposable {
     return { status: 'success', summary, content: `${summary}\n${tt('tool.fileWritten')}`, approval: 'approved', changedFiles: [resolved.relativePath] };
   }
 
-  private async replaceInFile(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
-    const resolved = await this.resolvePath(stringArg(args, 'path'));
+  private async replaceInFile(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
+    const resolved = await this.resolvePath(stringArg(args, 'path'), scope);
     this.assertWritable(resolved, settings);
+    this.bindProjectRoot(scope, resolved);
     const oldText = stringArg(args, 'oldText');
     const newText = stringArg(args, 'newText');
     if (!oldText) throw new Error(tt('tool.oldTextEmpty'));
@@ -587,16 +617,19 @@ export class ToolExecutor implements vscode.Disposable {
       throw new Error(tt('tool.replaceTooLargeAfter'));
     }
     const next = Boolean(args.replaceAll) ? current.split(oldText).join(newText) : current.replace(oldText, newText);
+    const bump = versionBumpBlockReason(resolved, current, next, scope);
+    if (bump) return bump;
     await vscode.workspace.fs.writeFile(resolved.uri, new TextEncoder().encode(next));
     const summary = tt('tool.replaceSummary', { path: resolved.relativePath, count: Boolean(args.replaceAll) ? occurrences : 1 });
     return { status: 'success', summary, content: `${summary}\n${lineDelta(current, next)}`, approval: 'approved', changedFiles: [resolved.relativePath] };
   }
 
-  private async renameFile(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
-    const from = await this.resolvePath(stringArg(args, 'from'));
-    const to = await this.resolvePath(stringArg(args, 'to'));
+  private async renameFile(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
+    const from = await this.resolvePath(stringArg(args, 'from'), scope);
+    const to = await this.resolvePath(stringArg(args, 'to'), scope);
     this.assertWritable(from, settings);
     this.assertWritable(to, settings);
+    this.bindProjectRoot(scope, from);
     const sourceStat = await vscode.workspace.fs.stat(from.uri);
     if ((sourceStat.type & vscode.FileType.File) === 0) throw new Error(tt('tool.renameOnlyFiles'));
     await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(to.fsPath)));
@@ -605,9 +638,10 @@ export class ToolExecutor implements vscode.Disposable {
     return { status: 'success', summary, content: summary, approval: 'approved', changedFiles: [from.relativePath, to.relativePath] };
   }
 
-  private async deleteFile(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
-    const resolved = await this.resolvePath(stringArg(args, 'path'));
+  private async deleteFile(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
+    const resolved = await this.resolvePath(stringArg(args, 'path'), scope);
     this.assertWritable(resolved, settings);
+    this.bindProjectRoot(scope, resolved);
     const targetStat = await vscode.workspace.fs.stat(resolved.uri);
     if ((targetStat.type & vscode.FileType.File) === 0) throw new Error(tt('tool.deleteOnlyFiles'));
     await vscode.workspace.fs.delete(resolved.uri, { recursive: false, useTrash: true });
@@ -615,10 +649,23 @@ export class ToolExecutor implements vscode.Disposable {
     return { status: 'success', summary, content: summary, approval: 'approved', changedFiles: [resolved.relativePath] };
   }
 
-  private async runCommand(args: Record<string, unknown>, settings: ChatSettings): Promise<ToolExecutionResult> {
+  private async runCommand(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
     const command = stringArg(args, 'command');
     if (!command || command.length > 4_000) throw new Error(tt('tool.commandEmpty'));
-    const resolvedCwd = await this.resolvePath(stringArg(args, 'cwd', '.'));
+    // cwd 缺省时落到「本次对话的项目根」：多根工作区里 `'.'` 以前会落到第一个根目录，
+    // 于是「提交一下」可能提交掉了另一个项目。
+    const explicitCwd = typeof args.cwd === 'string' && args.cwd.trim() ? args.cwd.trim() : undefined;
+    const resolvedCwd = await this.resolvePath(explicitCwd ?? '.', scope);
+    const gitWrite = gitWriteOperation(command);
+    if (gitWrite) {
+      const blocked = await this.gitWriteBlockReason(gitWrite.verb, resolvedCwd, explicitCwd, scope);
+      if (blocked) return deniedResult(blocked);
+    }
+    // 版本号同理：`npm version` / `standard-version` 会直接改写清单并提交，未授权一律拒绝。
+    const versionTool = versionBumpCommand(command);
+    if (versionTool && !scope?.versionBumpAllowed) {
+      return deniedResult(tt('tool.versionBumpCommandNotAuthorized', { command: versionTool }));
+    }
     const timeout = Math.min(settings.maxCommandSeconds, Math.max(5, numberArg(args, 'timeoutSeconds', settings.maxCommandSeconds)));
     const result = await spawnCommand(command, resolvedCwd.fsPath, timeout, settings.maxToolOutputBytes);
     const output = redact([result.stdout, result.stderr].filter(Boolean).join('\n')).trim();
@@ -630,6 +677,53 @@ export class ToolExecutor implements vscode.Disposable {
     };
   }
 
+  /**
+   * git 写操作的准入判断，返回拒绝理由时一律不执行。
+   *
+   * 三道检查，缺一不可：
+   * 1. 用户本轮是否明确要求（或已启用的技能规则要求）—— HWChat 不主动提交；
+   * 2. 本次对话是否已绑定项目根 —— 没有绑定就不许猜，猜错的代价是提交错项目；
+   * 3. git 仓库根必须就是该项目，且不能顺带罩住工作区里的其他项目。
+   */
+  private async gitWriteBlockReason(
+    verb: string,
+    cwd: ResolvedPath,
+    explicitCwd: string | undefined,
+    scope?: ToolExecutionScope,
+  ): Promise<string | undefined> {
+    if (!scope?.gitWriteAllowed) return tt('tool.gitWriteNotRequested', { operation: verb });
+
+    let projectRoot = scope.projectRoot ? resolve(scope.projectRoot) : undefined;
+    if (!projectRoot) {
+      // 未绑定项目根时只接受**显式 cwd**：默认 cwd 落到第一个根目录恰恰是错的那一个。
+      if (!explicitCwd) return tt('tool.gitProjectUnknown');
+      projectRoot = resolve(cwd.folder.uri.fsPath);
+      this.bindProjectRoot(scope, cwd);
+    }
+
+    const repoRoot = await gitRepositoryRoot(cwd.fsPath);
+    if (!repoRoot) return tt('tool.gitNotRepository', { path: cwd.relativePath });
+
+    const [repo, project] = await Promise.all([safeRealpath(repoRoot), safeRealpath(projectRoot)]);
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => resolve(folder.uri.fsPath));
+    const repoIsWorkspaceRoot = roots.some((root) => root === repo);
+    // 允许两种情形：仓库根就是项目根；或项目根在仓库根之内、而仓库根本身是一个工作区根。
+    if (repo !== project && !(isPathWithin(repo, project) && repoIsWorkspaceRoot)) {
+      return tt('tool.gitProjectMismatch', { repo, project });
+    }
+    // 仓库根不能顺带罩住别的工作区根，否则一次 `git add -A` 会收进其他项目的改动。
+    const foreignRoot = roots.find((root) => root !== project && isPathWithin(repo, root));
+    if (foreignRoot) return tt('tool.gitForeignProject', { project: foreignRoot, repo });
+    return undefined;
+  }
+
+  /** 首次确定项目归属时写回对话存档；已绑定时不再改动，避免被后续读操作带偏。 */
+  private bindProjectRoot(scope: ToolExecutionScope | undefined, resolved: ResolvedPath): void {
+    if (!scope || scope.projectRoot || !scope.bindProjectRoot) return;
+    scope.projectRoot = resolve(resolved.folder.uri.fsPath);
+    scope.bindProjectRoot(scope.projectRoot);
+  }
+
   private checkAccess(
     name: string,
     args: Record<string, unknown>,
@@ -637,6 +731,7 @@ export class ToolExecutor implements vscode.Disposable {
     settings: ChatSettings,
     policy: PermissionPolicy,
     tier?: CommandRiskTier,
+    scope?: ToolExecutionScope,
   ): string | undefined {
     if (!['list_workspace_roots', 'list_directory', 'list_files', 'search_files', 'read_file', 'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name)) {
       return tt('tool.toolNotAllowed', { name });
@@ -652,9 +747,12 @@ export class ToolExecutor implements vscode.Disposable {
     }
     if (name === 'run_command') {
       const roots = workspaceRoots();
+      const preferredRoot = scope?.projectRoot
+        ? roots.find((root) => resolve(root.fsPath) === resolve(scope.projectRoot!))
+        : undefined;
       const cwd = (() => {
         try {
-          return resolveWorkspacePath(String(args.cwd ?? '.'), roots, { exists: existsSync }).fsPath;
+          return resolveWorkspacePath(String(args.cwd ?? '.'), roots, { exists: existsSync, preferredRoot }).fsPath;
         } catch {
           return undefined;
         }
@@ -669,12 +767,19 @@ export class ToolExecutor implements vscode.Disposable {
     return undefined;
   }
 
-  private async resolvePath(input: string): Promise<ResolvedPath> {
+  private async resolvePath(input: string, scope?: ToolExecutionScope): Promise<ResolvedPath> {
     const folders = vscode.workspace.workspaceFolders ?? [];
+    const roots = folders.map((folder) => ({ folder, name: folder.name, fsPath: folder.uri.fsPath }));
     const resolved = resolveWorkspacePath(
       input,
-      folders.map((folder) => ({ folder, name: folder.name, fsPath: folder.uri.fsPath })),
-      { exists: existsSync },
+      roots,
+      {
+        exists: existsSync,
+        // 本次对话已绑定项目根时，相对路径以它为准（含 `'.'`）。
+        preferredRoot: scope?.projectRoot
+          ? roots.find((root) => resolve(root.fsPath) === resolve(scope.projectRoot!))
+          : undefined,
+      },
     );
     const actual = await safeRealpath(resolved.fsPath);
     const realRoot = await safeRealpath(resolved.root.fsPath);
@@ -695,6 +800,7 @@ export class ToolExecutor implements vscode.Disposable {
     name: string,
     args: Record<string, unknown>,
     settings: ChatSettings,
+    scope?: ToolExecutionScope,
   ): Promise<{ denied?: string; ask?: boolean; summary?: string; detail?: string }> {
     const policy = sensitiveFilePolicyFor(settings);
     if (policy === 'allow') return {};
@@ -710,7 +816,7 @@ export class ToolExecutor implements vscode.Disposable {
         const value = args[field];
         if (typeof value !== 'string' || !value.trim()) continue;
         try {
-          const resolved = await this.resolvePath(value);
+          const resolved = await this.resolvePath(value, scope);
           if (isSensitivePath(resolved.relativePath)) targets.push(resolved.relativePath);
         } catch {
           // 路径解析失败由具体工具返回更精确的错误信息。
@@ -822,6 +928,30 @@ function deniedResult(summary: string): ToolExecutionResult {
   return { status: 'denied', summary, content: summary, approval: 'denied' };
 }
 
+/**
+ * 版本号写入的准入判断：返回拒绝结果时一律不落盘。
+ *
+ * 只拦「项目版本号被改动」这一种情况：
+ * - 非版本清单、新建文件、解析不出版本号 → 放行（不制造误报）；
+ * - 只改依赖版本或代码 → 放行；
+ * - 用户本轮明确要求（或技能规则要求）→ 放行。
+ */
+function versionBumpBlockReason(
+  resolved: ResolvedPath,
+  before: string,
+  after: string,
+  scope?: ToolExecutionScope,
+): ToolExecutionResult | undefined {
+  if (scope?.versionBumpAllowed) return undefined;
+  const bump = detectVersionBump(basename(resolved.fsPath), before, after);
+  if (!bump) return undefined;
+  return deniedResult(tt('tool.versionBumpNotAuthorized', {
+    file: resolved.relativePath,
+    from: bump.from,
+    to: bump.to,
+  }));
+}
+
 function approvalSummary(name: string, args: Record<string, unknown>): string {
   if (name === 'run_command') return tt('tool.approvalRunCommand', { command: redact(String(args.command ?? '')).slice(0, 180) });
   if (name === 'rename_file') return tt('tool.approvalMoveFile', { from: String(args.from ?? ''), to: String(args.to ?? '') });
@@ -877,6 +1007,32 @@ async function safeRealpath(value: string): Promise<string> {
     if (parent === value) return resolve(value);
     return resolve(await safeRealpath(parent), value.slice(parent.length + 1));
   }
+}
+
+/**
+ * 取 git 仓库根。
+ *
+ * 用途是给 git 写操作划定边界：命令的 cwd 可能是一个仓库里的子目录，
+ * 也可能根本不在仓库里（那就直接拒绝写操作）。用 `--show-toplevel` 而不是
+ * 自己往上找 `.git`，是因为 worktree / submodule / `GIT_DIR` 环境变量这些
+ * 情形下只有 git 自己知道真实边界。
+ */
+async function gitRepositoryRoot(cwd: string): Promise<string | undefined> {
+  return new Promise((resolvePromise) => {
+    const child = spawn('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let output = '';
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      output += String(chunk);
+    });
+    child.on('error', () => resolvePromise(undefined));
+    child.on('close', (code) => {
+      const value = output.trim();
+      resolvePromise(code === 0 && value ? value : undefined);
+    });
+  });
 }
 
 function decodeText(bytes: Uint8Array): string {

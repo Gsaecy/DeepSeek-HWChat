@@ -2,7 +2,24 @@
 
 ## 0.2.1
 
-- 发布版本号定为 **0.2.1**（沿用 0.2.x 补丁号），构建产物为 `hwchat-0.2.1.vsix`。
+- 发布版本号定为 **0.2.1**（沿用 0.2.x 补丁号），构建产物为 `hwchat-0.2.1.vsix`。本版把「任务清单归档胶囊 / 多线程对话」与「git、项目、版本三条边界 + 每条对话独立设置」合并为同一个发布。
+- **版本号也不再主动升级，改为「任务完成后询问」**（用户规则第 4 条）。以前模型很容易把「顺手把版本号也改了」当成收尾步骤，而没有任何一处区分「用户要升版本」和「模型自己想升」。现在：
+  - 提示词硬规则（`VERSION_RULE_PROMPT`，`src/agent/releasePolicy.ts`）：不得自行改动版本清单里的 `version` 字段，不得跑 `npm version` / `yarn version` / `cargo set-version` / `standard-version`，不得打 tag。需要升版本或提交时，**只在这两个时刻**问一次——短任务：本轮对话里提到的所有问题都做完、验证过之后；长任务：明确的阶段边界或整个任务做完之后。任务进行中不问，得到明确同意之前不动版本与 git。
+  - 运行时闸门 `ToolExecutor` + `releasePolicy`：`write_file` / `replace_in_file` 在落盘前比较版本清单里**项目自身**的 `version` 字段，变了就拒绝并提示「先去问用户」；`run_command` 识别 `npm version` 一类升版本命令并拒绝；桥接的 VS Code 工具用 `argumentsMentionVersionBump()` 检查 JSON 参数，换个通道也绕不过去。只读查询（`npm --version`、`git tag -l`）始终放行。
+  - 只认项目级版本号，不做粗粒度文本匹配：`package-lock.json` 里依赖的版本变化、`Cargo.toml` 依赖表里的 `version = "1.0"` 都不会被误判；清单解析失败（例如文件被写坏）时**不拦**，宁可放过也不打断正常的文件修复。支持 JSON / TOML / YAML / MSBuild / Info.plist 五类清单。
+  - 授权口径与 git 一致：用户本轮明确要求（`不要升版本` 这类否定写法排除）或已启用技能规则要求，二者之一即放行。
+- 测试 216 → 240：新增 `src/test/releasePolicy.test.ts`（20 条：五类清单的版本提取、新建文件不算升版本、依赖版本不被误判、解析失败不拦、升版本命令识别与 `npm --version` / `echo` / 提交说明不误杀、命令链与 npx 包装、桥接参数、中英文意图与否定写法、技能规则、提示词是否同时写明「不主动升版本」与两种询问时机），以及 `src/test/toolExecutorVersion.test.ts`（4 条端到端：未授权时版本改动被拒绝**且文件保持原样**、授权后正常写入、普通字段与非清单文件不受影响、`npm version` 被拒而 `npm --version` 放行）。
+- **HWChat 不再主动提交 git**。以前「收尾顺手提交」完全靠模型自觉，而默认预设 `review` 会把 `git add` / `git commit` 判成「正常命令」直接放行，于是模型把提交当收尾步骤时既没人拦、也不弹审批。现在有两道保证：
+  - 提示词里写成硬规则：除非用户在本轮明确要求，或已启用技能的规则要求「完成后提交」，否则不得执行任何 git 写操作（`git add / commit / push / tag / reset / clean / merge / rebase / checkout / restore / stash`）；只读检查（`status / diff / log / show`）始终允许。
+  - 运行时闸门 `src/agent/conversationScope.ts` + `ToolExecutor.gitWriteBlockReason()`：每次 `run_command` 都解析命令里的 git 子命令，未获授权直接拒绝并给出可执行的下一步，**不再依赖模型是否遵守提示词**。授权来源只有两个——用户本轮消息里的明确要求（含「不要提交」这类否定写法的排除），或已启用技能正文里的提交规则（技能正文是说明文字，用宽松匹配识别）。
+- 桥接通道同样受控：VS Code 侧工具（如 `run_in_terminal`）的授权委托给 VS Code，模型换个通道就能绕过原生闸门。现在对桥接工具的 JSON 参数做递归检查（`argumentsMentionGitWrite()`），未授权时直接拒绝，两条通道口径一致。
+- **git 只作用于本次对话的项目**。修复一条真实危险路径：`run_command` 的 `cwd` 默认值是 `'.'`，在多根工作区里会解析到**第一个**工作区根目录（本项目 19 个根里排第一的是另一个项目），于是「提交一下」可能提交掉完全无关的项目，而且不弹审批。现在：
+  - `ConversationSummary` 新增 `projectRoot`，首次写入文件或显式指定 `cwd` 时绑定（`resolveWorkspacePath` 新增 `preferredRoot`，`'.'` 直接解析成该项目根，多根同名文件优先取项目内的那一份，新文件也在项目里创建）。
+  - git 写操作前用 `git rev-parse --show-toplevel` 取真实仓库根，要求它与项目根一致（或项目根在某个工作区根之内）；**仓库根若还罩着另一个工作区项目，也拒绝**——否则一次 `git add -A` 会把别的项目改动一起收进去。
+  - 项目根尚未绑定时，git 写操作只接受**显式 `cwd`**，绝不把「默认落到第一个根」当成项目归属。
+- **每条对话的运行时设置互不污染**（多线程对话的前提）。以前权限预设 / 最大步骤 / 思考深度 / 模型全部写进 `hwchat.*` 全局设置：在对话 A 把预设调成「完全访问」，正在后台跑的对话 B 会立刻跟着放宽；对话 B 把步骤数改成 8，正在跑的 A 下一轮就被截断。现在这三项 + 模型都归属对话（`ConversationSummary.permissionPreset / agentMaxSteps / reasoningEffort / model`），采用与模式一致的优先级：**对话存档值 → 工具条草稿选择 → 全局默认值**（`src/core/conversationControls.ts`）。全局设置只作为新对话的默认值，面板上的改动写回当前对话。
+- 存档侧同样做了脏值防御：`normalizeStored*` + `sanitizeSummary()` 在载入时把非法枚举、非数字步骤、非字符串项目根一律丢掉（回落到全局默认），而不是带着脏值去猜；`agentMaxSteps` 保留 `0 = 不限步` 的语义，字符串 `'99'` 不会被当成 99 或「不限」。
+- 测试 189 → 216：新增 `conversationScope.test.ts`（13 条：写的识别、读子命令不误判、`git -C` / 全局选项、命令链拆分、`echo "git commit"` 不误杀、混合子命令按参数分类、中英文意图与否定写法、技能规则授权、桥接 JSON 参数检测）、`conversationControls.test.ts`（6 条：默认继承、对话值优先且不反向污染全局、非法预设回落、步骤 0 与脏值、思考深度回落而非变成 `default`、枚举校验）、`workspacePaths.test.ts` 新增 5 条 `preferredRoot` 用例、storage 新增 2 条（项目根与三项设置随 manifest 持久化且不影响其他对话；非法值载入时丢弃）。
 - **中断的清单（停止 / 失败 / 关窗口）改成「保守待办」显示**，不再出现「什么都没在跑、界面却一直跳执行中」的假象。运行结束的结算收敛到一个纯函数 `planTodoSettlement()`（`src/core/todoArchives.ts`）：全部完成 → 归档成胶囊；否则 → 清单留在面板上，把 `in_progress` 降级成 `pending` 并记 `todosInterrupted: true`。`send()` 的 `finally` 对成功 / 失败 / 停止走同一条路径，所以模型报错、网络中断、用户点停止的处理完全一致。
 - 关窗口 / 进程被杀时 `finally` 不一定会跑到：`sendState()` 读清单时补一次归位（`viewTodos()`），把存档里残留的 `in_progress` 降级成待办，重开面板不会再有假跳动。
 - 用户**接着做**：模型沿用原清单、把当前项改回 `in_progress`，全绿后照常归档；用户**换新任务**：新清单整体覆盖旧清单（`updateTodos()` 同时清掉中断标记），旧清单不保留、也不进归档。`update_todos` 的工具说明补上这条约定，让模型知道要沿用被中断的清单。
