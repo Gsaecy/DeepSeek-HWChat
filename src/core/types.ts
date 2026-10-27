@@ -69,6 +69,15 @@ export interface UsageInfo {
 
 export interface MessageContext {
   label: string;
+  /**
+   * 面板侧用来找回「完整附件」的句柄。
+   *
+   * webview 只拿到去掉 `dataBase64` / `content` 的精简副本（避免把几 MB 的图片
+   * 常驻在前端），所以点击附件时只能回传一个标识，由扩展按 id 取回原始内容。
+   * 对同一个附件反复调用 `attachmentForWebview` 必须得到同一个 id，否则
+   * 每次重绘都会在索引里多出一条，而点击时又找不回刚才那条。
+   */
+  id?: string;
   content?: string;
   dataBase64?: string;
   path?: string;
@@ -364,7 +373,7 @@ export interface WebviewConversationState {
   conversations: ConversationSummary[];
   settings: Pick<ChatSettings, 'apiProfiles' | 'activeApiProfileId' | 'model' | 'sendOnEnter' | 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort'>;
   apiKeyConfigured: boolean;
-  pendingAttachments: Array<Pick<MessageContext, 'label' | 'path' | 'kind' | 'bytes' | 'mimeType' | 'thumbnailDataUrl'>>;
+  pendingAttachments: Array<Pick<MessageContext, 'id' | 'label' | 'path' | 'kind' | 'bytes' | 'mimeType' | 'thumbnailDataUrl'>>;
   modelOptionsByProfile: Record<string, ModelOption[]>;
   archivedConversations: ConversationSummary[];
   skills: SkillSummary[];

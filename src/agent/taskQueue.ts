@@ -22,12 +22,20 @@ export class AgentTaskQueue {
   private readonly queued: PendingTask[] = [];
   private routingTail: Promise<void> = Promise.resolve();
   private currentNodeId: string;
+  /**
+   * 根节点是「续跑绑定」时记下它的 id。
+   *
+   * 续跑的作用域来自暂停清单，语义只对根节点成立；一旦 `take()` 换到排队分支，
+   * `currentNodeId` 就变了，判定随之失效——否则一个已经结束的续跑会继续污染后续分支。
+   */
+  private readonly resumeNodeId: string | undefined;
   private accepting = true;
   private usage: UsageInfo | undefined;
 
-  constructor(rootTitle: string) {
+  constructor(rootTitle: string, options: { resumeScope?: boolean } = {}) {
     const rootId = createId('task');
     this.currentNodeId = rootId;
+    this.resumeNodeId = options.resumeScope === true ? rootId : undefined;
     this.nodes = [{
       id: rootId,
       title: shortTitle(rootTitle, '当前任务'),
@@ -65,7 +73,7 @@ export class AgentTaskQueue {
   enqueue(
     title: string,
     request: ChatRequestMessage,
-    classify: (currentTask: string, incomingTask: string) => Promise<{ relation: TaskRelation; usage?: UsageInfo }>,
+    classify: (currentTask: string, incomingTask: string, resumeScope: boolean) => Promise<{ relation: TaskRelation; usage?: UsageInfo }>,
     onChange: (state: AgentTaskTreeState) => void | Promise<void>,
     binding: AgentTaskBinding = {},
   ): AgentTaskNode {
@@ -82,7 +90,7 @@ export class AgentTaskQueue {
     this.routingTail = this.routingTail.then(async () => {
       let classified: { relation: TaskRelation; usage?: UsageInfo };
       try {
-        classified = await classify(this.currentTitle(), title);
+        classified = await classify(this.currentTitle(), title, this.currentNodeId === this.resumeNodeId);
       } catch {
         if (!this.accepting) {
           node.status = 'cancelled';

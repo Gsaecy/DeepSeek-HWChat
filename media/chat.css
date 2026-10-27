@@ -180,6 +180,8 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .conversation-dot.awaiting { background: var(--warning); }
 @keyframes conversation-dot { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .conversation-meta { color: var(--muted); font-size: 10px; white-space: nowrap; }
+/* 侧边栏卡片里的运行状态：用强调色（蓝）把「这条正在跑」从时间戳里拎出来。 */
+.conversation-status.running { color: var(--accent); }
 .conversation-preview { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
 .conversation-actions { display: none; padding-right: 4px; gap: 1px; }
 .conversation-row:hover .conversation-actions, .conversation-row:focus-within .conversation-actions, .conversation-row.active .conversation-actions { display: flex; }
@@ -874,6 +876,12 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 .attachment-chip small { color: var(--muted); font-size: 9px; white-space: nowrap; }
 .attachment-chip button { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; }
 .attachment-chip button:hover { color: var(--surface-hover-fg); background: var(--surface-hover); }
+/* 可点击查看的附件：光标 + 悬停描边，用最小的视觉成本说明「这里能点」。 */
+.attachment-openable { cursor: pointer; }
+.attachment-chip.attachment-openable:hover,
+.message-file-attachment.attachment-openable:hover,
+.message-image-attachment.attachment-openable:hover { border-color: var(--accent); }
+.attachment-openable:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 
 .toast { position: fixed; left: 50%; bottom: 92px; z-index: 10; max-width: min(460px, calc(100% - 32px)); transform: translateX(-50%); padding: 9px 12px; border: 1px solid var(--border); border-radius: 7px; color: var(--notification-fg); background: var(--notification-bg); box-shadow: var(--shadow); }
 .toast[data-tone="error"] { border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); }

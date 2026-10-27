@@ -44,3 +44,51 @@ test('uses a conservative local fallback when relation classification fails', ()
   assert.equal(fallbackTaskRelation('修改 src/auth.ts 登录刷新', '继续调整 auth.ts 的错误处理'), 'related');
   assert.equal(fallbackTaskRelation('修改 src/auth.ts 登录刷新', '新增支付结果页面'), 'queued');
 });
+
+test('续跑语义只作用在续跑根分支，换到排队分支后自动失效', async () => {
+  const flags: boolean[] = [];
+  const onChange = () => {};
+  const queue = new AgentTaskQueue('附件点击打开；运行中显示蓝色', { resumeScope: true });
+
+  queue.enqueue(
+    '将侧边栏的运行状态改成蓝色',
+    { role: 'user', content: '将侧边栏的运行状态改成蓝色' },
+    async (_current, _incoming, resumeScope) => {
+      flags.push(resumeScope);
+      return { relation: 'queued' };
+    },
+    onChange,
+  );
+  // 续跑根节点上比较新需求：必须告知分类器「当前是续跑清单，不是单一交付物」。
+  assert.equal((await queue.take('complete', onChange)).length, 1);
+  assert.deepEqual(flags, [true]);
+
+  queue.enqueue(
+    '再加一个导出按钮',
+    { role: 'user', content: '再加一个导出按钮' },
+    async (_current, _incoming, resumeScope) => {
+      flags.push(resumeScope);
+      return { relation: 'queued' };
+    },
+    onChange,
+  );
+  await queue.take('complete', onChange);
+  // 已经离开续跑分支：不能再让旧清单的语义影响后续任务。
+  assert.deepEqual(flags, [true, false]);
+});
+
+test('普通队列从不声明续跑语义', async () => {
+  const flags: boolean[] = [];
+  const queue = new AgentTaskQueue('修复登录刷新并发问题');
+  queue.enqueue(
+    '新增支付结果页面',
+    { role: 'user', content: '新增支付结果页面' },
+    async (_current, _incoming, resumeScope) => {
+      flags.push(resumeScope);
+      return { relation: 'queued' };
+    },
+    () => {},
+  );
+  await queue.take('complete', () => {});
+  assert.deepEqual(flags, [false]);
+});

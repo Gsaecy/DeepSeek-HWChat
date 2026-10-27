@@ -44,6 +44,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let settingsPanel!: SettingsPanel;
   const chat = new ChatPanel(
     context.extensionUri,
+    context.globalStorageUri,
     storage,
     client,
     context.secrets,

@@ -100,6 +100,27 @@
   const secretScan = globalThis.HWChatSecretScan || null;
 
   /**
+   * toast 的显示时长。规则在 media/toast-timing.js（纯函数，可单独单测）。
+   *
+   * 原来所有 toast 一律 4.2 秒，与文字长度无关 —— 六十多个汉字的停滞提醒
+   * 在 4.2 秒里读不完，用户反馈「弹了一次但消失太快，没看清」。
+   *
+   * 退化策略：模块没加载成功时退回原来的 4.2 秒，行为与改动前完全一致。
+   */
+  const toastTiming = globalThis.HWChatToastTiming || null;
+
+  /**
+   * 收尾清单里的复选框剥离。规则在 media/follow-up-format.js（纯函数，可单测）。
+   *
+   * 模型爱把「需要你做的」写成 `1. [ ] **动作**`，渲染出来就是一串字面方括号。
+   * 提示词已经要求它别这么写（src/agent/followUpPrompt.ts），这里再兜一层：
+   * 只剥有序列表的标记，`- [ ]` 这类真正的任务列表保持原样。
+   *
+   * 退化策略：模块没加载成功时原样显示，行为与改动前一致。
+   */
+  const followUpFormat = globalThis.HWChatFollowUpFormat || null;
+
+  /**
    * 造一个图标节点。
    *
    * 用 DOMParser 而不是 innerHTML：SVG 是外来命名空间，用 HTML 解析器插入时
@@ -356,10 +377,14 @@
       if (runningNow) titleRow.append(textElement('span', 'conversation-dot running', ''));
       if (awaitingNow) titleRow.append(textElement('span', 'conversation-dot awaiting', ''));
       titleRow.append(textElement('span', 'conversation-title', conversation.title));
-      const statusPrefix = awaitingNow ? `${t('approval.pending')} · ` : runningNow ? `${t('chat.running')} · ` : '';
+      // 状态文字单独成节点（而不是拼进整段 meta 字符串）：「运行中」要单独着色，
+      // 时间戳和 token 数必须保持原色，否则整行都被染蓝就分不出重点了。
       const tokenTotal = conversation.totalTokens ? ` · ${formatMillionTokens(conversation.totalTokens)} tokens` : '';
       const linked = conversation.sourceConversationId ? t('chat.continuedPrefix') : '';
-      const meta = textElement('span', 'conversation-meta', `${statusPrefix}${linked}${relativeTime(conversation.updatedAt)}${tokenTotal}`);
+      const meta = textElement('span', 'conversation-meta', '');
+      if (awaitingNow) meta.append(textElement('span', 'conversation-status awaiting', `${t('approval.pending')} · `));
+      else if (runningNow) meta.append(textElement('span', 'conversation-status running', `${t('chat.running')} · `));
+      meta.append(document.createTextNode(`${linked}${relativeTime(conversation.updatedAt)}${tokenTotal}`));
       const preview = textElement('span', 'conversation-preview', conversation.preview || t('common.emptyConversation'));
       content.append(titleRow, meta, preview);
       content.addEventListener('click', () => { post('selectConversation', { id: conversation.id }); closeMobileHistory(); });
@@ -1132,15 +1157,48 @@
     details.append(summary, list); return details;
   }
 
+  /**
+   * 点击附件 → 在编辑器里打开查看（粘贴错了可以先点开核对再发送）。
+   *
+   * 只回传标识，不回传内容：前端从来没有拿到 `dataBase64`，`id` 才是这里
+   * 唯一可靠的句柄，扩展侧靠它取回完整附件。
+   */
+  function attachmentOpenPayload(attachment) {
+    const payload = { label: attachment && attachment.label ? String(attachment.label) : '' };
+    if (attachment && attachment.id) payload.id = attachment.id;
+    if (attachment && attachment.path) payload.path = attachment.path;
+    return payload;
+  }
+
+  function makeAttachmentOpenable(element, attachment) {
+    const base = (attachment && (attachment.path || attachment.label)) || '';
+    element.title = `${base} · ${t('chat.openAttachmentHint')}`;
+    element.classList.add('attachment-openable');
+    element.setAttribute('role', 'button');
+    element.tabIndex = 0;
+    element.addEventListener('click', (event) => {
+      // 删除按钮在同一个容器里，点它不能顺带把附件打开。
+      if (event.target instanceof Element && event.target.closest('button')) return;
+      post('openAttachment', attachmentOpenPayload(attachment));
+    });
+    element.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      post('openAttachment', attachmentOpenPayload(attachment));
+    });
+  }
+
   function renderMessageAttachments(attachments) {
     const row = document.createElement('div'); row.className = 'message-attachments';
     for (const attachment of attachments) {
       if (attachment.kind === 'image' && attachment.thumbnailDataUrl) {
-        const figure = document.createElement('figure'); figure.className = 'message-image-attachment'; figure.title = attachment.path || attachment.label;
+        const figure = document.createElement('figure'); figure.className = 'message-image-attachment';
         const image = document.createElement('img'); image.src = attachment.thumbnailDataUrl; image.alt = attachment.label;
         figure.append(image, textElement('figcaption', '', attachment.label)); row.append(figure);
+        makeAttachmentOpenable(figure, attachment);
       } else {
-        const chip = textElement('span', 'message-file-attachment', attachment.label); chip.title = attachment.path || attachment.label; row.append(chip);
+        const chip = textElement('span', 'message-file-attachment', attachment.label); row.append(chip);
+        makeAttachmentOpenable(chip, attachment);
       }
     }
     return row;
@@ -1464,7 +1522,9 @@
         indent: match[1].replace(/\t/g, '    ').length,
         ordered: /\d/.test(match[2]),
         startNumber: Number.parseInt(match[2], 10) || 1,
-        text: match[3],
+        // 有序列表开头多出来的 `[ ]` 是模型自带的复选框标记，渲染出来只是噪音；
+        // 提示词已经禁止，这里再兜一层（见 media/follow-up-format.js）。
+        text: followUpFormat ? followUpFormat.listItemText(match[2], match[3]) : match[3],
         blocks: [],
       });
       index += 1;
@@ -1592,12 +1652,14 @@
         const image = document.createElement('img'); image.src = attachment.thumbnailDataUrl; image.alt = '';
         chip.append(image);
       }
-      const label = textElement('span', '', attachment.label); label.title = attachment.path || attachment.label;
+      const label = textElement('span', '', attachment.label);
       const size = textElement('small', '', attachment.kind === 'selection' ? t('chat.codeSelection') : formatBytes(attachment.bytes || 0));
       const remove = textElement('button', '', ''); remove.type = 'button'; remove.title = t('common.remove'); remove.append(iconNode('close'));
       if (attachment.kind === 'selection') remove.addEventListener('click', () => post('removeContext'));
       else { const index = fileIndex; remove.addEventListener('click', () => post('removeAttachment', { index })); fileIndex += 1; }
       chip.append(label, size, remove); elements.attachmentList.append(chip);
+      // 待发送的附件同样可以点开核对——「粘贴错了」正好发生在发送之前。
+      makeAttachmentOpenable(chip, attachment);
     }
     elements.contextChip.hidden = true;
   }
@@ -1668,12 +1730,24 @@
     if (running === state.streaming) { updateComposerState(); return; }
     setStreaming(running, currentId);
   }
-  function showToast(text, tone = 'neutral') { elements.toast.textContent = text; elements.toast.dataset.tone = tone; elements.toast.hidden = false; clearTimeout(showToast.timer); showToast.timer = setTimeout(() => { elements.toast.hidden = true; }, 4200); }
+  function showToast(text, tone = 'neutral') {
+    elements.toast.textContent = text;
+    elements.toast.dataset.tone = tone;
+    elements.toast.hidden = false;
+    clearTimeout(showToast.timer);
+    // 时长跟文字量走：长警告要读得完，短提示仍维持 4 秒左右。
+    const duration = toastTiming ? toastTiming.toastDurationMs(text, tone) : 4200;
+    showToast.timer = setTimeout(hideToast, duration);
+  }
+  /** 立刻收起提示。函数声明会提升，所以 showToast 里可以直接引用。 */
+  function hideToast() { clearTimeout(showToast.timer); elements.toast.hidden = true; }
   function closeMobileHistory() { elements.app.classList.remove('history-open'); }
   function textElement(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; node.textContent = text; return node; }
 
   // 三个面板（任务树 / 任务清单 / 归档快照）互斥展开。
   // 鼠标点击和键盘回车/空格触发的都是 click，所以这一处就覆盖了全部展开入口。
+  // 点一下就把提示收起：有些警告确实要读很久，何时消掉应该由用户决定。
+  elements.toast.addEventListener('click', hideToast);
   elements.editTitleButton.append(iconNode('pencil'));
   elements.saveTitleButton.append(iconNode('check'));
   elements.cancelTitleButton.append(iconNode('close'));

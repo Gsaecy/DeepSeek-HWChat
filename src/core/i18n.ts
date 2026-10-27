@@ -54,6 +54,7 @@ const DICTIONARY: Record<string, Entry> = {
   'common.minutes': { zh: '分钟', en: 'min' },
   'common.listSeparator': { zh: '、', en: ', ' },
   'chat.clipboardAttachment': { zh: '剪贴板附件', en: 'Clipboard attachment' },
+  'chat.openAttachmentHint': { zh: '点击在编辑器中查看', en: 'Click to open in the editor' },
   'notice.attachmentTaskPrefix': { zh: '处理附件：', en: 'Work with attachments: ' },
   'chat.continuationTitlePrefix': { zh: '继续：', en: 'Continue: ' },
   'chat.untitledTask': { zh: '未命名任务', en: 'Untitled task' },
@@ -582,6 +583,8 @@ const DICTIONARY: Record<string, Entry> = {
   'error.clipboardBase64': { zh: '剪贴板附件不是有效的 Base64 数据。', en: 'The clipboard attachment is not valid Base64 data.' },
   'error.clipboardEmpty': { zh: '剪贴板附件为空。', en: 'The clipboard attachment is empty.' },
   'error.clipboardBinary': { zh: '该剪贴板文件是二进制文件；图片请使用图像格式粘贴。', en: 'The clipboard file is binary; paste images in an image format instead.' },
+  'error.attachmentUnavailable': { zh: '这个附件的内容已被清理，无法再打开。', en: 'The body of this attachment has been cleared and can no longer be opened.' },
+  'error.attachmentOpenFailed': { zh: '无法打开附件：{error}', en: 'Could not open the attachment: {error}' },
 
   // 历史视图
   'history.pinned': { zh: '固定 · ', en: 'Pinned · ' },
