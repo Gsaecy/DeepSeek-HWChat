@@ -241,3 +241,92 @@ test('search resource exhaustion surfaces as an actionable error, not an infinit
     return true;
   });
 });
+
+/**
+ * 「按了停止，后台还在跑」的两个来源，逐条锁死。
+ *
+ * 旧实现：先 SIGTERM、1 秒后才 SIGKILL，结算还要等 close 或 4.5 秒硬兜底。
+ * 于是忽略 SIGTERM 的进程能活 1 秒以上，界面在那段时间里还显示「运行中」。
+ */
+test('spawn: 取消是立即 SIGKILL，不给忽略 SIGTERM 的进程留活口', async () => {
+  const controller = new AbortController();
+  let pid: number | undefined;
+  // `trap '' TERM` 让 shell 忽略 SIGTERM 并继续 sleep：旧实现下它会活满 1 秒。
+  // 用 SIGKILL 才能杀掉它，正好验证「立即 SIGKILL」这条语义。
+  const pending = spawnCommand(
+    `sh -c 'trap "" TERM; sleep 30'`,
+    process.cwd(),
+    60,
+    10_000,
+    undefined,
+    { signal: controller.signal, onSpawn: (child) => { pid = child.pid; } },
+  );
+  await sleepUntil(() => pid !== undefined, 2_000);
+  const abortedAt = Date.now();
+  controller.abort();
+  const result = await pending;
+  const settledMs = Date.now() - abortedAt;
+
+  assert.equal(result.cancelled, true);
+  assert.ok(settledMs < 500, `取消必须在毫秒级结算，实际 ${settledMs}ms（旧实现要等 close 或 4.5s）`);
+  assert.ok(pid !== undefined);
+  const dead = await sleepUntil(() => !isProcessAlive(pid!), 1_000, 10);
+  assert.equal(dead, true, `忽略 SIGTERM 的进程 ${pid} 必须被立即 SIGKILL`);
+});
+
+test('tool executor: 停止某一次运行会同步杀光它拉起的全部进程', async () => {
+  const executor = new ToolExecutor(new AuditLog(auditPath), () => true);
+  const controller = new AbortController();
+  const pending = executor.execute(
+    { id: 'kill-run', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'sleep 30', timeoutSeconds: 60 }) } },
+    'agent',
+    settings({ permissionPreset: 'autopilot' }),
+    async () => true,
+    'conversation-kill-run',
+    { signal: controller.signal, projectRoot: workspaceRoot },
+  );
+  try {
+    const started = await sleepUntil(() => executor.resourceStats().children > 0, 3_000, 10);
+    assert.equal(started, true, '命令没有真正拉起进程，测试前提不成立');
+
+    // 这就是「停止」按钮做的事：同步杀，不等任何异步路径。
+    const killed = executor.killRunProcesses(controller.signal);
+    assert.ok(killed >= 1, '必须同步杀掉这次运行的子进程');
+    assert.equal(executor.resourceStats().children, 0, '杀完后不应再有登记的存活子进程');
+
+    controller.abort();
+    await pending.catch(() => undefined);
+  } finally {
+    executor.dispose();
+  }
+});
+
+test('tool executor: 杀某一次运行不影响另一次运行的进程', async () => {
+  const executor = new ToolExecutor(new AuditLog(auditPath), () => true);
+  const stopA = new AbortController();
+  const keepB = new AbortController();
+  const run = (id: string, signal: AbortSignal) => executor.execute(
+    { id, type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'sleep 30', timeoutSeconds: 60 }) } },
+    'agent',
+    settings({ permissionPreset: 'autopilot' }),
+    async () => true,
+    `conversation-${id}`,
+    { signal, projectRoot: workspaceRoot },
+  );
+  try {
+    const a = run('a', stopA.signal);
+    const b = run('b', keepB.signal);
+    const both = await sleepUntil(() => executor.resourceStats().children >= 2, 4_000, 10);
+    assert.equal(both, true, '两条命令都应拉起进程');
+
+    const killed = executor.killRunProcesses(stopA.signal);
+    assert.equal(killed, 1, '只应杀掉 A 的进程');
+    assert.equal(executor.resourceStats().children, 1, 'B 的进程必须还在（后台对话不能被连带停掉）');
+
+    stopA.abort();
+    keepB.abort();
+    await Promise.allSettled([a, b]);
+  } finally {
+    executor.dispose();
+  }
+});

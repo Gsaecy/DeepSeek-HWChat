@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isReasoningEffort, resolveConversationControls } from '../core/conversationControls';
+import { controlChangeScope, isReasoningEffort, resolveConversationControls } from '../core/conversationControls';
 import { AGENT_STEP_SAFETY_CAP, DEFAULT_AGENT_MAX_STEPS } from '../core/agentLimits';
 
 const defaults = {
@@ -69,4 +69,24 @@ test('controls: isReasoningEffort accepts exactly the six supported values', () 
   for (const value of ['ultra', '', undefined, null, 3]) {
     assert.equal(isReasoningEffort(value), false);
   }
+});
+
+/**
+ * 运行中改「最大步骤 / 思考深度」的生效范围。
+ *
+ * 与权限预设同一套语义：正在跑的这轮用运行开始时的设置快照，所以新值只对
+ * 下一次发送生效。以前这两个下拉在运行中直接被禁用，用户只能等这一轮跑完。
+ */
+test('controlChangeScope：没有运行中的任务时立刻生效', () => {
+  assert.equal(controlChangeScope({ runningValue: undefined, requested: 24 }), 'immediate');
+});
+
+test('controlChangeScope：运行中改成别的值 → 只对下一次发送生效', () => {
+  assert.equal(controlChangeScope({ runningValue: 24, requested: 68 }), 'next-send-only');
+  assert.equal(controlChangeScope({ runningValue: 'default', requested: 'high' }), 'next-send-only');
+});
+
+test('controlChangeScope：选回和当前运行相同的值 → 不需要提示「下一次生效」', () => {
+  assert.equal(controlChangeScope({ runningValue: 24, requested: 24 }), 'immediate');
+  assert.equal(controlChangeScope({ runningValue: 'high', requested: 'high' }), 'immediate');
 });

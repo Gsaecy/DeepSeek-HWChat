@@ -625,7 +625,24 @@
     const singleLabel = support === 'unsupported' ? t('chat.reasoningUnsupportedShort') : support === 'fixed' ? t('chat.reasoningFixedShort') : support === 'unknown' ? t('chat.reasoningUnknownShort') : undefined;
     replaceSelectOptions(elements.reasoningEffortInput, efforts.map((value) => ({ value, label: singleLabel || labels[value] || value })), state.reasoningEffort);
     elements.reasoningEffortInput.dataset.support = support;
-    elements.reasoningEffortInput.title = title;
+    elements.reasoningEffortInput.dataset.baseTitle = title;
+    applyReasoningTitle();
+  }
+
+  /** 思考深度的悬停提示 = 能力说明 + （运行中）「下一次发送生效」。 */
+  function applyReasoningTitle() {
+    const base = elements.reasoningEffortInput.dataset.baseTitle || '';
+    const nextSend = state.streaming && elements.reasoningEffortInput.dataset.support === 'configurable'
+      ? t('chat.controlsNextSendHint')
+      : '';
+    elements.reasoningEffortInput.title = [base, nextSend].filter(Boolean).join('\n');
+  }
+
+  /** 步数与思考深度在运行中也能改，把「下一次发送生效」写进悬停提示。 */
+  function syncNextSendHints() {
+    const nextSend = state.streaming ? t('chat.controlsNextSendHint') : '';
+    elements.agentMaxStepsInput.title = [t('chat.maxSteps'), nextSend].filter(Boolean).join('\n');
+    applyReasoningTitle();
   }
 
   function replaceSelectOptions(select, options, selected) {
@@ -2283,12 +2300,15 @@
     elements.refreshModelsButton.disabled = state.streaming || archived || Boolean(state.modelLoadingProfileId);
     // 预设允许在任务运行中改（只对下一次对话生效）；步数与思考深度仍然锁在当前任务上。
     elements.permissionPresetInput.disabled = archived || state.permissionPresetPending;
-    elements.agentMaxStepsInput.disabled = state.streaming || archived;
-    elements.reasoningEffortInput.disabled = state.streaming || archived || elements.reasoningEffortInput.dataset.support !== 'configurable';
+    // 步数与思考深度和权限预设同一套语义：**运行中可改，下一次发送生效**。
+    // 当前这一轮用的是运行开始时的设置快照，所以中途改不会让同一轮前后请求不一致。
+    elements.agentMaxStepsInput.disabled = archived;
+    elements.reasoningEffortInput.disabled = archived || elements.reasoningEffortInput.dataset.support !== 'configurable';
     elements.voiceButton.disabled = archived;
     elements.detachHistoryButton.disabled = state.streaming || archived;
     elements.promptInput.placeholder = archived ? t('chat.promptPlaceholderArchived') : state.streaming ? t('chat.promptPlaceholderStreaming') : t('chat.promptPlaceholderAgent');
     syncPermissionHint();
+    syncNextSendHints();
   }
 
   function autoResize() { elements.promptInput.style.height = 'auto'; elements.promptInput.style.height = `${Math.min(elements.promptInput.scrollHeight, 180)}px`; updateComposerState(); }

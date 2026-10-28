@@ -135,6 +135,23 @@ export function presetChangeScope(options: {
 }
 
 /**
+ * 运行中改了「最大步骤 / 思考深度」时，这次改动对谁生效。
+ *
+ * 与 `presetChangeScope()` 同一套语义：正在跑的 Agent 用的是**运行开始时的设置快照**
+ * （`ConversationRun.settings`），所以持久化新值不会影响它；下一次发送才读新值。
+ * 抽成函数是为了让「提示文案」和「真实行为」共用一个判据。
+ */
+export function controlChangeScope(options: {
+  /** 本次运行开始时快照的值；没有正在运行的任务时为 undefined。 */
+  runningValue?: string | number;
+  /** 用户刚选的值。 */
+  requested: string | number;
+}): 'immediate' | 'next-send-only' {
+  if (options.runningValue === undefined) return 'immediate';
+  return options.runningValue === options.requested ? 'immediate' : 'next-send-only';
+}
+
+/**
  * 这是不是一条「建了但一直没用」的空对话？
  *
  * 用途有两处，判据必须完全一致（以前是两段各写一遍的条件，容易走偏）：

@@ -23,7 +23,7 @@ import { FOLLOW_UP_PROMPT } from '../agent/followUpPrompt';
 import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChangedFiles } from '../agent/workspacePaths';
 import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
-import { NEW_CONVERSATION_CONTROLS, isReasoningEffort, presetChangeScope, resolveConversationControls, resolveNewConversationControls, type ConversationControls } from '../core/conversationControls';
+import { NEW_CONVERSATION_CONTROLS, controlChangeScope, isReasoningEffort, presetChangeScope, resolveConversationControls, resolveNewConversationControls, type ConversationControls } from '../core/conversationControls';
 import { PERMISSION_PRESET_IDS, permissionPresetDetail, permissionPresetDetails } from '../core/permissions';
 import { currentLanguage, messageScriptTag, t, tt, type Language } from '../core/i18n';
 import { isConversationMode, modePromptInstruction, resolveActiveMode, resolveConversationMode } from '../core/modes';
@@ -679,9 +679,23 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     await this.continueFromConversation(sourceId);
   }
 
+  /**
+   * 停止当前对话。
+   *
+   * 顺序很重要：**先同步杀进程，再 abort**。
+   * `abort()` 只是通知，真正杀进程发生在各个工具的取消分支里；只要有一个工具
+   * 还没走到取消分支（在等 IO、或命令正在调度器里排队），它的子进程就会活下来
+   * ——「按了停止，后台还在跑」就是这么来的。这里先按该次运行同步 SIGKILL 掉
+   * 全部子进程，再 abort 让 Agent 循环与搜索/队列一起收手。
+   *
+   * 只停当前对话的线程：另一个对话在后台跑不该被这个按钮连带停掉。
+   */
   stop(): void {
-    // 只停当前对话的线程：另一个对话在后台跑不该被这个按钮连带停掉。
-    this.viewedRun?.controller.abort();
+    const run = this.viewedRun;
+    if (!run) return;
+    const killed = this.toolExecutor.killRunProcesses(run.controller.signal);
+    run.controller.abort();
+    if (killed) this.log(`[stop] 已立即终止 ${killed} 个子进程`);
   }
 
   dispose(): void {

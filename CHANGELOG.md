@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.8
+
+- **最大步骤 / 思考深度也可以在 Agent 运行中切换了，且只对下一次发送生效**（与权限预设同一套语义）。以前这两个下拉在流式输出期间被直接 `disabled`，用户想「这一轮跑完就换成 68 步 / 更高思考」只能干等。现在：
+  - 面板侧 `setAgentMaxSteps()` / `setReasoningEffort()` 不再 `if (this.viewingBusy) return;`；改的是**这条对话**的存档值，正在跑的这轮仍用运行开始时的设置快照（`ConversationRun.settings`），所以不会让同一轮里前后请求的档位不一致。
+  - 改了会弹一条说明「已改为 X。当前这一轮仍按原设置执行，下一次发送起生效」，并把同样的提示写进两个下拉的悬停说明——否则用户改了看不见变化，会以为设置没生效。
+  - 判据抽成 `core/conversationControls.ts` 的 `controlChangeScope()`（没有运行中的任务 → 立刻生效；运行中改成了别的值 → 下一次发送生效；选回当前运行的值 → 不打扰）。界面与文案共用一个判据，不会分叉。
+  - headless Chromium 实测：运行中两个下拉都 `disabled=false`、悬停提示含「下一次发送起生效」；空闲时不显示该提示；运行中改值后选择保持住。
+
+- **停止按钮现在真的「按下即停」：立即 SIGKILL 整个进程组，不再先 SIGTERM 等 1 秒、也不再等 4.5 秒结算**。用户反馈「按了停止后台还在跑」。审计出四个来源，逐个修掉：
+  - **`spawnCommand` 的取消路径改了**：原来 `killTree('SIGTERM')` 之后 `setTimeout(SIGKILL, 1_000)`，忽略 SIGTERM 的进程（`npm run dev`、自己管子进程的构建工具）能在这一秒里继续跑。现在直接 SIGKILL，并在 250ms 补一枪覆盖「父进程刚收到信号时正在 fork 孙进程」的竞态窗口。
+  - **结算不再等 `close`**：原来要等 `close`（孙进程攥着管道时永不触发）或 `COMMAND_CLOSE_GRACE_MS + COMMAND_HARD_SETTLE_MS` = **4.5 秒**的硬兜底，那段时间界面还显示「运行中」。现在取消时立刻 `destroy()` 管道并 `settle()`，工具调用马上返回「命令已取消」。
+  - **停止时同步杀光这次运行的全部子进程**：新增 `ToolExecutor.killRunProcesses(signal)`，子进程按 `AbortSignal` 归组（`children` 从 `Set` 改成 `Map<ChildProcess, AbortSignal|undefined>`）。`ChatPanel.stop()` 改为**先同步 SIGKILL 再 abort**——只靠 `abort()` 是不够的：它只是通知，真正杀进程发生在各工具的取消分支里，只要有一个工具没走到取消分支（在等 IO、或命令还在调度器里排队），进程就会活下来，这正是「假停止」的形态。按信号归组还保证**不影响另一个正在后台跑的对话**。
+  - **`dispose()` 也改成立即 SIGKILL**（原来同样有 1 秒 SIGTERM 宽限）。
+  - 实测（真实进程，`isProcessAlive` 探活）：`sh -c 'trap "" TERM; sleep 30'` 这种**忽略 SIGTERM** 的进程，取消后 **<500ms 内结算且进程已消失**；`killRunProcesses()` 只杀目标运行（A 被杀后 B 的进程仍在）；杀完 `resourceStats().children` 归零。测试 630 → **636**（新增 6 条：忽略 SIGTERM 也立即死、按运行杀干净、不影响其他运行、`controlChangeScope` 三条语义）。
+
 ## 0.2.7
 
 - **思考层级现在和支持它的模型真正打通了：DeepSeek 官方模型可选「默认 / 无 / 低 / 高 / 最大」，与 Copilot 一致**。用户反馈「Copilot 能给 DeepSeek 定思考层级，HWChat 不行，只能看到『能力未知』的灰下拉框」。审计后发现不是没能力发参数——发请求那一侧本来就是对的——而是**能力探测把正确的内置能力表冲掉了**：

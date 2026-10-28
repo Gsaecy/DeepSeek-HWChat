@@ -189,7 +189,8 @@ export class ToolExecutor implements vscode.Disposable {
   /** 命令独立限流：搜索和命令抢的是不同资源，不能共用一个很小的全局并发。 */
   private readonly commands = new CommandScheduler(2, 8);
   /** 正在运行的子进程：扩展停用 / 面板释放时要整组杀掉，不留孤儿进程。 */
-  private readonly children = new Set<ChildProcess>();
+  /** 子进程 → 它属于哪一次运行（按 AbortSignal 归组，取消时能精确杀光）。 */
+  private readonly children = new Map<ChildProcess, AbortSignal | undefined>();
   /** 相同查询的结果缓存；key 里带文件变化代数，写文件后自动失效。 */
   private readonly searchResults = new Map<string, { at: number; result: ToolExecutionResult; matches: number; truncated: boolean }>();
   private searchScans = 0;
@@ -522,12 +523,32 @@ export class ToolExecutor implements vscode.Disposable {
    */
   dispose(): void {
     this.commands.dispose();
-    for (const child of this.children) {
-      killProcessTree(child, 'SIGTERM');
-      setTimeout(() => killProcessTree(child, 'SIGKILL'), 1_000).unref?.();
+    // 停用扩展 / 关工作区时同样不留活口：SIGKILL，不再等 1 秒。
+    for (const child of this.children.keys()) {
+      killProcessTree(child, 'SIGKILL');
     }
     this.children.clear();
     disposeWorkspaceSearch();
+  }
+
+  /**
+   * 立刻杀光「某一次运行」拉起的全部进程，返回杀掉的数量。
+   *
+   * 为什么不能只靠 `AbortController.abort()`：abort 只是通知，真正杀进程发生在
+   * 每个工具的取消分支里。只要有一个工具没走到取消分支（还在等自己的 IO、或命令
+   * 正在调度器里排队），它的子进程就会活下来 —— 用户看到的就是「点了停止，
+   * 后台还在跑」。这里按 `AbortSignal` 归组同步 SIGKILL，不依赖任何异步路径。
+   */
+  killRunProcesses(signal: AbortSignal | undefined): number {
+    if (!signal) return 0;
+    let killed = 0;
+    for (const [child, owner] of this.children) {
+      if (owner !== signal) continue;
+      killProcessTree(child, 'SIGKILL');
+      this.children.delete(child);
+      killed += 1;
+    }
+    return killed;
   }
 
   private async listFiles(
@@ -956,7 +977,7 @@ export class ToolExecutor implements vscode.Disposable {
         const attempt = await withTransientRetry(
           () => spawnCommand(command, resolvedCwd.fsPath, timeout, settings.maxToolOutputBytes, scope?.onCommandProgress, {
             signal: scope?.signal,
-            onSpawn: (child) => this.trackChild(child),
+            onSpawn: (child) => this.trackChild(child, scope?.signal),
           }),
           {
             signal: scope?.signal,
@@ -1017,8 +1038,8 @@ export class ToolExecutor implements vscode.Disposable {
     };
   }
 
-  private trackChild(child: ChildProcess): void {
-    this.children.add(child);
+  private trackChild(child: ChildProcess, signal?: AbortSignal): void {
+    this.children.set(child, signal);
     const release = (): void => {
       this.children.delete(child);
     };
@@ -1705,10 +1726,23 @@ export function spawnCommand(
     const onAbort = (): void => {
       if (settled) return;
       cancelled = true;
-      killTree('SIGTERM');
-      setTimeout(() => killTree('SIGKILL'), 1_000).unref?.();
-      hardSettle = setTimeout(() => settle(null), COMMAND_CLOSE_GRACE_MS + COMMAND_HARD_SETTLE_MS);
-      hardSettle.unref?.();
+      /*
+       * 历史遗留的两处「假停止」：
+       *  1. 先发 SIGTERM、1 秒后才 SIGKILL —— 忽略 SIGTERM 的进程（构建工具、
+       *     `npm run dev` 这类自己管子进程的）在这一秒里继续跑，用户以为已经停了。
+       *  2. 结算要等 `close` 或 4.5 秒硬兜底 —— 那段时间界面还显示「运行中」，
+       *     进程其实早该死了，看起来就是「按了停止但后台还在跑」。
+       *
+       * 现在：直接 SIGKILL 整个进程组（没有忽略信号的可能），立刻断开管道并结算；
+       * 250ms 再补一枪，覆盖「父进程刚收到信号时正在 fork 孙进程」这个竞态窗口。
+       */
+      killTree('SIGKILL');
+      const sweep = setTimeout(() => killTree('SIGKILL'), 250);
+      sweep.unref?.();
+      // 孙进程还活着时 child 的 'close' 不会触发，等它就是假停止。
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      settle(null);
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
 

@@ -240,6 +240,8 @@ const DICTIONARY: Record<string, Entry> = {
   // 否则用户放宽权限后看到命令仍被拦，会以为设置没生效。
   'chat.permissionPresetNextTurnHint': { zh: '任务运行中可切换：新预设从下一次对话起生效，当前任务仍按原预设执行。', en: 'Switchable while a task runs: the new preset applies from the next conversation; the running task keeps its own preset.' },
   'chat.permissionPresetNextTurn': { zh: '已切换为「{preset}」。当前任务仍按「{current}」执行，本次任务结束后的下一次对话使用新预设。', en: 'Switched to “{preset}”. The running task keeps “{current}”; the next conversation after it finishes uses the new preset.' },
+  'chat.controlsNextSendHint': { zh: '任务运行中可切换：从下一次发送起生效，当前这一轮仍按原设置执行。', en: 'Switchable while a task runs: the change applies from the next message; the current turn keeps its own setting.' },
+  'chat.controlsNextSend': { zh: '已改为 {label}。当前这一轮仍按原设置执行，下一次发送起生效。', en: 'Changed to {label}. The current turn keeps its setting; this applies from the next message.' },
   'chat.maxSteps': { zh: '最大步骤', en: 'Max steps' },
   'chat.maxStepsLabel': { zh: '最大步骤：', en: 'Max steps: ' },
   'chat.stepsOption': { zh: '{count} 步', en: '{count} steps' },
