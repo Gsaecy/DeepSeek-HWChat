@@ -148,6 +148,7 @@ export function renderTodoContext(
       ? `Next item to work on: #${nextIndex + 1} "${items[nextIndex]!.content.trim()}". Continue from there; do not restart items already marked [x].`
       : '',
     'Keep using update_todos with the whole list (never an empty array). Only mark an item completed after its work is verified.',
+    'This is the SAME list the user is continuing. Re-submit these exact items (keep every [x] with its original wording) and change only their status; put any new step at the end. Do NOT create or re-plan a new list — dropping a completed item is rejected by the tool.',
     '</task_list>',
   ].filter(Boolean).join('\n');
 }

@@ -802,6 +802,11 @@ const DICTIONARY: Record<string, Entry> = {
   'todo.scopeExcludedSummary': { zh: '任务清单已更新：{done}/{total} 已完成（已移出 {count} 条推送 / 版本号条目）', en: 'Task list updated: {done}/{total} done ({count} push/version item(s) moved out)' },
   'todo.scopeExcludedNotice': { zh: '已从任务清单移出 {count} 条不属于清单的条目：{items}。推送与版本号更新不写进任务清单——工作完成并验证后，请单独用一句话征询用户确认，得到明确同意再执行；不要把它们当收尾步骤顺手做掉。', en: 'Moved {count} item(s) out of the task list because they do not belong there: {items}. A push and a version bump are not checklist work — after the work is finished and verified, ask the user separately in one short sentence and act only on an explicit yes. Do not treat them as a finishing step.' },
   'todo.scopeExcludedOnlySummary': { zh: '任务清单未更新：这 {count} 条都是推送 / 版本号条目', en: 'Task list unchanged: all {count} item(s) were push/version steps' },
+  'todo.replacementBlockedSummary': { zh: '任务清单未更新：会丢掉 {count} 条已完成条目', en: 'Task list unchanged: {count} completed item(s) would be dropped' },
+  'todo.replacementBlockedNotice': {
+    zh: '这次提交的清单丢掉了现有清单里的 {count} 条已完成条目：{items}。用户点「继续执行」是在继续**同一份**清单（共 {total} 条），不是让你重新拆一份——已完成项是已验证的事实，换掉等于把进度抹掉。请照抄现有条目的原文（已完成的保留 completed 状态），只在后面接着加或调整**未完成**的部分，然后把整份清单再提交一次。如果用户本轮明确要求重新规划，才按新方案提交。',
+    en: 'The list you submitted drops {count} already-completed item(s) from the existing list: {items}. Pressing Continue resumes the SAME list ({total} items), not a re-plan — completed items are verified facts, and replacing them erases progress. Copy the existing items verbatim (keep them completed), re-plan only the unfinished part, then submit the whole list again. Only submit a fresh plan when the user explicitly asked for one this turn.',
+  },
   'todo.scopeExcludedOnlyNotice': { zh: '这次提交的 {count} 条全是推送或版本号步骤（{items}），它们不属于任务清单，所以清单保持不变。请把真正的实现步骤写进清单；推送与版本号更新在工作完成后单独征询用户确认。', en: 'All {count} item(s) this call contained were push or version steps ({items}); they do not belong in the task list, so the list is unchanged. Put the real implementation steps in the list, and ask the user separately about the push and the version bump once the work is done.' },
   // 英文不再写 ", can be resumed"：状态区宽度要固定，句尾那半句会把控件拉到 170px，
   // 整个顶栏都为它让路；「可以继续」由右侧那两个按钮本身表达，不必再写一遍。
@@ -816,8 +821,8 @@ const DICTIONARY: Record<string, Entry> = {
   'todo.resumeHint': { zh: '从中断的地方接着执行这份清单', en: 'Keep running this list from where it stopped' },
   'todo.cancelHint': { zh: '放弃这份清单，面板上的清单会消失且不归档', en: 'Discard this list; it disappears without being archived' },
   'todo.resumeInstruction': {
-    zh: '继续执行当前任务清单里尚未完成的条目，从中断的地方接着做，不要重复已经完成的步骤。开始前先用 update_todos 把接下来要做的那一项标成 in_progress。',
-    en: 'Continue the unfinished items of the current task list from where it stopped; do not repeat steps that are already done. Mark the next item in_progress with update_todos before you start it.',
+    zh: '继续执行当前任务清单里尚未完成的条目，从中断的地方接着做，不要重复已经完成的步骤。现有清单就是这一轮的计划：用 update_todos 传入同一份清单（条目原文照抄，已完成的保持 completed），只把接下来要做的那一项标成 in_progress；不要重新拆一份清单。',
+    en: 'Continue the unfinished items of the current task list from where it stopped; do not repeat steps that are already done. The existing list IS the plan for this turn: call update_todos with that same list (copy every item verbatim, keep completed ones completed) and move only the next item to in_progress. Do not write a new list.',
   },
   'todo.resumed': { zh: '已从中断处继续执行', en: 'Resumed from the interruption point' },
   'todo.cancelled': { zh: '任务已取消，清单已清除', en: 'Task cancelled; the list was cleared' },

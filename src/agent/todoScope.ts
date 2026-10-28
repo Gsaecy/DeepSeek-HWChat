@@ -95,3 +95,51 @@ export function splitTodoScope(todos: readonly TodoItem[]): TodoScopeSplit {
   }
   return { kept, excluded };
 }
+
+/**
+ * 跨轮次比对清单条目的归一化键。
+ *
+ * 模型重述同一条时会改标点和空白（`同步 README、MVP 与周报` → `同步 README / MVP / 周报`），
+ * 严格字符串比较会把「同一件事」判成两件事，所以这里抹掉分隔符再比。
+ */
+function todoKey(content: string): string {
+  return content.replace(/\s+/g, ' ').replace(/[、，,。．。/／·・:：;；\-—]/g, '').trim().toLocaleLowerCase();
+}
+
+/**
+ * 这次提交丢掉了上一份清单里的哪些「已完成」条目。
+ *
+ * 真实故障：用户点「继续执行」续跑 6/8 的清单，模型却重新拆了一份 4 项的新清单 ——
+ * 前六条（含已验证通过的门禁与泄漏扫描）被整份替换掉，用户看到的是「进度全没了」。
+ * 提示词里本来就有「keep that list… instead of starting a new one」，但它不是硬约束。
+ *
+ * 判定只看「已完成项是否还在」这一条：已完成是**已验证的事实**，任何重规划都不该抹掉它，
+ * 而正常续跑 / 加项 / 把某项改回 pending 都会保留原条目文字，不会被误拦。
+ * 上一份清单没有已完成项（没进度可丢）或已全部完成（该归档、新清单就是新任务）时放行。
+ */
+export function droppedCompletedTodos(
+  previous: readonly TodoItem[] | undefined,
+  submitted: readonly TodoItem[],
+): string[] {
+  if (!previous?.length) return [];
+  const done = previous.filter((todo) => todo.status === 'completed');
+  if (!done.length || done.length === previous.length) return [];
+  const kept = new Set(submitted.map((todo) => todoKey(todo.content)));
+  return done.filter((todo) => !kept.has(todoKey(todo.content))).map((todo) => todo.content);
+}
+
+/**
+ * 用户这一轮是否明确要求「重做清单」。
+ *
+ * `droppedCompletedTodos` 的守卫默认拦下所有「丢进度」的替换；但用户说「重新规划清单」
+ * 时那就是合法操作。判定要求出现**清单 + 重做动词**的组合，
+ * 续跑指令（「继续执行当前任务清单里尚未完成的条目」）不含这些动词，不会被放过。
+ */
+const REPLAN_ZH = /(?:(?:重新|重|再|另外|换)\s*[^。；;，,\n]{0,6}?(?:规划|计划|拆分|列|排|开|做|来)[^。；;，,\n]{0,6}?(?:清单|任务|计划)|换(?:个|一份|一个)?\s*(?:清单|任务|计划)|(?:忘掉|丢掉|放弃|清空|不要|忽略|弃用)\s*(?:之前|原来|上一份|现有|旧)?\s*(?:的)?\s*(?:清单|任务|计划)|(?:之前|原来|上一份|现有|旧)\s*(?:的)?\s*(?:清单|任务|计划)\s*[^。；;，,\n]{0,4}?(?:丢掉|放弃|清空|不要|弃用|重来|重新))/;
+const REPLAN_EN = /\b(?:re-?plan|start over|from scratch|new (?:task )?list|discard|forget|ignore|drop|reset)\b[^.;!?]{0,24}\b(?:list|plan|todos?)\b/i;
+
+export function hasTodoReplanIntent(text: string): boolean {
+  const value = text.replace(/\s+/g, ' ').trim();
+  if (!value) return false;
+  return REPLAN_ZH.test(value) || REPLAN_EN.test(value);
+}

@@ -16,7 +16,7 @@ import { searchWorkspace } from '../agent/workspaceSearch';
 import { gitWriteAuthorization, argumentsMentionGitWrite } from '../agent/conversationScope';
 import { VERSION_RULE_PROMPT, argumentsMentionVersionBump, versionBumpAuthorization } from '../agent/releasePolicy';
 import { TODO_LIST_PROMPT } from '../agent/todoPrompt';
-import { splitTodoScope } from '../agent/todoScope';
+import { droppedCompletedTodos, hasTodoReplanIntent, splitTodoScope } from '../agent/todoScope';
 import { COMMAND_BLOCK_PROMPT } from '../agent/commandPrompt';
 import { NOTICE_PROMPT } from '../agent/noticePrompt';
 import { FOLLOW_UP_PROMPT } from '../agent/followUpPrompt';
@@ -1231,7 +1231,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           ].filter((tool): tool is NonNullable<typeof tool> => Boolean(tool)),
           executeExtraTool: async (call) => {
             if (call.function.name === 'update_todos') {
-              return { result: await this.updateTodos(conversationId!, call) };
+              return { result: await this.updateTodos(conversationId!, call, hasTodoReplanIntent(content)) };
             }
             if (call.function.name === 'search_conversation_history') {
               return { result: await this.searchLinkedConversationHistory(conversationId!, call, mode, settings, run) };
@@ -2429,7 +2429,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 这里是清单的唯一写入口——面板不自己算状态，避免出现“界面已完成、存档还是执行中”。
    * 每次调用都要求模型传整份清单（不是增量），所以直接整体替换即可。
    */
-  private async updateTodos(conversationId: string, call: ToolCall): Promise<ToolExecutionResult> {
+  private async updateTodos(conversationId: string, call: ToolCall, allowReplan = false): Promise<ToolExecutionResult> {
     const args = parseToolArguments(call.function.arguments);
     const submitted = normalizeTodos(args.todos);
     if (!submitted.length) {
@@ -2459,6 +2459,25 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       };
     }
     const previous = await this.storage.getConversation(conversationId);
+    /**
+     * 禁止「丢进度式」替换清单。
+     *
+     * 真实故障：用户点「继续执行」续跑 6/8 的清单，模型重新拆了一份 4 项的新清单，
+     * 前六条已验证的进度被整份换掉。提示词里写着「keep that list… instead of starting
+     * a new one」，但它拦不住模型 —— 清单是用户点「继续」时认可的那一份，换掉等于
+     * 偷偷改了双方约定的范围，所以这里做成硬约束：已完成项必须原样沿用。
+     * 用户明确要求重规划（`hasTodoReplanIntent`）时才放行。
+     */
+    const dropped = allowReplan ? [] : droppedCompletedTodos(previous?.todos, todos);
+    if (dropped.length) {
+      const total = previous?.todos?.length ?? 0;
+      return {
+        status: 'error',
+        summary: tt('todo.replacementBlockedSummary', { count: dropped.length }),
+        content: tt('todo.replacementBlockedNotice', { count: dropped.length, total, items: dropped.join('；') }),
+        approval: 'not-required',
+      };
+    }
     const archivable = allTodosCompleted(previous?.todos) ? createTodoArchive(previous?.todos) : undefined;
     let archives = archivable ? appendTodoArchive(previous?.todoArchives, archivable) : previous?.todoArchives;
     /**
