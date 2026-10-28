@@ -286,9 +286,10 @@
   }
 
   /**
-   * 工具条上的四档思考深度，与 `src/views/chatPanel.ts` 的 REASONING_DEPTHS 一致。
-   * 'default'（不发送参数）/ 'none' 不在这里：它们不是「深度」，只留给旧对话与
-   * 不支持思考的模型，界面显示为单选项的说明文字。
+   * 工具条上的「深度」档，与 `src/views/chatPanel.ts` 的 REASONING_DEPTHS 一致。
+   * 'none'（关闭思考）不在常量里，但由 `syncReasoningSelector()` 对**所有**支持
+   * 思考的模型动态加到第二位——它和「低/高/最大」一样是官方接受的档位。
+   * 'default'（不发送参数）也不是深度，固定在第一档。
    */
   const REASONING_DEPTHS = ['low', 'medium', 'high', 'max'];
   /** 步数第四档「无限制」的表示值，与 `src/core/agentLimits.ts` 保持一致。 */
@@ -601,11 +602,14 @@
     let efforts = ['default'];
     let title = t('chat.reasoningSupport.unknown');
     if (support === 'configurable') {
-      // 四档「深度」按模型声明过滤；模型声明里若还带着 default / none
-      // （旧能力数据），这里不用它们——'default' 已经固定在第一档。
+      // 深度档按模型声明过滤（声明里若带着 default，这里不用它——'default'
+      // 已固定在第一档）。「无」= 关闭思考，任何支持思考的模型都能关
+      // （DeepSeek 走 thinking.type=disabled），所以它常驻在第二位，
+      // 与 Copilot 的「无 / 低 / 高 / 最大」一致。
       const declared = modelOption?.reasoningEfforts?.length ? modelOption.reasoningEfforts : REASONING_DEPTHS;
       const depths = REASONING_DEPTHS.filter((value) => declared.includes(value));
-      efforts = ['default', ...(depths.length ? depths : [...REASONING_DEPTHS])];
+      const levels = ['none', ...(depths.length ? depths : [...REASONING_DEPTHS])];
+      efforts = ['default', ...new Set(levels)];
       title = t('chat.reasoningSupport.configurable');
     } else if (support === 'unsupported') {
       title = t('chat.reasoningSupport.unsupported');
@@ -614,9 +618,7 @@
     }
     // 旧存档里可能是 'none'（关闭思考）：不是「深度」，但也不能静默改成别的档
     // ——那等于替用户打开思考、多花 token。补一个临时选项照原样显示即可。
-    if (state.reasoningEffort === 'none' && support === 'configurable') {
-      efforts = ['default', 'none', ...efforts.slice(1)];
-    } else if (!efforts.includes(state.reasoningEffort)) {
+    if (!efforts.includes(state.reasoningEffort)) {
       // 非法 / 已不在该模型能力里的值：回到「模型官方默认」，而不是替用户选「高」。
       state.reasoningEffort = 'default';
     }

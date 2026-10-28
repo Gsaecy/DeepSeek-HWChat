@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.7
+
+- **思考层级现在和支持它的模型真正打通了：DeepSeek 官方模型可选「默认 / 无 / 低 / 高 / 最大」，与 Copilot 一致**。用户反馈「Copilot 能给 DeepSeek 定思考层级，HWChat 不行，只能看到『能力未知』的灰下拉框」。审计后发现不是没能力发参数——发请求那一侧本来就是对的——而是**能力探测把正确的内置能力表冲掉了**：
+  - **根因 1：不认 DeepSeek 官方 `/models` 的元数据结构**。官方把档位放在嵌套对象里：`effort: { supported_levels: ["low","high","max"], default_level: "high" }`，而 `reasoningEfforts()` 只认 6 个扁平数组键（`reasoning_efforts` / `thinking_levels` …），`reasoningCapability()` 又去查 `capabilities` 而不是官方的 `api_capabilities` → 一律读不到 → 能力判成 `unknown`。现在新增嵌套读取（`effort.supported_levels` / `supportedLevels` / `levels`、`capabilities.reasoning_efforts`），并在只有 `default_level` 时按官方取值补齐档位，避免把「确实支持思考」判成未知。
+  - **根因 2：探测结果整体替换内置能力表**。`modelOptionsForProfile()` 里 `if (discovered?.length) return discovered…` 直接返回探测结果，而探测只修显示名、不补能力，于是 `configurable` 被洗成 `unknown`（刷新窗口后先短暂显示四档、随即变灰，正是这个顺序）。新增 `core/modelCapabilities.ts` 的 `withFallbackCapabilities()`：**探测到的能力优先，探测缺失才回落到内置值**；`discoverModels()` 推给面板的那份也一并补齐。
+  - **根因 3：「无」被当成非法值**。DeepSeek 的 `effort.supported_levels` 按官方定义**不含 `none`**（文档原话：`none`, which turns thinking mode off, is not included），于是按声明列表校验时「无」会被静默改回「默认」——用户以为关掉了思考，实际仍在发 `thinking: enabled`，多烧 token。现在 `none` 对任何「可调」模型都合法（`thinking: {type:'disabled'}` + `reasoning_effort: 'none'`，有请求体断言）。
+  - **档位集合对齐官方**：DeepSeek 内置能力表的档位由 `low/medium/high/max` 改为 `none/low/high/max`——`medium` 只是服务端兼容别名（折算成 `high`），声明它会让界面多出一档官方并不存在的「中」。旧存档里存着 `medium` 的对话会显示成「默认（模型官方）」，而两者的实际请求行为一致（都是服务端默认 `high`）。
+  - **顺手做的一处重构**：`reasoningEffortForModel()` 从 `views/chatPanel.ts` 移到 `core/modelCapabilities.ts`（纯逻辑、不 import vscode），这样「哪些档位合法」能被单测直接覆盖，而不是只能靠人读代码。
+  - 测试 613 → **630**：新增 `test/modelCapabilities.test.ts`（12 条：探测缺失补内置、探测有值优先、`unsupported`/`fixed` 不被内置值改回来、`name===id` 时用内置显示名、无变化时返回原对象、`none` 在声明列表不含它时仍合法、声明外档位回落 `default`、不支持/固定/未知模型一律回 `default`），`deepseekClient.test.ts` 新增 5 条解析用例（`supported_levels`、只有 `default_level`、单档=固定、无元数据=unknown、`capabilities.reasoning_efforts` 且 `minimal`→`low`）与「无 → `thinking:disabled` + `reasoning_effort:none`」的请求体断言。
+  - headless Chromium 实测渲染：DeepSeek 模型下拉为 **默认（模型官方）/ 无 / 低 / 高 / 最大值**、可点击；`unknown` 与 `unsupported` 仍禁用（没有伪装能力）；选「无」后不会被静默改回别的档。
+
 ## 0.2.6
 
 - **「删掉的空对话重载后又回来了，还显示『刚刚』」+「对话框不见了」：两个真实故障，都修了。**

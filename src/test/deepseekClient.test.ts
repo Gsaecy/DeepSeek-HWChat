@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ChatSettings } from '../core/types';
-import { buildEndpoint, DeepSeekClient } from '../providers/deepseekClient';
+import { buildEndpoint, DeepSeekClient, parseModels } from '../providers/deepseekClient';
 
 const settings: ChatSettings = {
   apiProfiles: [{ id: 'default', name: 'Test', baseUrl: 'https://example.invalid/v1', models: ['deepseek-chat'], requestHeaders: {} }],
@@ -185,6 +185,12 @@ test('reasoning depth: DeepSeek 官方四档原样发送，其他 OpenAI 兼容�
     assert.equal((await bodyFor('https://example.invalid/v1', 'max')).reasoning_effort, 'high');
     assert.equal((await bodyFor('https://example.invalid/v1', 'low')).reasoning_effort, 'low');
 
+    // 'none'（界面上的「无」）= 关闭思考。DeepSeek 官方把 reasoning_effort=none
+    // 定义为关闭思考，同时 thinking.type 也置成 disabled，两处一致。
+    const off = await bodyFor('https://api.deepseek.com', 'none');
+    assert.deepEqual(off.thinking, { type: 'disabled' }, '选「无」必须真的关闭思考');
+    assert.equal(off.reasoning_effort, 'none');
+
     // 'default' = 不发送任何思考参数（不支持思考的模型走这条）。
     const plain = await bodyFor('https://api.deepseek.com', 'default');
     assert.equal('thinking' in plain, false);
@@ -232,4 +238,52 @@ test('retries without an unsupported reasoning control', async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+/**
+ * DeepSeek 官方 `/models` 的思考档位在**嵌套对象**里：
+ *   effort: { supported_levels: ["low","high","max"], default_level: "high" }
+ * 早先只认扁平数组（reasoning_efforts / thinking_levels …），读不到就把能力判成
+ * unknown，界面于是把「思考深度」灰成「能力未知」——Copilot 能设、HWChat 不能，
+ * 差别就在这里。
+ */
+test('parseModels：读出 DeepSeek 官方 /models 的 effort.supported_levels', () => {
+  const models = parseModels({
+    object: 'list',
+    data: [{
+      id: 'deepseek-flash',
+      object: 'model',
+      owned_by: 'deepseek',
+      name: 'DeepSeek V4.1 Flash',
+      context_window: 1_000_000,
+      effort: { supported_levels: ['low', 'high', 'max'], default_level: 'high' },
+      api_capabilities: { anthropic_messages: { system_prompt_update: 'leading-only' } },
+    }],
+  });
+  assert.equal(models.length, 1);
+  assert.equal(models[0]?.reasoningSupport, 'configurable', '有 supported_levels 就必须判为可调');
+  assert.deepEqual(models[0]?.reasoningEfforts, ['low', 'high', 'max']);
+});
+
+test('parseModels：只有 default_level 时仍判定为可调，档位按官方取值补齐', () => {
+  const models = parseModels({ data: [{ id: 'x', effort: { default_level: 'high' } }] });
+  assert.equal(models[0]?.reasoningSupport, 'configurable');
+  assert.deepEqual(models[0]?.reasoningEfforts, ['none', 'low', 'high', 'max']);
+});
+
+test('parseModels：effort 里只有一个档位视为固定思考', () => {
+  const models = parseModels({ data: [{ id: 'y', effort: { supported_levels: ['high'] } }] });
+  assert.equal(models[0]?.reasoningSupport, 'fixed');
+  assert.deepEqual(models[0]?.reasoningEfforts, ['high']);
+});
+
+test('parseModels：完全没有思考元数据时仍是 unknown（不伪造能力）', () => {
+  const models = parseModels({ data: [{ id: 'plain' }] });
+  assert.equal(models[0]?.reasoningSupport, 'unknown');
+});
+
+test('parseModels：capabilities 里的 reasoning_efforts 也能读到', () => {
+  const models = parseModels({ data: [{ id: 'z', capabilities: { reasoning_efforts: ['minimal', 'high'] } }] });
+  assert.equal(models[0]?.reasoningSupport, 'configurable');
+  assert.deepEqual(models[0]?.reasoningEfforts, ['low', 'high'], 'minimal 应落到 low');
 });

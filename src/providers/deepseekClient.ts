@@ -302,6 +302,11 @@ function isUnavailableModel(item: Record<string, unknown>): boolean {
 
 function reasoningCapability(item: Record<string, unknown>): Pick<DiscoveredModel, 'reasoningSupport' | 'reasoningEfforts'> {
   const efforts = reasoningEfforts(item);
+  // 只有 default_level、没给 supported_levels 时，仍可确定「服务端支持思考」，
+  // 档位按 DeepSeek 文档的取值补齐，避免又把能力判成 unknown。
+  if (!efforts.length && objectField(item, ['effort'])?.default_level) {
+    return { reasoningSupport: 'configurable', reasoningEfforts: ['none', 'low', 'high', 'max'] };
+  }
   const explicit = booleanField(item, [
     'supports_reasoning', 'supportsReasoning', 'reasoning_supported', 'reasoningSupported',
     'supports_thinking', 'supportsThinking', 'thinking_supported', 'thinkingSupported',
@@ -333,6 +338,13 @@ function reasoningCapability(item: Record<string, unknown>): Pick<DiscoveredMode
 }
 
 function reasoningEfforts(item: Record<string, unknown>): ReasoningEffort[] {
+  /*
+   * DeepSeek 官方 `/models` 把档位放在**嵌套对象**里：
+   *   effort: { supported_levels: ["low","high","max"], default_level: "high" }
+   * 只认扁平数组（reasoning_efforts / thinking_levels …）时这里读不到任何值，
+   * 能力随后被判成 unknown，界面就把「思考深度」灰成「能力未知」。
+   */
+  const effort = objectField(item, ['effort', 'thinking', 'reasoning']);
   const candidates = [
     item.reasoning_efforts,
     item.reasoningEfforts,
@@ -340,6 +352,10 @@ function reasoningEfforts(item: Record<string, unknown>): ReasoningEffort[] {
     item.supportedReasoningEfforts,
     item.thinking_levels,
     item.thinkingLevels,
+    effort?.supported_levels,
+    effort?.supportedLevels,
+    effort?.levels,
+    objectField(item, ['capabilities', 'api_capabilities'])?.reasoning_efforts,
   ].find(Array.isArray) as unknown[] | undefined;
   if (!candidates) return [];
   const normalized = candidates
@@ -354,6 +370,14 @@ function reasoningEfforts(item: Record<string, unknown>): ReasoningEffort[] {
     })
     .filter((value): value is ReasoningEffort => Boolean(value));
   return [...new Set(normalized)];
+}
+
+function objectField(item: Record<string, unknown>, keys: string[]): Record<string, unknown> | undefined {
+  for (const key of keys) {
+    const value = item[key];
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  }
+  return undefined;
 }
 
 function booleanField(item: Record<string, unknown>, keys: string[]): boolean | undefined {

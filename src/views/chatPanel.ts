@@ -39,6 +39,7 @@ import {
   readSettings,
   updateSettings,
 } from '../core/settings';
+import { REASONING_DEPTHS, reasoningEffortForModel, withFallbackCapabilities } from '../core/modelCapabilities';
 import { SingleFlight } from '../core/singleFlight';
 import { ConversationStorage } from '../core/storage';
 import {
@@ -1774,7 +1775,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           ? settings.model
           : undefined;
       const excluded = new Set(profile.excludedModels ?? []);
-      const options = mergeModelOptions(apiModels.map(withKnownModelName)).filter((model) => !excluded.has(model.id));
+      const officialModels = new Map(this.officialModelOptions(profile).map((model) => [model.id, model]));
+      const options = mergeModelOptions(apiModels.map(withKnownModelName))
+        .map((model) => withFallbackCapabilities(model, officialModels.get(model.id)))
+        .filter((model) => !excluded.has(model.id));
       if (!options.length) throw new Error(tt('error.allModelsInvalid'));
       this.discoveredModelOptions.set(profile.id, options);
       const nextModels = options.map((model) => model.id);
@@ -2267,7 +2271,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private modelOptionsForProfile(profile: ChatSettings['apiProfiles'][number]): ModelOption[] {
     const excluded = new Set(profile.excludedModels ?? []);
     const discovered = this.discoveredModelOptions.get(profile.id);
-    if (discovered?.length) return discovered.filter((model) => !excluded.has(model.id));
+    if (discovered?.length) {
+      // 探测成功只说明「有哪些模型」，不代表能力字段读得到：用内置能力补齐。
+      // 探测到的能力优先（见 core/modelCapabilities）。
+      const official = new Map(this.officialModelOptions(profile).map((model) => [model.id, model]));
+      return discovered
+        .map((model) => withFallbackCapabilities(model, official.get(model.id)))
+        .filter((model) => !excluded.has(model.id));
+    }
     return mergeModelOptions(
       this.officialModelOptions(profile),
       profile.models.map(modelOptionForId),
@@ -3434,8 +3445,11 @@ function continuationTitle(value: string): string {
 }
 
 const OFFICIAL_DEEPSEEK_MODELS: ModelOption[] = [
-  { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', reasoningSupport: 'configurable', reasoningEfforts: ['low', 'medium', 'high', 'max'] },
-  { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', reasoningSupport: 'configurable', reasoningEfforts: ['low', 'medium', 'high', 'max'] },
+  // 档位取自 DeepSeek 官方文档：`reasoning_effort` 取 none/low/high/max，
+  // `medium` 只是兼容别名（服务端映射到 high），所以不再声明它——
+  // 声明它会让界面多出一档官方并不存在的「中」。
+  { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', reasoningSupport: 'configurable', reasoningEfforts: ['none', 'low', 'high', 'max'] },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', reasoningSupport: 'configurable', reasoningEfforts: ['none', 'low', 'high', 'max'] },
 ];
 
 const DEEPSEEK_MODEL_NAMES = new Map<string, string>([
@@ -3478,14 +3492,6 @@ function mergeModelOptions(...groups: ModelOption[][]): ModelOption[] {
   return [...merged.values()].slice(0, 500);
 }
 
-function reasoningEffortForModel(requested: ReasoningEffort, model: ModelOption | undefined): ReasoningEffort {
-  // `default` 对任何模型都合法：它就是「不发参数、用模型官方默认」。
-  if (requested === 'default') return 'default';
-  if (model?.reasoningSupport !== 'configurable') return 'default';
-  const allowed = model.reasoningEfforts?.length ? model.reasoningEfforts : REASONING_DEPTHS;
-  return allowed.includes(requested) ? requested : 'default';
-}
-
 function isRiskyPermissionPreset(value: PermissionPreset): boolean {
   return value === 'autopilot' || value === 'full';
 }
@@ -3505,11 +3511,14 @@ function permissionPresetOptionsHtml(lang: Language): string {
  * 新对话的初始值就是它——用户要求「按模型官方思考深度设置」，由我们猜一个
  * `high` 发出去等于替模型改默认值，还会多烧 token。
  *
- * 后面四档是真正的「深度」（低 / 中 / 高 / 最大），按模型声明的能力过滤。
- * `none`（关闭思考）只作为旧存档的兼容选项出现，不再进入新对话。
+ * 之后是「无」（`none` = 关闭思考）与各档深度，按模型声明的能力过滤。
+ * 「无」不是深度，但它是官方接受的档位（DeepSeek 走 `thinking.type=disabled`），
+ * 所以对支持思考的模型常驻——与 Copilot 的「无 / 低 / 高 / 最大」一致。
+ *
+ * `medium` 保留在深度列表里只是为了兼容旧存档：DeepSeek 会把 `medium` 折算成
+ * `high`，官方档位其实是 low / high / max。
  */
-const REASONING_DEPTHS: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'max'];
-const REASONING_OPTIONS: readonly ReasoningEffort[] = ['default', ...REASONING_DEPTHS];
+const REASONING_OPTIONS: readonly ReasoningEffort[] = ['default', 'none', ...REASONING_DEPTHS];
 
 /** 步数选项文案：0 是第四档「无限制」，不能显示成「0 步」。 */
 function stepsOptionLabel(lang: Language, steps: number): string {
