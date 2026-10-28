@@ -256,6 +256,31 @@ export class ConversationStorage {
     return { ...updated };
   }
 
+  /**
+   * 删掉一条消息。
+   *
+   * 目前只有「删除排队中的消息」用它：那条消息还没被 agent 读过，从队列里撤掉之后
+   * 存档里也不该再留着，否则重开对话会看到一条既不会执行、也没有回复的孤儿消息。
+   *
+   * 已经落成的对话历史不提供删除入口 —— 删掉一问一答里的问句会让上下文断裂。
+   */
+  async deleteMessage(conversationId: string, messageId: string): Promise<void> {
+    await this.initialize();
+    const summary = this.requireSummary(conversationId);
+    await this.enqueueWrite(async () => {
+      const current = await this.readMessage(conversationId, messageId);
+      if (!current) return;
+      await removeIfPresent(this.messagePath(conversationId, messageId));
+      await removeIfPresent(`${this.messagePath(conversationId, messageId)}.bak`);
+      this.invalidateMessagePages();
+      this.markConversationChanged(conversationId);
+      summary.messageCount = Math.max(0, (summary.messageCount ?? 1) - 1);
+      summary.totalTokens = Math.max(0, (summary.totalTokens ?? 0) - (current.usage?.totalTokens ?? 0));
+      summary.updatedAt = Date.now();
+      await this.persistManifest();
+    });
+  }
+
   async getMessages(
     conversationId: string,
     options: { limit?: number; before?: string; maxBytes?: number } = {},

@@ -47,7 +47,12 @@ check(
 
 /* ── 2. 落库前过滤的接线 ─────────────────────────────────── */
 
-check('chatPanel 引入 splitTodoScope', /import \{ splitTodoScope \} from '\.\.\/agent\/todoScope'/.test(PANEL));
+check('chatPanel 引入 splitTodoScope', /import \{[^}]*\bsplitTodoScope\b[^}]*\} from '\.\.\/agent\/todoScope'/.test(PANEL));
+// 续跑时「整份换掉清单」的守卫：发现丢了已完成项就拒绝写库（见 agent/todoScope 的 droppedCompletedTodos）。
+check('chatPanel 引入 droppedCompletedTodos', /import \{[^}]*\bdroppedCompletedTodos\b[^}]*\} from '\.\.\/agent\/todoScope'/.test(PANEL));
+check('丢进度的替换在落库前被拦下', /const dropped = allowReplan \? \[\] : droppedCompletedTodos\(previous\?\.todos, todos\)/.test(PANEL));
+check('被拦下时返回 error 且不写库', /status: 'error',\s*\n\s*summary: tt\('todo\.replacementBlockedSummary'/.test(PANEL));
+check('重规划意图来自本轮用户文本', /hasTodoReplanIntent\(content\)/.test(PANEL));
 // 关键写法：保留部分直接重命名为 todos，后面任何一处都不可能再拿到未过滤的清单。
 check(
   '保留部分重新绑定为 todos，杜绝误用未过滤清单',

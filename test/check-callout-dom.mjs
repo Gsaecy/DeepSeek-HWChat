@@ -152,7 +152,8 @@ function render(plan) {
   const source = readFileSync('media/chat.js', 'utf8');
   check('接线 → 读全局 HWChatCalloutMeta', source.includes('const calloutMeta = globalThis.HWChatCalloutMeta || null;'));
   check('接线 → 引用块分支里调用 parseCallout', source.includes('calloutMeta.parseCallout(quoted)'));
-  check('接线 → 解析成功时走 calloutNode', source.includes('container.append(calloutNode(callout'));
+  // 正文块统一走 push(node, startLine) 以便流式增量更新按块定位，所以只钉住「调用了 calloutNode」。
+  check('接线 → 解析成功时走 calloutNode', source.includes('calloutNode(callout'));
   // 「其他的显示不变」靠这一行保证：解析不出来还要能落到原来的 blockquote。
   check('接线 → 解析失败仍走普通 blockquote', source.includes("const node = document.createElement('blockquote');"));
   check('接线 → 缺少脚本时退化不抛错', source.includes('calloutMeta ? calloutMeta.parseCallout(quoted) : null'));

@@ -878,6 +878,17 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 .task-node.status-complete .task-node-status { color: var(--success); }
 .task-node.status-error .task-node-status { color: var(--danger); }
 .task-node.status-routing .task-node-status, .task-node.status-active .task-node-status { color: var(--accent); }
+/* 排队消息的行内操作：常态几乎不可见（任务树是背景信息），悬停/聚焦时显形。 */
+.task-node-actions { display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity .12s ease; }
+.task-node:hover .task-node-actions, .task-node:focus-within .task-node-actions { opacity: 1; }
+.task-node-action { border: 0; padding: 2px 5px; border-radius: 4px; font-size: 9px; color: var(--muted); background: transparent; cursor: pointer; }
+.task-node-action:hover { color: var(--fg); background: var(--surface-raised); }
+.task-node-action.is-danger:hover { color: #ffffff; background: #d32f2f; }
+.task-node-action.is-primary { color: var(--accent-text); background: var(--accent); }
+.task-node-edit-wrap { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.task-node-edit { flex: 1 1 auto; min-width: 0; padding: 3px 6px; border: 1px solid var(--accent); border-radius: 5px; font-size: 10px; color: var(--fg); background: var(--surface); }
+.task-node-edit:focus { outline: none; box-shadow: 0 0 0 1px var(--accent); }
+@media (prefers-reduced-motion: reduce) { .task-node-actions { transition: none; } }
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

@@ -172,6 +172,8 @@ type IncomingMessage =
   | { type: 'detachConversationHistory' }
   | { type: 'send'; text: string; mode?: ConversationMode; skillIds?: string[]; permissionPreset?: PermissionPreset; agentMaxSteps?: number; reasoningEffort?: ReasoningEffort }
   | { type: 'sendWhileRunning'; text: string }
+  | { type: 'editTaskMessage'; nodeId: string; text: string }
+  | { type: 'removeTaskMessage'; nodeId: string }
   | { type: 'stop' }
   | { type: 'resumeTodos' }
   | { type: 'cancelTodos' }
@@ -766,6 +768,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         case 'stop':
           this.stop();
           break;
+        case 'editTaskMessage':
+          await this.editTaskMessage(message.nodeId, message.text);
+          break;
+        case 'removeTaskMessage':
+          await this.removeTaskMessage(message.nodeId);
+          break;
         case 'resumeTodos':
           await this.resumeTodos();
           break;
@@ -1173,6 +1181,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         || tt('notice.processAttachments');
       const taskQueue = new AgentTaskQueue(resumeScope ?? fallbackTaskTitle, { resumeScope: resumeScope !== undefined });
       const rootTaskId = taskQueue.state().currentNodeId!;
+      // 根节点也要能「编辑后重发」：把这一问一答的 id 补记到它身上。
+      taskQueue.bind(rootTaskId, { userMessageId: userMessage.id, assistantMessageId: assistant.id });
       const run: ConversationRun = {
         conversationId,
         controller,
@@ -2307,6 +2317,83 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private async postTaskTree(queue: AgentTaskQueue, conversationId: string): Promise<void> {
     await this.post({ type: 'taskTreeChanged', conversationId, taskTree: queue.state() });
   }
+
+  /** 按节点 id 找到它所属的运行（任务树只在内存里，节点 id 全局唯一）。 */
+  private runOfTask(nodeId: string): ConversationRun | undefined {
+    for (const run of this.runs.values()) {
+      if (run.taskQueue.state().nodes.some((node) => node.id === nodeId)) return run;
+    }
+    return undefined;
+  }
+
+  /**
+   * 改一条排队消息。
+   *
+   * 两种情形，用户要的结果不同：
+   * - **还没被 agent 取走**：队列里持着的就是那条 request，直接换掉内容即生效，
+   *   存档里的用户消息、任务树标题一起改，下一轮 `take()` 读到的是新内容。
+   * - **已经被取走执行**：历史不能改写，所以把编辑后的内容当成一条新消息发出去
+   *   （用户原话：「即使被 agent 开始执行了，编辑后的消息也可以再次发出」）。
+   */
+  private async editTaskMessage(nodeId: string, text: string): Promise<void> {
+    const content = text.trim();
+    if (!content) return;
+    const run = this.runOfTask(nodeId);
+    if (!run) {
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.editExpired') });
+      return;
+    }
+    const conversationId = run.conversationId;
+    const before = run.taskQueue.state().nodes.find((node) => node.id === nodeId);
+    const applied = await run.taskQueue.editPending(nodeId, content, (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
+    if (!applied) {
+      // 已执行 / 已取消：历史保留原样，把改过的内容重新发一条。
+      await this.send(content);
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.resentAfterEdit') });
+      return;
+    }
+    const userMessageId = before?.userMessageId;
+    if (userMessageId) {
+      const updated = await this.storage.updateMessage(conversationId, userMessageId, { content });
+      await this.post({ type: 'messageUpdated', conversationId, message: this.forWebview(updated) });
+    }
+    this.callbacks.onHistoryChanged();
+    await this.postTaskTree(run.taskQueue, conversationId);
+  }
+
+  /**
+   * 撤回一条排队消息。
+   *
+   * 只有队列还持有的节点能撤；已经被 agent 读去执行的不允许删 —— 那会把一条
+   * 正在进行的任务从时间线上抹掉，界面与存档立刻对不上。
+   */
+  private async removeTaskMessage(nodeId: string): Promise<void> {
+    const run = this.runOfTask(nodeId);
+    if (!run) {
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.editExpired') });
+      return;
+    }
+    const conversationId = run.conversationId;
+    const node = run.taskQueue.state().nodes.find((candidate) => candidate.id === nodeId);
+    const removed = await run.taskQueue.removePending(nodeId, (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
+    if (!removed) {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('taskQueue.removeExecuted') });
+      return;
+    }
+    // 运行时记账也要一起撤：结算时会为未激活的 response 补一条「排队未执行」消息，
+    // 留着它会把刚删掉的那一问一答又写回来。
+    const response = run.responses.get(nodeId);
+    run.responses.delete(nodeId);
+    const userMessageId = node?.userMessageId ?? response?.userMessageId;
+    const assistantMessageId = response?.assistantMessageId;
+    if (userMessageId) await this.storage.deleteMessage(conversationId, userMessageId);
+    if (assistantMessageId) await this.storage.deleteMessage(conversationId, assistantMessageId);
+    this.callbacks.onHistoryChanged();
+    await this.post({ type: 'messageRemoved', conversationId, userMessageId, assistantMessageId });
+    await this.postTaskTree(run.taskQueue, conversationId);
+    await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.removed') });
+  }
+
 
   /**
    * 放宽权限前的确认。

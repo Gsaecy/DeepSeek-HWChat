@@ -96,6 +96,20 @@ export interface AgentTaskNode {
   title: string;
   status: AgentTaskStatus;
   relation: 'root' | 'pending' | 'related' | 'queued';
+  /**
+   * 这条任务对应的用户消息 id。
+   *
+   * 界面上的「编辑」要靠它读回原话（任务标题是截断过的），「删除」要靠它把
+   * 那条还没执行的消息从存档里撤掉。
+   */
+  userMessageId?: string;
+  /**
+   * 还没被 agent 取走执行。
+   *
+   * 只有这类节点能原地改、能删：队列里持有它的 request，改完下一轮读到的就是新内容。
+   * 一旦 `take()` 把它取走变成当前分支，历史已经发生，就只能「改完重新发一条」。
+   */
+  pending?: boolean;
 }
 
 export interface AgentTaskTreeState {

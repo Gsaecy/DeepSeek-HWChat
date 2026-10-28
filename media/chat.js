@@ -342,6 +342,9 @@
   let pasteFallbackTimer = null;
   let pendingPaste = null;
   let deferredMessageRenderMode = null;
+  /** 正在行内编辑的排队任务节点 id / 草稿内容（见 renderTaskTree）。 */
+  let editingTaskId = null;
+  let editingTaskDraft = '';
   /** 等着被局部重画的那条消息 id（见 scheduleMessagePatch）。 */
   let pendingPatchId = null;
   let selectingMessageText = false;
@@ -864,7 +867,11 @@
     const detailOverrides = captureDetailOverrides();
     elements.messageList.replaceChildren(); elements.emptyState.hidden = state.messages.length > 0;
     elements.loadOlderButton.hidden = !state.hasMore || !state.messages.length;
-    for (const message of state.messages) elements.messageList.append(renderMessage(message));
+    for (const message of state.messages) {
+      const article = renderMessage(message);
+      rememberRender(article, message);
+      elements.messageList.append(article);
+    }
     restoreDetailOverrides(detailOverrides);
     renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
     requestAnimationFrame(() => {
@@ -894,12 +901,99 @@
    *
    * 返回 false 表示没法就地替换（DOM 与 state 顺序对不上），调用方退回整段重建。
    */
+  /**
+   * 只重画「还在增长的那一段正文」。
+   *
+   * 真实故障：用户看到的「已经输出的文字在后续内容继续输出时闪动，像是同一个位置
+   * 闪过不一样的文字」。除了半截 markdown 解析出的回退（见 appendInline 的斜体边界），
+   * 主因是每一帧都把**整条消息**重新解析、重建全部块：1500 字的回答约 42 块，单帧
+   * 就要 20ms 且随长度线性增长，已输出的段落跟着一起被销毁重建，肉眼看到的就是闪。
+   *
+   * 这里只做一件事：把「最后一次渲染时最后一个块的起始行」之后的内容重新解析，
+   * 用它替换尾部，前面的块节点原样留在 DOM 里 —— 文字、行内元素、代码块高亮、
+   * emoji 图标、展开状态全都不用重建，也不可能闪。
+   *
+   * 返回 false 表示这一帧没法增量（字段变了、内容不是纯追加、结构对不上），
+   * 调用方退回整条替换。
+   */
+  function patchGrowingSegment(current) {
+    const previous = current.hwchatRender;
+    const flow = current.hwchatFlow;
+    if (!previous || !flow?.tail?.node?.isConnected) return false;
+    const message = state.messages.find((item) => item.id === current.dataset.messageId);
+    if (!message) return false;
+    const content = message.content || '';
+    // 只有「正文纯追加、别的什么都不变」才能增量；其余情况交给整条替换。
+    if (!content.startsWith(previous.content)) return false;
+    if (content.length === previous.content.length) return false;
+    if (previous.reasoning !== (message.reasoning || '')) return false;
+    if (previous.status !== (message.status || '')) return false;
+    if (previous.skills !== JSON.stringify(message.usedSkills || [])) return false;
+    if (previous.usage !== (message.usage?.totalTokens || 0)) return false;
+    if (previous.tools !== toolGroupSignature(message)) return false;
+
+    const tailText = content.slice(flow.tailStart).trim();
+    if (!tailText) return false;
+    const tailNode = flow.tail.node;
+    const lastBlock = flow.tail.blocks[flow.tail.blocks.length - 1];
+    if (!lastBlock || !lastBlock.node.isConnected) return false;
+    // 从「最后一个块」的起始行重新解析：它可能继续增长，也可能裂成两个块。
+    // 只有最后一个块会被替换，它前面的块连节点带文字都不动。
+    const fresh = document.createElement('div');
+    const freshBlocks = appendRichText(fresh, tailText.split('\n').slice(lastBlock.line).join('\n'));
+    // 从最后一个块开始往后清掉：一个列表块可能对应多个 <ol>/<ul> 兄弟节点，
+    // 所以按 DOM 顺序删，不按 blocks 数量删。
+    let node = lastBlock.node;
+    while (node) { const after = node.nextElementSibling; node.remove(); node = after; }
+    const kept = flow.tail.blocks.filter((block) => block.line < lastBlock.line);
+    const appended = [];
+    for (const block of freshBlocks) { tailNode.append(block.node); appended.push({ line: lastBlock.line + block.line, node: block.node }); }
+    flow.tail.blocks = kept.concat(appended);
+    current.hwchatRender = { ...previous, content };
+    return true;
+  }
+
+  /**
+   * 工具调用的结构签名：任何一项变化都会影响正文分段，增量就不安全了。
+   *
+   * 注意必须把「当前正文长度下算出的分组」也纳入签名。工具块的位置是
+   * `min(contentOffset, text.length)`：正文还没写到那个位置时，工具块只能贴在末尾，
+   * 随着正文增长它会跳回中间。只看工具自身字段的话，这种「分组变了」会被漏掉，
+   * 增量更新就会把正文一直追加到错误的段里（实测：块数 2，整条渲染是 5）。
+   */
+  function toolGroupSignature(message) {
+    const tools = message.toolExecutions || [];
+    const groups = groupToolsByOffset(tools, (message.content || '').length);
+    return JSON.stringify([
+      tools.map((tool) => [tool.callId, tool.status, tool.summary, tool.contentOffset, tool.output, tool.finishedAt]),
+      groups ? groups.map((group) => [group.offset, group.tools.map((tool) => tool.callId)]) : null,
+    ]);
+  }
+
+  /** 记下这一帧的渲染快照，下一帧据此判断能不能增量。 */
+  function rememberRender(article, message) {
+    article.hwchatRender = {
+      content: message.content || '',
+      reasoning: message.reasoning || '',
+      status: message.status || '',
+      skills: JSON.stringify(message.usedSkills || []),
+      usage: message.usage?.totalTokens || 0,
+      tools: toolGroupSignature(message),
+    };
+  }
+
   function patchMessage(messageId) {
     const index = state.messages.findIndex((item) => item.id === messageId);
     if (index < 0) return false;
     const current = elements.messageList.children[index];
     // 顺序对不上时不能按索引换：会换错那一条。宁可整段重建一次。
     if (!current || current.dataset.messageId !== messageId) return false;
+    // 快路径：只动还在增长的那一段，已输出的块一个节点都不重建。
+    if (patchGrowingSegment(current)) {
+      renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
+      keepViewportAfterPatch();
+      return true;
+    }
     // 只抓这一条里的展开状态，别的消息根本没动。
     const detailOverrides = captureDetailOverrides(current);
     const liveCursor = current.querySelector('.stream-cursor');
@@ -912,6 +1006,7 @@
     const previousTop = viewport.scrollTop;
     state.renderingMessages = true;
     current.replaceWith(next);
+    rememberRender(next, state.messages[index]);
     renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
     requestAnimationFrame(() => {
       // 变的都是最后一条：跟着底部就贴底；用户翻上去看了就一点不动。
@@ -921,6 +1016,17 @@
       updateScrollToBottom();
     });
     return true;
+  }
+
+  /** 增量更新之后同样要跟住滚动，语义与整条替换那条路径保持一致。 */
+  function keepViewportAfterPatch() {
+    const viewport = elements.messageViewport;
+    const previousTop = viewport.scrollTop;
+    requestAnimationFrame(() => {
+      if (state.autoFollow) viewport.scrollTop = viewport.scrollHeight;
+      else viewport.scrollTop = previousTop;
+      updateScrollToBottom();
+    });
   }
 
   /**
@@ -1008,6 +1114,18 @@
     elements.agentRunLabel.textContent = current?.title ? t('chat.agentRunningWith', { title: current.title }) : t('chat.agentRunning');
     elements.agentRunMeta.textContent = [routing ? t('chat.routingCount', { count: routing }) : '', queued ? t('chat.queuedCount', { count: queued }) : ''].filter(Boolean).join(' · ');
     elements.taskTreeSummary.textContent = queued ? t('chat.nodeCountWithQueue', { count: nodes.length, queued }) : t('chat.nodeCount', { count: nodes.length });
+    /**
+     * 编辑框已经画在界面上时**不重建节点列表**。
+     *
+     * agent 在后台跑，任务树每完成一步都会重推一次；如果照常 replaceChildren，
+     * 编辑框每几百毫秒被销毁重建一次——光标跳回开头、正在打的字丢失，
+     * 用户根本没法把这句改完。编辑期间只更新上面的标题和计数，收尾时统一重建。
+     *
+     * 判据必须看「DOM 里是否已经有编辑框」而不是只看 editingTaskId：
+     * 刚点下编辑时 editingTaskId 已设置、编辑框还没画出来，这时候若也跳过重建，
+     * 编辑框就永远出不来。
+     */
+    if (editingTaskId && elements.taskTreeList.querySelector('.task-node-edit')) return;
     elements.taskTreeList.replaceChildren();
     const rootId = nodes[0]?.id;
     for (const node of nodes) {
@@ -1016,9 +1134,90 @@
       if (node.parentId && node.parentId !== rootId) row.classList.add('nested');
       const statusCell = textElement('span', 'task-node-status', '');
       statusCell.append(iconNode(taskStatusIconName(node.status)));
-      row.append(statusCell, textElement('span', 'task-node-title', node.title), textElement('small', '', taskStatusLabel(node.status)));
+      const titleCell = textElement('span', 'task-node-title', node.title);
+      if (editingTaskId === node.id) {
+        row.append(statusCell, taskEditBox(node), textElement('small', '', taskStatusLabel(node.status)));
+        elements.taskTreeList.append(row);
+        continue;
+      }
+      const actions = taskNodeActions(node);
+      row.append(statusCell, titleCell, actions || textElement('small', '', taskStatusLabel(node.status)));
       elements.taskTreeList.append(row);
     }
+    // 编辑框刚插进 DOM，这一帧之后自动聚焦并把光标放到末尾。
+    if (editingTaskId && !document.activeElement?.closest('.task-node-edit')) {
+      const input = elements.taskTreeList.querySelector('.task-node-edit');
+      if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+    }
+  }
+
+  /**
+   * 排队消息的行内操作：编辑 / 删除。
+   *
+   * `pending`（队列还没被 agent 取走）→ 两个按钮都可用：改完直接生效，删掉不会留下孤儿消息。
+   * 已执行的节点只给「编辑」：历史不能改写，但用户改完可以再发一次（用户明确要求）。
+   */
+  function taskNodeActions(node) {
+    const editable = node.pending || node.status === 'active' || node.status === 'complete';
+    if (!editable || !node.userMessageId) return null;
+    const actions = document.createElement('span'); actions.className = 'task-node-actions';
+    const edit = textElement('button', 'task-node-action', t('taskQueue.edit'));
+    edit.type = 'button';
+    edit.title = node.pending ? t('taskQueue.editHint') : t('taskQueue.editExecutedHint');
+    edit.addEventListener('click', (event) => { event.stopPropagation(); beginTaskEdit(node); });
+    actions.append(edit);
+    if (node.pending) {
+      const remove = textElement('button', 'task-node-action is-danger', t('taskQueue.remove'));
+      remove.type = 'button';
+      remove.title = t('taskQueue.removeHint');
+      remove.addEventListener('click', (event) => { event.stopPropagation(); post('removeTaskMessage', { nodeId: node.id }); });
+      actions.append(remove);
+    }
+    return actions;
+  }
+
+  /** 打开行内编辑框；初值取存档里那条用户消息的原话，而不是被截断的标题。 */
+  function beginTaskEdit(node) {
+    editingTaskId = node.id;
+    const message = state.messages.find((item) => item.id === node.userMessageId);
+    editingTaskDraft = message?.content ?? node.title;
+    renderTaskTree();
+  }
+
+  function taskEditBox(node) {
+    const wrap = document.createElement('span'); wrap.className = 'task-node-edit-wrap';
+    const input = document.createElement('input');
+    input.className = 'task-node-edit';
+    input.type = 'text';
+    input.value = editingTaskDraft;
+    input.addEventListener('input', () => { editingTaskDraft = input.value; });
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); commitTaskEdit(node); }
+      else if (event.key === 'Escape') { event.preventDefault(); cancelTaskEdit(); }
+    });
+    const save = textElement('button', 'task-node-action is-primary', t('taskQueue.save'));
+    save.type = 'button';
+    save.addEventListener('click', () => commitTaskEdit(node));
+    const cancel = textElement('button', 'task-node-action', t('taskQueue.cancelEdit'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => cancelTaskEdit());
+    wrap.append(input, save, cancel);
+    return wrap;
+  }
+
+  function commitTaskEdit(node) {
+    const text = String(editingTaskDraft || '').trim();
+    if (!text) return;
+    if (text !== (state.messages.find((item) => item.id === node.userMessageId)?.content ?? '')) {
+      post('editTaskMessage', { nodeId: node.id, text });
+    }
+    cancelTaskEdit();
+  }
+
+  function cancelTaskEdit() {
+    editingTaskId = null;
+    editingTaskDraft = '';
+    renderTaskTree();
   }
 
   /** 任务树节点的状态 → 图标名（形状定义见 media/ui-icons.js）。 */
@@ -1417,7 +1616,7 @@
     if (attached.length) body.append(renderMessageAttachments(attached));
     if (message.usedSkills?.length) body.append(renderSkillUsage(message.usedSkills));
     if (message.reasoning) body.append(renderReasoning(message.reasoning, message.status === 'streaming'));
-    appendMessageFlow(body, message);
+    const flow = appendMessageFlow(body, message);
     // 用户自己贴进来的明文凭据：在界面层直接认出来，不等模型提醒。
     // 放在消息正文之后，顺序上与「你说的话 → 系统的警告」一致。
     if (message.role === 'user') {
@@ -1428,7 +1627,10 @@
     if (message.role !== 'user') flattenEmojiIcons(body);
     if (message.status === 'streaming') { const cursor = document.createElement('span'); cursor.className = 'stream-cursor'; cursor.setAttribute('aria-label', t('chat.generating')); body.append(cursor); }
     if (message.usage?.totalTokens) body.append(textElement('div', 'message-usage', `${formatMillionTokens(message.usage.totalTokens)} tokens`));
-    article.append(meta, body); return article;
+    article.append(meta, body);
+    // 流式增量更新要靠这份定位信息：正文最后一段的源起点 + 里面每个块的起始行。
+    article.hwchatFlow = flow;
+    return article;
   }
 
   /**
@@ -1445,32 +1647,45 @@
     if (!groups) {
       if (tools.length) body.append(renderToolExecutions(tools));
       const content = document.createElement('div'); content.className = 'message-content';
-      appendRichText(content, text || idleStatusText); body.append(content);
-      return;
+      const blocks = appendRichText(content, text || idleStatusText); body.append(content);
+      return { tailStart: 0, tail: { node: content, blocks } };
     }
     let cursor = 0;
+    let tailStart = 0;
+    let tail = null;
     let rendered = false;
     for (const group of groups) {
       const boundary = Math.max(cursor, Math.min(group.offset, text.length));
-      rendered = appendNarration(body, text.slice(cursor, boundary)) || rendered;
+      const narration = appendNarration(body, text.slice(cursor, boundary));
+      if (narration) { rendered = true; tailStart = cursor; tail = narration; }
       body.append(renderToolExecutions(group.tools));
       cursor = boundary;
     }
-    rendered = appendNarration(body, text.slice(cursor)) || rendered;
+    const last = appendNarration(body, text.slice(cursor));
+    if (last) { rendered = true; tailStart = cursor; tail = last; }
     if (!rendered) {
       const content = document.createElement('div'); content.className = 'message-content';
-      appendRichText(content, idleStatusText); body.append(content);
+      const blocks = appendRichText(content, idleStatusText); body.append(content);
+      return { tailStart: 0, tail: { node: content, blocks } };
     }
+    return { tailStart, tail };
   }
 
   /** 只渲染有内容的段落：分段边界上的空行、纯空白段直接跳过，不占版面。 */
   function appendNarration(body, rawText) {
+    const info = narrationNode(rawText);
+    if (!info) return null;
+    body.append(info.node);
+    return info;
+  }
+
+  /** 建一个正文段落节点；`rawText` 全是空白时返回 null（不占版面）。 */
+  function narrationNode(rawText) {
     const text = String(rawText || '').trim();
-    if (!text) return false;
+    if (!text) return null;
     const content = document.createElement('div'); content.className = 'message-content message-narration';
-    appendRichText(content, text);
-    body.append(content);
-    return true;
+    const blocks = appendRichText(content, text);
+    return { node: content, blocks, text };
   }
 
   /**
@@ -1684,17 +1899,27 @@
    * 引用、分隔线、段落；行内支持 **加粗**、`代码`、~~删除~~、[文字](链接)、裸链接。
    * 全程用 DOM + textContent 构造，不拼 HTML 字符串——模型输出里的尖括号永远是文字。
    */
+  /**
+   * 把一段 markdown 渲染进 `container`，并返回「每个块是从第几行开始的」。
+   *
+   * 返回块行号是为了流式增量更新：正文增长时只需要从「最后一个块的起始行」重新解析，
+   * 前面的块连节点带文字都不用碰（见 patchGrowingSegment）。
+   */
   function appendRichText(container, text) {
     const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+    const blocks = [];
+    const push = (node, line) => { container.append(node); blocks.push({ line, node }); };
     let paragraph = [];
+    let paragraphLine = 0;
     const flushParagraph = () => {
       if (!paragraph.length) return;
       const value = paragraph.join('\n').trim();
+      const startLine = paragraphLine;
       paragraph = [];
       if (!value) return;
       const node = document.createElement('p');
       appendInline(node, value);
-      container.append(node);
+      push(node, startLine);
     };
     let index = 0;
     while (index < lines.length) {
@@ -1703,15 +1928,16 @@
       const block = codeMeta.collectFenceBlock(lines, index);
       if (block) {
         flushParagraph();
+        const startLine = index;
         index = block.nextIndex;
-        container.append(codeBlockNode(block.code, block.info));
+        push(codeBlockNode(block.code, block.info), startLine);
         continue;
       }
       if (!line.trim()) { flushParagraph(); index += 1; continue; }
       // 分隔线：--- / *** / ___（三个以上同类符号）
       if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
         flushParagraph();
-        container.append(document.createElement('hr'));
+        push(document.createElement('hr'), index);
         index += 1;
         continue;
       }
@@ -1721,15 +1947,16 @@
         flushParagraph();
         const node = document.createElement(`h${heading[1].length}`);
         appendInline(node, heading[2]);
-        container.append(node);
+        push(node, index);
         index += 1;
         continue;
       }
       // 表格：表头行 + |---|---| 分隔行
-      if (isTableStart(lines, index)) { flushParagraph(); index = appendTable(container, lines, index); continue; }
+      if (isTableStart(lines, index)) { flushParagraph(); const startLine = index; const table = appendTable(container, lines, index); index = table.nextIndex; push(table.node, startLine); continue; }
       // 引用：连续的 > 行合成一个引用块，块内再走一遍同样的排版
       if (/^\s{0,3}>/.test(line)) {
         flushParagraph();
+        const startLine = index;
         const quoted = [];
         while (index < lines.length) {
           const current = lines[index] || '';
@@ -1741,20 +1968,22 @@
         // 解析不出来（普通引用、没登记的标记）继续走下面的引用块，外观完全不变。
         const callout = calloutMeta ? calloutMeta.parseCallout(quoted) : null;
         if (callout) {
-          container.append(calloutNode(callout, (body) => appendRichText(body, callout.body)));
+          push(calloutNode(callout, (body) => appendRichText(body, callout.body)), startLine);
           continue;
         }
         const node = document.createElement('blockquote');
         appendRichText(node, quoted.join('\n'));
-        container.append(node);
+        push(node, startLine);
         continue;
       }
       // 列表：层级由 appendList 按缩进算，正文里不再叠加第二套缩进规则
-      if (isListLine(line)) { flushParagraph(); index = appendList(container, lines, index); continue; }
+      if (isListLine(line)) { flushParagraph(); const startLine = index; const list = appendList(container, lines, index); index = list.nextIndex; push(list.node, startLine); continue; }
+      if (!paragraph.length) paragraphLine = index;
       paragraph.push(line);
       index += 1;
     }
     flushParagraph();
+    return blocks;
   }
 
   /** 位置标签：已知的两种走文案表，其余（例如 loc="GitHub runner"）原样显示。 */
@@ -1879,6 +2108,7 @@
       index += 1;
     }
     const stack = [];
+    let firstList = null;
     for (const item of items) {
       while (stack.length && item.indent < stack[stack.length - 1].indent) stack.pop();
       let frame = stack[stack.length - 1];
@@ -1887,6 +2117,7 @@
         const list = document.createElement(tagName);
         if (item.ordered && item.startNumber !== 1) list.start = item.startNumber;
         if (frame?.li) frame.li.append(list); else container.append(list);
+        if (!firstList) firstList = list;
         frame = { indent: item.indent, list, li: null };
         stack.push(frame);
       } else if (frame.list.tagName.toLowerCase() !== tagName) {
@@ -1901,7 +2132,7 @@
       frame.list.append(li);
       frame.li = li;
     }
-    return index;
+    return { node: firstList, nextIndex: index };
   }
 
   function splitTableRow(line) {
@@ -1960,8 +2191,7 @@
     }
     const table = document.createElement('table'); table.append(head, body);
     const wrap = document.createElement('div'); wrap.className = 'table-wrap'; wrap.append(table);
-    container.append(wrap);
-    return index;
+    return { node: wrap, nextIndex: index };
   }
 
   function looksLikeShell(value) {
@@ -2239,7 +2469,12 @@
   function appendInline(parent, value) {
     // 只把「目标看起来像链接」的 [文字](目标) 当链接：目标必须以 http(s)://、mailto:、# 或 / 开头，
     // 这样 [文字](javascript:…) 之类的构造连匹配都不会匹配，不会出现半个链接加一个多余的右括号。
-    const pattern = /(`[^`]+`|\*\*[^*\n]+\*\*|\*[^\s*][^*\n]*\*|~~[^~\n]+~~|\[[^\]\n]+\]\((?:https?:\/\/|mailto:|#|\/)[^)\s]*\)|https?:\/\/[^\s<]+)/g; let cursor = 0;
+    //
+    // 斜体两侧的 `(?<!\*)` / `(?!\*)` 是流式输出的必需约束：`**重点` 还没等到收尾的 `**` 时，
+    // 旧的 `\*[^\s*][^*\n]*\*` 会把第二个 `*` 和结尾那个 `*` 配成斜体，于是可见文字从
+    // `**重点*` 跳成 `*重点`——已经显示出来的星号少了一个，用户看到的就是「同一位置闪过
+    // 不一样的文字」。加上边界后，半截的粗体一律按字面量显示，直到 `**` 真正闭合。
+    const pattern = /(`[^`]+`|\*\*[^*\n]+\*\*|(?<!\*)\*(?!\*)[^\s*][^*\n]*\*(?!\*)|~~[^~\n]+~~|\[[^\]\n]+\]\((?:https?:\/\/|mailto:|#|\/)[^)\s]*\)|https?:\/\/[^\s<]+)/g; let cursor = 0;
     for (const match of value.matchAll(pattern)) {
       const index = match.index || 0; if (index > cursor) appendPlainText(parent, value.slice(cursor, index)); const token = match[0];
       if (token.startsWith('`')) {
@@ -2811,6 +3046,25 @@
         setStreaming(true, message.conversationId); renderMessages('bottom'); renderAttachments(); renderHistory(); break;
       }
       case 'messageAdded': if (message.conversationId === state.conversation?.id) { state.messages.push(message.message); state.pendingAttachments = []; renderMessages(state.autoFollow ? 'bottom' : 'keep'); renderAttachments(); } break;
+      // 排队消息被编辑：原地换掉那一条的文字，不重建整个列表（否则滚动位置和选区都会丢）。
+      case 'messageUpdated': {
+        if (message.conversationId !== state.conversation?.id || !message.message) break;
+        const index = state.messages.findIndex((item) => item.id === message.message.id);
+        if (index < 0) break;
+        state.messages[index] = message.message;
+        if (!patchMessage(message.message.id)) renderMessages('keep');
+        break;
+      }
+      // 排队消息被删除：把它和它的占位回复一起从界面上撤掉。
+      case 'messageRemoved': {
+        if (message.conversationId !== state.conversation?.id) break;
+        const gone = new Set([message.userMessageId, message.assistantMessageId].filter(Boolean));
+        if (!gone.size) break;
+        state.messages = state.messages.filter((item) => !gone.has(item.id));
+        if (editingTaskId && !state.taskTree?.nodes?.some((node) => node.id === editingTaskId)) cancelTaskEdit();
+        renderMessages('keep');
+        break;
+      }
       case 'streamDelta': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.content = `${target.content || ''}${message.content || ''}`; target.reasoning = `${target.reasoning || ''}${message.reasoning || ''}`; scheduleMessagePatch(message.messageId); } break; }
       case 'toolExecutions': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.toolExecutions = message.tools || []; scheduleMessagePatch(message.messageId); } break; }
       case 'skillUsage': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.usedSkills = message.skills || []; scheduleMessagePatch(message.messageId); } break; }

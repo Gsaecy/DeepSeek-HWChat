@@ -98,6 +98,10 @@ function extractBlock(sourceText, needle) {
 }
 
 const patchSource = extractBlock(CHAT_JS, '\n  function patchMessage(').replace(/^\n/, '');
+const growingSource = extractBlock(CHAT_JS, '\n  function patchGrowingSegment(').replace(/^\n/, '');
+const rememberSource = extractBlock(CHAT_JS, '\n  function rememberRender(').replace(/^\n/, '');
+const keepViewportSource = extractBlock(CHAT_JS, '\n  function keepViewportAfterPatch(').replace(/^\n/, '');
+const signatureSource = extractBlock(CHAT_JS, '\n  function toolGroupSignature(').replace(/^\n/, '');
 const scheduleSource = extractBlock(CHAT_JS, '\n  function scheduleMessagePatch(').replace(/^\n/, '');
 const runPendingSource = extractBlock(CHAT_JS, '\n  function runPendingMessageRender(').replace(/^\n/, '');
 const captureSource = extractBlock(CHAT_JS, '\n  function captureDetailOverrides(').replace(/^\n/, '');
@@ -155,7 +159,7 @@ const ctx = {
   setTimeout: (callback) => { timerQueue.push(callback); return timerQueue.length; },
 };
 
-const factory = new Function('ctx', `
+const factory = new Function('ctx', 'FakeNode', `
   "use strict";
   // 指向 ctx 的薄包装：测试中途换掉 ctx.hasSelection 也能立刻生效。
   const renderMessages = (...args) => ctx.renderMessages(...args);
@@ -167,6 +171,12 @@ const factory = new Function('ctx', `
   const setTimeout = (callback, delay) => ctx.setTimeout(callback, delay);
   const state = ctx.state;
   const elements = ctx.elements;
+  // 增量更新只在「正文纯追加」时才生效；这里的替身声明「结构永远不变」，
+  // 让 check-stream-patch 专注验证「别的消息不被重画」这一条。
+  const appendRichText = (container) => { container.append(new FakeNode('p')); return [{ line: 0, node: container.children[0] }]; };
+  const groupToolsByOffset = (tools) => (tools && tools.length ? [] : null);
+  const messageListSignature = () => 'sig';
+  let renderedMessageSignature = '';
   // 下面三个是 chat.js 模块级的 let，这里按同样形状重建。
   let selectingMessageText = false;
   let interactingWithMessages = false;
@@ -174,6 +184,10 @@ const factory = new Function('ctx', `
   let pendingPatchId = null;
   ${captureSource}
   ${restoreSource}
+  ${signatureSource}
+  ${growingSource}
+  ${rememberSource}
+  ${keepViewportSource}
   ${patchSource}
   ${scheduleSource}
   ${runPendingSource}
@@ -186,9 +200,29 @@ const factory = new Function('ctx', `
   };
 `);
 
-const ui = factory(ctx);
+const ui = factory(ctx, FakeNode);
 
 /* ── 断言 ─────────────────────────────────────────────────────── */
+
+/* 增量更新：只重画还在增长的那一段，已输出的块节点不重建。
+   这是「已经输出的文字会闪」的修复本体，钉住几个关键接线，防止以后被改回整条重建。 */
+{
+  const source = readFileSync('media/chat.js', 'utf8');
+  const wiring = [
+    ['增量更新入口在 patchMessage 里被优先调用', /if \(patchGrowingSegment\(current\)\)/.test(source)],
+    ['只删「最后一个块及之后」，前面的块原样保留', /let node = lastBlock\.node;\s*\n\s*while \(node\)/.test(source)],
+    ['从最后一个块的起始行重新解析', /tailText\.split\('\\n'\)\.slice\(lastBlock\.line\)/.test(source)],
+    ['整段重建也会记快照，流式第一帧就能增量', /rememberRender\(article, message\)/.test(source)],
+    ['工具分组纳入签名（正文变长会让工具块换位置）', /groupToolsByOffset\(tools, \(message\.content \|\| ''\)\.length\)/.test(source)],
+    ['半截粗体不再被当成斜体', /\(\?<!\\\*\)\\\*\(\?!\\\*\)/.test(source)],
+  ];
+  for (const [label, ok] of wiring) {
+    if (ok) { console.log(`✓ 增量渲染：${label}`); continue; }
+    failures += 1;
+    console.log(`✗ 增量渲染：${label}`);
+  }
+}
+
 
 let failures = 0;
 function check(label, condition, detail) {

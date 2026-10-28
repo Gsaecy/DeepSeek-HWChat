@@ -784,3 +784,30 @@ test('history order: createdAt order is stable across a reload', async () => {
     );
   });
 });
+
+test('deleteMessage：删掉一条排队消息，计数与预览跟着回退', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation();
+    const kept = await storage.appendMessage(conversation.id, { role: 'user', content: '保留这句', status: 'complete' });
+    const queued = await storage.appendMessage(conversation.id, { role: 'user', content: '要删掉这句', status: 'complete' });
+    const before = await storage.getConversation(conversation.id);
+    assert.equal(before?.messageCount, 2);
+
+    await storage.deleteMessage(conversation.id, queued.id);
+
+    const messages = await storage.getMessages(conversation.id);
+    assert.deepEqual(messages.messages.map((message) => message.id), [kept.id], '只剩下没被删的那条');
+    const after = await storage.getConversation(conversation.id);
+    assert.equal(after?.messageCount, 1, '计数要跟着减，否则界面显示的总条数是错的');
+  });
+});
+
+test('deleteMessage：删不存在的消息不报错、也不改计数', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation();
+    await storage.appendMessage(conversation.id, { role: 'user', content: '一', status: 'complete' });
+    await storage.deleteMessage(conversation.id, 'message-does-not-exist');
+    const after = await storage.getConversation(conversation.id);
+    assert.equal(after?.messageCount, 1, '幂等：重复删同一条不能把计数越减越少');
+  });
+});

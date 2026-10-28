@@ -157,6 +157,7 @@
           { callId: 't3', name: 'run_command', summary: '正在运行测试', status: 'pending', approval: 'approved', risk: 'command', startedAt: now - 4000, input: '{"command":"npm test","cwd":"/workspace"}' },
         ] },
         { id: 'm3', role: 'user', content: '不要改公共接口，再补一个刷新失败后的恢复测试。', createdAt: now - 3000, updatedAt: now - 3000, status: 'complete' },
+        { id: 'm4', role: 'user', content: '更新 README 使用说明', createdAt: now - 2000, updatedAt: now - 2000, status: 'complete' },
       ],
       hasMore: true,
       todos: [
@@ -172,7 +173,7 @@
       pendingAttachments: [{ label: 'failure-screenshot.png', kind: 'image', mimeType: 'image/png', bytes: 5620, thumbnailDataUrl: '../resources/logo.png' }],
       skills: [{ id: 's1', name: 'TypeScript 质量规范', description: '严格类型、最小改动与测试要求', source: 'workspace', relativePath: '.agents/skills/typescript/SKILL.md' }, { id: 's2', name: '项目文档同步', description: '代码改动后同步 README 与技术文档', source: 'copilot', relativePath: '~/.copilot/skills/project-doc-sync/SKILL.md', defaultEnabled: true, lastUsedAt: now - 20000 }],
       selectedSkillIds: ['s1', 's2'], mode: 'agent', workspaceTrusted: true, agentAvailable: true, availableToolCount: 27, showArchived: false,
-      taskTree: { active: true, currentNodeId: 'root', nodes: [{ id: 'root', title: '重构登录逻辑并运行测试', status: 'active', relation: 'root' }, { id: 'update', parentId: 'root', title: '保留公共接口并补恢复测试', status: 'merged', relation: 'related' }, { id: 'queued', parentId: 'root', title: '更新 README 使用说明', status: 'queued', relation: 'queued' }] },
+      taskTree: { active: true, currentNodeId: 'root', nodes: [{ id: 'root', title: '重构登录逻辑并运行测试', status: 'active', relation: 'root', userMessageId: 'm1' }, { id: 'update', parentId: 'root', title: '保留公共接口并补恢复测试', status: 'merged', relation: 'related' }, { id: 'queued', parentId: 'root', title: '更新 README 使用说明', status: 'queued', relation: 'queued', userMessageId: 'm4', pending: true }] },
     };
     // 预览用：给步骤钉上「接在哪段说明之后」的边界，验证分段交错渲染。
     const previewReply = previewState.messages[1];
@@ -296,6 +297,17 @@
   "chat.detachHistory": "解除任务历史",
   "chat.removeContext": "移除代码上下文",
   "chat.taskTree": "任务树",
+  "taskQueue.cancelEdit": "取消",
+  "taskQueue.edit": "编辑",
+  "taskQueue.editExecutedHint": "这条已经被 agent 执行过：历史不会改，保存后会把改过的内容作为新消息再发一次",
+  "taskQueue.editExpired": "这条排队消息已经不在队列里了",
+  "taskQueue.editHint": "修改这条排队消息；agent 还没读到它，保存后下一轮直接用新内容执行",
+  "taskQueue.remove": "删除",
+  "taskQueue.removeExecuted": "这条已经被 agent 读取执行，无法删除；可以编辑后重新发出",
+  "taskQueue.removeHint": "撤掉这条排队消息（还没被执行才能删）",
+  "taskQueue.removed": "已删除排队消息",
+  "taskQueue.resentAfterEdit": "已把改过的内容作为新消息发出",
+  "taskQueue.save": "保存",
   "chat.agentRuntimeSettings": "本轮 Agent 设置",
   "chat.promptPlaceholder": "询问代码、调试问题或实现思路…",
   "chat.promptPlaceholderAgent": "询问代码、调试问题或直接交给 Agent 实现…",
