@@ -5,6 +5,7 @@ import { hasVersionBumpIntent } from '../agent/releasePolicy';
 import { TODO_LIST_PROMPT } from '../agent/todoPrompt';
 import { splitTodoScope, todoScopeReason } from '../agent/todoScope';
 import { messageEntry } from '../core/i18n';
+import { renderTodoContext } from '../core/todos';
 import { TodoItem } from '../core/types';
 
 /**
@@ -136,4 +137,48 @@ test('「继续执行」发出的正文不构成推送或版本授权', () => {
 test('用户自己要求推送时，授权判定仍按原文放行（规则只管清单，不拦真实请求）', () => {
   assert.equal(hasGitWriteIntent('提交并推送'), true);
   assert.equal(hasVersionBumpIntent('升级版本号到 0.2.4'), true);
+});
+
+/**
+ * 「点了继续执行，清单卡在原地不动」。
+ *
+ * 根因：模型只收到一句「继续执行清单里未完成的条目」，却看不到清单本身 ——
+ * `requestMessages()` 跳过所有 `role: 'tool'` 消息（`update_todos` 的返回值就在
+ * 里面），清单又只存在对话摘要的 `todos` 字段里。这里锁住注入的产物：
+ * 带状态的完整列表 + 明确的下一条，模型才能接着做。
+ */
+test('renderTodoContext：注入带状态的完整清单，并指出下一条', () => {
+  const text = renderTodoContext([
+    { content: '验证 tray-icon 特性与单实例插件可离线编译', status: 'completed' },
+    { content: '实现单实例锁', status: 'completed' },
+    { content: '跑完质量门禁', status: 'pending' },
+    { content: '同步 README', status: 'in_progress' },
+  ], { interrupted: true });
+
+  assert.match(text, /<task_list>/, '要有明确边界，避免和正文混淆');
+  assert.match(text, /1\. \[x\] 验证 tray-icon/, '已完成的要标 [x]，模型据此不重复');
+  assert.match(text, /3\. \[ \] 跑完质量门禁/, '未开始的标 [ ]');
+  assert.match(text, /4\. \[>\] 同步 README/, '进行中的标 [>]');
+  assert.match(text, /2 of 4 item\(s\) are not finished/, '要给出未完成数量');
+  assert.match(text, /Next item to work on: #3/, '要明确指出下一条（跳过已完成的）');
+  assert.match(text, /interrupted/, '续跑时要说明这是被中断的清单');
+  assert.match(text, /never an empty array/, '重申不能用空数组清空清单');
+});
+
+test('renderTodoContext：清单全完成或没有清单时不注入', () => {
+  assert.equal(renderTodoContext([]), '');
+  assert.equal(renderTodoContext(undefined), '');
+  assert.equal(renderTodoContext([
+    { content: 'a', status: 'completed' },
+    { content: 'b', status: 'completed' },
+  ]), '', '全部完成时不再注入（该归档了）');
+});
+
+test('renderTodoContext：空内容条目被忽略，不会出现空行', () => {
+  const text = renderTodoContext([
+    { content: '   ', status: 'pending' },
+    { content: '真正的一条', status: 'pending' },
+  ]);
+  assert.match(text, /1\. \[ \] 真正的一条/, '空白条目不该占号');
+  assert.equal(text.includes('2. '), false);
 });

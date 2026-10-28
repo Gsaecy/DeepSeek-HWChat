@@ -108,3 +108,46 @@ export function clearedTodoState(): {
 } {
   return { todos: null, todosInterrupted: null, todosIncomplete: null };
 }
+
+/**
+ * 把当前清单渲染成给模型看的上下文。
+ *
+ * 真实故障：用户点「继续执行」，模型只收到一句「继续执行当前任务清单里尚未完成的
+ * 条目」，却**看不到清单本身** —— `requestMessages()` 会跳过所有 `role: 'tool'`
+ * 消息（`update_todos` 的返回值就在里面），清单又只存在对话摘要的 `todos` 字段里。
+ * 于是它要么猜、要么从头再来，清单就卡在原地。
+ *
+ * 输出刻意做成「带状态的结构化列表 + 明确的下一条」，而不是把原始 JSON 塞进去：
+ * 模型据此就能接着说「第 N 条还没做完」，也不需要自己推断哪个是下一个。
+ * 全部完成 / 没有清单时返回空串，调用方据此跳过注入。
+ */
+export function renderTodoContext(
+  todos: readonly TodoItem[] | undefined,
+  flags: { interrupted?: boolean; incomplete?: boolean } = {},
+): string {
+  const items = (todos ?? []).filter((todo) => todo && typeof todo.content === 'string' && todo.content.trim());
+  if (!items.length) return '';
+  const remaining = items.filter((todo) => todo.status !== 'completed');
+  if (!remaining.length) return '';
+
+  const mark = (status: TodoStatus): string => status === 'completed' ? '[x]' : status === 'in_progress' ? '[>]' : '[ ]';
+  const lines = items.map((todo, index) => `${index + 1}. ${mark(todo.status)} ${todo.content.trim()}`);
+  const nextIndex = items.findIndex((todo) => todo.status !== 'completed');
+  const state = flags.interrupted
+    ? 'This list was interrupted before it finished.'
+    : flags.incomplete
+      ? 'This list is still unfinished at the end of the previous turn.'
+      : 'This list is still in progress.';
+
+  return [
+    '<task_list>',
+    state,
+    ...lines,
+    `Legend: [x] completed, [>] in progress, [ ] pending. ${remaining.length} of ${items.length} item(s) are not finished.`,
+    nextIndex >= 0
+      ? `Next item to work on: #${nextIndex + 1} "${items[nextIndex]!.content.trim()}". Continue from there; do not restart items already marked [x].`
+      : '',
+    'Keep using update_todos with the whole list (never an empty array). Only mark an item completed after its work is verified.',
+    '</task_list>',
+  ].filter(Boolean).join('\n');
+}

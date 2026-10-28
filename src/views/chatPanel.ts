@@ -66,7 +66,7 @@ import {
   UsageInfo,
   WebviewConversationState,
 } from '../core/types';
-import { clearedTodoState, completedCount, hasMultipleInProgress, isResumableTodos, normalizeTodos, settleInterruptedTodos } from '../core/todos';
+import { clearedTodoState, completedCount, hasMultipleInProgress, isResumableTodos, normalizeTodos, renderTodoContext, settleInterruptedTodos } from '../core/todos';
 import {
   allTodosCompleted,
   appendTodoArchive,
@@ -1145,7 +1145,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         // 首次绑定之外，改到别的项目也要记下来：标题旁的徽标要显示全部涉及的项目。
         touchProjectRoot: (fsPath) => this.touchProjectRoot(conversationId!, fsPath),
       };
-      const requestMessages = await this.requestMessages(conversationId, settings, mode, preparedSkills.prompt);
+      const requestMessages = await this.requestMessages(conversationId, settings, mode, preparedSkills.prompt, options?.resumedTodos === true);
       const linkedConversation = await this.storage.getConversation(conversationId);
       const historyTool = linkedConversation?.sourceConversationId ? conversationHistoryToolDefinition() : undefined;
       const assistant = await this.storage.appendMessage(conversationId, {
@@ -1504,6 +1504,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     settings: ReturnType<typeof readSettings>,
     mode: ConversationMode,
     skillPrompt: string,
+    /**
+     * 本轮由「继续执行」按钮发起。`resumeTodos()` 在发送前就清掉了中断标记
+     * （否则面板会一直挂着「已中断」），所以这里只能由调用方显式告知，
+     * 注入的清单文案才能说清「这是被中断后接着做」。
+     */
+    resumed = false,
   ): Promise<ChatRequestMessage[]> {
     const stored = await this.storage.getContextMessages(conversationId, settings.maxMessagesInContext);
     const conversation = await this.storage.getConversation(conversationId);
@@ -1530,7 +1536,25 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         '</linked_conversation_history>',
       ].join('\n\n')
       : '';
-    messages.push({ role: 'system', content: this.agentSystemPrompt(mode, settings.systemPrompt, skillPrompt, historyPrompt) });
+    /*
+     * 清单要显式注入。
+     *
+     * `update_todos` 的返回值是 `role: 'tool'` 消息，而下面的循环会跳过所有 tool
+     * 消息；清单本身又只存在对话摘要的 `todos` 字段里。于是模型只看到
+     * 「继续执行清单里未完成的条目」这句话、却看不到清单内容——续跑只能靠猜，
+     * 表现就是「点了继续执行，清单卡在原地不动」。
+     * 把带状态的清单放进 system 消息，模型就能接着第 N 条往下做。
+     */
+    const todoContext = renderTodoContext(conversation?.todos, {
+      interrupted: resumed || conversation?.todosInterrupted === true,
+      incomplete: conversation?.todosIncomplete === true,
+    });
+    messages.push({
+      role: 'system',
+      content: [this.agentSystemPrompt(mode, settings.systemPrompt, skillPrompt, historyPrompt), todoContext]
+        .filter(Boolean)
+        .join('\n\n'),
+    });
     for (const message of stored) {
       if (message.role === 'system' || message.role === 'tool' || (message.role === 'assistant' && (!message.content || message.status === 'error'))) {
         continue;
