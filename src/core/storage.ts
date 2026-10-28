@@ -542,7 +542,8 @@ export class ConversationStorage {
     this.requireSummary(conversationId);
     await this.enqueueWrite(async () => {
       this.invalidateMessagePages();
-      await rm(this.messageDirectory(conversationId), { recursive: true, force: true });
+      // 整条对话目录一起删：只删 `messages/` 会留下空壳，重载后被 reconcile 复活。
+      await rm(this.conversationDirectory(conversationId), { recursive: true, force: true });
       this.conversationRevisions.delete(conversationId);
       this.cleanupScanCache.delete(conversationId);
       this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== conversationId);
@@ -681,7 +682,7 @@ export class ConversationStorage {
 
       for (const summary of [...this.manifest.conversations]) {
         if (prunableEmptyIds.has(summary.id)) {
-          await rm(this.messageDirectory(summary.id), { recursive: true, force: true });
+          await rm(this.conversationDirectory(summary.id), { recursive: true, force: true });
           this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== summary.id);
           this.conversationRevisions.delete(summary.id);
           this.cleanupScanCache.delete(summary.id);
@@ -784,7 +785,7 @@ export class ConversationStorage {
           && !protectedIds.has(summary.id)
           && now - summary.createdAt >= 60_000
         ) {
-          await rm(this.messageDirectory(summary.id), { recursive: true, force: true });
+          await rm(this.conversationDirectory(summary.id), { recursive: true, force: true });
           this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== summary.id);
           this.conversationRevisions.delete(summary.id);
           this.cleanupScanCache.delete(summary.id);
@@ -795,7 +796,7 @@ export class ConversationStorage {
           continue;
         }
         if (!summary.pinned && !summary.archived && !protectedIds.has(summary.id) && historyMs > 0 && now - summary.updatedAt >= historyMs) {
-          await rm(this.messageDirectory(summary.id), { recursive: true, force: true });
+          await rm(this.conversationDirectory(summary.id), { recursive: true, force: true });
           this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== summary.id);
           this.conversationRevisions.delete(summary.id);
           this.cleanupScanCache.delete(summary.id);
@@ -829,7 +830,7 @@ export class ConversationStorage {
             break;
           }
           const before = bytesById.get(summary.id) ?? 0;
-          await rm(this.messageDirectory(summary.id), { recursive: true, force: true });
+          await rm(this.conversationDirectory(summary.id), { recursive: true, force: true });
           this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== summary.id);
           this.conversationRevisions.delete(summary.id);
           this.cleanupScanCache.delete(summary.id);
@@ -914,8 +915,20 @@ export class ConversationStorage {
     return summary;
   }
 
+  /**
+   * 一条对话的**根目录**（`conversations/<id>`），消息在它下面的 `messages/` 里。
+   *
+   * 删除时必须删这一层，不能只删 `messages/`：留下空壳目录会被 `reconcileManifest`
+   * 当成「磁盘上还有这条对话」而重建记录，而空目录没有消息可取时间，重建出来的
+   * `createdAt` 就是当时的 `Date.now()` —— 用户看到的就是「删掉的空对话又冒出来了，
+   * 时间显示刚刚」。
+   */
+  private conversationDirectory(conversationId: string): string {
+    return join(this.conversationsPath, conversationId);
+  }
+
   private messageDirectory(conversationId: string): string {
-    return join(this.conversationsPath, conversationId, 'messages');
+    return join(this.conversationDirectory(conversationId), 'messages');
   }
 
   private messagePath(conversationId: string, messageId: string): string {
@@ -993,9 +1006,29 @@ export class ConversationStorage {
   }
 
   private async reconcileManifest(): Promise<void> {
-    const directories = (await readdir(this.conversationsPath, { withFileTypes: true }))
-      .filter((entry: Dirent) => entry.isDirectory())
-      .map((entry) => entry.name);
+    const entries = (await readdir(this.conversationsPath, { withFileTypes: true }))
+      .filter((entry: Dirent) => entry.isDirectory());
+    /**
+     * 丢掉**空壳目录**：`conversations/<id>/` 里连 `messages/` 都没有。
+     *
+     * 真实故障：删除对话时只 `rm` 了 `messages/`，`conversations/<id>/` 留了下来；
+     * 下次启动这里看到「磁盘上还有这个 id」，就把它当成一条对话重建出来 ——
+     * 空目录没有消息可读时间，`createdAt` 取的就是当时的 `Date.now()`，
+     * 于是用户看到「删掉的空对话又回来了，还显示『刚刚』」。
+     *
+     * `createConversation` 一定会 `mkdir messages/`，所以**没有 `messages/` 子目录的
+     * 对话目录一定是残骸**，直接删掉比留着重建成幽灵对话安全。
+     */
+    const directories: string[] = [];
+    for (const entry of entries) {
+      const messagesPath = join(this.conversationsPath, entry.name, 'messages');
+      const hasMessages = await stat(messagesPath).then((info) => info.isDirectory()).catch(() => false);
+      if (hasMessages) {
+        directories.push(entry.name);
+        continue;
+      }
+      await rm(join(this.conversationsPath, entry.name), { recursive: true, force: true }).catch(() => undefined);
+    }
     const existing = new Set(directories);
     const summaries = new Map(
       this.manifest.conversations

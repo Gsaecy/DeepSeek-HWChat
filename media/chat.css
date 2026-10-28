@@ -72,6 +72,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .app-shell {
   display: grid;
   grid-template-columns: 268px minmax(0, 1fr);
+  /* 必须显式声明行高：只写 columns 时隐式行是 `auto`，会被侧栏内容撑到比容器还高
+     （实测 12 条对话时行高 956px > 视口 760px），右栏的输入框就被顶到视口外面，
+     看起来像「对话框不见了」。`minmax(0, 1fr)` 让这一行永远等于容器高度。 */
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
 }
 
@@ -80,6 +84,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
   gap: 12px;
   min-width: 0;
+  /* grid item 的默认 min-height 是 auto：不写这一行，侧栏就拒绝收缩到内容高度以下，
+     对话一多就把整列顶高（配合上面 app-shell 的行高一起兜住）。 */
+  min-height: 0;
   padding: 14px 12px 12px;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border);

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.6
+
+- **「删掉的空对话重载后又回来了，还显示『刚刚』」+「对话框不见了」：两个真实故障，都修了。**
+  - **幽灵对话**：删除对话时只 `rm conversations/<id>/messages`，把 `conversations/<id>/` 空壳留下了；下次启动 `reconcileManifest` 看到「磁盘上还有这个 id」就把它当一条对话重建 —— 空目录没有消息可读时间，`createdAt` 取的就是当时的 `Date.now()`，于是删掉的卡片全回来了、时间显示「刚刚」。用户磁盘上的证据很直接：12 个空对话的**目录年龄是 911～3415 秒**（当初删除的时刻），而它们的 `createdAt` **全是 107 秒前**（重载的时刻）。现在删除走 `conversationDirectory()` 删**整条目录**（`deleteConversation` 与清理里全部 5 处删除点一起改），并且 `reconcileManifest` 增加一层兜底：**没有 `messages/` 子目录的对话目录一律当成残骸删除**（`createConversation` 一定会 `mkdir messages/`，所以这个判据是安全的），不再重建成幽灵。用用户真实磁盘副本实测：**28 个目录 → 15 个**，清掉 13 个空壳，保留 1 个合法空对话 + 14 个有内容的对话，零误删。
+  - **对话框被顶出视口**：`.app-shell` 只声明了 `grid-template-columns`，隐式行是 `auto`，于是侧栏内容有多高、整行就有多高——12 条对话时行高 **956px**，而视口只有 **760px**，右栏的输入框被推到视口外面，看起来就像「对话框不见了」。现在显式声明 `grid-template-rows: minmax(0, 1fr)`，并给 `.history-pane` 补 `min-height: 0`（grid item 默认 `min-height: auto` 会拒绝收缩）。修后实测：`bodyScrollHeight` **956 → 760**，对话列表改为内部滚动（clientHeight 502 / scrollHeight 756），对话框回到视口内。headless Chromium 实测 2 张与 12 张两种情况都 `composerVisible=true`。
+  - 新增 4 条测试：删除不留空壳且重载不复活、启动时清掉历史遗留空壳且不重建成幽灵、正常空对话（有 `messages/`）不被误删、以及布局约束（`.app-shell` 必须有 `grid-template-rows: minmax(0,1fr)`、`.history-pane` 必须 `min-height: 0`、列表必须自己滚动）。`npm test` **613 全绿**。
+
 ## 0.2.5
 
 - **空对话不再堆卡片；卸载扩展后的残留勾选不再被读取**。两处都是上一版没做对的地方：

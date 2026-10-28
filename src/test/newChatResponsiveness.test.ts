@@ -260,3 +260,23 @@ test('清理会把堆积的空对话收敛成一张', async () => {
     assert.ok(remaining.some((item) => item.id === used.id), '有内容的对话不能被误删');
   });
 });
+
+test('侧栏对话再多也不能把输入框顶出视口（布局约束）', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { dirname, join } = await import('node:path');
+  const css = await readFile(join(dirname(__dirname), '..', 'media', 'chat.css'), 'utf8');
+
+  // 真实故障：`.app-shell` 只声明了 grid-template-columns，隐式行是 auto，
+  // 于是 12 条对话把这一行撑到 956px（视口 760px），右栏输入框被推到视口外面，
+  // 用户看到的是「对话框不见了」。两处约束缺一不可。
+  const shell = /\.app-shell\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(shell, /grid-template-rows:\s*minmax\(0,\s*1fr\)/, '.app-shell 必须显式声明 rows 为 minmax(0,1fr)');
+  assert.match(shell, /height:\s*100%/, '.app-shell 必须占满高度');
+
+  const pane = /\.history-pane\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(pane, /min-height:\s*0/, '.history-pane 必须允许收缩（grid item 默认 min-height:auto 会顶高整列）');
+  assert.match(pane, /minmax\(0,\s*1fr\)/, '对话列表那一行必须是 minmax(0,1fr)');
+
+  const list = /\.conversation-list\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(list, /overflow:\s*auto/, '对话列表要自己滚动，而不是把整页撑高');
+});

@@ -145,3 +145,84 @@ test('deleting a conversation drops its scan bookkeeping', async () => {
     assert.equal(result.messages, 0);
   });
 });
+
+/**
+ * 「删掉的空对话重载后又回来了，还显示『刚刚』」。
+ *
+ * 原因有两层，缺一不可：
+ *  1. 删除只 `rm` 了 `conversations/<id>/messages`，`conversations/<id>/` 留下空壳；
+ *  2. 下次 `reconcileManifest` 看到磁盘上还有这个 id，就把空目录重建成一条对话——
+ *     空目录没有消息可读时间，`createdAt` 取当时的 `Date.now()`，于是"刚刚"。
+ */
+test('删除对话会删掉整个目录，不留空壳（否则重载后被 reconcile 复活）', async () => {
+  const { readdir, stat } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'hwchat-shell-'));
+  try {
+    const storage = new ConversationStorage(root);
+    await storage.initialize();
+    const conversation = await storage.createConversation('要删掉的');
+    await storage.appendMessage(conversation.id, { role: 'user', content: 'x', status: 'complete' });
+    await storage.deleteConversation(conversation.id);
+
+    const dirExists = await stat(join(root, 'conversations', conversation.id))
+      .then(() => true)
+      .catch(() => false);
+    assert.equal(dirExists, false, 'conversations/<id> 必须整条删掉，不能只删 messages/');
+    assert.deepEqual(await readdir(join(root, 'conversations')), [], '不能留下空目录');
+
+    // 重载：绝不能把删掉的对话又变出来。
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    assert.deepEqual(await reloaded.listConversations({ includeArchived: true }), [], '重载后不该复活');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('启动时清掉历史遗留的空壳目录，且不把它重建成幽灵对话', async () => {
+  const { mkdir, readdir, stat, writeFile } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'hwchat-shadow-'));
+  try {
+    // 复刻用户磁盘上的破损状态：manifest 里有一条「新对话」，磁盘上只剩空壳目录。
+    await mkdir(join(root, 'conversations', 'conversation_ghost'), { recursive: true });
+    await writeFile(join(root, 'manifest.json'), JSON.stringify({
+      version: 1,
+      conversations: [{
+        id: 'conversation_ghost', title: '新对话', createdAt: 1, updatedAt: 1,
+        messageCount: 0, preview: '', pinned: false, totalTokens: 0, mode: 'agent',
+        skillIds: [], skillSelectionInitialized: false, archived: false,
+      }],
+    }), 'utf8');
+
+    const storage = new ConversationStorage(root);
+    await storage.initialize();
+    assert.deepEqual(await storage.listConversations({ includeArchived: true }), [], '空壳不能变成对话');
+
+    const leftover = await readdir(join(root, 'conversations'));
+    assert.deepEqual(leftover, [], '空壳目录本身也要清掉');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('正常空对话（有 messages/ 目录）不会被当成空壳删掉', async () => {
+  const { stat } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'hwchat-keep-'));
+  try {
+    const storage = new ConversationStorage(root);
+    await storage.initialize();
+    const conversation = await storage.createConversation('新对话');
+    await storage.updateConversation(conversation.id, { skillSelectionInitialized: true });
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    assert.deepEqual(
+      (await reloaded.listConversations({ includeArchived: true })).map((item) => item.id),
+      [conversation.id],
+      '刚建好的空对话必须还在',
+    );
+    assert.ok(await stat(join(root, 'conversations', conversation.id, 'messages')).then(() => true));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
