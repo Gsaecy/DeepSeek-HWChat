@@ -83,3 +83,12 @@ test('单纯的小数点不受影响（不能因为怕路径就禁掉数字）',
   // `3.5` 这种带点的数字会被判成「像扩展名」，走重排——只是慢一点，不会渲染错
   assert.equal(api.canAppendPlainText('5 倍', '3.'), false);
 });
+
+test('空白边界：这些帧交给重排，不能靠猜', () => {
+  const api = load();
+  // `3.5 倍` 被拆成两帧时，上一帧以空格结尾、画出来时被 trim 掉了。
+  // 纯函数看不出来，所以 chat.js 里额外用「原文以空白结尾 / DOM 没有这个空白」判一次；
+  // 这里钉住的是同一类：以空白开头的这一小段本身可以安全追加（空白跟着一起进 DOM）。
+  assert.equal(api.canAppendPlainText(' 倍。', '3.5'), true);
+  assert.equal(api.canAppendPlainText('倍。', '3.5'), true);
+});

@@ -366,7 +366,11 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 /* 消息区外壳：给「回到最新消息」按钮提供定位参考。
    按钮必须放在滚动容器之外，否则会跟着内容一起滚走。 */
 .message-area { position: relative; display: grid; grid-template-rows: minmax(0, 1fr); min-height: 0; }
-.message-viewport { position: relative; min-height: 0; overflow: auto; }
+/* 消息区自己管滚动（每帧按 autoFollow 决定贴底还是保持原位），所以显式关掉浏览器的
+   滚动锚定：两者同时生效时会互相补偿——浏览器的锚定先按「内容变了」挪一次 scrollTop，
+   我们的 rAF 又把它覆盖回自己算的值，肉眼看就是整段文字在轻微跳动。
+   MDN《scroll anchoring》：只有你自己在管滚动、又碰到跳动时才需要关掉它。 */
+.message-viewport { position: relative; min-height: 0; overflow: auto; overflow-anchor: none; }
 /* 悬浮在输入框上方一点：贴住消息区底边，与右侧留出与消息列表一致的边距。 */
 .scroll-to-bottom { position: absolute; bottom: 12px; right: 14px; z-index: 6; border-radius: 999px; background: var(--surface); box-shadow: var(--shadow); }
 /* .icon-button 是 display:grid，会覆盖 [hidden] 的默认 display:none，这里必须显式声明。 */

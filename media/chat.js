@@ -102,6 +102,15 @@
   const calloutMeta = globalThis.HWChatCalloutMeta || null;
   /** 行内快路径的纯函数判定（见 media/inline-append.js）。缺了就一律走重排，行为安全。 */
   const inlineAppend = globalThis.HWChatInlineAppend || null;
+  /**
+   * 流式补全未闭合 markdown（见 media/stream-repair.js）。
+   *
+   * 依据 Vercel AI SDK 官方 Streamdown 的做法：还在流的 `**重点`、`` `npm test ``、
+   * `[文档](https://exa` 直接按**最终形态**渲染，而不是先显示成字面量、等收尾符
+   * 到了再跳变——那正是「已经输出的文字会跳」的另一半原因。缺了脚本就不补，
+   * 行为退回原样，不会渲染错。
+   */
+  const streamRepair = globalThis.HWChatStreamRepair || null;
 
   /**
    * 用户消息里的明文凭据识别。规则在 media/secret-scan.js（纯函数，可单独单测）。
@@ -952,8 +961,20 @@
      * 原地追加只改一个文本节点的内容，标签节点、悬停状态、动画都不受影响。
      */
     const appended = content.slice(previous.content.length);
+    /*
+     * 尾部还有没闭合的 `**` / `~~` / `` ` `` 时不能走原地追加：追加只是把字符贴到
+     * 文本节点上，不会重新走遍行内解析，补全也就没机会生效，用户会先看到字面量的
+     * `**重点`、等收尾符到了才变粗 —— 仍然是一次可见跳动。
+     */
+    const tailNeedsRepair = Boolean(streamRepair?.needsRepair?.(tailText));
+    /*
+     * 上一帧的正文以空白结尾、而画出来的那段并没有这个空白（排版时 `trim()` 掉了），
+     * 这一帧又接着写实字 —— 直接追加就会把那个空格永久吃掉（实测：`增长 3.5 倍`
+     * 变成 `增长 3.5倍`）。这种帧必须重排一次，让空白重新参与排版。
+     */
+    const lostTrailingSpace = /[ \t]$/.test(previous.content) && !/[ \t]$/.test(lastBlock.node.textContent || '');
     // 上一帧画的还是占位文案：交给调用方整条重画，别把正文接在占位后面。
-    if (!flow.placeholder && canAppendPlainText(appended, lastBlock.node, tailNode)) {
+    if (!flow.placeholder && !tailNeedsRepair && !lostTrailingSpace && canAppendPlainText(appended, lastBlock.node, tailNode)) {
       appendRawText(lastBlock.node, appended);
       current.hwchatRender = { ...previous, content };
       return true;
@@ -961,7 +982,7 @@
     // 从「最后一个块」的起始行重新解析：它可能继续增长，也可能裂成两个块。
     // 只有最后一个块会被替换，它前面的块连节点带文字都不动。
     const fresh = document.createElement('div');
-    const freshBlocks = appendRichText(fresh, tailText.split('\n').slice(lastBlock.line).join('\n'));
+    const freshBlocks = appendRichText(fresh, tailText.split('\n').slice(lastBlock.line).join('\n'), true);
     // 从最后一个块开始往后清掉：一个列表块可能对应多个 <ol>/<ul> 兄弟节点，
     // 所以按 DOM 顺序删，不按 blocks 数量删。
     let node = lastBlock.node;
@@ -1703,7 +1724,8 @@
     if (!groups) {
       if (tools.length) body.append(renderToolExecutions(tools));
       const content = document.createElement('div'); content.className = 'message-content';
-      const blocks = appendRichText(content, text || idleStatusText); body.append(content);
+      const blocks = appendRichText(content, text || idleStatusText, Boolean(text) && message.status === 'streaming');
+      body.append(content);
       // 画的是占位文案（还没有正文）时记一笔：这一块不能走「原地追加」，
       // 否则第一句真正的话会被接在「正在继续处理…」后面。
       return { tailStart: 0, placeholder: !text, tail: { node: content, blocks } };
@@ -1719,7 +1741,9 @@
       body.append(renderToolExecutions(group.tools));
       cursor = boundary;
     }
-    const last = appendNarration(body, text.slice(cursor));
+    // 只有**最后**一段才可能是「还在写」的那一段，也只有它允许补全；
+    // 前面的段落已经完整，若它恰好以 `2 * 3` 这种结尾，补全反而会凭空多出星号。
+    const last = appendNarration(body, text.slice(cursor), message.status === 'streaming');
     if (last) { rendered = true; tailStart = cursor; tail = last; }
     if (!rendered) {
       const content = document.createElement('div'); content.className = 'message-content';
@@ -1730,19 +1754,19 @@
   }
 
   /** 只渲染有内容的段落：分段边界上的空行、纯空白段直接跳过，不占版面。 */
-  function appendNarration(body, rawText) {
-    const info = narrationNode(rawText);
+  function appendNarration(body, rawText, streaming = false) {
+    const info = narrationNode(rawText, streaming);
     if (!info) return null;
     body.append(info.node);
     return info;
   }
 
   /** 建一个正文段落节点；`rawText` 全是空白时返回 null（不占版面）。 */
-  function narrationNode(rawText) {
+  function narrationNode(rawText, streaming = false) {
     const text = String(rawText || '').trim();
     if (!text) return null;
     const content = document.createElement('div'); content.className = 'message-content message-narration';
-    const blocks = appendRichText(content, text);
+    const blocks = appendRichText(content, text, streaming);
     return { node: content, blocks, text };
   }
 
@@ -1940,7 +1964,7 @@
     details.dataset.detailKey = 'reasoning';
     // 默认收起：思考过程是给想追根究底的人看的，不该一上来就占满视野。
     details.dataset.defaultOpen = '0';
-    const content = document.createElement('div'); content.className = 'reasoning-content'; appendRichText(content, reasoning);
+    const content = document.createElement('div'); content.className = 'reasoning-content'; appendRichText(content, reasoning, streaming);
     const summary = document.createElement('summary');
     // 标题上直接写清「现在在干什么 / 里面有多少内容」，不用点开也能判断要不要看。
     const chars = String(reasoning || '').replace(/\s+/g, '').length;
@@ -1963,8 +1987,16 @@
    * 返回块行号是为了流式增量更新：正文增长时只需要从「最后一个块的起始行」重新解析，
    * 前面的块连节点带文字都不用碰（见 patchGrowingSegment）。
    */
-  function appendRichText(container, text) {
-    const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  function appendRichText(container, text, streaming = false) {
+    /*
+     * 流式输出时先把「还在写的那一段」补全再排版。
+     *
+     * 只补尾部：前面已经完整的段落一个字符都不动（否则前一段里没闭合的标记会被
+     * 补到末尾去）。补全之后，`**重点` 这一帧就是粗体、`[文档](https://exa` 这一帧
+     * 就是链接文字，可见文字只增不减，不会再「先字面量、后跳变」。
+     */
+    const source = streaming && streamRepair ? streamRepair.repairStreamingMarkdown(text) : text;
+    const lines = String(source || '').replace(/\r\n/g, '\n').split('\n');
     const blocks = [];
     const push = (node, line) => { container.append(node); blocks.push({ line, node }); };
     let paragraph = [];
