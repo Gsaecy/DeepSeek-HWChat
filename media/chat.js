@@ -100,6 +100,8 @@
    * 少一种样式总比把 `> [!DANGER]` 那行标记渲染成正文、让人看到一堆方括号好。
    */
   const calloutMeta = globalThis.HWChatCalloutMeta || null;
+  /** 行内快路径的纯函数判定（见 media/inline-append.js）。缺了就一律走重排，行为安全。 */
+  const inlineAppend = globalThis.HWChatInlineAppend || null;
 
   /**
    * 用户消息里的明文凭据识别。规则在 media/secret-scan.js（纯函数，可单独单测）。
@@ -920,6 +922,8 @@
     const previous = current.hwchatRender;
     const flow = current.hwchatFlow;
     if (!previous || !flow?.tail?.node?.isConnected) return false;
+    // 这一条还是「正在继续处理…」的占位：结构马上要整体换掉，增量不适用。
+    if (flow.placeholder) return false;
     const message = state.messages.find((item) => item.id === current.dataset.messageId);
     if (!message) return false;
     const content = message.content || '';
@@ -937,6 +941,23 @@
     const tailNode = flow.tail.node;
     const lastBlock = flow.tail.blocks[flow.tail.blocks.length - 1];
     if (!lastBlock || !lastBlock.node.isConnected) return false;
+
+    /*
+     * 最省的一档：这一段最后是一整段普通文字，新来的又只是普通文字 —— 直接追加到
+     * 末尾的文本节点上，连重排都不做。
+     *
+     * 为什么值得单独做一档：重排会把段落里的整个 DOM 重建一遍，里面的文件标签
+     * 也是新造的。用户鼠标正停在那颗标签上时，新造的节点要重新进入 :hover、
+     * 过渡动画从头跑一遍，看起来就是「鼠标停在已经输出的文字上，那些字也会跳」。
+     * 原地追加只改一个文本节点的内容，标签节点、悬停状态、动画都不受影响。
+     */
+    const appended = content.slice(previous.content.length);
+    // 上一帧画的还是占位文案：交给调用方整条重画，别把正文接在占位后面。
+    if (!flow.placeholder && canAppendPlainText(appended, lastBlock.node, tailNode)) {
+      appendRawText(lastBlock.node, appended);
+      current.hwchatRender = { ...previous, content };
+      return true;
+    }
     // 从「最后一个块」的起始行重新解析：它可能继续增长，也可能裂成两个块。
     // 只有最后一个块会被替换，它前面的块连节点带文字都不动。
     const fresh = document.createElement('div');
@@ -946,11 +967,46 @@
     let node = lastBlock.node;
     while (node) { const after = node.nextElementSibling; node.remove(); node = after; }
     const kept = flow.tail.blocks.filter((block) => block.line < lastBlock.line);
-    const appended = [];
-    for (const block of freshBlocks) { tailNode.append(block.node); appended.push({ line: lastBlock.line + block.line, node: block.node }); }
-    flow.tail.blocks = kept.concat(appended);
+    const appendedBlocks = [];
+    for (const block of freshBlocks) { tailNode.append(block.node); appendedBlocks.push({ line: lastBlock.line + block.line, node: block.node }); }
+    flow.tail.blocks = kept.concat(appendedBlocks);
     current.hwchatRender = { ...previous, content };
     return true;
+  }
+
+  /**
+   * 新追加的这一小段能不能直接贴到段落末尾。
+   *
+   * 判定刻意保守：只要这一小段里出现任何可能**开启或闭合**行内标记、链接、表格、
+   * 换行，或者看起来像路径的一小截，就返回 false 让调用方老老实实重排这一段。
+   * 重排永远是对的，这个快路径只负责「普通文字」这个绝大多数情况 ——
+   * 路径、粗体跨帧这些边界一律走重排，不会因为走快路径而渲染错。
+   */
+  function canAppendPlainText(appended, blockNode, tailNode) {
+    if (!appended) return false;
+    // 结构检查：只有「这一段最后一个块、而且就是整段普通文字」才谈得上原地追加。
+    if (blockNode.tagName !== 'P') return false;
+    if (blockNode.parentNode !== tailNode) return false;
+    if (blockNode.nextElementSibling) return false;
+    /*
+     * 末尾必须已经是一个文本节点。
+     *
+     * 否则新来的字有可能属于上一个行内元素：正文写到 `src/app/App.ts` 时那半截
+     * 已经被认成文件标签，接着来的 `x` 应该在标签**里面**（`App.tsx`），而不是
+     * 贴在标签后面变成散字。末尾是元素时一律重排，让这段文字重新参与行内解析；
+     * 重排过一次之后末尾就有文本节点了，后面的普通文字照旧走快路径。
+     */
+    if (!blockNode.lastChild || blockNode.lastChild.nodeType !== 3) return false;
+    // 文字层面的判定交给纯函数（media/inline-append.js），自带单测。
+    if (!inlineAppend) return false;
+    return inlineAppend.canAppendPlainText(appended, (blockNode.textContent || '').slice(-8));
+  }
+
+  /** 把纯文字贴到块的末尾：优先并入最后一个文本节点，避免多出一层空 span。 */
+  function appendRawText(blockNode, text) {
+    const last = blockNode.lastChild;
+    if (last && last.nodeType === 3) { last.appendData(text); return; }
+    blockNode.append(document.createTextNode(text));
   }
 
   /**
@@ -1648,7 +1704,9 @@
       if (tools.length) body.append(renderToolExecutions(tools));
       const content = document.createElement('div'); content.className = 'message-content';
       const blocks = appendRichText(content, text || idleStatusText); body.append(content);
-      return { tailStart: 0, tail: { node: content, blocks } };
+      // 画的是占位文案（还没有正文）时记一笔：这一块不能走「原地追加」，
+      // 否则第一句真正的话会被接在「正在继续处理…」后面。
+      return { tailStart: 0, placeholder: !text, tail: { node: content, blocks } };
     }
     let cursor = 0;
     let tailStart = 0;
@@ -1666,7 +1724,7 @@
     if (!rendered) {
       const content = document.createElement('div'); content.className = 'message-content';
       const blocks = appendRichText(content, idleStatusText); body.append(content);
-      return { tailStart: 0, tail: { node: content, blocks } };
+      return { tailStart: 0, placeholder: true, tail: { node: content, blocks } };
     }
     return { tailStart, tail };
   }
@@ -2248,27 +2306,69 @@
     // 解析不出绝对路径（没有工作区根、又是相对路径）时退回原文，别显示一个点不开的假引用。
     if (!resolved) return null;
 
+    /*
+     * 这一步是「文件标签后面的文字会跳动」的修复点。
+     *
+     * 流式输出时，正在增长的那一段正文每 70ms 会被重新排版一次，里面的文件标签
+     * 也跟着重新造一个。新造的标签一开始按**用户写的原文**显示（短），随后扩展
+     * 核实回来才换成真实路径（可能长得多，例如解析到当前首选根目录之外的文件）。
+     * 于是每一帧都重演一次「短 → 长」：标签后面的文字被推来推去，看起来就是
+     * 标签长度在来回变化、后面的字在跳。
+     *
+     * 现在把核实结果按「首选根 + 路径」缓存起来。重建出来的标签直接套用上一次的
+     * 结论，既不会再晚一拍，也不会重复发请求 —— 同一段正文里每帧画出来的标签
+     * 与上一帧完全一致，后面的文字自然不动。
+     */
+    const entry = {
+      node: null,
+      labelNode: null,
+      reference,
+      resolved,
+      compact: Boolean(options.compact),
+      original: typeof input === 'string' ? input : (options.original || reference.path),
+    };
+    const known = cachedReferenceResolution(reference);
+    if (known !== undefined) {
+      // 已经判过「不是真实文件」：直接退回原文（compact 时是 <code>），
+      // 别再画一个点不开的假标签、也别再问一次。
+      if (!known) return null;
+      return buildFileReferenceNode(entry, known);
+    }
+
+    const node = buildFileReferenceNode(entry);
+    pendingFileReferences.push(entry);
+    scheduleFileReferenceCheck();
+    return node;
+  }
+
+  /**
+   * 造出标签节点本身。
+   *
+   * `verified` 是已经核实过的绝对路径（来自上一次应答的缓存）。传了它就直接按
+   * **最终形态**画：标签一次到位，不会先短后长；不传就先按原文画，等应答再更新。
+   */
+  function buildFileReferenceNode(entry, verified) {
+    const { reference, compact } = entry;
+    if (verified) {
+      // 核实过就整条重新解析一遍：扩展查到的可能是**另一个文件**
+      // （`extension.js` → `out/extension.js`），点击目标与标签要一起换。
+      const next = fileRef.resolveReference({ ...reference, path: verified }, fileReferenceContext());
+      if (next) entry.resolved = next;
+    }
     const suffix = fileRef.locationSuffix(reference);
-    const label = options.compact && resolved.relative
-      ? `${resolved.relative}${suffix}`
-      : `${resolved.absolute}${suffix}`;
+    const resolved = entry.resolved;
+    const label = fileReferenceLabel(entry);
 
     const node = document.createElement('span');
-    node.className = `file-ref${options.compact ? '' : ' file-ref-full'}`;
+    node.className = `file-ref${compact ? '' : ' file-ref-full'}`;
     node.setAttribute('role', 'button');
     node.tabIndex = 0;
     node.title = `${resolved.absolute}${suffix}\n${t('chat.fileRefHint', { target: fileTargetLabel() })}`;
     const labelNode = textElement('span', 'file-ref-label', label);
     node.append(iconNode('file'), labelNode);
 
-    const entry = {
-      node,
-      labelNode,
-      reference,
-      resolved,
-      compact: Boolean(options.compact),
-      original: typeof input === 'string' ? input : (options.original || reference.path),
-    };
+    entry.node = node;
+    entry.labelNode = labelNode;
     node.hwFileReference = entry;
     node.addEventListener('click', () => post('openFileReference', fileReferencePayload(entry.resolved)));
     node.addEventListener('keydown', (event) => {
@@ -2280,9 +2380,53 @@
       event.preventDefault();
       openFileReferenceMenu(event, entry.resolved);
     });
-    pendingFileReferences.push(entry);
-    scheduleFileReferenceCheck();
     return node;
+  }
+
+  /**
+   * 标签文字的唯一计算处。
+   *
+   * 「文件标签后面的文字会跳」的根因是同一颗标签有短长两种写法：首次渲染按猜的
+   * 路径写一遍、核实回来再改成真实路径写一遍。流式输出每 70ms 重建一次正文，
+   * 于是每一帧都重演一次「短 → 长」，后面的文字被推来推去。
+   *
+   * 现在首次渲染、沿用缓存结论的重建、以及核实后的原地更新，全部调用这一个函数：
+   * 只要 `entry.resolved` 相同，算出来的标签就一模一样，宽度自然不会再变。
+   */
+  function fileReferenceLabel(entry) {
+    const suffix = fileRef.locationSuffix(entry.reference);
+    if (entry.compact && entry.resolved.relative) return `${entry.resolved.relative}${suffix}`;
+    return `${entry.resolved.absolute}${suffix}`;
+  }
+
+  /**
+   * 核实结果缓存：键是「首选根 + 用户写的路径」。
+   *
+   * 存的是「绝对路径」或 `null`（判不出来）。`undefined` 表示还没问过 ——
+   * 三种状态必须分清，否则「没问过」会被当成「不存在」而误降级。
+   */
+  const fileReferenceResolution = new Map();
+  const FILE_REFERENCE_CACHE_LIMIT = 500;
+  /** 上一次看到的工作区根签名：根一变，核实缓存整份作废。 */
+  let fileRootsSignature = '';
+
+  function fileReferenceKey(reference) {
+    return `${state.fileRoots.preferred || ''}::${reference.path || ''}`;
+  }
+
+  function cachedReferenceResolution(reference) {
+    return fileReferenceResolution.get(fileReferenceKey(reference));
+  }
+
+  function rememberReferenceResolution(reference, absolute) {
+    const key = fileReferenceKey(reference);
+    fileReferenceResolution.delete(key);
+    fileReferenceResolution.set(key, absolute || null);
+    // 只留最近的若干条：长对话里引用会很多，但真正会重复出现的都是最近的。
+    if (fileReferenceResolution.size > FILE_REFERENCE_CACHE_LIMIT) {
+      const oldest = fileReferenceResolution.keys().next();
+      if (!oldest.done) fileReferenceResolution.delete(oldest.value);
+    }
   }
 
   /*
@@ -2331,6 +2475,14 @@
     const resolved = Array.isArray(message.resolved) ? message.resolved : [];
     batch.forEach((entry, index) => {
       const absolute = typeof resolved[index] === 'string' && resolved[index] ? resolved[index] : '';
+      /*
+       * 先落缓存再动 DOM。
+       *
+       * 流式输出会不停重建这一段正文，同一个引用几毫秒后就会再画一次；没有缓存时
+       * 新节点只能先按原文画、等下一轮应答再改 —— 每帧都重演一次「短 → 长」，
+       * 标签后面的文字因此来回跳。有了缓存，重建出来的节点一次就画成最终形态。
+       */
+      rememberReferenceResolution(entry.reference, absolute);
       if (absolute) upgradeFileReference(entry, absolute); else demoteFileReference(entry);
     });
   }
@@ -2347,9 +2499,14 @@
     if (!next) return;
     entry.resolved = next;
     const suffix = fileRef.locationSuffix(entry.reference);
-    entry.labelNode.textContent = entry.compact && next.relative
-      ? `${next.relative}${suffix}`
-      : `${next.absolute}${suffix}`;
+    /*
+     * 点击目标、悬停提示、标签文字一起换成真实文件。
+     *
+     * 只改这一次是安全的：下一次重建会从缓存里拿到同一个结论、算出一模一样的标签
+     * （见 fileReferenceLabel），不会再「一帧短一帧长」。整条消息里同一颗标签因此
+     * 只有一次「猜的 → 真实的」变化，而不是每帧一次。
+     */
+    entry.labelNode.textContent = fileReferenceLabel(entry);
     entry.node.title = `${next.absolute}${suffix}\n${t('chat.fileRefHint', { target: fileTargetLabel() })}`;
   }
 
@@ -3006,12 +3163,24 @@
             bound: Boolean(incoming.project.bound),
           }
           : { name: null, others: [], bound: false };
-        state.fileRoots = incoming.fileRoots && typeof incoming.fileRoots === 'object'
-          ? {
-            roots: Array.isArray(incoming.fileRoots.roots) ? incoming.fileRoots.roots.filter((value) => typeof value === 'string' && value) : [],
-            preferred: typeof incoming.fileRoots.preferred === 'string' ? incoming.fileRoots.preferred : '',
+        {
+          const nextRoots = incoming.fileRoots && typeof incoming.fileRoots === 'object'
+            ? {
+              roots: Array.isArray(incoming.fileRoots.roots) ? incoming.fileRoots.roots.filter((value) => typeof value === 'string' && value) : [],
+              preferred: typeof incoming.fileRoots.preferred === 'string' ? incoming.fileRoots.preferred : '',
+            }
+            : { roots: [], preferred: '' };
+          /*
+           * 工作区根变了，之前核实的「这个路径对应哪个文件」就不再成立
+           * （同一个相对路径换根目录就是另一个文件），缓存必须整份作废。
+           */
+          const signature = `${nextRoots.preferred}\u0000${nextRoots.roots.join('\u0000')}`;
+          if (signature !== fileRootsSignature) {
+            fileRootsSignature = signature;
+            fileReferenceResolution.clear();
           }
-          : { roots: [], preferred: '' };
+          state.fileRoots = nextRoots;
+        }
         state.fileTarget = incoming.fileTarget === 'explorer' || incoming.fileTarget === 'fileManager'
           ? incoming.fileTarget
           : 'finder';

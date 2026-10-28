@@ -42,7 +42,7 @@ check('用官方命令 revealFileInOS（三平台都是「打开文件管理器�
 check('状态里下发了工作区根与项目根', /fileRoots: \{/.test(PANEL) && /preferred: this\.projectRootFor\(conversation\)/.test(PANEL));
 check('平台判断只有一处（revealTargetFor）', PANEL.includes('revealTargetFor(process.platform)'));
 check('类型里声明了 fileRoots / fileTarget', TYPES.includes('fileRoots: { roots: string[]; preferred?: string }') && TYPES.includes("fileTarget: 'finder' | 'explorer' | 'fileManager'"));
-check('chat.js 从状态里读回 fileRoots', CHAT_JS.includes('state.fileRoots = incoming.fileRoots'));
+check('chat.js 从状态里读回 fileRoots', /state\.fileRoots = nextRoots;/.test(CHAT_JS) && CHAT_JS.includes('incoming.fileRoots'));
 check('行内渲染走 appendPlainText（裸路径）与 fileReferenceNode（反引号）',
   CHAT_JS.includes('if (index > cursor) appendPlainText(parent, value.slice(cursor, index));')
   && CHAT_JS.includes('if (cursor < value.length) appendPlainText(parent, value.slice(cursor));')
@@ -73,6 +73,24 @@ check('按文件名搜索用 minimal 排除档，不排除构建产物目录（`
 check('同名多份只认唯一命中（猜错文件比不给引用更糟）', /unique\.size !== 1/.test(readFileSync('src/agent/fileReferenceResolve.ts', 'utf8')));
 check('核实结论回给界面', /case 'fileReferencesVerified': applyFileReferenceVerification\(message\); break;/.test(CHAT_JS));
 check('判不出来就降级成普通文本', CHAT_JS.includes('function demoteFileReference(') && CHAT_JS.includes('function upgradeFileReference('));
+
+/* ── 1b. 「文件标签后面的文字会跳动」的接线 ─────────────────────
+   流式输出每 70ms 会把正在增长的那一段重排一遍，标签跟着重造。只要重造出来的
+   标签和上一帧长得不一样，后面的文字就会被推来推去。这两条保证「长一个样」。 */
+check('核实结论按「首选根 + 路径」缓存', CHAT_JS.includes('const fileReferenceResolution = new Map()') && CHAT_JS.includes('function rememberReferenceResolution('));
+check('应答先落缓存再动 DOM', /rememberReferenceResolution\(entry\.reference, absolute\);\s*\n\s*if \(absolute\) upgradeFileReference/.test(CHAT_JS));
+check('重建标签时直接套用已核实结论（不再晚一拍改短变长）', /const known = cachedReferenceResolution\(reference\)/.test(CHAT_JS) && /buildFileReferenceNode\(entry, known\)/.test(CHAT_JS));
+/* 标签宽度不再来回变，靠的是「同一颗标签只有一个算法」：
+   首次渲染、沿用缓存结论的重建、核实后的原地更新，三处都调 fileReferenceLabel()，
+   所以只要结论相同，算出来的标签就一模一样（而不是各自拼一遍短/长两种写法）。 */
+check('标签文字只有一个计算处', /function fileReferenceLabel\(entry\)/.test(CHAT_JS));
+check('首次渲染走 fileReferenceLabel', /const label = fileReferenceLabel\(entry\);/.test(CHAT_JS));
+check('核实后的原地更新也走同一个函数', /function upgradeFileReference[\s\S]{0,700}?entry\.labelNode\.textContent = fileReferenceLabel\(entry\);/.test(CHAT_JS));
+check('没有任何地方自己拼标签（避免第三套写法）',
+  (CHAT_JS.match(/labelNode\.textContent =/g) || []).length === 1);
+check('工作区根变化时缓存整份作废', CHAT_JS.includes('fileReferenceResolution.clear()') && CHAT_JS.includes('fileRootsSignature'));
+check('纯文字续写走原地追加（不重造段落里的标签）', CHAT_JS.includes('canAppendPlainText(appended, lastBlock.node, tailNode)') && CHAT_JS.includes("globalThis.HWChatInlineAppend"));
+check('占位文案不参与增量（否则正文会接在「正在继续处理…」后面）', CHAT_JS.includes('if (flow.placeholder) return false;'));
 
 /* ── 2. 最小 DOM ─────────────────────────────────────────── */
 

@@ -92,7 +92,16 @@ function makeStateMessage(conversationId, extra = {}) {
 function receiveState(state, message) {
   const run = new Function(
     'state', 'elements', 'message', 'setStreaming', 'renderAll', 'finishTitleEdit',
-    `${draftKeySource}\n${saveDraftSource}\n${restoreDraftSource}\n${normalizeStepValueSource}\nconst autoResize = () => {};\n${stateCaseBlock}`,
+    // 这段是真代码，用到哪些模块级函数/变量就得在这里补上，否则桩环境直接 ReferenceError。
+    // `messageListSignature` 只用来判断「要不要重画」，桩里给个常量即可；
+    // `fileRootsSignature` / `fileReferenceResolution` 是文件引用核实缓存（根变即作废）。
+    `${draftKeySource}\n${saveDraftSource}\n${restoreDraftSource}\n${normalizeStepValueSource}\n`
+    + `const autoResize = () => {};\n`
+    + `const messageListSignature = () => 'sig';\n`
+    + `let renderedMessageSignature = '';\n`
+    + `let fileRootsSignature = '';\n`
+    + `const fileReferenceResolution = new Map();\n`
+    + `${stateCaseBlock}`,
   );
   run(state, elements, message, setStreaming, renderAll, finishTitleEdit);
 }
