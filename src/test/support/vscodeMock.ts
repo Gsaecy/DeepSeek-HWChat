@@ -26,12 +26,149 @@ export class Uri {
     return new Uri(nodePath.resolve(value));
   }
 
+  static joinPath(uri: Uri, ...pathSegments: string[]): Uri {
+    return new Uri(nodePath.join(uri.fsPath, ...pathSegments));
+  }
+
   get path(): string {
     return this.fsPath;
   }
 
   toString(): string {
     return `file://${this.fsPath}`;
+  }
+}
+
+/** `vscode.EventEmitter` 的替身：足够驱动 watcher 与共享状态回调。 */
+export class EventEmitter<T> {
+  private listeners: Array<(value: T) => unknown> = [];
+
+  readonly event = (
+    listener: (value: T) => unknown,
+    thisArg?: unknown,
+    disposables?: Array<{ dispose(): void }>,
+  ): { dispose(): void } => {
+    const bound = (thisArg ? listener.bind(thisArg) : listener) as (value: T) => unknown;
+    this.listeners.push(bound);
+    const disposable = {
+      dispose: () => {
+        const index = this.listeners.indexOf(bound);
+        if (index >= 0) this.listeners.splice(index, 1);
+      },
+    };
+    disposables?.push(disposable);
+    return disposable;
+  };
+
+  fire(value: T): void {
+    for (const listener of [...this.listeners]) listener(value);
+  }
+
+  dispose(): void {
+    this.listeners = [];
+  }
+}
+
+type MockWatcherListener = () => unknown;
+
+export interface MockFileSystemWatcher {
+  onDidCreate(listener: MockWatcherListener, thisArg?: unknown, disposables?: Array<{ dispose(): void }>): { dispose(): void };
+  onDidChange(listener: MockWatcherListener, thisArg?: unknown, disposables?: Array<{ dispose(): void }>): { dispose(): void };
+  onDidDelete(listener: MockWatcherListener, thisArg?: unknown, disposables?: Array<{ dispose(): void }>): { dispose(): void };
+  dispose(): void;
+}
+
+const watcherRegistry: Array<{ pattern: unknown; fire: (kind: 'create' | 'change' | 'delete') => void }> = [];
+
+function createFileSystemWatcher(pattern: unknown): MockFileSystemWatcher {
+  const listeners = { create: [] as MockWatcherListener[], change: [] as MockWatcherListener[], delete: [] as MockWatcherListener[] };
+  const register = (kind: 'create' | 'change' | 'delete') => (
+    listener: MockWatcherListener,
+    thisArg?: unknown,
+    disposables?: Array<{ dispose(): void }>,
+  ): { dispose(): void } => {
+    const bound = (thisArg ? listener.bind(thisArg) : listener) as MockWatcherListener;
+    listeners[kind].push(bound);
+    const disposable = {
+      dispose: () => {
+        const index = listeners[kind].indexOf(bound);
+        if (index >= 0) listeners[kind].splice(index, 1);
+      },
+    };
+    disposables?.push(disposable);
+    return disposable;
+  };
+  const watcher: MockFileSystemWatcher = {
+    onDidCreate: register('create'),
+    onDidChange: register('change'),
+    onDidDelete: register('delete'),
+    dispose: () => {
+      listeners.create = [];
+      listeners.change = [];
+      listeners.delete = [];
+    },
+  };
+  watcherRegistry.push({ pattern, fire: (kind) => { for (const listener of [...listeners[kind]]) listener(); } });
+  return watcher;
+}
+
+/** 触发已注册的 workspace watcher（模拟 VS Code 的文件事件）。 */
+export function fireWorkspaceWatchers(kind: 'create' | 'change' | 'delete' = 'change'): void {
+  for (const watcher of watcherRegistry) watcher.fire(kind);
+}
+
+/** 清理 watcher 注册表，避免用例之间互相污染。 */
+export function resetWorkspaceWatchers(): void {
+  watcherRegistry.length = 0;
+}
+
+/** `vscode.CancellationError` 替身：真实 VS Code 在搜索被取消时抛这个。 */
+export class CancellationError extends Error {
+  constructor() {
+    super('Canceled');
+    this.name = 'Canceled';
+  }
+}
+
+export interface MockCancellationToken {
+  readonly isCancellationRequested: boolean;
+  onCancellationRequested(listener: () => unknown): { dispose(): void };
+}
+
+/** `vscode.CancellationTokenSource` 替身，并记录每次 findFiles 收到的 token。 */
+export class CancellationTokenSource {
+  private readonly listeners: Array<() => unknown> = [];
+  private cancelled = false;
+  private disposed = false;
+  readonly token: MockCancellationToken;
+
+  constructor() {
+    const self = this;
+    this.token = {
+      get isCancellationRequested(): boolean {
+        return self.cancelled;
+      },
+      onCancellationRequested(listener: () => unknown) {
+        self.listeners.push(listener);
+        return {
+          dispose: () => {
+            const index = self.listeners.indexOf(listener);
+            if (index >= 0) self.listeners.splice(index, 1);
+          },
+        };
+      },
+    };
+  }
+
+  cancel(): void {
+    if (this.cancelled || this.disposed) return;
+    this.cancelled = true;
+    for (const listener of [...this.listeners]) listener();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.listeners.length = 0;
   }
 }
 
@@ -173,11 +310,36 @@ async function walkFiles(root: string, excluded: ReadonlySet<string>): Promise<s
   return found;
 }
 
+/** 每个 findFiles 调用收到的 token：用来断言「取消真的传给了搜索引擎」。 */
+const receivedSearchTokens: MockCancellationToken[] = [];
+
+export function getReceivedSearchTokens(): readonly MockCancellationToken[] {
+  return receivedSearchTokens;
+}
+
+export function resetReceivedSearchTokens(): void {
+  receivedSearchTokens.length = 0;
+}
+
+/**
+ * 让测试把 findFiles 卡在「已经开始搜索」的那一刻。
+ *
+ * 用例需要「取消发生在搜索进行中」这个确定状态，靠 sleep 猜时机必然随机失败。
+ */
+let findFilesGate: (() => Promise<void> | void) | undefined;
+
+export function setFindFilesGate(gate: (() => Promise<void> | void) | undefined): void {
+  findFilesGate = gate;
+}
+
 async function findFiles(
   include: string | RelativePattern,
   exclude?: string | null,
   maxResults = 0,
+  token?: MockCancellationToken,
 ): Promise<Uri[]> {
+  if (token) receivedSearchTokens.push(token);
+  if (findFilesGate) await findFilesGate();
   if (!folders.length) return [];
   const scoped = typeof include === 'string' ? undefined : include.baseUri.fsPath;
   const pattern = globToRegExp(typeof include === 'string' ? include : include.pattern);
@@ -187,6 +349,9 @@ async function findFiles(
     const root = folder.uri.fsPath;
     if (scoped && nodePath.resolve(root) !== nodePath.resolve(scoped)) continue;
     for (const file of await walkFiles(root, excluded)) {
+      // 真实 VS Code 在 token 取消后会让搜索引擎停下并抛 Cancelled；
+      // 替身也遵守同一契约，才能测出「取消是否真的传下去了」。
+      if (token?.isCancellationRequested) throw new CancellationError();
       const relative = nodePath.relative(root, file).split(nodePath.sep).join('/');
       if (!pattern.test(relative)) continue;
       results.push(Uri.file(file));
@@ -251,6 +416,7 @@ export const workspace = {
   },
   fs: fileSystem,
   findFiles,
+  createFileSystemWatcher,
   asRelativePath,
   async openTextDocument(uri: Uri) {
     return {
@@ -332,7 +498,19 @@ export class LanguageModelDataPart {
   constructor(readonly data: Uint8Array, readonly mimeType: string) {}
 }
 
-export const extensions = { all: [] as Array<{ isActive: boolean; packageJSON?: unknown; activate: () => Promise<void> }> };
+export const extensions = {
+  all: [] as Array<{ isActive: boolean; packageJSON?: unknown; activate: () => Promise<void> }>,
+  /** 默认没有安装任何扩展；需要时用 `setInstalledExtension` 注入。 */
+  getExtension(_id: string): { id: string } | undefined {
+    return installedExtension;
+  },
+};
+
+let installedExtension: { id: string } | undefined;
+
+export function setInstalledExtension(extension: { id: string } | undefined): void {
+  installedExtension = extension;
+}
 
 /**
  * 显示语言替身。默认中文，使既有断言可以继续比对中文文案；

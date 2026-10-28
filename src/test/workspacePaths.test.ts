@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chooseProjectRoot, externalToolPathViolation, normalizeWorkspaceGlob, projectNameOf, resolveWorkspacePath } from '../agent/workspacePaths';
+import { chooseProjectRoot, externalToolPathViolation, involvedProjectRoots, normalizeWorkspaceGlob, PROJECT_BADGE_LIMIT, projectNameOf, resolveWorkspacePath, rootsFromChangedFiles } from '../agent/workspacePaths';
 
 const roots = [
   { name: 'Safevault_android', fsPath: '/Users/test/AI projects/Safevault_android' },
@@ -262,4 +262,91 @@ test('project badge name: uses the folder name, and the filesystem root has none
   assert.equal(projectNameOf(`${roots[1]?.fsPath}/`), 'MaiKer_Win');
   assert.equal(projectNameOf(undefined), null);
   assert.equal(projectNameOf('/'), null);
+});
+
+/* ── 涉及多个项目 ─────────────────────────────────────────────── */
+
+const many = [
+  { name: 'DeepSeek-HWChat', fsPath: '/Users/test/AI projects/DeepSeek-HWChat' },
+  { name: 'Local_skill_quick_access', fsPath: '/Users/test/AI projects/Local_skill_quick_access' },
+  { name: 'MaiKer_Win', fsPath: '/Users/test/AI projects/MaiKer_Win' },
+];
+
+test('involved projects: primary first, then the order they were touched', () => {
+  // 主项目永远是第一个：它决定相对路径和 git 写操作归谁，徽标不能把它挤到后面。
+  assert.deepEqual(
+    involvedProjectRoots({
+      roots: many.map((root) => root.fsPath),
+      primary: many[0]!.fsPath,
+      touched: [many[1]!.fsPath, many[2]!.fsPath],
+    }),
+    [many[0]!.fsPath, many[1]!.fsPath, many[2]!.fsPath],
+  );
+});
+
+test('involved projects: the primary is not repeated when it is also in touched', () => {
+  assert.deepEqual(
+    involvedProjectRoots({
+      roots: many.map((root) => root.fsPath),
+      primary: many[0]!.fsPath,
+      touched: [many[0]!.fsPath, many[1]!.fsPath, many[1]!.fsPath],
+    }),
+    [many[0]!.fsPath, many[1]!.fsPath],
+  );
+});
+
+test('involved projects: roots that are no longer in the workspace are dropped', () => {
+  // 工作区根被移除之后，存档里的旧路径不能凭空变成徽标上的一个项目。
+  assert.deepEqual(
+    involvedProjectRoots({
+      roots: many.map((root) => root.fsPath),
+      primary: '/Users/test/AI projects/Deleted',
+      touched: ['/Users/test/AI projects/Deleted', many[2]!.fsPath],
+    }),
+    [many[2]!.fsPath],
+  );
+});
+
+test('involved projects: an unbound conversation with no history shows nothing', () => {
+  assert.deepEqual(involvedProjectRoots({ roots: many.map((root) => root.fsPath) }), []);
+});
+
+test('involved projects: the badge list is capped, primary still first', () => {
+  const paths = Array.from({ length: PROJECT_BADGE_LIMIT + 3 }, (_value, index) => `/Users/test/AI projects/P${index}`);
+  const list = involvedProjectRoots({
+    roots: paths,
+    primary: paths[0],
+    touched: paths.slice(1),
+  });
+  assert.equal(list.length, PROJECT_BADGE_LIMIT);
+  assert.equal(list[0], paths[0]);
+});
+
+test('involved projects: single-root workspaces never derive from changed files', () => {
+  // 单根工作区里 `asRelativePath` 不带文件夹名前缀，前缀匹配会把文件名当项目名。
+  assert.deepEqual(rootsFromChangedFiles({ roots: [many[0] as { name: string; fsPath: string }], files: ['src/a.ts'] }), []);
+});
+
+test('involved projects: legacy conversations recover projects from changed-file prefixes', () => {
+  // 升级前的对话没有 `projectRoots` 字段，但 `changedFiles` 里带着根目录名前缀。
+  assert.deepEqual(
+    rootsFromChangedFiles({
+      roots: many,
+      files: [
+        'DeepSeek-HWChat/src/views/chatPanel.ts',
+        'Local_skill_quick_access/CHANGELOG.md',
+        'DeepSeek-HWChat/src/core/types.ts',
+      ],
+    }),
+    [many[0]!.fsPath, many[1]!.fsPath],
+  );
+});
+
+test('involved projects: a file name equal to a project name is not a project', () => {
+  // 无扩展名的文件 `DeepSeek-HWChat` 的第一段恰好等于文件夹名，但后面没有分隔符。
+  assert.deepEqual(rootsFromChangedFiles({ roots: many, files: ['DeepSeek-HWChat'] }), []);
+  // 名字相近的项目不能被当成同一个。
+  assert.deepEqual(rootsFromChangedFiles({ roots: many, files: ['DeepSeek-HWChat-older/src/a.ts'] }), []);
+  // 绝对路径不参与推断。
+  assert.deepEqual(rootsFromChangedFiles({ roots: many, files: ['/Users/test/AI projects/MaiKer_Win/src/a.ts'] }), []);
 });

@@ -38,6 +38,9 @@ const draftKeySource = extractBlock(CHAT_JS, '\n  function draftKey(');
 const saveDraftSource = extractBlock(CHAT_JS, '\n  function saveDraft(');
 const restoreDraftSource = extractBlock(CHAT_JS, '\n  function restoreDraft(');
 const submitSource = extractBlock(CHAT_JS, '\n  function submit(');
+// `case 'state'` 里会调用步数归一函数（0 不再表示「不限制」），必须一起抽出来，
+// 否则这段真代码在桩环境里会以 ReferenceError 直接崩掉。
+const normalizeStepValueSource = extractBlock(CHAT_JS, '\n  function normalizeStepValue(');
 
 // `case 'state': { ... }` 去掉前缀 `case 'state': ` 就是一段合法块语句；
 // 收尾的 `break;` 在函数体里非法，必须去掉（已核对：块内只有这一处 break）。
@@ -89,7 +92,7 @@ function makeStateMessage(conversationId, extra = {}) {
 function receiveState(state, message) {
   const run = new Function(
     'state', 'elements', 'message', 'setStreaming', 'renderAll', 'finishTitleEdit',
-    `${draftKeySource}\n${saveDraftSource}\n${restoreDraftSource}\nconst autoResize = () => {};\n${stateCaseBlock}`,
+    `${draftKeySource}\n${saveDraftSource}\n${restoreDraftSource}\n${normalizeStepValueSource}\nconst autoResize = () => {};\n${stateCaseBlock}`,
   );
   run(state, elements, message, setStreaming, renderAll, finishTitleEdit);
 }

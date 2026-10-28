@@ -1,20 +1,23 @@
 import * as vscode from 'vscode';
 import { ApiProfile, ChatSettings, PermissionPreset, ReasoningEffort } from './types';
-import { PERMISSION_PRESET_PROFILES } from './permissions';
+import { PERMISSION_PRESET_PROFILES, DEFAULT_PERMISSION_PRESET } from './permissions';
 import { LanguageSetting, normalizeLanguageSetting } from './i18n';
 import { resolveConversationMode } from './modes';
+import { normalizeAgentMaxSteps, DEFAULT_AGENT_MAX_STEPS } from './agentLimits';
 
 const SECTION = 'hwchat';
-const REASONING_FALLBACK_KEY = 'settings.reasoningEffort';
 
-// A VS Code window can keep the previous contribution registry alive for a
-// short time after an extension upgrade. Keep the composer controls usable in
-// that window while still mirroring the value to the normal configuration.
-let fallbackState: vscode.Memento | undefined;
-
-export function initializeSettingsStorage(state: vscode.Memento): void {
-  fallbackState = state;
-}
+/**
+ * 新对话的默认思考深度：`default` = 不发送任何思考参数。
+ *
+ * 用户要求「按模型官方思考深度设置」：不同模型（以及同一模型的不同版本）官方默认档
+ * 并不相同，DeepSeek 服务端在未指定时按模型自己的默认值处理，OpenAI 兼容端点同理。
+ * 由我们猜一个 `high` 发出去，等于替模型改默认值，还会多烧 token。
+ * 所以初始值固定为 `default`；想更深/更浅由用户在工具条上显式选四档深度之一。
+ *
+ * 与 `package.json` 里 `hwchat.reasoningEffort` 的 default 必须一致（有测试钉住）。
+ */
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'default';
 
 export function readSettings(): ChatSettings {
   const configuration = vscode.workspace.getConfiguration(SECTION);
@@ -31,11 +34,15 @@ export function readSettings(): ChatSettings {
   });
   const configuredProfileId = configuration.get<string>('activeApiProfileId', apiProfiles[0]!.id);
   const activeProfile = apiProfiles.find((profile) => profile.id === configuredProfileId) ?? apiProfiles[0]!;
-  // 权限类设置必须走 resolveScopedPermissionValue：多根工作区里无 resource 的
-  // getConfiguration 读不到各文件夹 .vscode/settings.json，会让写进去的预设失效。
-  // 五项具体策略完全由预设推导，不再读取单项策略列——自定义档位移除后它们
-  // 已无判定作用，继续读取只会造成“设置里写着禁止、实际按预设放行”的错觉。
-  const permissionPreset = resolvePermissionPresetValue();
+  // 权限预设 / 最大步数 / 思考深度这三项**归属于每一条对话**，不再从配置读取：
+  // 新对话一律从固定的最保守初始值开始（每次询问 / 24 步 / 模型官方思考默认），
+  // 需要调整只能在某条对话的工具条上显式改，改完随该对话存档。
+  //
+  // 为什么连配置都不读（真实故障）：旧版本会把面板上的选择写进 `hwchat.*`，
+  // 用户设置里因此留下了 `permissionPreset: autopilot`、`agentMaxSteps: 0`；
+  // 之后每一条新对话一开就自动执行、无限步，与「每次询问 / 24 步」完全相反。
+  // 声明值仍由 `describePermissionScope()` 如实汇报（便于对账），但不参与判定。
+  const permissionPreset = DEFAULT_PERMISSION_PRESET;
   const permission = resolvePermissionPreset(permissionPreset);
   return {
     apiProfiles,
@@ -54,8 +61,8 @@ export function readSettings(): ChatSettings {
     requestHeaders: activeProfile.requestHeaders,
     requestTimeoutSeconds: clamp(configuration.get<number>('requestTimeoutSeconds', 120), 10, 900),
     defaultMode: resolveConversationMode(configuration.get<unknown>('defaultMode'), 'agent'),
-    agentMaxSteps: normalizeAgentMaxSteps(configuration.get<number>('agentMaxSteps', 0)),
-    reasoningEffort: readReasoningEffort(configuration),
+    agentMaxSteps: DEFAULT_AGENT_MAX_STEPS,
+    reasoningEffort: DEFAULT_REASONING_EFFORT,
     permissionPreset,
     ...permission,
     maxReadBytes: clamp(configuration.get<number>('maxReadBytes', 512_000), 16_384, 5_242_880),
@@ -84,14 +91,14 @@ export async function updateSettings(values: Partial<ChatSettings>): Promise<voi
     ['requestHeaders', values.requestHeaders],
     ['requestTimeoutSeconds', values.requestTimeoutSeconds],
     ['defaultMode', values.defaultMode],
-    ['agentMaxSteps', values.agentMaxSteps],
-    ['reasoningEffort', values.reasoningEffort],
-    ['permissionPreset', values.permissionPreset],
-    ['fileReadPolicy', values.fileReadPolicy],
-    ['fileWritePolicy', values.fileWritePolicy],
-    ['commandPolicy', values.commandPolicy],
-    ['dangerousCommandPolicy', values.dangerousCommandPolicy],
-    ['sensitiveFilePolicy', values.sensitiveFilePolicy],
+    // 权限预设 / 最大步数 / 思考深度**不写配置**：它们属于对话，随对话存档。
+    // 旧实现写全局设置，于是「在 A 对话放宽权限」会连带影响所有新对话。
+    // 五项单项策略（fileReadPolicy / commandPolicy / dangerousCommandPolicy …）
+    // 已废弃：权限完全由预设推导。它们仍出现在 `contributes.configuration` 里，
+    // 只为让老用户的 settings.json 不报「未知配置项」，并带 deprecationMessage
+    // 说明已失效。这里**不再写回**——旧实现每次保存设置都会把预设推导出的值
+    // 写进用户设置，留下一条看起来能生效、实际被忽略的配置，正是「日志里写着
+    // allow、实际情况另有来源」那种混淆的来源。读取侧也从不使用它们。
     ['maxReadBytes', values.maxReadBytes],
     ['maxToolOutputBytes', values.maxToolOutputBytes],
     ['maxCommandSeconds', values.maxCommandSeconds],
@@ -105,67 +112,10 @@ export async function updateSettings(values: Partial<ChatSettings>): Promise<voi
     // 出现过 hwchat.*，面板里的修改就会被更高优先级的作用域覆盖，表现为
     // “预设改了但没生效”。多根工作区里每个文件夹要分别带资源 URI 才能判断。
     const plan = updatePlan(key);
-    if (key === 'reasoningEffort') {
-      const normalized = normalizeReasoningEffort(value);
-      await fallbackState?.update(REASONING_FALLBACK_KEY, normalized);
-      for (const step of plan) {
-        try {
-          await step.configuration.update(key, normalized, step.target);
-        } catch (error) {
-          if (!isUnregisteredConfigurationError(error)) {
-            throw error;
-          }
-        }
-      }
-      continue;
-    }
     for (const step of plan) {
       await step.configuration.update(key, value, step.target);
     }
   }
-}
-
-/** 权限取值越“严格”数值越大：多处同级声明冲突时取最严格的一个。 */
-const PRESET_RESTRICTIVENESS: Record<PermissionPreset, number> = {
-  full: 0,
-  autopilot: 1,
-  review: 2,
-  askAll: 3,
-};
-
-/**
- * 权限类设置的作用域解析。
- *
- * VS Code 的合并视图只有在传入 resource 时才会应用 `workspaceFolderValue`
- * （vscode.d.ts 明确写着它来自“请求的资源所属的工作区文件夹”）。多根工作区里
- * `getConfiguration(section)` 不传资源，各文件夹的 `.vscode/settings.json`
- * 就完全读不到——用户按文档在某个根写了 `"hwchat.permissionPreset": "review"`，
- * 实际仍在用户设置的 autopilot 下运行，危险命令不会弹确认。
- *
- * 这里显式按“最具体优先”解析，同级冲突时取最严格的一个：
- *   1. 各工作区文件夹里的显式值（最具体）
- *   2. .code-workspace / 工作区设置
- *   3. 用户设置
- * 全部未设置时返回 undefined，由调用方套默认值。
- */
-function resolveScopedPermissionValue<T>(
-  key: string,
-  isValid: (value: unknown) => value is T,
-  strictest: (values: readonly T[]) => T,
-): T | undefined {
-  const folderValues: T[] = [];
-  for (const folder of vscode.workspace.workspaceFolders ?? []) {
-    const value = vscode.workspace.getConfiguration(SECTION, folder.uri).inspect<unknown>(key)?.workspaceFolderValue;
-    if (isValid(value)) folderValues.push(value);
-  }
-  if (folderValues.length) return strictest(folderValues);
-
-  const inspected = vscode.workspace.getConfiguration(SECTION).inspect<unknown>(key);
-  const workspaceValue = inspected?.workspaceValue;
-  if (isValid(workspaceValue)) return workspaceValue;
-  const globalValue = inspected?.globalValue;
-  if (isValid(globalValue)) return globalValue;
-  return undefined;
 }
 
 export interface PermissionScopeEntry {
@@ -192,8 +142,12 @@ const PERMISSION_SCOPE_KEYS = [
 ] as const;
 
 /**
- * 解释“生效的权限值来自哪一层”。多根工作区里权限失效最常见的原因就是文件夹级
- * 声明没被读到，这个报告把每一层的原始值都摊开，便于用户和日志直接对账。
+ * 汇报权限相关配置的**声明值**与**实际生效值**。
+ *
+ * 这几项已不再参与判定：新对话固定从「每次询问」开始，之后按对话单独调整并存档。
+ * 这里仍然把每一层的声明原样摊开，原因是排障时最常见的困惑就是「我明明在
+ * settings.json 写了 autopilot，为什么没生效」——报告要能直接回答：它确实被读到了，
+ * 但按新规则不生效（通常是旧版本自动写入的残留）。
  */
 export function describePermissionScope(): PermissionScopeReport {
   const settings = readSettings();
@@ -217,7 +171,9 @@ export function describePermissionScope(): PermissionScopeReport {
 
 /** 把报告压成几行文本，供日志与通知使用。 */
 export function formatPermissionScope(report: PermissionScopeReport): string[] {
-  const lines = [`权限预设：${report.preset}`];
+  const lines = [
+    `权限预设：${report.preset}（新对话固定值；声明值不参与判定，按对话调整）`,
+  ];
   for (const entry of report.entries) {
     const declared = entry.folders
       .filter((folder) => folder.value !== undefined)
@@ -233,28 +189,6 @@ export function formatPermissionScope(report: PermissionScopeReport): string[] {
 
 function stringifyScopeValue(value: unknown): string | undefined {
   return value === undefined ? undefined : JSON.stringify(value);
-}
-
-function strictestOf<T>(values: readonly T[], rank: (value: T) => number): T {
-  return values.reduce((best, candidate) => (rank(candidate) > rank(best) ? candidate : best));
-}
-
-function resolvePermissionPresetValue(): PermissionPreset {
-  const explicit = resolveScopedPermissionValue(
-    'permissionPreset',
-    isPermissionPreset,
-    (values) => strictestOf(values, (value) => PRESET_RESTRICTIVENESS[value]),
-  );
-  return normalizePermissionPreset(explicit ?? 'review');
-}
-
-function readReasoningEffort(configuration: vscode.WorkspaceConfiguration): ReasoningEffort {
-  const inspection = configuration.inspect<string>('reasoningEffort');
-  const explicitValue = inspection?.workspaceFolderValue
-    ?? inspection?.workspaceValue
-    ?? inspection?.globalValue;
-  const fallbackValue = fallbackState?.get<string>(REASONING_FALLBACK_KEY);
-  return normalizeReasoningEffort(explicitValue ?? fallbackValue ?? inspection?.defaultValue ?? 'default');
 }
 
 /**
@@ -282,11 +216,6 @@ function updatePlan(key: string): Array<{
       ? vscode.ConfigurationTarget.Workspace
       : vscode.ConfigurationTarget.Global,
   }];
-}
-
-function isUnregisteredConfigurationError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /not a registered configuration|没有注册配置|未注册配置|configuration.*registered/i.test(message);
 }
 
 export function profileFor(settings: ChatSettings, profileId?: string): ApiProfile {
@@ -323,7 +252,7 @@ export function isPermissionPreset(value: unknown): value is PermissionPreset {
 }
 
 export function normalizePermissionPreset(value: unknown): PermissionPreset {
-  return isPermissionPreset(value) ? value : 'review';
+  return isPermissionPreset(value) ? value : DEFAULT_PERMISSION_PRESET;
 }
 
 export function applyRuntimeControls(
@@ -360,14 +289,20 @@ function resolvePermissionPreset(
   };
 }
 
-export function normalizeAgentMaxSteps(value: unknown): number {
-  const numeric = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
-  return Math.floor(numeric);
-}
+// 预算规则放在 vscode-free 的 agentLimits 里，存储层要用同一份规则清洗历史存档；
+// 这里重新导出，保持 `settings` 作为设置相关函数的统一入口。
+export {
+  AGENT_MAX_STEPS_UNLIMITED,
+  AGENT_STEP_PRESETS,
+  AGENT_STEP_SAFETY_CAP,
+  DEFAULT_AGENT_MAX_STEPS,
+  agentStepBudget,
+  isUnlimitedSteps,
+  normalizeAgentMaxSteps,
+} from './agentLimits';
 
 export function normalizeReasoningEffort(value: unknown): ReasoningEffort {
-  return value === 'none' || value === 'low' || value === 'high' || value === 'max'
+  return value === 'none' || value === 'low' || value === 'medium' || value === 'high' || value === 'max'
     ? value
     : 'default';
 }

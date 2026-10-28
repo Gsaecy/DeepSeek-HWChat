@@ -55,13 +55,24 @@ test('stdin 接到 /dev/null：需要输入的命令立刻读到 EOF，不会无
   assert.ok(elapsed < 5, `应立即结束，实际用了 ${elapsed.toFixed(1)} 秒`);
 });
 
-test('运行期会推送进度，界面才有「已运行 N 秒」可显示', async () => {
+test('运行期只在「卡住」时推送，不再有每秒一次的 tick', async () => {
+  // 「已运行 N 秒」是 webview 自己按 startedAt 算的，扩展不需要每秒推一次；
+  // 旧实现每秒回调一次，而消费者第一行就是 `phase !== 'stall' → return`（纯废弃调用）。
+  const phases: string[] = [];
+  await spawnCommand('sleep 3', process.cwd(), 10, MAX_OUTPUT, (progress) => {
+    phases.push(progress.phase);
+  }, { stallSeconds: 1 });
+  assert.ok(phases.length > 0, '调低阈值后必须能观察到停滞提示');
+  assert.ok(phases.every((phase) => phase === 'stall'), `只应推送停滞提示，实际 ${phases.join(',')}`);
+  assert.ok(!phases.includes('tick' as never), 'tick 阶段已删除，不能复活');
+});
+
+test('没有卡住时不推送任何进度（每秒一次的空回调也会被删掉）', async () => {
   const phases: string[] = [];
   await spawnCommand('sleep 2', process.cwd(), 10, MAX_OUTPUT, (progress) => {
     phases.push(progress.phase);
   });
-  assert.ok(phases.length > 0, '运行超过 1 秒至少应推送一次进度');
-  assert.ok(phases.every((phase) => ['tick', 'stall', 'timeout'].includes(phase)));
+  assert.deepEqual(phases, [], '默认 30 秒阈值下，2 秒的命令一次都不该回调');
 });
 
 test('进度回调抛错不会影响命令本身', async () => {

@@ -131,6 +131,69 @@ export function chooseProjectRoot(input: {
   return roots.length === 1 ? roots[0] : undefined;
 }
 
+/** 项目徽标最多显示几个项目：再多就折成 `+N`，否则整条状态栏都被项目名吃掉。 */
+export const PROJECT_BADGE_LIMIT = 8;
+
+/**
+ * 本对话**涉及**的项目根：主项目在前，其余按首次触达顺序，去重且只保留仍在工作区里的根。
+ *
+ * 为什么需要它：`chooseProjectRoot` 只回答「相对路径和 git 操作归属哪个项目」，而一个
+ * 对话经常横跨多个项目（在 A 做功能、顺手把 B 的对接改掉）。徽标只显示主项目时，
+ * 用户看不出这条对话到底动过什么地方，也发现不了「改到了别的项目」。
+ *
+ * `touched` 的每一项都会和工作区根做规范化比对（`resolve`），不在工作区里的丢弃——
+ * 工作区根被移除、或存档里写的是相对路径时，徽标不能凭空多出一个不存在的项目。
+ */
+export function involvedProjectRoots(input: {
+  roots: readonly string[];
+  primary?: string;
+  touched?: readonly string[];
+  limit?: number;
+}): string[] {
+  const roots = input.roots.filter((root) => Boolean(root)).map((root) => resolve(root));
+  const canonical = (value?: string): string | undefined => {
+    if (!value) return undefined;
+    const target = resolve(value);
+    return roots.includes(target) ? target : undefined;
+  };
+  const ordered: string[] = [];
+  const push = (root?: string): void => {
+    if (root && !ordered.includes(root)) ordered.push(root);
+  };
+  push(canonical(input.primary));
+  for (const item of input.touched ?? []) push(canonical(item));
+  const limit = Math.max(1, input.limit ?? PROJECT_BADGE_LIMIT);
+  return ordered.slice(0, limit);
+}
+
+/**
+ * 从工具记录里的 `changedFiles` 反推「改过文件的项目」。
+ *
+ * 多根工作区里 `asRelativePath(uri, true)` 会带上文件夹名前缀（`Local_skill_quick_access/src/x.ts`），
+ * 这就是历史记录里唯一能区分项目的线索。它让**升级前**的老对话也能显示出多个项目，
+ * 不必等下一次写入才开始记录。单根工作区的前缀是纯文件名，不会误判。
+ *
+ * 只看第一段是否**精确等于**某个文件夹名：这一条挡掉两边的误报——
+ * 文件名恰好与项目同名（`DeepSeek-HWChat` 这种无扩展名文件），以及名字相近的项目。
+ */
+export function rootsFromChangedFiles(input: {
+  roots: readonly WorkspaceRootLike[];
+  files: readonly string[];
+}): string[] {
+  if (input.roots.length < 2) return [];
+  const matched: string[] = [];
+  for (const file of input.files) {
+    const normalized = file.replaceAll('\\', '/').replace(/^\.\//, '');
+    if (!normalized || isAbsolute(normalized)) continue;
+    const separator = normalized.indexOf('/');
+    if (separator <= 0) continue;
+    const prefix = normalized.slice(0, separator);
+    const root = input.roots.find((item) => item.name === prefix);
+    if (root && !matched.includes(resolve(root.fsPath))) matched.push(resolve(root.fsPath));
+  }
+  return matched;
+}
+
 /** 项目徽标上的名字：取文件夹名。根目录本身（`/`、`C:\`）没有名字，按未绑定处理。 */
 export function projectNameOf(projectRoot?: string): string | null {
   if (!projectRoot) {

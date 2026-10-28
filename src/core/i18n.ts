@@ -167,6 +167,10 @@ const DICTIONARY: Record<string, Entry> = {
   'chat.titleSaved': { zh: '标题已更新。', en: 'Title updated.' },
   'chat.titleEditLocked': { zh: '发出第一条消息后才能改标题。', en: 'Send the first message before renaming.' },
   'chat.projectLabel': { zh: '本次对话所属项目：{name}', en: 'Project for this conversation: {name}' },
+  'chat.projectLabelMany': {
+    zh: '本对话改过 {count} 个项目：{names}',
+    en: 'Projects changed in this conversation ({count}): {names}',
+  },
   'chat.projectPending': { zh: '项目待建立', en: 'No project yet' },
   'chat.projectPendingHint': {
     zh: '这条对话还没有落到任何工作区文件夹，git 写操作会被拒绝；等它开始改文件（或指定项目）就会自动绑定。',
@@ -175,9 +179,28 @@ const DICTIONARY: Record<string, Entry> = {
   'chat.skillsPanelTitle': { zh: '本次对话使用的 Skill', en: 'Skills used in this conversation' },
   'chat.workspaceTrustBadge': { zh: '工作区状态', en: 'Workspace status' },
   'chat.skillsPanelNote': {
-    zh: '“默认启用”来自本地 skill 快捷调用。route 模式只在命中后通过 load_skill 读取；每条回复会显示本轮实际加载的 Skill。',
-    en: '“Enabled by default” comes from local skill quick-invoke. In route mode a skill is only read through load_skill on a match; every reply lists the skills actually loaded for that turn.',
+    zh: 'route 模式只在命中后通过 load_skill 读取正文，每条回复会显示本轮实际加载的 Skill。',
+    en: 'In route mode a skill is only read through load_skill on a match, and every reply lists the skills actually loaded.',
   },
+  'chat.skillsSourceInstalled': {
+    zh: '勾选状态来自「本地skill快捷调用」。在这里勾选 / 取消只影响本次对话，不会改动它那边的勾选。',
+    en: 'Ticks come from the local skill quick-launch extension. Changing a tick here only affects this conversation, never that extension.',
+  },
+  'chat.skillsSourceMissing': {
+    zh: '勾选状态来自「本地skill快捷调用」。没检测到它，所以新对话从空白开始；装好后新建对话会自动套用它的勾选。在这里勾选仍然只影响本次对话。',
+    en: 'Ticks come from the local skill quick-launch extension. It is not detected, so new conversations start empty; once installed a new conversation picks its ticks up. Ticking here still only affects this conversation.',
+  },
+  'chat.skillsInstallBadge': { zh: '未安装', en: 'Not installed' },
+  'chat.skillsInstallTitle': {
+    zh: '新对话的默认勾选来自「本地skill快捷调用」',
+    en: 'New conversations start from “Local Skill Quick Launch”',
+  },
+  'chat.skillsInstallBody': {
+    zh: '装上「本地skill快捷调用」后，它的勾选会决定每个新对话默认启用哪些 Skill（route 模式下命中才读取正文）。现在没有检测到它，所以新对话从空白开始；装好后新建对话即可自动套用。注意：在 HWChat 里取消勾选只作用于当前这条对话，不会改到它的全局清单。',
+    en: 'With the local skill quick-launch extension installed, its ticks decide which skills every new conversation starts with (in route mode a skill’s text is read only on a match). It is not detected right now, so new conversations start empty; install it and the next new conversation picks the ticks up. Note that unticking here only affects the current conversation and never edits that global list.',
+  },
+  'chat.skillsInstallAction': { zh: '打开扩展详情', en: 'Open extension page' },
+  'chat.skillsToggleFailed': { zh: '没能保存这条对话的 Skill 勾选，请再点一次。', en: 'Could not save the skill selection for this conversation. Please try again.' },
 
   // 对话面板：空状态
   'chat.loadOlder': { zh: '加载更早消息', en: 'Load earlier messages' },
@@ -213,17 +236,24 @@ const DICTIONARY: Record<string, Entry> = {
   'chat.permissionPreset': { zh: '权限预设', en: 'Permission preset' },
   'chat.permissionPresetLabel': { zh: '权限预设：', en: 'Preset: ' },
   'chat.permissionPresetTitle': { zh: '权限预设：{hint}', en: 'Permission preset: {hint}' },
+  // 运行中也能改预设，但只对下一次对话生效：界面必须把这件事说清楚，
+  // 否则用户放宽权限后看到命令仍被拦，会以为设置没生效。
+  'chat.permissionPresetNextTurnHint': { zh: '任务运行中可切换：新预设从下一次对话起生效，当前任务仍按原预设执行。', en: 'Switchable while a task runs: the new preset applies from the next conversation; the running task keeps its own preset.' },
+  'chat.permissionPresetNextTurn': { zh: '已切换为「{preset}」。当前任务仍按「{current}」执行，本次任务结束后的下一次对话使用新预设。', en: 'Switched to “{preset}”. The running task keeps “{current}”; the next conversation after it finishes uses the new preset.' },
   'chat.maxSteps': { zh: '最大步骤', en: 'Max steps' },
   'chat.maxStepsLabel': { zh: '最大步骤：', en: 'Max steps: ' },
-  'chat.unlimited': { zh: '无限制', en: 'Unlimited' },
   'chat.stepsOption': { zh: '{count} 步', en: '{count} steps' },
+  'chat.stepsUnlimited': { zh: '无限制', en: 'Unlimited' },
   'chat.reasoningDepth': { zh: '思考深度', en: 'Reasoning depth' },
   'chat.reasoningDepthLabel': { zh: '思考深度：', en: 'Reasoning: ' },
-  'chat.reasoning.default': { zh: '默认', en: 'Default' },
+  // 'default' / 'none' 两档已从下拉框移除（不是「深度」），文案留着是因为旧对话
+  // 与不支持思考的模型仍会走到这两个值。
+  'chat.reasoning.default': { zh: '默认（模型官方）', en: 'Default (model)' },
   'chat.reasoning.none': { zh: '无', en: 'None' },
   'chat.reasoning.low': { zh: '低', en: 'Low' },
+  'chat.reasoning.medium': { zh: '中', en: 'Medium' },
   'chat.reasoning.high': { zh: '高', en: 'High' },
-  'chat.reasoning.max': { zh: '最大值', en: 'Max' },
+  'chat.reasoning.max': { zh: '最大', en: 'Max' },
   'chat.attachFile': { zh: '添加文件', en: 'Add files' },
   'chat.voiceInput': { zh: '语音输入', en: 'Voice input' },
   'chat.send': { zh: '发送', en: 'Send' },
@@ -504,8 +534,11 @@ const DICTIONARY: Record<string, Entry> = {
   'settings.workspaceUntrusted': { zh: '工作区未信任', en: 'Workspace untrusted' },
   'settings.defaultMode.label': { zh: '默认模式', en: 'Default mode' },
   'settings.defaultMode.hint': { zh: 'Agent 可执行工具，Plan 仅分析，Chat 仅对话', en: 'Agent can use tools, Plan only analyses, Chat only talks' },
-  'settings.maxSteps.label': { zh: '最大执行步骤', en: 'Max agent steps' },
-  'settings.maxSteps.hint': { zh: '0 表示不限制；也可在对话输入框下方即时调整', en: '0 means unlimited; also adjustable under the composer' },
+  // 设置页不再提供「新对话默认值」的三个下拉：它们改成固定初始值，按对话在工具条里调。
+  'settings.fixedDefaults.title': { zh: '新对话的初始值（固定）', en: 'New-conversation defaults (fixed)' },
+  'settings.fixedDefaults.body': { zh: '每一条新对话都从「每次询问」+ 24 步 + 「默认（模型官方）」开始，不受此处或 settings.json 里旧值影响；这三项请在输入框下方的工具条里按对话调整，选择随该对话存档。任务运行中也可以切换权限预设，但只对下一次对话生效。', en: 'Every new conversation starts at “Ask every time”, 24 steps and “Default (model)”, regardless of older values in settings.json. Adjust the three under the composer; the choice is stored with that conversation. The permission preset can be switched while a task runs, but only takes effect for the next conversation.' },
+  'settings.maxSteps.label': { zh: '新对话的最大执行步骤', en: 'Max agent steps for new chats' },
+  'settings.maxSteps.hint': { zh: '默认 {default} 步，四档可选（含「无限制」）；也可在对话输入框下方即时调整，只影响当前对话', en: 'Defaults to {default} steps; four presets including Unlimited. Also adjustable under the composer, per conversation' },
   'settings.stepsUnit': { zh: '步', en: 'steps' },
   'settings.commandTimeout.label': { zh: '命令超时', en: 'Command timeout' },
   'settings.readLimit.label': { zh: '单文件读取上限', en: 'Per-file read limit' },
@@ -585,7 +618,7 @@ const DICTIONARY: Record<string, Entry> = {
   'error.profileMissing': { zh: '当前 API 配置档不存在。', en: 'The current API profile does not exist.' },
   'error.modelEmpty': { zh: '模型名称不能为空。', en: 'The model name cannot be empty.' },
   'error.defaultModeInvalid': { zh: '默认模式无效。', en: 'Invalid default mode.' },
-  'error.maxStepsInvalid': { zh: '最大执行步骤必须是 0 或正数。', en: 'Max agent steps must be 0 or a positive number.' },
+  'error.maxStepsInvalid': { zh: '最大执行步骤必须是 1 到 200 之间的整数（不再支持 0 = 不限制）。', en: 'Max agent steps must be an integer between 1 and 200 (0 = unlimited is no longer supported).' },
   'error.reasoningInvalid': { zh: '思考层级无效。', en: 'Invalid reasoning level.' },
   'error.presetInvalid': { zh: '权限预设无效。', en: 'Invalid permission preset.' },
   'error.policyInvalid': { zh: '{key} 权限策略无效。', en: 'Invalid policy for {key}.' },
@@ -611,6 +644,7 @@ const DICTIONARY: Record<string, Entry> = {
   // 扩展命令与通知
   'ext.skillsFound': { zh: '已发现 {count} 个 Skill。', en: 'Found {count} skills.' },
   'ext.permissionScope': { zh: '生效权限预设：{preset}（各层来源见 HWChat 输出面板）', en: 'Effective permission preset: {preset} (per-layer sources in the HWChat output channel)' },
+  'ext.resourceStats': { zh: '搜索：活动 {active}、排队 {queued}；命令：活动 {commands}。详细计数已写入 HWChat 输出面板。', en: 'Searches: {active} active, {queued} queued; commands: {commands} active. Full counters were written to the HWChat output panel.' },
   'ext.privacyTitle': {
     zh: 'HWChat 会将你发送的消息、已选择的文件内容和必要的工具结果发送到你在设置中配置的模型接口。对话、Skill 和审计记录默认只保存在本机；扩展不上传遥测。Agent 的写入和命令操作仍需按权限策略审批。',
     en: 'HWChat sends your messages, the file content you select and necessary tool results to the model endpoint you configure. Conversations, skills and audit records stay on this device by default; the extension uploads no telemetry. Agent writes and commands still go through the permission policy.',
@@ -673,6 +707,10 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.queryEmpty': { zh: 'query 不能为空。', en: 'query cannot be empty.' },
   'tool.searchRangeNote': { zh: '文件列表已达上限，搜索范围不完整；请用根目录名前缀或更具体的 glob 缩小范围。', en: 'The file list hit its limit, so the search was incomplete. Narrow it with a root-name prefix or a more specific glob.' },
   'tool.searchBudgetNote': { zh: '只扫描了前 {count} 个文件，搜索范围不完整。', en: 'Only the first {count} files were scanned, so the search was incomplete.' },
+  'tool.searchByteBudgetNote': { zh: '本次搜索已读取到 {size} 上限，搜索范围不完整；请用更具体的 query 或 glob 缩小范围。', en: 'This search hit the {size} read budget, so the scope was incomplete. Narrow it with a more specific query or glob.' },
+  'tool.searchQueueFull': { zh: '搜索队列已满（上限 {count} 个等待任务），本次搜索未执行。请等待当前搜索结束后再试。', en: 'The search queue is full ({count} waiting), so this search was not run. Wait for the current search to finish and try again.' },
+  'tool.searchResourceBusy': { zh: '系统暂时无法启动搜索进程（{code}），已按上限重试 {attempts} 次仍失败。请关闭其他窗口或占用资源的进程后重试，或改用更具体的 glob 缩小范围。', en: 'The system could not start a search process ({code}); retried {attempts} times with backoff and gave up. Close other windows or resource-heavy processes and retry, or narrow the scope with a more specific glob.' },
+  'tool.cancelled': { zh: '任务已取消，工具调用已停止。', en: 'The task was cancelled, so the tool call stopped.' },
   'tool.noMatches': { zh: '没有匹配。', en: 'No matches.' },
   'tool.matchesFound': { zh: '找到 {count} 处匹配', en: 'Found {count} matches' },
   'tool.readFileTooLarge': { zh: '文件过大（{size}），已超过 {max} 上限；请提高读取上限或先用搜索定位内容。', en: 'File too large ({size}); it exceeds the {max} limit. Raise the read limit or locate the content with a search first.' },
@@ -699,6 +737,8 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.trashedFile': { zh: '已将 {path} 移到废纸篓', en: 'Moved {path} to the trash' },
   'tool.commandEmpty': { zh: '命令为空或过长。', en: 'The command is empty or too long.' },
   'tool.commandTimeout': { zh: '命令超时（{seconds} 秒）', en: 'Command timed out ({seconds}s)' },
+  'tool.commandCancelled': { zh: '命令已取消，相关子进程正在结束。', en: 'The command was cancelled and its process tree is being stopped.' },
+  'tool.commandQueueFull': { zh: '同时运行的命令已达上限（{count} 个等待中），本次命令未执行。请等待当前命令结束后再试。', en: 'Too many commands are already running ({count} waiting), so this command was not run. Wait for the current command to finish and try again.' },
   'tool.commandExit': { zh: '命令退出码 {code}', en: 'Command exit code {code}' },
   'tool.noOutput': { zh: '(无输出)', en: '(no output)' },
   'tool.commandStallHint': { zh: '已 {seconds} 秒无输出，可能在等终端输入', en: 'No output for {seconds}s — may be waiting for terminal input' },
@@ -765,6 +805,9 @@ const DICTIONARY: Record<string, Entry> = {
   // 整个顶栏都为它让路；「可以继续」由右侧那两个按钮本身表达，不必再写一遍。
   'todo.interrupted': { zh: '已中断，可继续', en: 'interrupted' },
   'todo.incomplete': { zh: '未完成，可继续', en: 'not finished' },
+  // 清单全部完成时立刻归档成胶囊，面板不再占位；这两条分别给工具卡与模型看。
+  'todo.archived': { zh: '任务清单全部完成（{total} 项），已归档成胶囊', en: 'Task list complete ({total} item(s)); archived as a capsule' },
+  'todo.archivedHint': { zh: '这份清单已全部完成并归档，面板上的清单已收起（可在输入框上方的胶囊里回看）。若要继续做别的，请提交一份新的清单。', en: 'This list is fully completed and archived, so the panel is collapsed (reopen it from the capsule above the composer). To keep going, submit a new list.' },
   // 顶栏的「继续执行 / 取消任务」，只在清单处于可继续状态时出现
   'todo.resume': { zh: '继续执行', en: 'Continue' },
   'todo.cancel': { zh: '取消任务', en: 'Cancel task' },
@@ -833,7 +876,13 @@ const DICTIONARY: Record<string, Entry> = {
   'api.unknownError': { zh: '未知错误', en: 'Unknown error' },
 
   // Agent 运行进度
-  'agent.stepLimit': { zh: '\n\nAgent 已达到 {steps} 步执行上限，已停止继续调用工具。', en: '\n\nThe agent reached its {steps}-step limit and stopped calling tools.' },
+  'agent.stepLimit': { zh: '\n\nAgent 已达到 {steps} 步执行上限，已停止继续调用工具。上面的进度和结果都保留着，回复「继续」即可接着执行；如果一直跑到上限，多半是任务没拆细，可以把它拆成几步分别发给我。', en: '\n\nThe agent reached its {steps}-step limit and stopped calling tools. Everything above is preserved; reply "continue" to carry on. If every run hits the limit, the task is probably too broad — split it into a few smaller requests.' },
+  'agent.cancelled': { zh: '任务已取消。', en: 'The task was cancelled.' },
+  'agent.loopDetected': { zh: '\n\n检测到连续 {count} 次完全相同的工具调用（{tool}），已停止自动重试以避免死循环。请告诉我需要改变的做法（换关键词、换目录或换工具），我再继续。', en: '\n\nDetected {count} identical tool calls in a row ({tool}); automatic retries were stopped to avoid an endless loop. Tell me what should change (different keywords, folder, or tool) and I will continue.' },
+  'agent.noProgress': { zh: '\n\n连续 {rounds} 轮工具调用全部失败，已停止继续自动重试。请检查上面的错误信息，调整权限、路径或网络后回复「继续」。', en: '\n\nThe last {rounds} rounds of tool calls all failed, so automatic retries stopped. Review the errors above, adjust permissions, paths, or network access, then reply "continue".' },
+  'agent.toolCallBudget': { zh: '\n\n本轮工具调用次数已达安全上限（单轮最多 {round} 个、整轮请求最多 {count} 个），已暂停。已完成的进度和结果都保留着，回复「继续」可以从当前进度接着执行。', en: '\n\nThis run reached its tool-call safety limit (at most {round} per step and {count} per request), so it paused. Completed progress and results are preserved; reply "continue" to resume.' },
+  'agent.toolBudgetSkipped': { zh: '已达本轮工具调用安全上限，此步骤未执行', en: 'Skipped: the tool-call safety limit for this run was reached' },
+  'agent.loopSkipped': { zh: '连续 {count} 次完全相同的调用，已阻止以避免死循环', en: 'Blocked: {count} identical calls in a row would loop forever' },
   'agent.commandStalled': { zh: '有命令已 {seconds} 秒没有输出，可能卡在等待密码或确认。HWChat 无法替你输入，可在该步骤上点停止；到达 {timeout} 秒上限会自动终止。', en: 'A command has produced no output for {seconds}s and may be waiting for a password or confirmation. HWChat cannot type it for you; stop that step if needed. It will be killed automatically at the {timeout}s cap.' },
   'agent.mergedGuidance': { zh: '收到相关新消息，已跳过尚未执行的旧步骤', en: 'New guidance arrived; pending steps were skipped' },
   'agent.mergedGuidanceOutput': { zh: '任务树已合并用户的新指导，Agent 将先重新规划。', en: 'The task tree merged your new guidance; the agent will re-plan first.' },

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isReasoningEffort, resolveConversationControls } from '../core/conversationControls';
+import { AGENT_STEP_SAFETY_CAP, DEFAULT_AGENT_MAX_STEPS } from '../core/agentLimits';
 
 const defaults = {
   permissionPreset: 'review' as const,
@@ -39,12 +40,19 @@ test('controls: an invalid preset falls back instead of creating a third state',
   assert.equal(resolveConversationControls(defaults, { permissionPreset: 1 }).permissionPreset, 'review');
 });
 
-test('controls: step limits keep 0 (unlimited) and reject garbage', () => {
+test('controls: step limits treat 0 as "unlimited" and still reject dirty values', () => {
+  // 0 是工具条上的第四档「无限制」，是显式选择，必须原样保留。
   assert.equal(resolveConversationControls(defaults, { agentMaxSteps: 0 }).agentMaxSteps, 0);
   assert.equal(resolveConversationControls(defaults, { agentMaxSteps: 12.9 }).agentMaxSteps, 12);
-  // 脏数据（字符串 / 负数）回落到默认值，而不是变成「无限步」。
+  // 脏数据（字符串 / 负数）仍然回落到默认值，而不是变成「无限步」。
   assert.equal(resolveConversationControls(defaults, { agentMaxSteps: '99' as unknown }).agentMaxSteps, 40);
-  assert.equal(resolveConversationControls(defaults, { agentMaxSteps: -1 }).agentMaxSteps, 0);
+  assert.equal(resolveConversationControls(defaults, { agentMaxSteps: -1 }).agentMaxSteps, 40);
+  // 默认值本身是负数 / 非法时，落到硬默认 24，而不是 0。
+  assert.equal(resolveConversationControls({ ...defaults, agentMaxSteps: -1 }, {}).agentMaxSteps, DEFAULT_AGENT_MAX_STEPS);
+  // 全局默认值就是「无限制」时，新对话继承它。
+  assert.equal(resolveConversationControls({ ...defaults, agentMaxSteps: 0 }, {}).agentMaxSteps, 0);
+  // 超过绝对上限的存档值被夹到上限。
+  assert.equal(resolveConversationControls(defaults, { agentMaxSteps: 10_000 }).agentMaxSteps, AGENT_STEP_SAFETY_CAP);
 });
 
 test('controls: invalid reasoning falls back to the configured default, not to "default"', () => {
@@ -53,11 +61,12 @@ test('controls: invalid reasoning falls back to the configured default, not to "
   assert.equal(resolveConversationControls(defaults, { reasoningEffort: 'default' }).reasoningEffort, 'default');
 });
 
-test('controls: isReasoningEffort accepts exactly the five supported values', () => {
-  for (const value of ['default', 'none', 'low', 'high', 'max']) {
+test('controls: isReasoningEffort accepts exactly the six supported values', () => {
+  // 四档深度（low/medium/high/max）+ 两个旧值（default = 不发送参数，none = 关闭思考）。
+  for (const value of ['default', 'none', 'low', 'medium', 'high', 'max']) {
     assert.ok(isReasoningEffort(value), `${value} 应当合法`);
   }
-  for (const value of ['medium', '', undefined, null, 3]) {
+  for (const value of ['ultra', '', undefined, null, 3]) {
     assert.equal(isReasoningEffort(value), false);
   }
 });

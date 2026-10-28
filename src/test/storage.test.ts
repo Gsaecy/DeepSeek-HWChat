@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { ConversationStorage } from '../core/storage';
+import { AGENT_STEP_SAFETY_CAP } from '../core/agentLimits';
 
 async function withStorage(
   run: (storage: ConversationStorage, root: string) => Promise<void>,
@@ -549,6 +550,90 @@ test('manifest 里非法的项目根与运行时设置在载入时被丢掉', as
     assert.equal(loaded?.permissionPreset, undefined);
     assert.equal(loaded?.agentMaxSteps, undefined);
     assert.equal(loaded?.reasoningEffort, undefined);
+  });
+});
+
+test('涉及多个项目：projectRoots 随 manifest 持久化，且不碰主项目', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('multi project');
+    const primary = join(root, 'workspace', 'DeepSeek-HWChat');
+    await storage.updateConversation(conversation.id, {
+      projectRoot: primary,
+      projectRoots: [join(root, 'workspace', 'Local_skill_quick_access')],
+    });
+    await storage.flush();
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const loaded = await reloaded.getConversation(conversation.id);
+    // 主项目仍由 projectRoot 表达：追加展示用的项目不能把它改掉，
+    // 否则相对路径与 git 写操作的归属会跟着漂。
+    assert.equal(loaded?.projectRoot, primary);
+    assert.deepEqual(loaded?.projectRoots, [join(root, 'workspace', 'Local_skill_quick_access')]);
+  });
+});
+
+test('涉及多个项目：载入时丢掉相对路径、重复项与非字符串', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('bad roots');
+    const manifestPath = join(root, 'manifest.json');
+    const raw = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const absolute = join(root, 'workspace', 'MaiKer_Win');
+    raw.conversations[0].projectRoots = ['workspace/relative', 42, '', absolute, absolute, `${absolute}/`];
+    await writeFile(manifestPath, JSON.stringify(raw), 'utf8');
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const loaded = await reloaded.getConversation(conversation.id);
+    // 徽标只展示绝对路径的项目：相对路径会拼到进程 cwd 上，显示出来是个不存在的目录。
+    assert.deepEqual(loaded?.projectRoots, [absolute]);
+  });
+});
+
+test('涉及多个项目：写空数组等于清空该字段', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation('clear roots');
+    const absolute = join(process.cwd(), 'workspace', 'MaiKer_Win');
+    await storage.updateConversation(conversation.id, { projectRoots: [absolute] });
+    assert.deepEqual((await storage.getConversation(conversation.id))?.projectRoots, [absolute]);
+    await storage.updateConversation(conversation.id, { projectRoots: [] });
+    assert.equal((await storage.getConversation(conversation.id))?.projectRoots, undefined);
+  });
+});
+
+test('存档里的 agentMaxSteps = 0 是「无限制」，原样保留；负数才是脏值', async () => {  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('unlimited steps');
+    const manifestPath = join(root, 'manifest.json');
+    const raw = JSON.parse(await readFile(manifestPath, 'utf8'));
+    // 0 = 工具条第四档「无限制」（显式选择），必须原样读回来，
+    // 否则选了「无限制」的对话一重启就悄悄退回默认预算。
+    raw.conversations[0].agentMaxSteps = 0;
+    await writeFile(manifestPath, JSON.stringify(raw), 'utf8');
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    const loaded = await reloaded.getConversation(conversation.id);
+    assert.equal(loaded?.agentMaxSteps, 0, '0 是「无限制」，不能当成脏值丢掉');
+
+    // 负数才是脏值：它既不是任何一档预设，也不该被解释成无限。
+    const negative = JSON.parse(await readFile(manifestPath, 'utf8'));
+    negative.conversations[0].agentMaxSteps = -5;
+    await writeFile(manifestPath, JSON.stringify(negative), 'utf8');
+    const reloadedNegative = new ConversationStorage(root);
+    await reloadedNegative.initialize();
+    assert.equal(
+      (await reloadedNegative.getConversation(conversation.id))?.agentMaxSteps,
+      undefined,
+      '负数必须当成脏值丢掉，回落到默认预算',
+    );
+
+    // 超过绝对上限的值被夹到上限，而不是原样保留。
+    const over = JSON.parse(await readFile(manifestPath, 'utf8'));
+    over.conversations[0].agentMaxSteps = 10_000;
+    await writeFile(manifestPath, JSON.stringify(over), 'utf8');
+    const reloadedAgain = new ConversationStorage(root);
+    await reloadedAgain.initialize();
+    assert.equal((await reloadedAgain.getConversation(conversation.id))?.agentMaxSteps, AGENT_STEP_SAFETY_CAP);
   });
 });
 

@@ -53,12 +53,25 @@ check(
   '保留部分重新绑定为 todos，杜绝误用未过滤清单',
   /const \{ kept: todos, excluded \} = splitTodoScope\(submitted\)/.test(PANEL),
 );
+// 过滤后的清单才允许落库 / 推给面板。这里不钉具体字面量（写入口后来加上了
+// 「全部完成就归档」的分支，存档里可能是 `null`），而是钉住两点：
+// 1) 写存档、推面板用的都是过滤后的 `todos`，一个 `submitted` 都不许漏出来；
+// 2) 过滤发生在这两处之前。
+const filterAt = PANEL.indexOf('splitTodoScope(submitted)');
+// 从过滤那行往后找：`send()` 里也有一次 `updateConversation(conversationId, {`，从文件头找会锚错位置。
+const writeAt = PANEL.indexOf('await this.storage.updateConversation(conversationId, {', filterAt);
+const writeBlock = writeAt < 0 ? '' : PANEL.slice(writeAt, PANEL.indexOf("type: 'todoArchives'", writeAt));
 check(
   '过滤发生在写入存档之前',
-  PANEL.indexOf('splitTodoScope(submitted)') < PANEL.indexOf('todos,\n      // 新清单是一份新任务'),
+  filterAt >= 0 && writeAt > filterAt,
 );
-check('存档写入用的是过滤后的 todos', /updateConversation\(conversationId, \{\s*todos,/.test(PANEL));
-check('推给面板的也是过滤后的 todos', /type: 'todos', conversationId, todos,/.test(PANEL));
+check('存档写入用的是过滤后的 todos', /todos: keepList \? todos : null,/.test(writeBlock));
+check('推给面板的也是过滤后的 todos', /todos: keepList \? todos : \[\],/.test(writeBlock));
+check(
+  '写入口里没有任何地方直接用未过滤的 submitted',
+  writeBlock.length > 0 && !/\bsubmitted\b/.test(writeBlock),
+  '存档 / 推送区块出现了 submitted',
+);
 
 /* ── 3. 整份都被摘掉时不覆盖旧清单 ───────────────────────── */
 

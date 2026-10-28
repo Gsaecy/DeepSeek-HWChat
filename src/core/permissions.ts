@@ -45,6 +45,19 @@ export interface PermissionPresetDetail extends PermissionPresetProfile {
 /** 预设顺序，设置页与输入框下拉共用，避免两处顺序漂移。 */
 export const PERMISSION_PRESET_IDS: readonly PermissionPreset[] = ['askAll', 'review', 'autopilot', 'full'];
 
+/**
+ * 新对话的默认预设。
+ *
+ * 取最严格的一档（每次询问）而不是 `review`：默认值决定了“用户什么都没说的
+ * 时候 Agent 能自己做什么”，这类默认值出错是不可撤销的——一条没被确认的
+ * 强制推送或递归删除发出去就收不回来。宁可让第一次使用的人多点几次确认，
+ * 再由他主动放宽到 `风险操作询问` / `Autopilot`，也不该让他先承担一次自动执行。
+ *
+ * 这里而不是 `settings.ts` 定义，是因为 `settings.ts` 要 import 本文件（单向依赖），
+ * 反过来 import 会形成循环。
+ */
+export const DEFAULT_PERMISSION_PRESET: PermissionPreset = 'askAll';
+
 export const PERMISSION_PRESET_PROFILES: Record<PermissionPreset, PermissionPresetProfile> = {
   askAll: {
     fileReadPolicy: 'ask',
@@ -131,7 +144,9 @@ export const PERMISSION_PRESET_DETAILS: readonly (PermissionPresetProfile & { id
 
 export function permissionPresetDetail(preset: PermissionPreset, lang: Language): PermissionPresetDetail {
   const details = permissionPresetDetails(lang);
-  return details.find((detail) => detail.id === preset) ?? details[1]!;
+  // 查不到时回落到默认预设，而不是“列表里的第二个”（那是 review，默认值一改就错位）。
+  return details.find((detail) => detail.id === preset)
+    ?? details.find((detail) => detail.id === DEFAULT_PERMISSION_PRESET)!;
 }
 
 /** Autopilot / 完全访问：常规操作不弹窗。 */

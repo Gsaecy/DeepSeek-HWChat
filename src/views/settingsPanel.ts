@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
 import { SkillRegistry } from '../agent/skillRegistry';
 import { deleteApiKey, hasApiKey, storeApiKey } from '../core/apiKeys';
-import { PERMISSION_PRESET_IDS, permissionPresetDetails } from '../core/permissions';
+import { PERMISSION_PRESET_IDS, DEFAULT_PERMISSION_PRESET, permissionPresetDetail, permissionPresetDetails } from '../core/permissions';
 import { currentLanguage, messageScriptTag, t, tt, type Language } from '../core/i18n';
 import { isConversationMode } from '../core/modes';
-import { isPermissionPreset, profileFor, readSettings, updateSettings } from '../core/settings';
+import { profileFor, readSettings, updateSettings } from '../core/settings';
 import { ConversationStorage } from '../core/storage';
 import { ChatSettings } from '../core/types';
 import { DeepSeekClient } from '../providers/deepseekClient';
@@ -112,7 +112,7 @@ export class SettingsPanel implements vscode.Disposable {
           await this.exportAll();
           break;
         case 'rescanSkills':
-          await this.skills.refresh();
+          await this.skills.refresh({ force: true });
           this.callbacks.onChanged();
           await this.sendState();
           break;
@@ -138,25 +138,7 @@ export class SettingsPanel implements vscode.Disposable {
 
   private async save(message: Extract<IncomingMessage, { type: 'save' }>): Promise<void> {
     const previous = readSettings();
-    let settings = validateSettings(message.settings);
-    let permissionChangeCancelled = false;
-    if (
-      isPermissionPreset(settings.permissionPreset)
-      && settings.permissionPreset !== previous.permissionPreset
-      && isRiskyPermissionPreset(settings.permissionPreset)
-      && !await this.confirmPermissionPreset(settings.permissionPreset)
-    ) {
-      permissionChangeCancelled = true;
-      settings = {
-        ...settings,
-        permissionPreset: previous.permissionPreset,
-        fileReadPolicy: previous.fileReadPolicy,
-        fileWritePolicy: previous.fileWritePolicy,
-        commandPolicy: previous.commandPolicy,
-        dangerousCommandPolicy: previous.dangerousCommandPolicy,
-        sensitiveFilePolicy: previous.sensitiveFilePolicy,
-      };
-    }
+    const settings = validateSettings(message.settings);
     await updateSettings(settings);
     const next = readSettings();
     const nextIds = new Set(next.apiProfiles.map((profile) => profile.id));
@@ -170,28 +152,8 @@ export class SettingsPanel implements vscode.Disposable {
       if (nextIds.has(profileId) && apiKey.trim()) await storeApiKey(this.secrets, profileId, apiKey.trim());
     }
     this.callbacks.onChanged();
-    await this.post({
-      type: 'toast',
-      tone: permissionChangeCancelled ? 'neutral' : 'success',
-      text: permissionChangeCancelled ? tt('settings.savedWithPresetCancelled') : tt('settings.savedToast'),
-    });
+    await this.post({ type: 'toast', tone: 'success', text: tt('settings.savedToast') });
     await this.sendState();
-  }
-
-  private async confirmPermissionPreset(permissionPreset: ChatSettings['permissionPreset']): Promise<boolean> {
-    const risk = permissionPreset === 'full'
-      ? tt('notice.permissionFull')
-      : tt('notice.permissionReview');
-    const answer = await vscode.window.showWarningMessage(
-      tt('notice.permissionTitle'),
-      {
-        modal: true,
-        detail: tt('notice.permissionDetail', { risk }),
-      },
-      tt('notice.permissionConfirm'),
-      tt('common.cancel'),
-    );
-    return answer === tt('notice.permissionConfirm');
   }
 
   private async test(values: Partial<ChatSettings>, apiKey?: string): Promise<void> {
@@ -251,11 +213,11 @@ export class SettingsPanel implements vscode.Disposable {
     if (this.callbacks.isAgentBusy()) {
       throw new Error(tt('settings.busy'));
     }
+    // 模态框的「取消」由 VS Code 追加，这里只给危险动作本身一个按钮。
     const answer = await vscode.window.showWarningMessage(
       tt('settings.clearConfirmTitle'),
       { modal: true, detail: tt('settings.clearConfirmDetail') },
       tt('settings.dangerZone.action'),
-      tt('common.cancel'),
     );
     if (answer !== tt('settings.dangerZone.action')) return;
     await this.storage.clearAll();
@@ -363,7 +325,6 @@ export class SettingsPanel implements vscode.Disposable {
           <div class="section-heading"><h2>${t(lang, 'settings.agent.title')}</h2><span id="trustState" class="status-pill">${t(lang, 'settings.trustStatePlaceholder')}</span></div>
           <div class="settings-group">
             <label class="setting-row"><span><strong>${t(lang, 'settings.defaultMode.label')}</strong><small>${t(lang, 'settings.defaultMode.hint')}</small></span><select id="defaultMode" class="control"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
-            <label class="setting-row"><span><strong>${t(lang, 'settings.maxSteps.label')}</strong><small>${t(lang, 'settings.maxSteps.hint')}</small></span><span class="stepper"><input id="agentMaxSteps" type="number" min="0"><span>${t(lang, 'settings.stepsUnit')}</span></span></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.commandTimeout.label')}</strong></span><span class="stepper"><input id="maxCommandSeconds" type="number" min="5" max="900"><span>${t(lang, 'common.seconds')}</span></span></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.readLimit.label')}</strong></span><span class="stepper"><input id="maxReadBytes" type="number" min="16384" max="5242880"><span>bytes</span></span></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.toolOutputLimit.label')}</strong></span><span class="stepper"><input id="maxToolOutputBytes" type="number" min="16384" max="2097152"><span>bytes</span></span></label>
@@ -378,7 +339,7 @@ export class SettingsPanel implements vscode.Disposable {
           <div class="section-heading"><h2>${t(lang, 'settings.privacy.title')}</h2><span class="status-pill configured">${t(lang, 'settings.privacy.noTelemetry')}</span></div>
           <div class="privacy-summary"><strong>${t(lang, 'settings.privacy.dataFlow')}</strong><p>${t(lang, 'settings.privacy.dataFlowBody')}</p></div>
           <div class="settings-group">
-            <label class="setting-row"><span><strong>${t(lang, 'settings.privacy.presetLabel')}</strong><small id="permissionPresetHint">${permissionPresetDetails(lang)[1]!.summary}</small></span><select id="permissionPreset" class="control">${permissionPresetOptionsHtml(lang)}</select></label>
+            <div class="privacy-summary"><strong>${t(lang, 'settings.fixedDefaults.title')}</strong><p>${t(lang, 'settings.fixedDefaults.body')}</p></div>
             <div class="permission-matrix">
               <table>
                 <thead><tr><th scope="col">${t(lang, 'matrix.preset')}</th><th scope="col">${t(lang, 'matrix.read')}</th><th scope="col">${t(lang, 'matrix.write')}</th><th scope="col">${t(lang, 'matrix.readOnlyCommand')}</th><th scope="col">${t(lang, 'matrix.regularCommand')}</th><th scope="col">${t(lang, 'matrix.dangerousCommand')}</th><th scope="col">${t(lang, 'matrix.sensitive')}</th></tr></thead>
@@ -386,11 +347,6 @@ export class SettingsPanel implements vscode.Disposable {
               </table>
               <p>${t(lang, 'matrix.hardBoundary')}</p>
             </div>
-            <label class="setting-row"><span><strong>${t(lang, 'settings.privacy.readFile')}</strong><small>${t(lang, 'settings.privacy.readFileHint')}</small></span><select id="fileReadPolicy" class="control"><option value="allow">${t(lang, 'policy.allow')}</option><option value="ask">${t(lang, 'policy.ask')}</option><option value="deny">${t(lang, 'policy.deny')}</option></select></label>
-            <label class="setting-row"><span><strong>${t(lang, 'settings.privacy.writeFile')}</strong><small>${t(lang, 'settings.privacy.writeFileHint')}</small></span><select id="fileWritePolicy" class="control"><option value="ask">${t(lang, 'policy.ask')}</option><option value="allow">${t(lang, 'policy.allow')}</option><option value="deny">${t(lang, 'policy.deny')}</option></select></label>
-            <label class="setting-row"><span><strong>${t(lang, 'settings.privacy.command')}</strong><small>${t(lang, 'settings.privacy.commandHint')}</small></span><select id="commandPolicy" class="control"><option value="ask">${t(lang, 'policy.ask')}</option><option value="allow">${t(lang, 'policy.allow')}</option><option value="deny">${t(lang, 'policy.deny')}</option></select></label>
-            <label class="setting-row"><span><strong>${t(lang, 'settings.privacy.dangerous')}</strong><small>${t(lang, 'settings.privacy.dangerousHint')}</small></span><select id="dangerousCommandPolicy" class="control"><option value="ask">${t(lang, 'policy.dangerous.ask')}</option><option value="allow">${t(lang, 'policy.dangerous.allow')}</option><option value="deny">${t(lang, 'policy.dangerous.deny')}</option></select></label>
-            <label class="setting-row"><span><strong>${t(lang, 'settings.privacy.sensitive')}</strong><small>${t(lang, 'settings.privacy.sensitiveHint')}</small></span><select id="sensitiveFilePolicy" class="control"><option value="deny">${t(lang, 'policy.sensitive.deny')}</option><option value="ask">${t(lang, 'policy.sensitive.ask')}</option><option value="allow">${t(lang, 'policy.sensitive.allow')}</option></select></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.privacy.audit')}</strong><small>${t(lang, 'settings.privacy.auditHint')}</small></span><span class="stepper"><input id="auditRetentionDays" type="number" min="0" max="365"><span>${t(lang, 'common.days')}</span></span></label>
           </div>
           <div class="danger-zone"><div><strong>${t(lang, 'settings.dangerZone.title')}</strong><span>${t(lang, 'settings.dangerZone.hint')}</span></div><button id="clearLocalDataButton" type="button">${t(lang, 'settings.dangerZone.action')}</button></div>
@@ -454,10 +410,11 @@ function validateSettings(values: Partial<ChatSettings>): Partial<ChatSettings> 
   if (values.defaultMode !== undefined && !isConversationMode(values.defaultMode)) {
     throw new Error(tt('error.defaultModeInvalid'));
   }
+  // 0 是显式的「无限制」；负数与非数字才是非法值。
   if (values.agentMaxSteps !== undefined && (!Number.isFinite(values.agentMaxSteps) || values.agentMaxSteps < 0)) {
     throw new Error(tt('error.maxStepsInvalid'));
   }
-  if (values.reasoningEffort !== undefined && !['default', 'none', 'low', 'high', 'max'].includes(values.reasoningEffort)) {
+  if (values.reasoningEffort !== undefined && !['default', 'none', 'low', 'medium', 'high', 'max'].includes(values.reasoningEffort)) {
     throw new Error(tt('error.reasoningInvalid'));
   }
   if (values.permissionPreset !== undefined && !['askAll', 'review', 'autopilot', 'full'].includes(values.permissionPreset)) {
@@ -479,17 +436,6 @@ function validateEndpoint(value: string): string {
     throw new Error(tt('error.endpointHttps'));
   }
   return url.toString().replace(/\/$/, '');
-}
-
-function isRiskyPermissionPreset(value: ChatSettings['permissionPreset']): boolean {
-  return value === 'autopilot' || value === 'full';
-}
-
-/** 权限预设下拉项与对照表都来自 core/permissions，避免 UI 与运行时策略漂移。 */
-function permissionPresetOptionsHtml(lang: Language): string {
-  return permissionPresetDetails(lang)
-    .map((detail) => `<option value="${detail.id}" title="${escapeHtml(detail.summary)}">${escapeHtml(detail.label)}</option>`)
-    .join('');
 }
 
 function permissionMatrixRowsHtml(lang: Language): string {

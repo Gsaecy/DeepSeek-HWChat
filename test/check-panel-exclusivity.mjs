@@ -96,6 +96,8 @@ class StubNode {
     return walk(this);
   }
   scrollIntoView() {}
+  /** 横向滚动：按「每颗胶囊 32px」估算内容宽度，够本文件用。 */
+  get scrollWidth() { return this.children.length * 32; }
 }
 
 const document = { createElement: (tag) => new StubNode(tag) };
@@ -201,6 +203,9 @@ const source = [
   'renderArchivePanel',
   'renderTodoArchives',
   'layoutTodoArchives',
+  // 拖动松手的 click 要吞掉：判定逻辑本体由 test/check-capsule-drag.mjs 验证，
+  // 这里只验证「胶囊点击真的会先问它一次」。
+  'consumeArchiveDragClick',
 ].map(extract).join('\n\n')
   // 标题栏监听也原样抽出来：这三行是「锁住时点了不开」的唯一入口，必须一起验证。
   + '\n\n'
@@ -209,9 +214,8 @@ const source = [
 const factory = new Function(
   'elements', 'state', 'document', 'todoPanelState', 't', 'showToast', 'formatTime', 'iconNode',
   `const CAPSULE_BASE_HEIGHT = ${numberConst('CAPSULE_BASE_HEIGHT')};
-   const CAPSULE_MIN_HEIGHT = ${numberConst('CAPSULE_MIN_HEIGHT')};
    const CAPSULE_RATIO = ${numberConst('CAPSULE_RATIO')};
-   let lastCapsuleBarWidth = 0;
+   let lastArchiveCount = 0;
    ${source}
    return { renderTodos, renderArchivePanel, renderTodoArchives, togglePanel, enterArchiveFocus, exitArchiveFocus, state };`,
 );
@@ -347,6 +351,34 @@ state.todoArchives = [];
 ui.renderTodoArchives();
 view = snapshot();
 check('归档消失：自动退出聚焦并解锁', view.locked === false && view.archivePanel === false, JSON.stringify(view));
+
+// 场景 10：横向滚动的跟随规则 —— 新归档可能在视野之外，重渲染不该抢滚动位置
+seed({ todos: todos(2), archives: [archive('a', 1), archive('b', 2), archive('c', 3)] });
+elements.todoArchiveBar.scrollLeft = 0; // 模拟用户已经往回滚到最左
+ui.renderTodoArchives(); // 条数没变（展开/收起引起的重渲染）
+check('条数没变：不抢用户往回滚的位置', elements.todoArchiveBar.scrollLeft === 0, `scrollLeft = ${elements.todoArchiveBar.scrollLeft}`);
+state.todoArchives = [...state.todoArchives, archive('d', 4)];
+ui.renderTodoArchives();
+check(
+  '新增一份归档：跟到最右端',
+  elements.todoArchiveBar.scrollLeft === elements.todoArchiveBar.scrollWidth && elements.todoArchiveBar.scrollLeft > 0,
+  `scrollLeft = ${elements.todoArchiveBar.scrollLeft}, scrollWidth = ${elements.todoArchiveBar.scrollWidth}`,
+);
+
+// 场景 11：拖动松手后浏览器补发的 click —— 不能当成「点击那一颗胶囊」。
+// 否则用户只是按住拖了一下（胶囊栏没有滚动条，拖动是主要滚法），松手就莫名展开一个面板。
+seed({ todos: todos(2), archives: [archive('a', 1), archive('b', 2)] });
+elements.todoArchiveBar.dataset.dragMoved = '1'; // 模拟刚刚拖动过
+elements.todoArchiveBar.children[0].click();
+view = snapshot();
+check('拖动后的 click：不展开归档面板', view.archivePanel === false, JSON.stringify(view));
+check('拖动后的 click：任务树与任务清单保持原状', view.taskTree && view.todoPanel, JSON.stringify(view));
+check('拖动后的 click：一次性标记被消费掉',
+  elements.todoArchiveBar.dataset.dragMoved === undefined, String(elements.todoArchiveBar.dataset.dragMoved));
+elements.todoArchiveBar.children[0].click();
+view = snapshot();
+check('紧接着的正常点击：照常展开那一颗',
+  view.archivePanel && view.active.length === 1 && view.active[0] === 'a', JSON.stringify(view));
 
 console.log(failures ? `\n${failures} 项不满足` : '\n全部通过：同一时刻只展开一个面板、收起后还原、锁住时点了不开');
 process.exitCode = failures ? 1 : 0;

@@ -139,44 +139,33 @@ test('预设说明与预设策略表同源', () => {
   }
 });
 
-test('设置页的预设镜像表必须与真实策略表逐项一致', () => {
-  // media/settings.js 里手写了一份 [读取, 写入, 只读命令, 正常命令, 危险命令, 敏感文件] 镜像，
-  // 用于切换预设时填充那几个锁定的下拉框。它一旦和 PERMISSION_PRESET_PROFILES 不一致，
-  // 设置页就会把某个档位显示得比实际更严格。这条断言把两边钉在一起。
-  const candidates = [
+test('权限矩阵只有一份来源：设置页直接渲染预设表，不再手写镜像', () => {
+  // 以前 media/settings.js 里手写了一份 [读取, 写入, 只读命令, 正常命令, 危险命令, 敏感文件]
+  // 镜像，用于切换预设时填充锁定的下拉框。它一旦和 PERMISSION_PRESET_PROFILES 不一致，
+  // 设置页就会把某个档位显示得比实际更严格（曾经 autopilot 的危险命令这里写 ask、
+  // 真实策略是 allow）。现在预设控件搬到了输入框下方，矩阵直接由 `permissionPresetDetails`
+  // 生成，镜像表已删除；这条断言防止有人再抄一份回来。
+  const settingsJs = [
     path.join(process.cwd(), 'media', 'settings.js'),
     path.join(process.cwd(), 'DeepSeek-HWChat', 'media', 'settings.js'),
-  ];
-  const sourcePath = candidates.find((candidate) => existsSync(candidate));
-  assert.ok(sourcePath, '找不到 media/settings.js');
-  const source = readFileSync(sourcePath, 'utf8');
+  ].find((candidate) => existsSync(candidate));
+  assert.ok(settingsJs, '找不到 media/settings.js');
+  assert.doesNotMatch(readFileSync(settingsJs, 'utf8'), /permissionPresetProfiles/, '设置页不该再维护预设镜像表');
 
-  const start = source.indexOf('const permissionPresetProfiles');
-  assert.ok(start >= 0, 'media/settings.js 中找不到 permissionPresetProfiles');
-  const block = source.slice(start, source.indexOf('\n  };', start));
-  const rows = [...block.matchAll(/^\s{4}([A-Za-z]+): \[([^\]]+)\],$/gm)];
-  assert.equal(rows.length, 4, '镜像表应包含 4 个预设');
-
-  for (const row of rows) {
-    const preset = row[1]!;
-    const actual = row[2]!.split(',').map((value) => value.trim().replaceAll("'", ''));
-    const profile = Object.prototype.hasOwnProperty.call(PERMISSION_PRESET_PROFILES, preset)
-      ? PERMISSION_PRESET_PROFILES[preset as PermissionPreset]
-      : undefined;
-    assert.ok(profile, `镜像表出现了未知预设 ${preset}`);
-    assert.deepEqual(
-      actual,
-      [
-        profile.fileReadPolicy,
-        profile.fileWritePolicy,
-        profile.readOnlyCommandPolicy,
-        profile.commandPolicy,
-        profile.dangerousCommandPolicy,
-        profile.sensitiveFilePolicy,
-      ],
-      preset,
-    );
-  }
+  const panel = [
+    path.join(process.cwd(), 'src', 'views', 'settingsPanel.ts'),
+    path.join(process.cwd(), 'DeepSeek-HWChat', 'src', 'views', 'settingsPanel.ts'),
+  ].find((candidate) => existsSync(candidate));
+  assert.ok(panel, '找不到 src/views/settingsPanel.ts');
+  const source = readFileSync(panel, 'utf8');
+  assert.match(source, /permissionPresetDetails\(/, '矩阵必须由预设表生成');
+  assert.match(source, /data-preset="\$\{detail\.id\}"/, '每一行要带预设 id，才能和真实策略表对齐');
+  // 设置页把「新对话实际使用的档位」标出来：没有下拉可选，但必须看得出当前是哪一档。
+  assert.match(
+    readFileSync(settingsJs, 'utf8'),
+    /row\.dataset\.preset === 'askAll'/,
+    '设置页要标出新对话实际使用的档位',
+  );
 });
 
 test('VS Code 工具按名称与描述分档：只读工具不会被误判成需要授权', () => {

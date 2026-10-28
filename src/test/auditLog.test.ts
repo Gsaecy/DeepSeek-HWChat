@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { AuditLog, redact } from '../agent/auditLog';
+import { AUDIT_CLEANUP_FRESH_MS, AuditLog, redact } from '../agent/auditLog';
 
 async function withAudit(run: (audit: AuditLog, filePath: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'hwchat-audit-'));
@@ -58,4 +58,23 @@ test('redacts common credential formats before audit storage', () => {
   const value = redact('Authorization: Bearer abc.def sk-secretvalue API_KEY=plainsecret "password":"hidden"');
   assert.doesNotMatch(value, /abc\.def|sk-secretvalue|plainsecret|hidden/);
   assert.match(value, /REDACTED/);
+});
+
+test('repeated compactions inside the freshness window are skipped unless forced', async () => {
+  assert.ok(AUDIT_CLEANUP_FRESH_MS >= 1_000, 'freshness window must be meaningful');
+  await withAudit(async (audit, filePath) => {
+    const stale = JSON.stringify({ timestamp: Date.now() - 90 * 24 * 60 * 60 * 1_000, tool: 'read_file' });
+    await writeFile(filePath, `${stale}\n`, 'utf8');
+    await audit.cleanup(30);
+    assert.equal(await readFile(filePath, 'utf8'), '', 'first cleanup drops expired records');
+
+    // 窗口内再次调用：不做整份文件重算，留下的过期行说明压缩被跳过了。
+    await writeFile(filePath, `${stale}\n`, 'utf8');
+    await audit.cleanup(30);
+    assert.match(await readFile(filePath, 'utf8'), /read_file/, 'second cleanup inside the window is skipped');
+
+    // 显式强制（用户主动清理）必须立刻生效。
+    await audit.cleanup(30, { force: true });
+    assert.equal(await readFile(filePath, 'utf8'), '', 'forced cleanup compacts immediately');
+  });
 });

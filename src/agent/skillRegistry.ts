@@ -11,11 +11,28 @@ import {
   ToolExecutionResult,
 } from '../core/types';
 import { tt } from '../core/i18n';
+import { searchWorkspace } from './workspaceSearch';
+import {
+  QUICK_LAUNCH_EXTENSION_ID,
+  isMissingFileError,
+  readSharedState,
+  sharedSkillName,
+  withSharedLastUsed,
+} from '../core/skillSelection';
 
 interface SkillRecord extends SkillSummary {
   uri: vscode.Uri;
   content: string;
   quickLaunchName?: string;
+  /**
+   * 共享清单里用来指代这条 Skill 的名字。
+   *
+   * 「本地skill快捷调用」的命名规则是 `frontmatter.name` → 目录名，**没有「标题」这一级**；
+   * 而 HWChat 显示用的 `name` 在缺 frontmatter 时会退回正文标题。两者可能不同，
+   * 若按显示名往共享文件里写，那个扩展的面板就会认为「没勾选」——勾选框看着同步，
+   * 实际各说各话。所以写回一律用这个字段。
+   */
+  sharedName?: string;
 }
 
 interface QuickLaunchState {
@@ -39,9 +56,22 @@ const WORKSPACE_PATTERNS = [
 const MAX_SKILL_BYTES = 160 * 1024;
 const MAX_ENABLED_BYTES = 320 * 1024;
 
+/**
+ * 两次真实扫描之间的最短间隔。
+ *
+ * 30 秒足够让「刚在磁盘上加了技能」在下次打开/发送时被看到，同时把一次操作链里
+ * 十几次状态重发合并成最多一次扫描。显式「重新扫描」与 watcher 会绕过它。
+ */
+export const SKILL_REFRESH_TTL_MS = 30_000;
+
 export class SkillRegistry implements vscode.Disposable {
   private readonly records = new Map<string, SkillRecord>();
   private readonly watcherDisposables: vscode.Disposable[] = [];
+  /**
+   * 共享勾选文件被改写时触发（用户在「本地skill快捷调用」面板里打勾、它自己的
+   * 自动勾选、或我们写入）：面板据此重画勾选框，不必手动刷新。
+   */
+  readonly onDidChangeSharedState = new vscode.EventEmitter<void>();
 
   constructor(
     private readonly userSkillRoot: vscode.Uri,
@@ -50,15 +80,104 @@ export class SkillRegistry implements vscode.Disposable {
   ) {
     for (const pattern of WORKSPACE_PATTERNS) {
       const watcher = vscode.workspace.createFileSystemWatcher(pattern);
-      watcher.onDidCreate(() => void this.refresh(), undefined, this.watcherDisposables);
-      watcher.onDidChange(() => void this.refresh(), undefined, this.watcherDisposables);
-      watcher.onDidDelete(() => void this.refresh(), undefined, this.watcherDisposables);
+      // 一次保存常常连着 create/change 多个事件；合并成一次刷新，
+      // 否则「保存一个 skill」就是三倍的文件扫描。
+      watcher.onDidCreate(() => this.scheduleRefresh(), undefined, this.watcherDisposables);
+      watcher.onDidChange(() => this.scheduleRefresh(), undefined, this.watcherDisposables);
+      watcher.onDidDelete(() => this.scheduleRefresh(), undefined, this.watcherDisposables);
       this.watcherDisposables.push(watcher);
     }
+    // 共享勾选文件在用户主目录下、不在工作区里，所以用 RelativePattern 直接盯住它。
+    const stateWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(
+      vscode.Uri.file(dirname(this.quickLaunchStateFile.fsPath)),
+      basename(this.quickLaunchStateFile.fsPath),
+    ));
+    const reload = (): void => {
+      void this.refresh({ force: true })
+        .then(() => this.onDidChangeSharedState.fire())
+        .catch(() => undefined);
+    };
+    stateWatcher.onDidCreate(reload, undefined, this.watcherDisposables);
+    stateWatcher.onDidChange(reload, undefined, this.watcherDisposables);
+    stateWatcher.onDidDelete(reload, undefined, this.watcherDisposables);
+    this.watcherDisposables.push(stateWatcher);
   }
 
-  async refresh(): Promise<SkillSummary[]> {
-    const quickState = await this.readQuickLaunchState();
+  private refreshTimer: NodeJS.Timeout | undefined;
+  private inFlightRefresh: Promise<SkillSummary[]> | undefined;
+  private lastRefreshAt = 0;
+
+  /** 合并短时间内的多次 watcher 事件，避免一次保存触发多轮扫描。 */
+  private scheduleRefresh(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = undefined;
+      // 文件真的变了：必须绕过新鲜窗口，否则这次保存要等窗口过期才可见。
+      void this.refresh({ force: true }).catch(() => undefined);
+    }, 250);
+    this.refreshTimer.unref?.();
+  }
+
+  /**
+   * 重新扫描技能清单。
+   *
+   * 为什么要有「新鲜窗口」和 single-flight（真实故障）：面板每次重发状态
+   * （`ChatPanel.sendState`）都会调到这里，而一次扫描 = 三条 `findFiles`
+   * pattern，每条都会在 VS Code 里拉起一次 ripgrep 全工作区遍历，外加逐个
+   * 读取 `SKILL.md`。一次操作链里状态会重发十几遍，等于几十次全工作区扫描，
+   * 大型工作区上 CPU 与进程数都会被吃满（`spawn rg EAGAIN` 的来源之一）。
+   *
+   * 现在：窗口内直接复用上一次结果；并发调用共享同一次扫描。文件变化由
+   * watcher（`force`）、显式「重新扫描」命令、以及新建/切换对话触发。
+   *
+   * **这个函数永不 reject**（真实故障）。扫描会走统一搜索调度层，而调度层在
+   * 队列满时会抛 `SearchQueueFullError`（用户刚跑完一堆 Agent 任务时非常容易触发）。
+   * 以前 `refresh()` 直接把这个错误抛给调用方，而「新建对话」「打开对话」「激活」
+   * 都在 `await` 它 —— 于是**搜索队列一满，点新建对话就毫无反应**，只能重载窗口。
+   * 一份「可能稍旧」的技能清单永远比一个点不动的按钮好，所以这里把错误收住：
+   * 保留上一次的清单，把原因交给 `onError` 记录。
+   */
+  async refresh(options: { force?: boolean } = {}): Promise<SkillSummary[]> {
+    if (this.inFlightRefresh) return this.inFlightRefresh;
+    if (!options.force && this.lastRefreshAt && Date.now() - this.lastRefreshAt < SKILL_REFRESH_TTL_MS) {
+      return this.list();
+    }
+    const running = this.scan()
+      .then((summaries) => {
+        this.lastRefreshAt = Date.now();
+        return summaries;
+      }, (error: unknown) => {
+        // 不更新 lastRefreshAt：下次调用会立刻重试，而不是把一个坏结果缓存 30 秒。
+        this.onError?.(error);
+        return this.list();
+      })
+      .finally(() => {
+        this.inFlightRefresh = undefined;
+      });
+    this.inFlightRefresh = running;
+    return running;
+  }
+
+  /** 扫描失败时的上报口（只用于日志；不影响返回的清单）。 */
+  onError: ((error: unknown) => void) | undefined;
+
+  private async scan(): Promise<SkillSummary[]> {
+    /**
+     * 没装「本地skill快捷调用」时**不读**它的状态文件。
+     *
+     * 真实故障：用户卸载了那个扩展，但 `~/.copilot/.skill-quick-launch.json` 还在
+     * （卸载扩展不会删它，本机残留着 35 个 active）。旧实现照样读，于是 HWChat 把
+     * 每个技能标成「默认启用」并自动勾选 —— 用户看到的就是「扩展都卸了，怎么还有
+     * 一堆勾选」，以为是扩展残留。它确实是残留，但**不该由 HWChat 来读**。
+     *
+     * 现在：没装就当成「没有全局勾选」，一切从空白开始，等用户重新装上再对接。
+     * 技能本身仍会从 `~/.copilot/skills/` 扫出来（那是 Copilot 的技能目录，
+     * 不随扩展安装/卸载变化），只是不再被这份无主的状态文件影响。
+     */
+    const installed = this.quickLaunchInstalled();
+    const quickState: QuickLaunchState = installed
+      ? await this.readQuickLaunchState()
+      : { raw: {}, active: new Set<string>(), lastUsed: {} };
     const candidates: Array<{
       uri: vscode.Uri;
       source: SkillSummary['source'];
@@ -66,7 +185,10 @@ export class SkillRegistry implements vscode.Disposable {
       quickLaunchName?: string;
     }> = [];
     for (const pattern of WORKSPACE_PATTERNS) {
-      for (const uri of await vscode.workspace.findFiles(pattern, '**/{node_modules,.git}/**', 200)) {
+      // 走统一搜索调度层：一次保存会触发多个 watcher 事件，旧实现每次都直接
+      // findFiles（= 每次拉起 rg），三条 pattern 就是三次。
+      const found = await searchWorkspace({ include: pattern, limit: 200, operation: 'skill_registry' });
+      for (const uri of found.outcome.files) {
         candidates.push({
           uri,
           source: 'workspace',
@@ -82,9 +204,13 @@ export class SkillRegistry implements vscode.Disposable {
       const record = await this.readSkill(candidate).catch(() => undefined);
       if (!record) continue;
       if (record.source === 'copilot') {
-        const aliases = [record.quickLaunchName, record.name].filter((value): value is string => Boolean(value));
-        record.defaultEnabled = aliases.some((name) => quickState.active.has(name));
-        record.lastUsedAt = aliases.reduce((latest, name) => Math.max(latest, quickState.lastUsed[name] ?? 0), 0) || undefined;
+        const aliases = [record.sharedName, record.quickLaunchName, record.name]
+          .filter((value): value is string => Boolean(value));
+        // 未安装时 quickState 是空的，这里自然得到「不默认启用、无已调用时间」。
+        record.defaultEnabled = installed && aliases.some((name) => quickState.active.has(name));
+        record.lastUsedAt = installed
+          ? aliases.reduce((latest, name) => Math.max(latest, quickState.lastUsed[name] ?? 0), 0) || undefined
+          : undefined;
       }
       next.set(record.id, record);
     }
@@ -95,7 +221,7 @@ export class SkillRegistry implements vscode.Disposable {
 
   list(): SkillSummary[] {
     return [...this.records.values()]
-      .map(({ uri: _uri, content: _content, quickLaunchName: _quickName, ...summary }) => summary)
+      .map(({ uri: _uri, content: _content, quickLaunchName: _quickName, sharedName: _sharedName, ...summary }) => summary)
       .sort((a, b) => Number(b.defaultEnabled) - Number(a.defaultEnabled) || a.name.localeCompare(b.name));
   }
 
@@ -105,6 +231,30 @@ export class SkillRegistry implements vscode.Disposable {
 
   defaultEnabledIds(): string[] {
     return [...this.records.values()].filter((skill) => skill.defaultEnabled).map((skill) => skill.id);
+  }
+
+  /**
+   * 全局清单里当前勾选的 Skill。
+   *
+   * 只在**开新对话**时用作初始勾选（见 `resolveSkillSelection`）；对话里改勾选不会写回
+   * 这份清单，所以它不代表「当前对话用了哪些」。
+   */
+  sharedActiveIds(): string[] {
+    return this.defaultEnabledIds();
+  }
+
+  /**
+   * 「本地skill快捷调用」是否已安装。
+   *
+   * 它决定**新对话的默认勾选**从哪来，所以没装时面板要说明这件事（而不是禁止勾选：
+   * 对话内的勾选本来就不需要它）。
+   */
+  quickLaunchInstalled(): boolean {
+    try {
+      return Boolean(vscode.extensions.getExtension(QUICK_LAUNCH_EXTENSION_ID));
+    } catch {
+      return false;
+    }
   }
 
   prepare(ids: string[], mode: ConversationMode, query: string): PreparedSkillContext {
@@ -222,28 +372,38 @@ export class SkillRegistry implements vscode.Disposable {
   async recordUsage(ids: string[]): Promise<void> {
     const used = ids.map((id) => this.records.get(id)).filter((skill): skill is SkillRecord => Boolean(skill));
     if (!used.length) return;
-    const state = await this.readQuickLaunchState();
     const now = Date.now();
-    let sharedStateChanged = false;
-    for (const skill of used) {
-      skill.lastUsedAt = now;
-      if (skill.source === 'copilot') {
-        state.lastUsed[skill.quickLaunchName ?? skill.name] = now;
-        state.lastUsed[skill.name] = now;
-        sharedStateChanged = true;
-      }
-    }
-    if (!sharedStateChanged) return;
-    state.raw.lastUsed = state.lastUsed;
-    await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(this.quickLaunchStateFile.fsPath)));
-    await vscode.workspace.fs.writeFile(
-      this.quickLaunchStateFile,
-      new TextEncoder().encode(`${JSON.stringify(state.raw, null, 2)}\n`),
+    const sharedUsed = used.filter((skill) => skill.source === 'copilot');
+    // 内存里的角标先更新：即使共享文件写不了，本面板这几轮也照样显示「已调用」。
+    for (const skill of used) skill.lastUsedAt = now;
+    if (!sharedUsed.length) return;
+    // 读不懂就别写：少记一次时间戳只是少个角标，拿空对象覆盖会把对方的分类、
+    // 自定义名称与历史调用时间一起写没。
+    const raw = await this.readQuickLaunchRaw();
+    const next = withSharedLastUsed(
+      raw,
+      // 只写共享清单认得的那个名字。目录名与显示名（正文标题）也写进去，只会在文件里
+      // 堆出一串别人用不到的键，还可能和另一个技能撞名。
+      sharedUsed.map((skill) => skill.sharedName ?? skill.quickLaunchName ?? skill.name),
+      now,
     );
+    if (!next) return;
+    try {
+      await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(this.quickLaunchStateFile.fsPath)));
+      await vscode.workspace.fs.writeFile(
+        this.quickLaunchStateFile,
+        new TextEncoder().encode(`${JSON.stringify(next, null, 2)}\n`),
+      );
+    } catch {
+      // 记录调用时间失败不该让本轮对话失败：它只影响面板上的角标。
+    }
   }
 
   dispose(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = undefined;
     for (const disposable of this.watcherDisposables) disposable.dispose();
+    this.onDidChangeSharedState.dispose();
   }
 
   private async addFlatMarkdownSkills(candidates: Array<{
@@ -298,6 +458,14 @@ export class SkillRegistry implements vscode.Disposable {
     const fallback = candidate.quickLaunchName
       ?? basename(candidate.uri.path).replace(/\.md$/i, '').replace(/^SKILL$/i, basename(dirname(candidate.uri.path)));
     const name = cleanInline(frontmatter.name || firstHeading(frontmatter.body) || fallback || 'Unnamed skill', 80);
+    /**
+     * 共享清单里的名字：`frontmatter.name` → 目录名，且**只看这两级**。
+     * 这与「本地skill快捷调用」的 `parseSkillMd` 一致；它不认得正文标题，
+     * 若我们按显示名（可能来自标题）写回，它的面板就会显示成没勾选。
+     */
+    const sharedName = candidate.quickLaunchName
+      ? cleanInline(sharedSkillName(frontmatter.name, candidate.quickLaunchName) ?? '', 80) || undefined
+      : undefined;
     const description = cleanInline(frontmatter.description || firstParagraph(frontmatter.body), 240);
     const id = createHash('sha256').update(`${candidate.source}:${candidate.uri.toString()}`).digest('hex').slice(0, 20);
     return {
@@ -309,23 +477,30 @@ export class SkillRegistry implements vscode.Disposable {
       uri: candidate.uri,
       content: frontmatter.body,
       quickLaunchName: candidate.quickLaunchName,
+      sharedName,
     };
   }
 
-  private async readQuickLaunchState(): Promise<QuickLaunchState> {
+  /** 共享文件的原始 JSON；`undefined` 表示**存在但读不懂**，调用方必须放弃写入。 */
+  private async readQuickLaunchRaw(): Promise<Record<string, unknown> | undefined> {
     try {
       const bytes = await vscode.workspace.fs.readFile(this.quickLaunchStateFile);
-      const raw = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
-      const active = Array.isArray(raw.active)
-        ? new Set(raw.active.filter((value): value is string => typeof value === 'string'))
-        : new Set<string>();
-      const lastUsed = raw.lastUsed && typeof raw.lastUsed === 'object' && !Array.isArray(raw.lastUsed)
-        ? Object.fromEntries(Object.entries(raw.lastUsed).filter((entry): entry is [string, number] => typeof entry[1] === 'number'))
-        : {};
-      return { raw, active, lastUsed };
-    } catch {
-      return { raw: { active: [], lastUsed: {} }, active: new Set(), lastUsed: {} };
+      const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+      return parsed as Record<string, unknown>;
+    } catch (error) {
+      // 只有「文件不存在」才等价于空状态（首次使用，写入会新建文件）。
+      return isMissingFileError(error) ? {} : undefined;
     }
+  }
+
+  private async readQuickLaunchState(): Promise<QuickLaunchState> {
+    const raw = (await this.readQuickLaunchRaw()) ?? {};
+    const shared = readSharedState(raw);
+    const lastUsed = raw.lastUsed && typeof raw.lastUsed === 'object' && !Array.isArray(raw.lastUsed)
+      ? Object.fromEntries(Object.entries(raw.lastUsed).filter((entry): entry is [string, number] => typeof entry[1] === 'number'))
+      : {};
+    return { raw, active: new Set(shared.active), lastUsed };
   }
 }
 

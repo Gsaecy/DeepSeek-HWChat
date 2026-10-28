@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { basename, dirname, extname, resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
@@ -20,6 +20,15 @@ import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './wo
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
 import { gitWriteOperation } from './conversationScope';
 import { detectVersionBump, versionBumpCommand } from './releasePolicy';
+import { CommandQueueFullError, CommandScheduler } from './commandScheduler';
+import { SearchQueueFullError, SearchResourceBusyError } from './searchScheduler';
+import { disposeWorkspaceSearch, invalidateWorkspaceSearch, searchWorkspace, workspaceSearchGeneration, workspaceSearchStats } from './workspaceSearch';
+import {
+  OperationCancelledError,
+  describeTransientResourceError,
+  withTransientRetry,
+} from './transientErrors';
+
 
 /**
  * 一次工具调用所属的对话作用域。
@@ -32,6 +41,9 @@ import { detectVersionBump, versionBumpCommand } from './releasePolicy';
  *   为 false 时改动版本清单里的 version 字段、以及 `npm version` 这类命令一律拒绝——
  *   HWChat 也不主动升版本，只在任务完成后询问。
  * - `bindProjectRoot`：首次确定项目根时回调，由面板写回对话存档。
+ * - `touchProjectRoot`：**每次**改动落盘成功都回调一次「这次动的是哪个工作区根」。首次绑定的
+ *   那个之外，后续改到别的项目也要记下来，否则标题旁的徽标永远只显示第一个项目，用户看不出
+ *   这条对话还动过别的项目。只在改动成功之后回调：被拒绝或失败的调用没有改动任何文件。
  *
  * 注意：`ToolExecutor` 是跨对话共享的单例，作用域必须随调用传入，
  * 不能存成实例字段，否则多线程对话之间会互相污染。
@@ -41,6 +53,16 @@ export interface ToolExecutionScope {
   gitWriteAllowed?: boolean;
   versionBumpAllowed?: boolean;
   bindProjectRoot?: (fsPath: string) => void;
+  touchProjectRoot?: (fsPath: string) => void;
+  /**
+   * 本条 Agent 运行的取消信号。
+   *
+   * 必须一路传到工具内部：没有它，用户点「停止」之后正在执行的
+   * `search_files` 仍会读完整个仓库、`run_command` 仍会跑满 120 秒。
+   */
+  signal?: AbortSignal;
+  /** 诊断用：本次运行的标识，和工具调用 id 配对写入结构化日志。 */
+  turnId?: string;
   /**
    * 命令运行期的进度回调（每秒一次 + 停滞/超时事件）。
    * 由面板接上后，界面才能区分「在跑」和「卡住」——没有这条回调时，
@@ -49,9 +71,56 @@ export interface ToolExecutionScope {
   onCommandProgress?: (progress: CommandProgress) => void;
 }
 
+/**
+ * 一次工具调用的结构化诊断记录。
+ *
+ * 字段刻意保持扁平：日志、调试面板和测试共用同一份形状。
+ * 不记录命令正文、文件内容或任何凭据。
+ */
+export interface ToolDiagnostic {
+  turnId?: string;
+  toolCallId: string;
+  toolName: string;
+  operation: string;
+  queueWaitMs?: number;
+  durationMs: number;
+  activeSearches?: number;
+  pendingSearches?: number;
+  /** 累计的搜索重试次数（EAGAIN 一类资源错误才会重试）。 */
+  searchRetries?: number;
+  /** 累计被队列容量拒绝的搜索次数。 */
+  searchRejected?: number;
+  activeCommands?: number;
+  queuedCommands?: number;
+  resultCount?: number;
+  truncated?: boolean;
+  cancelled?: boolean;
+  errorCode?: string;
+}
+
+/** 一次调用内部累积的度量，最后统一交给诊断回调。 */
+interface CallMetrics {
+  queueWaitMs?: number;
+  resultCount?: number;
+  truncated?: boolean;
+  cancelled?: boolean;
+  errorCode?: string;
+}
+
+
 /** 命令运行期的进度快照。`idleSeconds` 是「距离上次收到输出」的秒数。 */
 export interface CommandProgress {
-  phase: 'tick' | 'stall' | 'timeout';
+  /**
+   * 只有两种「需要界面说话」的事件：
+   *  - `stall`：无输出已超过阈值，每 10 秒刷一次（30 → 40 → 50…）；
+   *  - `timeout`：到点要终止进程。
+   *
+   * 以前还有一个每秒一次的 `tick`：**没有任何消费者**（`agentRunner` 的进度回调
+   * 第一行就是 `if (progress.phase !== 'stall') return`），它只是每秒构造一个对象、
+   * 调一次回调。卡片上的「已运行 12.3 秒」是 webview 自己按 `startedAt` 每秒算的，
+   * 不需要扩展推。删除后行为不变，少掉每秒一次的无效调用。
+   */
+  phase: 'stall' | 'timeout';
   elapsedSeconds: number;
   timeoutSeconds: number;
   idleSeconds: number;
@@ -83,13 +152,31 @@ interface ResolvedPath {
   folder: vscode.WorkspaceFolder;
 }
 
-const DEFAULT_EXCLUDE = '**/{.git,node_modules,dist,build,out,.next,coverage}/**';
 /** 指定了根目录前缀时，单根最多取这么多文件。 */
 const ROOT_FILE_LIMIT = 1_000;
 /** 未指定根目录时必须逐根查询，这是每个根目录各自的上限。 */
 const PER_ROOT_FILE_LIMIT = 400;
 /** 搜索时最多读取的文件数，避免“全工作区搜索”退化成无限 IO。 */
 const SEARCH_FILE_BUDGET = 1_500;
+/**
+ * 单次搜索最多读取的字节数。
+ *
+ * 文件数上限只能挡住「很多小文件」，挡不住「1500 个 512KB 的文件」：
+ * 那一次工具调用就是几百 MB 读取 + 等量的字符串处理，Extension Host 的
+ * CPU 会直接顶到 100%。字节预算先于文件数预算生效。
+ */
+const SEARCH_BYTE_BUDGET = 24 * 1024 * 1024;
+/** 一次搜索最多回传多少处命中。 */
+const SEARCH_MATCH_LIMIT = 120;
+/**
+ * 「查询 → 命中结果」的短期缓存时长。
+ *
+ * 只省重复扫描（模型换个措辞前常常先重发一次相同搜索），因此可以很短：
+ * 任何写入/保存/删除都会让代数 +1，旧条目立刻不可达。
+ */
+const SEARCH_RESULT_TTL_MS = 2_000;
+/** 结果缓存条目上限，防止一次性长任务把它撑大。 */
+const SEARCH_RESULT_CACHE_LIMIT = 32;
 const SENSITIVE_NAMES = /(^|\/)(\.env(?:\..*)?|\.npmrc|\.pypirc|\.netrc|credentials?(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|service[-_]?account(?:\.[^/]*)?|id_(?:rsa|dsa|ecdsa|ed25519)|.*\.(?:pem|key|p12|pfx|jks|keystore))$/i;
 const SENSITIVE_PARTS = /(^|\/)(\.git|\.ssh|\.aws|\.kube)(\/|$)/i;
 
@@ -99,9 +186,19 @@ const SENSITIVE_COMMAND = /(^|[\s'"/])(?:\.env(?:\.[^\s'"]*)?|\.ssh|\.aws|\.kube
 const PATH_TOOLS = ['list_directory', 'read_file', 'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file', 'delete_file'];
 
 export class ToolExecutor implements vscode.Disposable {
+  /** 命令独立限流：搜索和命令抢的是不同资源，不能共用一个很小的全局并发。 */
+  private readonly commands = new CommandScheduler(2, 8);
+  /** 正在运行的子进程：扩展停用 / 面板释放时要整组杀掉，不留孤儿进程。 */
+  private readonly children = new Set<ChildProcess>();
+  /** 相同查询的结果缓存；key 里带文件变化代数，写文件后自动失效。 */
+  private readonly searchResults = new Map<string, { at: number; result: ToolExecutionResult; matches: number; truncated: boolean }>();
+  private searchScans = 0;
+  private searchCacheHits = 0;
+
   constructor(
     private readonly audit: AuditLog,
     private readonly isWorkspaceTrusted: () => boolean,
+    private readonly onDiagnostic: (event: ToolDiagnostic) => void = () => undefined,
   ) {}
 
   definitions(mode: ConversationMode): ToolDefinition[] {
@@ -224,6 +321,8 @@ export class ToolExecutor implements vscode.Disposable {
     }
 
     let result: ToolExecutionResult;
+    const metrics: CallMetrics = {};
+    const startedAt = Date.now();
     try {
       switch (name) {
         case 'list_workspace_roots':
@@ -233,10 +332,10 @@ export class ToolExecutor implements vscode.Disposable {
           result = await this.listDirectory(args, settings, scope);
           break;
         case 'list_files':
-          result = await this.listFiles(args);
+          result = await this.listFiles(args, scope, metrics);
           break;
         case 'search_files':
-          result = await this.searchFiles(args, settings, scope);
+          result = await this.searchFiles(args, settings, scope, metrics);
           break;
         case 'read_file':
           result = await this.readFile(args, settings, scope);
@@ -260,22 +359,58 @@ export class ToolExecutor implements vscode.Disposable {
           result = await this.deleteFile(args, settings, scope);
           break;
         case 'run_command':
-          result = await this.runCommand(args, settings, scope);
+          result = await this.runCommand(args, settings, scope, metrics);
           break;
         default:
           result = deniedResult(tt('tool.unknownTool', { name }));
       }
     } catch (error) {
+      metrics.errorCode = errorCodeFor(error);
+      metrics.cancelled = error instanceof OperationCancelledError || Boolean(scope?.signal?.aborted);
       result = {
         status: 'error',
-        summary: tt('tool.executionFailed', { name }),
+        summary: metrics.cancelled ? tt('tool.cancelled') : tt('tool.executionFailed', { name }),
         content: truncate(redact(error instanceof Error ? error.message : String(error)), settings.maxToolOutputBytes),
         approval: approvalRequired ? 'approved' : 'not-required',
       };
+    } finally {
+      this.reportDiagnostic(name, call.id, scope, metrics, startedAt);
     }
     result.approval = approvalRequired ? 'approved' : 'not-required';
     await this.auditResult(call, result, conversationId);
     return result;
+  }
+
+  private reportDiagnostic(
+    toolName: string,
+    toolCallId: string,
+    scope: ToolExecutionScope | undefined,
+    metrics: CallMetrics,
+    startedAt: number,
+  ): void {
+    const search = workspaceSearchStats();
+    try {
+      this.onDiagnostic({
+        turnId: scope?.turnId,
+        toolCallId,
+        toolName,
+        operation: toolName,
+        queueWaitMs: metrics.queueWaitMs,
+        durationMs: Date.now() - startedAt,
+        activeSearches: search?.active,
+        pendingSearches: search?.queued,
+        searchRetries: search?.retries,
+        searchRejected: search?.rejected,
+        activeCommands: this.commands.stats().active,
+        queuedCommands: this.commands.stats().queued,
+        resultCount: metrics.resultCount,
+        truncated: metrics.truncated,
+        cancelled: metrics.cancelled,
+        errorCode: metrics.errorCode,
+      });
+    } catch {
+      // 诊断永远不能影响工具调用本身。
+    }
   }
 
   async executeExternal(
@@ -342,7 +477,12 @@ export class ToolExecutor implements vscode.Disposable {
     return result;
   }
 
-  async readAttachment(uri: vscode.Uri, settings = readSettings()): Promise<MessageContext> {
+  /**
+   * 读取附件。`settings` 必须由调用方给出**这条对话当前生效**的设置：
+   * 以前这里默认 `readSettings()`，于是附件的敏感文件判定看的是全局默认值，
+   * 与用户在当前对话里切换过的预设无关。
+   */
+  async readAttachment(uri: vscode.Uri, settings: ChatSettings): Promise<MessageContext> {
     const resolved = await this.resolvePath(uri.fsPath);
     this.assertReadable(resolved, settings);
     const stat = await vscode.workspace.fs.stat(resolved.uri);
@@ -372,13 +512,35 @@ export class ToolExecutor implements vscode.Disposable {
     };
   }
 
+  /**
+   * 扩展停用 / 工作区关闭时回收资源。
+   *
+   * 旧实现是空函数（注释写「executor owns no process handles」），实际后果是
+   * 停用扩展后仍在运行的命令与排队的搜索继续存在——这正是「点了停止，CPU
+   * 仍然 100%」的一个来源。现在：排队的命令全部取消，正在跑的命令整组杀掉，
+   * 搜索调度器与它的缓存一起释放。
+   */
   dispose(): void {
-    // The executor owns no process handles; running commands are bounded by their local timeout.
+    this.commands.dispose();
+    for (const child of this.children) {
+      killProcessTree(child, 'SIGTERM');
+      setTimeout(() => killProcessTree(child, 'SIGKILL'), 1_000).unref?.();
+    }
+    this.children.clear();
+    disposeWorkspaceSearch();
   }
 
-  private async listFiles(args: Record<string, unknown>): Promise<ToolExecutionResult> {
-    const { files, truncated } = await this.findWorkspaceFiles(args);
+  private async listFiles(
+    args: Record<string, unknown>,
+    scope?: ToolExecutionScope,
+    metrics?: CallMetrics,
+  ): Promise<ToolExecutionResult> {
+    const { files, truncated } = await this.findWorkspaceFiles(args, scope, metrics, 'list_files');
     const paths = files.map(workspaceRelativePath).sort();
+    if (metrics) {
+      metrics.resultCount = paths.length;
+      metrics.truncated = truncated;
+    }
     const summary = truncated ? tt('tool.filesFoundTruncated', { count: paths.length }) : tt('tool.filesFound', { count: paths.length });
     const note = truncated ? tt('tool.filesTruncatedNote') : '';
     return success(summary, (paths.join('\n') || tt('tool.noMatchingFiles')) + note);
@@ -394,43 +556,43 @@ export class ToolExecutor implements vscode.Disposable {
    */
   private async findWorkspaceFiles(
     args: Record<string, unknown>,
+    scope: ToolExecutionScope | undefined,
+    metrics: CallMetrics | undefined,
+    operation: 'list_files' | 'search_files',
   ): Promise<{ files: vscode.Uri[]; scoped: boolean; truncated: boolean }> {
     const requested = stringArg(args, 'glob', '**/*');
     const { glob, root } = normalizeWorkspaceGlob(requested, workspaceRoots());
     const limit = root ? ROOT_FILE_LIMIT : PER_ROOT_FILE_LIMIT;
+    const signal = scope?.signal;
+    throwIfCancelled(signal);
+
     if (root) {
       // 必须用 RelativePattern 把查询限定在该根目录内。若只传字符串 glob，
       // 多根工作区里 findFiles 会搜遍所有根、共享同一个上限：真实会话中第 17 个
       // 根（DeepSeek-HWChat）被前 16 个根挤掉，过滤后返回 0 个文件，还因为
       // files.length 撞到上限被标成「已达上限」，调用方只能判定“这里没有文件”。
-      const folder = (vscode.workspace.workspaceFolders ?? []).find(
-        (candidate) => candidate.uri.fsPath === root.fsPath,
-      );
-      const files = folder
-        ? await vscode.workspace.findFiles(new vscode.RelativePattern(folder, glob), DEFAULT_EXCLUDE, limit)
-        : await vscode.workspace.findFiles(glob, DEFAULT_EXCLUDE, limit);
+      const search = await this.runSearch({ include: glob, limit, folder: root.fsPath, operation }, scope, metrics);
       return {
-        files: files.filter((uri) => isPathWithin(root.fsPath, uri.fsPath)),
+        files: search.outcome.files.filter((uri) => isPathWithin(root.fsPath, uri.fsPath)),
         scoped: true,
-        truncated: files.length >= limit,
+        truncated: search.outcome.truncated,
       };
     }
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (folders.length <= 1) {
-      const files = await vscode.workspace.findFiles(glob, DEFAULT_EXCLUDE, limit);
-      return { files, scoped: false, truncated: files.length >= limit };
+      const search = await this.runSearch({ include: glob, limit, operation }, scope, metrics);
+      return { files: search.outcome.files, scoped: false, truncated: search.outcome.truncated };
     }
     const merged: vscode.Uri[] = [];
     let truncated = false;
     const perRoot: vscode.Uri[][] = [];
     for (const folder of folders) {
-      const found = await vscode.workspace.findFiles(
-        new vscode.RelativePattern(folder, glob),
-        DEFAULT_EXCLUDE,
-        limit,
-      );
-      if (found.length >= limit) truncated = true;
-      perRoot.push(found);
+      // 逐根查询（不能合并成一次）——但所有请求都进同一个调度器：
+      // 串行执行、相同参数合并，多根工作区不会再「一次工具调用拉起十几个 rg」。
+      throwIfCancelled(signal);
+      const search = await this.runSearch({ include: glob, limit, folder: folder.uri.fsPath, operation }, scope, metrics);
+      if (search.outcome.truncated) truncated = true;
+      perRoot.push(search.outcome.files);
     }
     // 按根轮转交错合并，而不是「第一个根的全部 → 第二个根的全部」。
     // 否则下游的扫描预算（SEARCH_FILE_BUDGET / 输出行数）会被最靠前的根吃光，
@@ -444,6 +606,30 @@ export class ToolExecutor implements vscode.Disposable {
       }
     }
     return { files: merged, scoped: false, truncated };
+  }
+
+  /** 统一入口：任何工作区搜索都必须走调度器（并发上限 / 去重 / 短期缓存 / 退避重试）。 */
+  private async runSearch(
+    params: { include: string; limit: number; folder?: string; operation: string },
+    scope: ToolExecutionScope | undefined,
+    metrics: CallMetrics | undefined,
+  ) {
+    try {
+      const result = await searchWorkspace(params, { signal: scope?.signal });
+      if (metrics) {
+        metrics.queueWaitMs = Math.max(metrics.queueWaitMs ?? 0, result.queueWaitMs);
+      }
+      return result;
+    } catch (error) {
+      if (error instanceof OperationCancelledError || scope?.signal?.aborted) throw error;
+      if (error instanceof SearchQueueFullError) {
+        throw codedError(tt('tool.searchQueueFull', { count: error.capacity }), error.code);
+      }
+      if (error instanceof SearchResourceBusyError) {
+        throw codedError(tt('tool.searchResourceBusy', { code: error.resourceCode, attempts: error.attempts }), error.resourceCode);
+      }
+      throw error;
+    }
   }
 
   private async listWorkspaceRoots(): Promise<ToolExecutionResult> {
@@ -489,25 +675,67 @@ export class ToolExecutor implements vscode.Disposable {
     return rows.join('\n') || tt('tool.directoryEmpty');
   }
 
-  private async searchFiles(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
+  private async searchFiles(
+    args: Record<string, unknown>,
+    settings: ChatSettings,
+    scope?: ToolExecutionScope,
+    metrics?: CallMetrics,
+  ): Promise<ToolExecutionResult> {
     const query = stringArg(args, 'query');
     if (!query) throw new Error(tt('tool.queryEmpty'));
     const caseSensitive = Boolean(args.caseSensitive);
-    const needle = caseSensitive ? query : query.toLocaleLowerCase();
-    const { files, truncated } = await this.findWorkspaceFiles(args);
+    const needle = caseSensitive ? query : query.toLowerCase();
+    /**
+     * 相同查询直接复用上一次的命中结果。
+     *
+     * 只去重「文件列表」并不够：真正贵的是把文件读进来逐行匹配，旧实现每次
+     * 重发同一条搜索都要再扫一遍最多 1500 个文件。key 带上文件变化代数，
+     * 所以写入/保存/删除之后绝不会返回过期命中。
+     */
+    const cacheKey = [
+      String(workspaceSearchGeneration()),
+      caseSensitive ? 'cs' : 'ci',
+      query,
+      stringArg(args, 'glob', '**/*'),
+      String(scope?.projectRoot ?? ''),
+    ].join('\u0000');
+    const cached = this.searchResults.get(cacheKey);
+    if (cached && Date.now() - cached.at <= SEARCH_RESULT_TTL_MS) {
+      this.searchCacheHits += 1;
+      if (metrics) {
+        metrics.resultCount = cached.matches;
+        metrics.truncated = cached.truncated;
+      }
+      return { ...cached.result };
+    }
+    const { files, truncated } = await this.findWorkspaceFiles(args, scope, metrics, 'search_files');
     const matches: string[] = [];
     let scanned = 0;
+    let scannedBytes = 0;
     let budgetExhausted = false;
+    let byteBudgetExhausted = false;
+    const policy = sensitiveFilePolicyFor(settings);
     for (const uri of files) {
+      // 取消检查放在每个文件之前：Stop 之后绝不再读下一个文件。
+      throwIfCancelled(scope?.signal);
+      if (matches.length >= SEARCH_MATCH_LIMIT) break;
       if (scanned >= SEARCH_FILE_BUDGET) {
         budgetExhausted = true;
         break;
       }
-      scanned += 1;
-      const resolved = await this.resolvePath(uri.fsPath, scope);
-      if (isSensitivePath(resolved.relativePath) && sensitiveFilePolicyFor(settings) !== 'allow') continue;
+      if (scannedBytes >= SEARCH_BYTE_BUDGET) {
+        byteBudgetExhausted = true;
+        break;
+      }
+      // 符号链接逃出工作区 / 路径解析失败时只跳过这一项：
+      // 旧实现会让整次搜索因为一个逃逸链接而失败。
+      const resolved = await this.resolvePath(uri.fsPath, scope).catch(() => undefined);
+      if (!resolved) continue;
+      if (isSensitivePath(resolved.relativePath) && policy !== 'allow') continue;
       const stat = await Promise.resolve(vscode.workspace.fs.stat(uri)).catch(() => undefined);
       if (!stat || stat.size > settings.maxReadBytes) continue;
+      scanned += 1;
+      scannedBytes += stat.size;
       // 单个二进制或不可读文件不能中断整次搜索：它只是没有可搜索的文本。
       let text: string;
       try {
@@ -515,23 +743,46 @@ export class ToolExecutor implements vscode.Disposable {
       } catch {
         continue;
       }
-      const lines = text.split(/\r?\n/);
-      lines.forEach((line, index) => {
-        const haystack = caseSensitive ? line : line.toLocaleLowerCase();
-        if (haystack.includes(needle) && matches.length < 120) {
-          matches.push(`${workspaceRelativePath(uri)}:${index + 1}: ${line.trim().slice(0, 400)}`);
-        }
-      });
-      if (matches.length >= 120) break;
+      // 先对整篇文本做一次大小写归一，再判断「有没有命中」：
+      // 绝大多数文件都不含目标字符串，这样连按行拆分都不用做。
+      // 旧实现无条件 split + 逐行 toLocaleLowerCase（locale 版本比 toLowerCase 慢很多），
+      // 1500 个文件就是几十万次无用转换——这是 Extension Host CPU 打满的直接来源之一。
+      const haystackText = caseSensitive ? text : text.toLowerCase();
+      if (!haystackText.includes(needle)) continue;
+      const haystackLines = haystackText.split(/\r?\n/);
+      const rawLines = caseSensitive ? haystackLines : text.split(/\r?\n/);
+      for (let index = 0; index < haystackLines.length && matches.length < SEARCH_MATCH_LIMIT; index += 1) {
+        if (!haystackLines[index]!.includes(needle)) continue;
+        const line = rawLines[index] ?? '';
+        matches.push(`${workspaceRelativePath(uri)}:${index + 1}: ${line.trim().slice(0, 400)}`);
+      }
     }
     const notes: string[] = [];
     if (truncated) notes.push(tt('tool.searchRangeNote'));
     if (budgetExhausted) notes.push(tt('tool.searchBudgetNote', { count: SEARCH_FILE_BUDGET }));
+    if (byteBudgetExhausted) {
+      notes.push(tt('tool.searchByteBudgetNote', { size: formatBytes(SEARCH_BYTE_BUDGET) }));
+    }
+    if (metrics) {
+      metrics.resultCount = matches.length;
+      metrics.truncated = truncated || budgetExhausted || byteBudgetExhausted;
+    }
     const body = matches.join('\n') || tt('tool.noMatches');
-    return success(
+    const result = success(
       tt('tool.matchesFound', { count: matches.length }),
       truncate(redact(notes.length ? `${body}\n… ${notes.join(' ')}` : body), settings.maxToolOutputBytes),
     );
+    this.searchScans += 1;
+    this.rememberSearch(cacheKey, result, matches.length, metrics?.truncated === true);
+    return result;
+  }
+
+  private rememberSearch(key: string, result: ToolExecutionResult, matches: number, truncated: boolean): void {
+    if (this.searchResults.size >= SEARCH_RESULT_CACHE_LIMIT) {
+      const oldest = this.searchResults.keys().next();
+      if (!oldest.done) this.searchResults.delete(oldest.value);
+    }
+    this.searchResults.set(key, { at: Date.now(), result, matches, truncated });
   }
 
   private async readFile(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
@@ -602,6 +853,8 @@ export class ToolExecutor implements vscode.Disposable {
     const bump = versionBumpBlockReason(resolved, previous, content, scope);
     if (bump) return bump;
     await vscode.workspace.fs.writeFile(resolved.uri, new TextEncoder().encode(content));
+    invalidateWorkspaceSearch();
+    this.recordProjectRoot(scope, resolved);
     const summary = previousStat
       ? previous ? tt('tool.updatedFile', { path: resolved.relativePath, delta: lineDelta(previous, content) }) : tt('tool.updatedFileNoDelta', { path: resolved.relativePath })
       : tt('tool.createdFile', { path: resolved.relativePath });
@@ -635,6 +888,8 @@ export class ToolExecutor implements vscode.Disposable {
     const bump = versionBumpBlockReason(resolved, current, next, scope);
     if (bump) return bump;
     await vscode.workspace.fs.writeFile(resolved.uri, new TextEncoder().encode(next));
+    invalidateWorkspaceSearch();
+    this.recordProjectRoot(scope, resolved);
     const summary = tt('tool.replaceSummary', { path: resolved.relativePath, count: Boolean(args.replaceAll) ? occurrences : 1 });
     return { status: 'success', summary, content: `${summary}\n${lineDelta(current, next)}`, approval: 'approved', changedFiles: [resolved.relativePath] };
   }
@@ -649,6 +904,9 @@ export class ToolExecutor implements vscode.Disposable {
     if ((sourceStat.type & vscode.FileType.File) === 0) throw new Error(tt('tool.renameOnlyFiles'));
     await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(to.fsPath)));
     await vscode.workspace.fs.rename(from.uri, to.uri, { overwrite: false });
+    invalidateWorkspaceSearch();
+    // 跨项目移动时两端都要算：只在 from 记账会漏掉「文件被挪进了 B」。
+    this.recordProjectRoot(scope, from, to);
     const summary = tt('tool.movedFile', { from: from.relativePath, to: to.relativePath });
     return { status: 'success', summary, content: summary, approval: 'approved', changedFiles: [from.relativePath, to.relativePath] };
   }
@@ -660,11 +918,18 @@ export class ToolExecutor implements vscode.Disposable {
     const targetStat = await vscode.workspace.fs.stat(resolved.uri);
     if ((targetStat.type & vscode.FileType.File) === 0) throw new Error(tt('tool.deleteOnlyFiles'));
     await vscode.workspace.fs.delete(resolved.uri, { recursive: false, useTrash: true });
+    invalidateWorkspaceSearch();
+    this.recordProjectRoot(scope, resolved);
     const summary = tt('tool.trashedFile', { path: resolved.relativePath });
     return { status: 'success', summary, content: summary, approval: 'approved', changedFiles: [resolved.relativePath] };
   }
 
-  private async runCommand(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
+  private async runCommand(
+    args: Record<string, unknown>,
+    settings: ChatSettings,
+    scope?: ToolExecutionScope,
+    metrics?: CallMetrics,
+  ): Promise<ToolExecutionResult> {
     const command = stringArg(args, 'command');
     if (!command || command.length > 4_000) throw new Error(tt('tool.commandEmpty'));
     // cwd 缺省时落到「本次对话的项目根」：多根工作区里 `'.'` 以前会落到第一个根目录，
@@ -682,14 +947,83 @@ export class ToolExecutor implements vscode.Disposable {
       return deniedResult(tt('tool.versionBumpCommandNotAuthorized', { command: versionTool }));
     }
     const timeout = Math.min(settings.maxCommandSeconds, Math.max(5, numberArg(args, 'timeoutSeconds', settings.maxCommandSeconds)));
-    const result = await spawnCommand(command, resolvedCwd.fsPath, timeout, settings.maxToolOutputBytes, scope?.onCommandProgress);
+
+    let result: SpawnResult;
+    try {
+      result = await this.commands.run(scope?.signal, async () => {
+        // 命令本身也按「暂时性资源错误」重试：EAGAIN 是 fork 失败，
+        // 命令根本没起来，退避后重来是安全的；一旦有输出就不再重试。
+        const attempt = await withTransientRetry(
+          () => spawnCommand(command, resolvedCwd.fsPath, timeout, settings.maxToolOutputBytes, scope?.onCommandProgress, {
+            signal: scope?.signal,
+            onSpawn: (child) => this.trackChild(child),
+          }),
+          {
+            signal: scope?.signal,
+            onRetry: (info) => {
+              if (metrics) metrics.errorCode = info.code;
+              // 资源真的不够了：让调度器也收一收，别让排队中的命令立刻补位继续抢进程。
+              this.commands.markResourcePressure(COMMAND_PRESSURE_COOLDOWN_MS);
+            },
+          },
+        );
+        return attempt.value;
+      });
+    } catch (error) {
+      if (error instanceof CommandQueueFullError) {
+        throw new Error(tt('tool.commandQueueFull', { count: error.capacity }));
+      }
+      throw error;
+    }
+    if (metrics) metrics.errorCode = undefined;
+    if (result.cancelled) {
+      if (metrics) metrics.cancelled = true;
+      return {
+        status: 'error',
+        summary: tt('tool.commandCancelled'),
+        content: tt('tool.commandCancelled'),
+        approval: 'approved',
+      };
+    }
     const output = redact([result.stdout, result.stderr].filter(Boolean).join('\n')).trim();
+    /**
+     * 命令也要计入「涉及的项目」，但只认真正改动仓库状态的 git 写操作，且必须成功：
+     * 只读命令（`git status`、`npm test`）不改任何文件，算进去会让徽标显示出这条对话
+     * 根本没动过的项目，比漏掉更误导。
+     */
+    if (gitWrite && result.code === 0) this.recordProjectRoot(scope, resolvedCwd);
     return {
       status: result.code === 0 ? 'success' : 'error',
       summary: result.timedOut ? tt('tool.commandTimeout', { seconds: timeout }) : tt('tool.commandExit', { code: result.code ?? 'unknown' }),
       content: truncate(output || tt('tool.noOutput'), settings.maxToolOutputBytes),
       approval: 'approved',
     };
+  }
+
+  /** 诊断命令用：当前命令/子进程/搜索队列的实时计数。 */
+  resourceStats(): {
+    commands: ReturnType<CommandScheduler['stats']>;
+    children: number;
+    search: ReturnType<typeof workspaceSearchStats>;
+    contentSearches: number;
+    contentSearchCacheHits: number;
+  } {
+    return {
+      commands: this.commands.stats(),
+      children: this.children.size,
+      search: workspaceSearchStats(),
+      contentSearches: this.searchScans,
+      contentSearchCacheHits: this.searchCacheHits,
+    };
+  }
+
+  private trackChild(child: ChildProcess): void {
+    this.children.add(child);
+    const release = (): void => {
+      this.children.delete(child);
+    };
+    child.once('close', release);
+    child.once('error', release);
   }
 
   /**
@@ -737,6 +1071,21 @@ export class ToolExecutor implements vscode.Disposable {
     if (!scope || scope.projectRoot || !scope.bindProjectRoot) return;
     scope.projectRoot = resolve(resolved.folder.uri.fsPath);
     scope.bindProjectRoot(scope.projectRoot);
+  }
+
+  /**
+   * 记录「这次动的是哪个项目」。
+   *
+   * `bindProjectRoot` 只在**首次**绑定，回答的是「相对路径与 git 写操作归谁」；可一个
+   * 对话经常横跨多个项目（在 A 里做功能、顺手把 B 的对接改掉）。只在首次绑定记账时，
+   * 标题旁的项目徽标永远只有第一个项目，用户看不出这条对话到底动过别处。
+   *
+   * 只在**改动已经成功落盘之后**调用：被拒绝、被版本号策略拦下、或写失败的调用没有
+   * 改动任何文件，不该让徽标凭空多出一个项目。
+   */
+  private recordProjectRoot(scope: ToolExecutionScope | undefined, ...items: ResolvedPath[]): void {
+    if (!scope?.touchProjectRoot) return;
+    for (const item of items) scope.touchProjectRoot(resolve(item.folder.uri.fsPath));
   }
 
   private checkAccess(
@@ -1039,13 +1388,26 @@ async function gitRepositoryRoot(cwd: string): Promise<string | undefined> {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     let output = '';
+    let settled = false;
+    const finish = (value: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise(value);
+    };
+    // 网络盘 / 索引损坏时 git 可能长时间不返回；这里不该拖住整个工具调用。
+    const timer = setTimeout(() => {
+      killProcessTree(child, 'SIGKILL');
+      finish(undefined);
+    }, 5_000);
+    timer.unref?.();
     child.stdout?.on('data', (chunk: Buffer | string) => {
       output += String(chunk);
     });
-    child.on('error', () => resolvePromise(undefined));
+    child.on('error', () => finish(undefined));
     child.on('close', (code) => {
       const value = output.trim();
-      resolvePromise(code === 0 && value ? value : undefined);
+      finish(code === 0 && value ? value : undefined);
     });
   });
 }
@@ -1053,6 +1415,85 @@ async function gitRepositoryRoot(cwd: string): Promise<string | undefined> {
 function decodeText(bytes: Uint8Array): string {
   if (bytes.includes(0)) throw new Error(tt('tool.binaryFile'));
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+}
+
+/**
+ * 一条命令输出的有界累积结果。
+ *
+ * `text` 是**保留下来**的部分，`bytes` 是它的大小，`totalBytes` 是这条流总共
+ * 产出的字节数（用于「输出已截断，原始大小 N 字节」）。
+ */
+export interface BoundedText {
+  readonly text: string;
+  readonly bytes: number;
+  readonly totalBytes: number;
+  readonly truncated: boolean;
+}
+
+export const EMPTY_BOUNDED_TEXT: BoundedText = Object.freeze({
+  text: '',
+  bytes: 0,
+  totalBytes: 0,
+  truncated: false,
+});
+
+/**
+ * 追加一段命令输出，超过上限后**只计数、不再拼接**。
+ *
+ * 为什么需要它（真实性能缺陷）：旧实现每收到一个 data 事件就
+ * `stdout = truncate(`${stdout}${chunk}`, max)`，而 `truncate` 先对整个
+ * 字符串做一次 `Buffer.byteLength`（UTF-8 全量编码）再切片。也就是说每个
+ * chunk 都要付出「当前缓冲区大小」的代价：留 200KB 输出时，一次 `npm test`
+ * 或 watch 模式里每秒上千个 chunk，就是每秒几百 MB 的无谓编码与拷贝，
+ * Extension Host 直接顶到 100%，而命令其实只是话多。
+ *
+ * 现在每个 chunk 只做与自己大小成正比的字节计数；只有越界的那一次做一次
+ * 前缀截断，之后一律 O(1)。保留内容与旧实现一致：取输出**开头**的 75%
+ * （与 `truncate` 相同的比例），并标记 `truncated`。
+ */
+export function appendBoundedText(buffer: BoundedText, chunk: string, maxBytes: number): BoundedText {
+  if (!chunk) return buffer;
+  const chunkBytes = Buffer.byteLength(chunk);
+  const totalBytes = buffer.totalBytes + chunkBytes;
+  if (buffer.truncated) {
+    // 已经截断：后面的内容不再保留，只记账。内存与 CPU 都保持 O(chunk)。
+    return { ...buffer, totalBytes };
+  }
+  const limit = Math.max(1, Math.floor(maxBytes));
+  if (buffer.bytes + chunkBytes <= limit) {
+    return {
+      text: buffer.text + chunk,
+      bytes: buffer.bytes + chunkBytes,
+      totalBytes,
+      truncated: false,
+    };
+  }
+  // 只有越界的这一次需要拼接与按字节收边，之后走上面的 O(1) 分支。
+  // 收边用二分找「最多多少个字符还放得下」：中文/emoji 一个字符 3~4 字节，
+  // 按字符数直接切再逐段回退会在 CJK 输出上退化成上千次大字符串拷贝——
+  // 那正是这次要消除的成本形态。二分只做 log2(n) 次前缀编码。
+  const combined = `${buffer.text}${chunk}`;
+  const headTarget = Math.max(1, Math.floor(Math.min(limit * 0.75, limit - 80)));
+  let low = 0;
+  let high = combined.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(combined.slice(0, mid)) <= headTarget) low = mid;
+    else high = mid - 1;
+  }
+  // 别把代理对切成半个字符：切开后输出里会留下一个孤立代理项。
+  if (low > 0) {
+    const code = combined.charCodeAt(low - 1);
+    if (code >= 0xd800 && code <= 0xdbff) low -= 1;
+  }
+  const head = combined.slice(0, low);
+  return { text: head, bytes: Buffer.byteLength(head), totalBytes, truncated: true };
+}
+
+/** 把累积结果渲染成给模型看的文本（截断时补一行说明）。 */
+export function renderBoundedText(buffer: BoundedText): string {
+  if (!buffer.truncated) return buffer.text;
+  return tt('tool.outputTruncated', { result: buffer.text, bytes: buffer.totalBytes.toLocaleString() });
 }
 
 function truncate(value: string, maxBytes: number): string {
@@ -1075,6 +1516,56 @@ function lineDelta(before: string, after: string): string {
   return tt('tool.lineDelta', { lines: afterLines, delta: `${delta >= 0 ? '+' : ''}${delta}` });
 }
 
+/**
+ * 按「整棵进程树」终止一个子进程。
+ *
+ * spawnCommand 用 `detached: true` 让 shell 成为新进程组的组长，所以只要按
+ * 负 PID 发信号就能把 cargo / tail / qlmanage 这些孙进程一起带走。
+ * 只杀 shell 会把它们留给 init，命令看起来结束了，CPU 却还在烧。
+ */
+export function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (process.platform !== 'win32' && pid !== undefined) {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // 组已经不存在 / 没有权限：退回只杀直接子进程。
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // 已经退出了。
+  }
+}
+
+/** 取消检查：抛出去以后由调用方统一转成「已取消」的结果。 */
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new OperationCancelledError();
+}
+
+/** 附带错误码的错误：诊断日志要能区分 EAGAIN 与普通失败。 */
+function codedError(message: string, code: string): Error {
+  const error = new Error(message) as Error & { code?: string };
+  error.code = code;
+  return error;
+}
+
+/** 诊断用的错误码：优先用 Node 的 code，其次用我们自己的错误类。 */
+function errorCodeFor(error: unknown): string | undefined {
+  const transient = describeTransientResourceError(error);
+  if (transient) return transient.code;
+  if (error instanceof OperationCancelledError) return 'CANCELLED';
+  if (error && typeof error === 'object') {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'string' && code) return code.toUpperCase();
+    const name = (error as { name?: unknown }).name;
+    if (typeof name === 'string' && name) return name;
+  }
+  return undefined;
+}
+
 /** 无输出超过这个秒数就认为「可能卡住」，向界面提示（但不终止命令）。 */
 const COMMAND_STALL_SECONDS = 30;
 /** 停滞提示的刷新间隔：秒数必须跟着涨，冻在 30 秒的提示看着像界面又卡了。 */
@@ -1086,8 +1577,12 @@ export const COMMAND_STALL_REFRESH_SECONDS = 10;
  * 抽成纯函数是为了能在毫秒级单测里验证「秒数会涨」——
  * 否则要真等 40 秒才能测出这条行为，只能写没有意义的静态断言。
  */
-export function shouldReportStall(idleSeconds: number, lastReportedIdle: number): boolean {
-  if (idleSeconds < COMMAND_STALL_SECONDS) return false;
+export function shouldReportStall(
+  idleSeconds: number,
+  lastReportedIdle: number,
+  stallAfterSeconds: number = COMMAND_STALL_SECONDS,
+): boolean {
+  if (idleSeconds < stallAfterSeconds) return false;
   if (lastReportedIdle < 0) return true;
   return idleSeconds - lastReportedIdle >= COMMAND_STALL_REFRESH_SECONDS;
 }
@@ -1095,6 +1590,8 @@ export function shouldReportStall(idleSeconds: number, lastReportedIdle: number)
 const COMMAND_CLOSE_GRACE_MS = 1_500;
 /** 超时并 SIGKILL 之后的硬结算上限：无论还有谁占着管道，这次调用都必须返回。 */
 const COMMAND_HARD_SETTLE_MS = 3_000;
+/** 命令侧遇到 EAGAIN 一类资源错误后的串行冷却（与搜索调度层同口径）。 */
+const COMMAND_PRESSURE_COOLDOWN_MS = 5_000;
 
 /**
  * 执行一条命令。
@@ -1108,13 +1605,35 @@ const COMMAND_HARD_SETTLE_MS = 3_000;
  *    只监听 'close' 时，孙进程活着就会让 Promise 永不 resolve——界面上表现为
  *    「准备运行命令」一直转，用户完全不知道发生了什么。
  */
+export interface SpawnResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  /** 用户取消（AbortSignal）导致的提前结束。 */
+  cancelled: boolean;
+}
+
+export interface SpawnOptions {
+  /** 取消信号：触发后按整组 SIGTERM → SIGKILL，并立刻结算。 */
+  signal?: AbortSignal;
+  /** 子进程创建后回调，调用方据此登记「需要回收的进程」。 */
+  onSpawn?: (child: ChildProcess) => void;
+  /** 无输出多少秒后开始提示「可能卡住」。默认 30 秒；测试里调小即可毫秒级验证。 */
+  stallSeconds?: number;
+}
+
 export function spawnCommand(
   command: string,
   cwd: string,
   timeoutSeconds: number,
   maxOutputBytes: number,
   onProgress?: (progress: CommandProgress) => void,
-): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  options: SpawnOptions = {},
+): Promise<SpawnResult> {
+  if (options.signal?.aborted) {
+    return Promise.reject(new OperationCancelledError());
+  }
   return new Promise((resolvePromise, reject) => {
     const detached = process.platform !== 'win32';
     const child = spawn(command, {
@@ -1126,11 +1645,12 @@ export function spawnCommand(
       env: sanitizedEnvironment(),
     });
     const startedAt = Date.now();
-    let stdout = '';
-    let stderr = '';
+    let stdout = EMPTY_BOUNDED_TEXT;
+    let stderr = EMPTY_BOUNDED_TEXT;
     let outputBytes = 0;
     let lastOutputAt = startedAt;
     let timedOut = false;
+    let cancelled = false;
     let settled = false;
     let lastStallIdle = -1;
     let ticker: NodeJS.Timeout | undefined;
@@ -1150,47 +1670,60 @@ export function spawnCommand(
       if (closeGrace) clearTimeout(closeGrace);
       if (hardSettle) clearTimeout(hardSettle);
     };
-    const killTree = (signal: NodeJS.Signals) => {
-      const pid = child.pid;
-      if (!detached || pid === undefined) { child.kill(signal); return; }
-      try {
-        // 负 PID = 整个进程组：shell 是组长，cargo/tail/qlmanage 都在组里。
-        process.kill(-pid, signal);
-      } catch {
-        try { child.kill(signal); } catch { /* 已经退出了 */ }
-      }
-    };
+    const killTree = (signal: NodeJS.Signals) => killProcessTree(child, signal);
     const settle = (code: number | null) => {
       if (settled) return;
       settled = true;
       stopTimers();
+      options.signal?.removeEventListener('abort', onAbort);
       // 主动断开管道。孙进程还活着时 Node 会一直等流关闭，这是永久挂起的直接原因。
       child.stdout?.destroy();
       child.stderr?.destroy();
-      resolvePromise({ code, stdout, stderr, timedOut });
+      resolvePromise({ code, stdout: renderBoundedText(stdout), stderr: renderBoundedText(stderr), timedOut, cancelled });
     };
     const collect = (target: 'stdout' | 'stderr', chunk: Buffer | string) => {
       const text = String(chunk);
-      outputBytes += text.length;
       lastOutputAt = Date.now();
-      if (target === 'stdout') stdout = truncate(`${stdout}${text}`, maxOutputBytes);
-      else stderr = truncate(`${stderr}${text}`, maxOutputBytes);
+      if (target === 'stdout') {
+        stdout = appendBoundedText(stdout, text, maxOutputBytes);
+        outputBytes = stdout.totalBytes;
+      } else {
+        stderr = appendBoundedText(stderr, text, maxOutputBytes);
+        outputBytes = Math.max(outputBytes, stderr.totalBytes);
+      }
     };
     child.stdout?.on('data', (chunk) => collect('stdout', chunk));
     child.stderr?.on('data', (chunk) => collect('stderr', chunk));
+    options.onSpawn?.(child);
+
+    /**
+     * 取消 = 立刻整组停下来。
+     *
+     * 旧实现根本没有接 signal：用户点「停止」只中断了模型流，正在跑的命令
+     * 会照完自己的 120 秒超时，孙进程还继续占着 CPU。
+     */
+    const onAbort = (): void => {
+      if (settled) return;
+      cancelled = true;
+      killTree('SIGTERM');
+      setTimeout(() => killTree('SIGKILL'), 1_000).unref?.();
+      hardSettle = setTimeout(() => settle(null), COMMAND_CLOSE_GRACE_MS + COMMAND_HARD_SETTLE_MS);
+      hardSettle.unref?.();
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
 
     if (onProgress) {
+      const stallAfter = Math.max(1, Math.round(options.stallSeconds ?? COMMAND_STALL_SECONDS));
+      // 这个每秒一次的定时器现在只做两件便宜事：算一下空闲秒数、到点报一次停滞。
+      // 没有观测量时不构造对象、不回调，也不再有每秒一次的 `tick`。
       ticker = setInterval(() => {
         if (settled) return;
         const idle = idleSeconds();
+        if (idle < stallAfter) return;
         // 停滞提示每 10 秒刷一次（30 → 40 → 50…）：数字冻住比不显示更让人怀疑界面卡了。
-        if (shouldReportStall(idle, lastStallIdle)) {
-          lastStallIdle = idle;
-          report({ phase: 'stall', elapsedSeconds: elapsedSeconds(), timeoutSeconds, idleSeconds: idle, outputBytes });
-          return;
-        }
-        if (idle >= COMMAND_STALL_SECONDS) return;
-        report({ phase: 'tick', elapsedSeconds: elapsedSeconds(), timeoutSeconds, idleSeconds: idle, outputBytes });
+        if (!shouldReportStall(idle, lastStallIdle, stallAfter)) return;
+        lastStallIdle = idle;
+        report({ phase: 'stall', elapsedSeconds: elapsedSeconds(), timeoutSeconds, idleSeconds: idle, outputBytes });
       }, 1_000);
       ticker.unref?.();
     }
@@ -1208,6 +1741,7 @@ export function spawnCommand(
       if (settled) return;
       settled = true;
       stopTimers();
+      options.signal?.removeEventListener('abort', onAbort);
       reject(error);
     });
     child.on('exit', (code) => {

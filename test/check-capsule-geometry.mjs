@@ -1,10 +1,6 @@
-// 归档胶囊几何验证：把 media/chat.js 里 layoutTodoArchives 的算法原样搬过来，
-// 检查「永不换行 + 3:1 + 缩到放得下」这三条在常见面板宽度下是否成立。
+// 归档胶囊几何验证：固定 3:1 尺寸，不随栏宽变化；超出可视区域时由栏横向滚动。
 //
-// 三个常量不再在本文件里写死，而是直接从 media/chat.js 读出来：
-// 之前这里复制了一份 16 / 6 / 3，改基准高度时脚本不会跟着变，
-// 于是「测试通过」和「实际变小了」可以同时成立，等于没有守住。
-// 同理，chat.css 的兜底值也一并比对，防止只改 JS 不改 CSS。
+// 尺寸常量直接从 media/chat.js 读取，并与 chat.css 的值交叉比对。
 //
 // 运行：node test/check-capsule-geometry.mjs
 import { readFileSync } from 'node:fs';
@@ -20,14 +16,10 @@ function numberConst(name) {
 }
 
 const BASE_HEIGHT = numberConst('CAPSULE_BASE_HEIGHT');
-const MIN_HEIGHT = numberConst('CAPSULE_MIN_HEIGHT');
 const RATIO = numberConst('CAPSULE_RATIO');
 
-export function capsuleLayout(available, count) {
-  const perUnit = count * RATIO + Math.max(0, count - 1) * 0.25;
-  let height = Math.min(BASE_HEIGHT, available / perUnit);
-  if (height < 8) height = Math.min(height, (available - 2 * (count - 1)) / (count * RATIO));
-  height = Math.max(MIN_HEIGHT, height);
+export function capsuleLayout(count) {
+  const height = BASE_HEIGHT;
   const gap = Math.max(2, height * 0.25);
   return { height, width: height * RATIO, gap, total: count * height * RATIO + Math.max(0, count - 1) * gap };
 }
@@ -44,8 +36,36 @@ function check(label, condition, detail) {
 check('初始高度 = 16px 的 2/3（本次要求高度减少 1/3）',
   Math.abs(BASE_HEIGHT - (16 * 2) / 3) < 1e-9, `BASE_HEIGHT = ${BASE_HEIGHT}`);
 check('宽高比仍是 3:1', RATIO === 3, `RATIO = ${RATIO}`);
-check('缩放下限仍是 6px', MIN_HEIGHT === 6, `MIN_HEIGHT = ${MIN_HEIGHT}`);
-check('初始高度仍高于缩放下限', BASE_HEIGHT > MIN_HEIGHT, `${BASE_HEIGHT} <= ${MIN_HEIGHT}`);
+check('CSS 横向滚动且禁止纵向溢出',
+  /overflow-x:\s*auto/.test(CHAT_CSS) && /overflow-y:\s*hidden/.test(CHAT_CSS),
+  '归档栏必须支持横向滚动并裁住纵向溢出');
+// 只盯归档栏这一块：别的滚动区（面板栈）保留自己的细滚动条，那是另一件事。
+const barBlock = (CHAT_CSS.match(/\.todo-archive-bar\s*\{([\s\S]*?)\n\}/) || [, ''])[1];
+const barWebkitBar = (CHAT_CSS.match(/\.todo-archive-bar::-webkit-scrollbar\s*\{([^}]*)\}/) || [, ''])[1];
+check('归档栏的滚动条彻底隐藏（没有滚动槽，也没有滚动滑块）',
+  /scrollbar-width:\s*none/.test(barBlock)
+  && !/scrollbar-width:\s*thin/.test(barBlock)
+  && /display:\s*none/.test(barWebkitBar)
+  && !/\.todo-archive-bar::-webkit-scrollbar-thumb/.test(CHAT_CSS),
+  '不能留下 thin 滚动条或 webkit 滑块样式');
+check('隐藏滚动条的同时给了「可拖动」光标',
+  /cursor:\s*grab/.test(barBlock) && /\.todo-archive-bar\.dragging[^{]*\{\s*cursor:\s*grabbing/.test(CHAT_CSS),
+  '用户要能看出这一条可以按住拖');
+check('鼠标纵向滚轮映射到横向滚动',
+  /todoArchiveBar\.addEventListener\('wheel'/.test(CHAT_JS) && /scrollLeft \+ event\.deltaY/.test(CHAT_JS),
+  '悬停胶囊栏时滚轮应推进横向位置');
+// 滚动条隐藏之后，拖动是第二种（也是最直觉的）滚法，必须真的绑上去；
+// 同时拖动松手会补发 click，胶囊的点击处理得先问一次「这是不是拖动的尾巴」。
+check('按住拖动已接线，且拖动后的 click 会被吞掉',
+  /bindTodoArchiveDrag\(elements\.todoArchiveBar\)/.test(CHAT_JS)
+  && /if \(consumeArchiveDragClick\(\)\) return;/.test(CHAT_JS),
+  'chat.js 要绑定拖动，并让胶囊 click 先过一遍 consumeArchiveDragClick');
+// 新胶囊一定排在最右端。栏窄到要滚动时它就在视野外，不跟过去用户会以为「没新增」；
+// 但只能跟着「变多」这一种情况走，否则展开/收起引起的重渲染会抢走用户往回滚的位置。
+check('新增归档时跟到最右端，且只在变多时跟',
+  /const grew = archives\.length > lastArchiveCount/.test(CHAT_JS)
+  && /if \(grew\) elements\.todoArchiveBar\.scrollLeft = elements\.todoArchiveBar\.scrollWidth/.test(CHAT_JS),
+  '新归档可能在视野之外，渲染后应滚到末尾');
 
 /* ── 2. chat.css 的兜底值必须和 JS 算出来的一致 ──────────────────── */
 
@@ -74,32 +94,23 @@ check('chat.css 里不再残留旧的 16px / 48px 胶囊尺寸',
   !/--capsule-h:\s*16px/.test(CHAT_CSS) && !/--capsule-w:\s*48px/.test(CHAT_CSS),
   '还留着 16px / 48px');
 
-/* ── 3. 各种面板宽度 × 胶囊数量的几何 ───────────────────────────── */
+/* ── 3. 各种胶囊数量：固定尺寸不因栏宽变化 ─────────────────────── */
 
-for (const width of [846, 700, 620, 500, 400, 320, 240]) {
-  for (const count of [1, 2, 3, 5, 8, 12]) {
-    const { height, width: capsuleWidth, total } = capsuleLayout(width - 4, count);
-    check(`${width}px/${count}`, Math.abs(capsuleWidth / height - RATIO) < 1e-9, `宽高比 ${capsuleWidth}/${height}`);
-    check(`${width}px/${count}`, height >= MIN_HEIGHT && height <= BASE_HEIGHT, `高度越界 ${height}`);
-    // 缩到下限（6px）仍放不下是允许的（CSS 裁掉右侧），其余情况必须放得下。
-    // 允许 0.5px 容差：CSS 用的是小数像素，亚像素级别由 overflow: hidden 兜住。
-    if (height > MIN_HEIGHT) check(`${width}px/${count}`, total <= width - 4 + 0.5, `总宽 ${total.toFixed(1)} > ${width - 4}`);
-    // 用基准高度算，不再写死 48px —— 基准改成 10.67 后，48 这个数字已经不成立了。
-    if (height === BASE_HEIGHT) {
-      check(`${width}px/${count}`, total <= width - 4 + 0.5 || count * BASE_HEIGHT * RATIO > width,
-        `初始尺寸溢出 ${total}`);
-    }
-  }
+for (const count of [1, 2, 3, 5, 8, 12]) {
+  const { height, width: capsuleWidth, gap, total } = capsuleLayout(count);
+  check(`${count} 颗：宽高比 3:1`, Math.abs(capsuleWidth / height - RATIO) < 1e-9, `${capsuleWidth}/${height}`);
+  check(`${count} 颗：始终保持基准高度`, height === BASE_HEIGHT, `height = ${height}`);
+  check(`${count} 颗：窄栏是否需要滚动`, (total > 40) === (count > 1), `total = ${total}`);
 }
 
 /* ── 4. 高度确实降了，但没降成一条线 ─────────────────────────────── */
 
-const tenCapsules = capsuleLayout(846 - 4, 10);
-check('十颗胶囊在宽面板上仍是完整基准高度', Math.abs(tenCapsules.height - BASE_HEIGHT) < 1e-9, `height = ${tenCapsules.height}`);
+const tenCapsules = capsuleLayout(10);
+check('十颗胶囊保持完整基准高度', Math.abs(tenCapsules.height - BASE_HEIGHT) < 1e-9, `height = ${tenCapsules.height}`);
 check('基准高度约 10.67px（原来的 2/3）', Math.abs(BASE_HEIGHT - 10.6667) < 0.001, `height = ${BASE_HEIGHT}`);
 check('基准宽度约 32px（原来的 2/3）', Math.abs(BASE_HEIGHT * RATIO - 32) < 0.01, `width = ${BASE_HEIGHT * RATIO}`);
 
 console.log(failures
   ? `\n${failures} 项不满足`
-  : `\n全部通过：宽高比 3:1、高度不越界、初始尺寸 ${BASE_HEIGHT.toFixed(2)}×${(BASE_HEIGHT * RATIO).toFixed(0)}px、放不下时会缩小`);
+  : `\n全部通过：固定尺寸 ${BASE_HEIGHT.toFixed(2)}×${(BASE_HEIGHT * RATIO).toFixed(0)}px，超出栏宽可横向滚动`);
 process.exitCode = failures ? 1 : 0;

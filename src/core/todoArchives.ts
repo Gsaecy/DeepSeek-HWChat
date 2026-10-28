@@ -112,6 +112,56 @@ export function normalizeTodoArchives(input: unknown): TodoArchive[] {
 }
 
 /**
+ * 两份清单的内容与状态是否完全一致（逐条按顺序比对）。
+ *
+ * 用来挡住「同一份已完成的清单被反复提交」：模型偶尔会在同一轮里再发一次一样的清单
+ * （比如收尾时重述进度），若每次都归档，胶囊栏会凭空多出一排一模一样的胶囊。
+ */
+export function sameTodoList(
+  left: readonly TodoItem[] | undefined,
+  right: readonly TodoItem[] | undefined,
+): boolean {
+  if (!left?.length || !right?.length || left.length !== right.length) return false;
+  return left.every((todo, index) => {
+    const other = right[index]!;
+    return todo.content === other.content && todo.status === other.status;
+  });
+}
+
+/** 「这份已完成的清单该怎么处置」的结论。 */
+export interface CompletedListPlan {
+  /** 归档后的完整列表（重复提交时与入参相同）。 */
+  archives: TodoArchive[];
+  /** 这次是否真的新增了一颗胶囊。 */
+  archived: boolean;
+}
+
+/**
+ * 一份**已全部完成**的清单：立刻压成胶囊，不再占着面板。
+ *
+ * 为什么不等到「一轮运行结束」再归档：模型标完最后一项之后往往还要写很久总结、跑验证，
+ * 那段时间清单一直挂在输入框上方占着位置；窗口被杀或扩展重载时更糟——收尾那一步不会
+ * 执行，这份「6/6 已完成」的清单会永远留在面板上（用户看到的就是「做完了却没归档」）。
+ *
+ * 未完成的清单返回 `undefined`：执行到一半的清单必须留在面板上，不能悄悄归档。
+ * 与最后一条胶囊完全相同的清单也返回 `archived: false`，但调用方**仍然应该把它从面板
+ * 上撤掉**——它已经归档过了。
+ */
+export function planCompletedList(
+  todos: readonly TodoItem[] | undefined,
+  archives: readonly TodoArchive[] | undefined,
+  createdAt = Date.now(),
+): CompletedListPlan | undefined {
+  if (!allTodosCompleted(todos)) return undefined;
+  const list = [...(archives ?? [])];
+  const last = list[list.length - 1];
+  if (last && sameTodoList(last.todos, todos)) return { archives: list, archived: false };
+  const archive = createTodoArchive(todos, createdAt);
+  if (!archive) return undefined;
+  return { archives: appendTodoArchive(list, archive), archived: true };
+}
+
+/**
  * 一轮运行是怎么结束的。
  *
  * `completed` —— Agent 循环正常跑完（没抛错、没被停止）；

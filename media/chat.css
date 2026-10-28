@@ -169,6 +169,9 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
   margin-bottom: 3px;
 }
 .conversation-row:hover, .conversation-row.active { background: var(--surface-hover); }
+/* 「新建对话」的占位卡片：扩展还没回话时先占位，实时刷新成真实对话。 */
+.conversation-row[data-pending="1"] { opacity: 0.72; cursor: progress; }
+.conversation-row[data-pending="1"] .row-action { display: none; }
 .conversation-row.active::before { content: ""; position: absolute; left: 0; top: 9px; bottom: 9px; width: 2px; border-radius: 2px; background: var(--accent); }
 .conversation-content { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; min-width: 0; padding: 8px 4px 8px 10px; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .conversation-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 590; }
@@ -259,6 +262,8 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
   color: var(--project); font-size: 10px; font-weight: 600; line-height: 1.6;
 }
 .conversation-heading .project-badge.missing { color: var(--danger); }
+/* 涉及多个项目时名字之间用 `·` 分隔，间距靠 letter-spacing 拉开一点，不加边框。 */
+.conversation-heading .project-badge.multi { letter-spacing: .2px; }
 /* 标题右侧的小图标按钮（编辑 / 对勾 / 叉）：无边框，悬停才给底色。 */
 .title-action {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
@@ -324,6 +329,8 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .skills-panel-heading span { color: var(--warning); font-size: 10px; }
 .skills-panel-heading span.trusted { color: var(--success); }
 .skills-list { display: grid; padding: 6px 0; }
+/* .skills-list 是 grid，会覆盖 [hidden] 的默认 display:none，这里必须显式声明。 */
+.skills-list[hidden] { display: none; }
 .skills-empty { margin: 0; padding: 16px 8px; color: var(--muted); text-align: center; font-size: 11px; }
 .skill-option { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px; padding: 9px 7px; border-radius: 6px; cursor: pointer; }
 .skill-option:hover { background: var(--surface); }
@@ -336,6 +343,18 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .skill-option small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .skill-option code { color: var(--muted); font: 9px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skills-panel-note { padding: 8px 3px 2px; border-top: 1px solid var(--border); color: var(--muted); font-size: 9px; }
+/* 两条说明连着放时只让第一条画上分隔线，避免出现两条细线。 */
+.skills-panel-note + .skills-panel-note { border-top: none; padding-top: 0; }
+/* 未安装「本地skill快捷调用」时的安装提示：点勾选框才展开（默认隐藏）。
+   `display: grid` 会盖掉 [hidden] 的默认 display:none，所以必须显式声明 [hidden]。 */
+.skills-install-hint { display: grid; gap: 6px; margin-top: 8px; padding: 9px 10px; border: 1px solid var(--border); border-left: 3px solid var(--warning); border-radius: 6px; background: color-mix(in srgb, var(--warning) 9%, var(--surface)); }
+.skills-install-hint[hidden] { display: none; }
+.skills-install-hint strong { font-size: 11px; }
+.skills-install-hint p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.skills-install-hint button { justify-self: start; padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--fg); font-size: 10.5px; cursor: pointer; }
+.skills-install-hint button:hover { border-color: var(--accent); color: var(--accent); }
+.skills-install-hint strong { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.skills-install-badge { padding: 0 5px; border-radius: 4px; background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--warning); font-size: 9.5px; font-style: normal; font-weight: 600; }
 
 /* 消息区外壳：给「回到最新消息」按钮提供定位参考。
    按钮必须放在滚动容器之外，否则会跟着内容一起滚走。 */
@@ -680,10 +699,8 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 /* ── 归档胶囊栏 ───────────────────────────────────────────────────
    清单全部完成后压缩成一条纯色圆角矩形，夹在「任务清单」和输入框之间，左对齐。
    胶囊内不放图标或文字，也不挂 title 悬停提示 —— 颜色（越新越蓝）和左右顺序就是全部信息。
-   三重约束（见 media/chat.js 的 layoutTodoArchives）：
-   1. 永不换行 —— flex-wrap: nowrap + overflow: hidden；
-   2. 宽高比恒为 3:1 —— 宽由 --capsule-h 算出来，不单独设死；
-   3. 放不下就一起缩 —— 尺寸由脚本按可用宽度反解，缩到 6px 高为止。
+   永不换行，尺寸始终为 3:1；超出可视宽度时可横向滚动，但不显示滚动条 ——
+   滚轮（chat.js 里的 wheel 映射）和按住拖动（bindTodoArchiveDrag）才是入口。
    颜色由扩展逐颗算好（绿 → 浅蓝 → 深蓝），这里只负责形状。 */
 .todo-archive-bar {
   display: flex;
@@ -692,12 +709,24 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
   justify-content: flex-start;
   gap: var(--capsule-gap, 4px);
   width: 100%;
-  min-height: calc(var(--capsule-h, 10.67px) + 2px);
+  height: calc(var(--capsule-h, 10.67px) + 14px);
+  min-height: calc(var(--capsule-h, 10.67px) + 14px);
+  box-sizing: border-box;
   margin: 0 2px 7px;
   padding: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* 不要滚动条：6px 的横条快赶上胶囊本身的一半厚度（10.67px），既挡视线又抢注意力。
+     滚动改由「鼠标滚轮」和「按住拖动」承担，两种都由 chat.js 接管
+     （滚轮映射在 setup 里，拖动见 bindTodoArchiveDrag）。 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  /* 拖动时不许选中内容，也不让浏览器把它当成原生拖拽（否则鼠标一动就变成拖拽幽灵图）。 */
+  user-select: none;
+  /* 指针形状告诉用户「这里可以按住拖」。 */
+  cursor: grab;
   /* 初始 10.67px 高 = 原来 16px 的 2/3；宽按 3:1 得 32px；圆角取约 30% 高 = 3px。
-     这三个是脚本未运行时的兜底值，正常尺寸由 layoutTodoArchives 算好覆盖。 */
+     这些值也由 layoutTodoArchives 显式设置，避免栏宽影响胶囊尺寸。 */
   --capsule-h: 10.67px;
   --capsule-w: 32px;
   --capsule-gap: 4px;
@@ -706,6 +735,14 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
   --capsule-border-active: var(--danger);
   --capsule-border-hover: color-mix(in srgb, var(--danger) 55%, #fff);
 }
+/* 滚动条三件套一并清掉：只写 scrollbar-width 在旧 WebKit 内核里不生效。 */
+.todo-archive-bar::-webkit-scrollbar { display: none; width: 0; height: 0; }
+/* 拖动中：整条栏（含胶囊）换成「抓住」的光标。选择器比 .todo-capsule 的 pointer 更具体，
+   所以位置在前也能压住它。 */
+.todo-archive-bar.dragging,
+.todo-archive-bar.dragging .todo-capsule { cursor: grabbing; }
+/* 拖动中胶囊不做按压缩放：手指/鼠标在移动，缩一下再弹回来只会让人以为点错了。 */
+.todo-archive-bar.dragging .todo-capsule:active { transform: none; }
 .todo-capsule {
   flex: 0 0 auto;
   display: block;
@@ -718,7 +755,7 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
   border-radius: var(--capsule-radius, 5px);
   cursor: pointer;
   /* 用内阴影当边框：不占布局（不会因为出现边框而让胶囊变大小或跳动），
-     并且跟随 border-radius，也不会被归档条的 overflow: hidden 裁掉。 */
+     并且跟随 border-radius，也不会被归档条裁掉。 */
   box-shadow: none;
   transition: box-shadow .12s ease, transform .12s ease;
 }

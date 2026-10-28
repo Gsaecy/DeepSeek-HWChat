@@ -150,6 +150,50 @@ test('derives total token usage when a compatible API omits total_tokens', async
   }
 });
 
+test('reasoning depth: DeepSeek 官方四档原样发送，其他 OpenAI 兼容接口把 max 折成 high', async () => {
+  const originalFetch = globalThis.fetch;
+
+  async function bodyFor(baseUrl: string, reasoningEffort: ChatSettings['reasoningEffort']) {
+    let captured: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      captured = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const encoder = new TextEncoder();
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+    const client = new DeepSeekClient(async () => 'test-key');
+    await client.streamChat({ ...settings, baseUrl, reasoningEffort }, [{ role: 'user', content: 'hi' }], { onDelta: () => undefined });
+    return captured!;
+  }
+
+  try {
+    // DeepSeek 官方文档：thinking.type 是开关，reasoning_effort 取 none/low/high/max，
+    // 并额外接受 medium（服务端折算成 high）。四档因此必须原样发出去。
+    for (const effort of ['low', 'medium', 'high', 'max'] as const) {
+      const body = await bodyFor('https://api.deepseek.com', effort);
+      assert.deepEqual(body.thinking, { type: 'enabled' }, `${effort} 必须开启思考模式`);
+      assert.equal(body.reasoning_effort, effort, `DeepSeek 的 ${effort} 不能被本地折算`);
+    }
+
+    // 其他 OpenAI 兼容接口没有 max 这一档：折成它的最高档 high，其余原样。
+    assert.equal((await bodyFor('https://example.invalid/v1', 'medium')).reasoning_effort, 'medium');
+    assert.equal((await bodyFor('https://example.invalid/v1', 'max')).reasoning_effort, 'high');
+    assert.equal((await bodyFor('https://example.invalid/v1', 'low')).reasoning_effort, 'low');
+
+    // 'default' = 不发送任何思考参数（不支持思考的模型走这条）。
+    const plain = await bodyFor('https://api.deepseek.com', 'default');
+    assert.equal('thinking' in plain, false);
+    assert.equal('reasoning_effort' in plain, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('retries without an unsupported reasoning control', async () => {
   const originalFetch = globalThis.fetch;
   const requestBodies: Array<Record<string, unknown>> = [];

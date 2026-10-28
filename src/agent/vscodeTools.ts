@@ -29,7 +29,14 @@ interface ExternalTool {
 }
 
 export class VscodeToolBridge {
-  private toolContributorsWarmed = false;
+  /**
+   * 共享同一次预热。
+   *
+   * 以前只置一个布尔标记就提前返回：第二个调用方（`send()`）会在其它扩展
+   * 还没激活完时就去读工具列表，于是这一轮的工具定义缺项。改成记住 Promise，
+   * 所有人都等同一批激活结束，且只激活一次。
+   */
+  private warming: Promise<void> | undefined;
 
   constructor(private readonly tools: ToolExecutor) {}
 
@@ -164,9 +171,12 @@ export class VscodeToolBridge {
    * 激活尚未运行、但声明了语言模型工具的扩展，让它们的工具也出现在工具列表里。
    * 只尝试一次，且失败不影响其它工具。
    */
-  async warmToolContributors(): Promise<void> {
-    if (this.toolContributorsWarmed) return;
-    this.toolContributorsWarmed = true;
+  warmToolContributors(): Promise<void> {
+    if (!this.warming) this.warming = this.activateToolContributors();
+    return this.warming;
+  }
+
+  private async activateToolContributors(): Promise<void> {
     const candidates = vscode.extensions.all.filter((extension) => {
       if (extension.isActive) return false;
       const packageJSON = extension.packageJSON as {

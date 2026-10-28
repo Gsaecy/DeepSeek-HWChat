@@ -2,6 +2,16 @@ import { appendFile, mkdir, readFile, rename, stat, unlink, writeFile } from 'no
 import { dirname } from 'node:path';
 
 const MAX_AUDIT_BYTES = 5 * 1024 * 1024;
+/**
+ * 同一保留天数下，两次「真正压缩」之间的最短间隔。
+ *
+ * 每次压缩都要把整份审计日志读进内存、逐行 `JSON.parse`：本机 5MB 日志实测 36ms
+ * CPU。而这个函数在「保存设置」「清理完成回调」等路径上被频繁调用，几乎每次都是
+ * 白白重算（文件没变、也没超上限）。加上这个窗口后：
+ *  - 文件仍然超过 5MB 时窗口失效（`stat` 一次即可判断），上限语义不变；
+ *  - 显式操作可以 `force` 立即压缩。
+ */
+export const AUDIT_CLEANUP_FRESH_MS = 60_000;
 
 export interface AuditRecord {
   timestamp: number;
@@ -18,6 +28,8 @@ export interface AuditRecord {
 export class AuditLog {
   private tail: Promise<void> = Promise.resolve();
   private readonly sessionStartedAt = Date.now();
+  private lastCleanupAt = 0;
+  private lastRetentionDays: number | null = null;
 
   constructor(private readonly filePath: string) {}
 
@@ -35,8 +47,17 @@ export class AuditLog {
     });
   }
 
-  cleanup(retentionDays: number): Promise<void> {
+  cleanup(retentionDays: number, options: { force?: boolean } = {}): Promise<void> {
     return this.enqueue(async () => {
+      // 便宜的门槛判断（一次 stat，约 0.05ms）挡掉绝大多数重复压缩。
+      if (!options.force && this.lastRetentionDays === retentionDays && Date.now() - this.lastCleanupAt < AUDIT_CLEANUP_FRESH_MS) {
+        const size = await stat(this.filePath).then((value) => value.size).catch(() => 0);
+        if (size <= MAX_AUDIT_BYTES) {
+          return;
+        }
+      }
+      this.lastCleanupAt = Date.now();
+      this.lastRetentionDays = retentionDays;
       const source = await readFile(this.filePath, 'utf8').catch(() => '');
       if (!source) {
         return;

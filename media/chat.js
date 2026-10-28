@@ -37,7 +37,12 @@
     },
     collectFenceBlock: (lines, startIndex) => {
       const list = Array.isArray(lines) ? lines : [];
-      const info = String(list[startIndex] == null ? '' : list[startIndex]).trim().slice(3).trim();
+      const start = String(list[startIndex] == null ? '' : list[startIndex]);
+      // 必须真的以 ``` 开头才算围栏：旧兜底无条件 `slice(3)`，于是脚本没加载成功时
+      // 每一行正文都会被当成代码块，首三个字符被吃掉（预览夹具里实测正文 "ABCDEFGH"
+      // 显示成 "DEFGH" 且代码体为空）。
+      if (!/^\s*`{3,}/.test(start)) return null;
+      const info = start.trim().slice(3).trim();
       const code = [];
       let index = startIndex + 1;
       while (index < list.length && !/^\s*`{3,}\s*$/.test(String(list[index] == null ? '' : list[index]))) {
@@ -280,13 +285,22 @@
     }
   }
 
+  /**
+   * 工具条上的四档思考深度，与 `src/views/chatPanel.ts` 的 REASONING_DEPTHS 一致。
+   * 'default'（不发送参数）/ 'none' 不在这里：它们不是「深度」，只留给旧对话与
+   * 不支持思考的模型，界面显示为单选项的说明文字。
+   */
+  const REASONING_DEPTHS = ['low', 'medium', 'high', 'max'];
+  /** 步数第四档「无限制」的表示值，与 `src/core/agentLimits.ts` 保持一致。 */
+  const STEPS_UNLIMITED = 0;
+
   const elements = Object.fromEntries([
     'app', 'historyPane', 'historyButton', 'closeHistoryButton', 'newChatButton',
     'historySearch', 'archiveViewButton', 'conversationList', 'settingsButton',
     'settingsButtonSide', 'exportButton', 'archiveButton', 'conversationTitle',
     'conversationTitleInput', 'projectBadge', 'editTitleButton', 'saveTitleButton', 'cancelTitleButton',
     'connectionState', 'profileInput', 'modelInput', 'modeInput', 'refreshModelsButton', 'skillsButton', 'skillsCount',
-    'skillsPanel', 'skillsList', 'workspaceTrustBadge', 'messageViewport',
+    'skillsPanel', 'skillsList', 'workspaceTrustBadge', 'skillsInstallHint', 'skillsInstallButton', 'skillsSourceNote', 'messageViewport',
     'messageList', 'emptyState', 'loadOlderButton', 'scrollToBottomButton', 'attachmentList', 'contextChip',
     'contextLabel', 'removeContextButton', 'composer', 'promptInput',
     'historyLinkBanner', 'sourceHistoryTitle', 'detachHistoryButton',
@@ -301,8 +315,8 @@
   const state = {
     conversations: [], archivedConversations: [], conversation: null, messages: [],
     hasMore: false, sendOnEnter: true, streaming: false, streamingConversationId: null,
-    search: '', pendingAttachments: [], skills: [], selectedSkillIds: [], mode: 'agent',
-    apiProfiles: [], activeApiProfileId: '', model: '', permissionPreset: 'review', agentMaxSteps: 0, reasoningEffort: 'default',
+    search: '', pendingAttachments: [], skills: [], selectedSkillIds: [], quickLaunchInstalled: true, mode: 'agent',
+    apiProfiles: [], activeApiProfileId: '', model: '', permissionPreset: 'askAll', agentMaxSteps: 24, reasoningEffort: 'default',
     modelOptionsByProfile: {},
     permissionPresetPending: false, modelLoadingProfileId: null,
     workspaceTrusted: false, agentAvailable: false, availableToolCount: 0, showArchived: false, renderTimer: null,
@@ -327,6 +341,8 @@
   let pasteFallbackTimer = null;
   let pendingPaste = null;
   let deferredMessageRenderMode = null;
+  /** 等着被局部重画的那条消息 id（见 scheduleMessagePatch）。 */
+  let pendingPatchId = null;
   let selectingMessageText = false;
   let interactingWithMessages = false;
   let interactionTimer = null;
@@ -361,8 +377,11 @@
     if (!ok) showToast(t('chat.clipboardFailed', { error: error || t('chat.clipboardUnavailable') }), 'warning');
   }
 
-  function renderAll() {
-    renderHistory(); renderHeader(); renderSkills(); renderMessages('replace'); renderHistoryLink(); renderAttachments(); renderTaskTree(); renderTodos(); renderArchivePanel(); renderTodoArchives(); renderApproval(); updateComposerState();
+  function renderAll(options) {
+    const skipMessages = Boolean(options && options.skipMessages);
+    renderHistory(); renderHeader(); renderSkills();
+    if (!skipMessages) renderMessages('replace');
+    renderHistoryLink(); renderAttachments(); renderTaskTree(); renderTodos(); renderArchivePanel(); renderTodoArchives(); renderApproval(); updateComposerState();
   }
 
   function renderHistory() {
@@ -383,6 +402,7 @@
     for (const conversation of conversations) {
       const row = document.createElement('div');
       row.className = `conversation-row${state.conversation?.id === conversation.id ? ' active' : ''}`;
+      if (conversation.pending) row.dataset.pending = '1';
       const content = document.createElement('button');
       content.type = 'button'; content.className = 'conversation-content';
       const titleRow = document.createElement('span'); titleRow.className = 'conversation-title-row';
@@ -402,16 +422,23 @@
       meta.append(document.createTextNode(`${linked}${relativeTime(conversation.updatedAt)}${tokenTotal}`));
       const preview = textElement('span', 'conversation-preview', conversation.preview || t('common.emptyConversation'));
       content.append(titleRow, meta, preview);
-      content.addEventListener('click', () => { post('selectConversation', { id: conversation.id }); closeMobileHistory(); });
+      content.addEventListener('click', () => {
+        // 占位卡还没有真实 id：点它等于「什么都不做」，避免把假 id 发给扩展。
+        if (conversation.pending) return;
+        post('selectConversation', { id: conversation.id });
+        closeMobileHistory();
+      });
       const actions = document.createElement('div'); actions.className = 'conversation-actions';
       const continueTask = actionButton(t('chat.continueTaskHistory'), 'arrowUpRight');
-      continueTask.disabled = runningNow || awaitingNow;
+      continueTask.disabled = runningNow || awaitingNow || Boolean(conversation.pending);
       continueTask.addEventListener('click', () => { post('continueConversation', { id: conversation.id }); closeMobileHistory(); });
       const pin = actionButton(conversation.pinned ? t('chat.unpin') : t('chat.pin'), conversation.pinned ? 'dot' : 'ring');
+      pin.disabled = Boolean(conversation.pending);
       pin.addEventListener('click', () => post('togglePin', { id: conversation.id, pinned: !conversation.pinned }));
       const archive = actionButton(conversation.archived ? t('chat.restoreConversation') : t('chat.archive'), conversation.archived ? 'restore' : 'square');
       archive.addEventListener('click', () => post('toggleArchive', { id: conversation.id, archived: !conversation.archived }));
       const remove = actionButton(t('common.delete'), 'close'); remove.classList.add('danger-action');
+      remove.disabled = Boolean(conversation.pending);
       remove.addEventListener('click', () => post('deleteConversation', { id: conversation.id }));
       actions.append(continueTask, pin, archive, remove); row.append(content, actions); elements.conversationList.append(row);
     }
@@ -465,25 +492,37 @@
   }
 
   /**
-   * 标题旁的项目徽标。
+   * 标题旁的项目徽标：本对话**涉及**的全部项目。
    *
-   * 已绑定：橙色显示文件夹名（对话到底在操作哪个项目，一眼可见）。
+   * 已绑定：橙色显示文件夹名，多个项目用 `·` 连起来——一个对话经常横跨多个项目
+   * （在 A 里做功能、顺手把 B 的对接改掉），只显示第一个时用户看不出还动过别处。
+   * 一行放不下时折成 `+N`，完整清单进 title，别把标题挤走。
    * 未绑定：红色显示「项目待建立」——此时 git 写操作会被拒绝，必须让用户看见，
    * 不能显示一个猜出来的目录名让用户以为已经绑定好了。
    */
   function renderProjectBadge() {
     const badge = elements.projectBadge;
     if (!badge) return;
-    const project = state.project || { name: null, bound: false };
+    const project = state.project || { name: null, others: [], bound: false };
+    const others = Array.isArray(project.others) ? project.others.filter((name) => typeof name === 'string' && name) : [];
     if (project.bound && project.name) {
-      badge.textContent = project.name;
+      // 一行放得下的名字数量：写成常量而不是外部变量，这一段要能被测试脚本单独抽出来跑。
+      const visibleNames = 3;
+      const names = [project.name, ...others];
+      const shown = names.slice(0, visibleNames);
+      const hidden = names.length - shown.length;
+      badge.textContent = hidden > 0 ? `${shown.join(' · ')} +${hidden}` : shown.join(' · ');
       badge.classList.add('bound');
       badge.classList.remove('missing');
-      badge.title = t('chat.projectLabel', { name: project.name });
+      badge.classList.toggle('multi', names.length > 1);
+      // 悬停永远给出完整清单：折起来的那些名字不能只存在于「+N」里。
+      badge.title = names.length > 1
+        ? t('chat.projectLabelMany', { count: names.length, names: names.join(' / ') })
+        : t('chat.projectLabel', { name: names[0] });
     } else {
       badge.textContent = t('chat.projectPending');
       badge.classList.add('missing');
-      badge.classList.remove('bound');
+      badge.classList.remove('bound', 'multi');
       badge.title = t('chat.projectPendingHint');
     }
     badge.hidden = false;
@@ -527,8 +566,15 @@
   function syncPermissionHint() {
     const selected = elements.permissionPresetInput.selectedOptions[0];
     const hint = selected?.title || '';
-    elements.permissionPresetInput.title = hint ? t('chat.permissionPresetTitle', { hint }) : t('chat.permissionPreset');
-    elements.permissionPresetInput.closest('.permission-field')?.setAttribute('title', hint);
+    // 运行中切换只对下一次对话生效：把这个约束写进悬停提示，
+    // 用户才不会以为「改了但没生效」。
+    const nextTurn = state.streaming ? t('chat.permissionPresetNextTurnHint') : '';
+    elements.permissionPresetInput.title = [
+      hint ? t('chat.permissionPresetTitle', { hint }) : t('chat.permissionPreset'),
+      nextTurn,
+    ].filter(Boolean).join('\n');
+    elements.permissionPresetInput.dataset.nextTurnOnly = state.streaming ? '1' : '';
+    elements.permissionPresetInput.closest('.permission-field')?.setAttribute('title', [hint, nextTurn].filter(Boolean).join('\n'));
   }
 
   function syncConnectionSelectors() {
@@ -550,19 +596,30 @@
     const profileId = state.conversation?.apiProfileId || state.activeApiProfileId || state.apiProfiles[0]?.id || '';
     const modelOption = option || (state.modelOptionsByProfile[profileId] || []).find((item) => item.id === elements.modelInput.value);
     const support = modelOption?.reasoningSupport || 'unknown';
-    const labels = { default: t('chat.reasoning.default'), none: t('chat.reasoning.none'), low: t('chat.reasoning.low'), high: t('chat.reasoning.high'), max: t('chat.reasoning.max') };
+    const labels = { default: t('chat.reasoning.default'), none: t('chat.reasoning.none'), low: t('chat.reasoning.low'), medium: t('chat.reasoning.medium'), high: t('chat.reasoning.high'), max: t('chat.reasoning.max') };
+    // 'default' 永远排第一：它表示「不发参数、用模型官方默认」，也是新对话的初始值。
     let efforts = ['default'];
     let title = t('chat.reasoningSupport.unknown');
     if (support === 'configurable') {
-      efforts = modelOption?.reasoningEfforts?.length ? modelOption.reasoningEfforts : ['default', 'none', 'low', 'high', 'max'];
-      if (!efforts.includes('default')) efforts.unshift('default');
+      // 四档「深度」按模型声明过滤；模型声明里若还带着 default / none
+      // （旧能力数据），这里不用它们——'default' 已经固定在第一档。
+      const declared = modelOption?.reasoningEfforts?.length ? modelOption.reasoningEfforts : REASONING_DEPTHS;
+      const depths = REASONING_DEPTHS.filter((value) => declared.includes(value));
+      efforts = ['default', ...(depths.length ? depths : [...REASONING_DEPTHS])];
       title = t('chat.reasoningSupport.configurable');
     } else if (support === 'unsupported') {
       title = t('chat.reasoningSupport.unsupported');
     } else if (support === 'fixed') {
       title = t('chat.reasoningSupport.fixed');
     }
-    if (!efforts.includes(state.reasoningEffort)) state.reasoningEffort = 'default';
+    // 旧存档里可能是 'none'（关闭思考）：不是「深度」，但也不能静默改成别的档
+    // ——那等于替用户打开思考、多花 token。补一个临时选项照原样显示即可。
+    if (state.reasoningEffort === 'none' && support === 'configurable') {
+      efforts = ['default', 'none', ...efforts.slice(1)];
+    } else if (!efforts.includes(state.reasoningEffort)) {
+      // 非法 / 已不在该模型能力里的值：回到「模型官方默认」，而不是替用户选「高」。
+      state.reasoningEffort = 'default';
+    }
     const singleLabel = support === 'unsupported' ? t('chat.reasoningUnsupportedShort') : support === 'fixed' ? t('chat.reasoningFixedShort') : support === 'unknown' ? t('chat.reasoningUnknownShort') : undefined;
     replaceSelectOptions(elements.reasoningEffortInput, efforts.map((value) => ({ value, label: singleLabel || labels[value] || value })), state.reasoningEffort);
     elements.reasoningEffortInput.dataset.support = support;
@@ -580,10 +637,28 @@
     select.value = selected;
   }
 
+  /**
+   * 步数归一：`0` 是第四档「无限制」（显式选择），保持 0；
+   * 负数、非数字、空值这类脏值显示成默认 24；正数夹到 200 的绝对上限。
+   * 注意 `Number('') === 0`：空串必须单独挡掉，否则一个空的下拉值会被当成「无限制」。
+   */
+  function normalizeStepValue(value) {
+    if (value === '' || value === null || value === undefined) return 24;
+    const numeric = Math.floor(Number(value));
+    if (!Number.isFinite(numeric)) return 24;
+    if (numeric === STEPS_UNLIMITED) return STEPS_UNLIMITED;
+    if (numeric < 0) return 24;
+    return Math.min(numeric, 200);
+  }
+
+  function stepsLabel(value) {
+    return value === STEPS_UNLIMITED ? t('chat.stepsUnlimited') : t('chat.stepsOption', { count: value });
+  }
+
   function ensureStepOption(value) {
-    const normalized = Math.max(0, Math.floor(Number(value) || 0));
+    const normalized = normalizeStepValue(value);
     if ([...elements.agentMaxStepsInput.options].some((option) => Number(option.value) === normalized)) return;
-    const option = document.createElement('option'); option.value = String(normalized); option.textContent = t('chat.stepsOption', { count: normalized });
+    const option = document.createElement('option'); option.value = String(normalized); option.textContent = stepsLabel(normalized);
     elements.agentMaxStepsInput.append(option);
   }
 
@@ -604,6 +679,21 @@
     elements.skillsList.replaceChildren();
     elements.workspaceTrustBadge.textContent = state.workspaceTrusted ? t('settings.workspaceTrusted') : t('settings.workspaceUntrusted');
     elements.workspaceTrustBadge.classList.toggle('trusted', state.workspaceTrusted);
+    syncSkillsInstallHint();
+    /**
+     * 没装「本地skill快捷调用」时**不列技能**。
+     *
+     * 用户反馈：那个扩展卸载之后，星标面板里仍然是一整屏技能 + 「默认启用」打勾，
+     * 看起来像扩展的残留。原因是勾选读取的是它留下的 `.skill-quick-launch.json`
+     * （扩展侧已经不再读了），而列表本身来自 `~/.copilot/skills/`。按产品语义，
+     * 这时面板的职责只有一个：告诉用户去装那个扩展。装好之后（`extensions.onDidChange`
+     * 会立刻回推）列表与勾选自动接上。
+     */
+    if (!state.quickLaunchInstalled) {
+      elements.skillsList.hidden = true;
+      return;
+    }
+    elements.skillsList.hidden = false;
     if (!state.skills.length) {
       elements.skillsList.append(textElement('p', 'skills-empty', t('chat.skillsEmpty')));
       return;
@@ -611,10 +701,17 @@
     for (const skill of state.skills) {
       const label = document.createElement('label'); label.className = 'skill-option';
       const input = document.createElement('input'); input.type = 'checkbox'; input.checked = state.selectedSkillIds.includes(skill.id);
+      /**
+       * 勾选只属于**当前这条对话**：取消不会写回「本地skill快捷调用」那份全局清单，
+       * 那份清单只提供新对话的默认值。所以这里只发一个意图，由扩展侧落到这条对话的
+       * 存档，界面等 `skillsChanged` 回推再更新。
+       *
+       * 没装那个扩展时照样能勾（勾的是本对话），只是顺带把安装提示展开，说明新对话的
+       * 默认值本该从那里来。
+       */
       input.addEventListener('change', () => {
-        const selected = new Set(state.selectedSkillIds); if (input.checked) selected.add(skill.id); else selected.delete(skill.id);
-        state.selectedSkillIds = [...selected]; syncSkillsButton();
-        post('setSkills', { skillIds: state.selectedSkillIds });
+        if (skill.source === 'copilot' && !state.quickLaunchInstalled) showSkillsInstallHint();
+        post('toggleSkill', { skillId: skill.id, enabled: input.checked });
       });
       const copy = document.createElement('span');
       const title = document.createElement('span'); title.className = 'skill-option-title'; title.append(textElement('strong', '', skill.name));
@@ -622,6 +719,37 @@
       if (skill.lastUsedAt) title.append(textElement('em', 'skill-badge used', t('chat.skillUsed')));
       copy.append(title, textElement('small', '', skill.description || skill.relativePath), textElement('code', '', skill.relativePath));
       label.append(input, copy); elements.skillsList.append(label);
+    }
+  }
+
+  /**
+   * 安装提示只反映「扩展在不在」，与展开了几次无关，重渲染后由它统一对齐。
+   *
+   * 关键点：**没装时点开星标就要看到它**。旧实现只会在「用户勾了一个 copilot skill」
+   * 之后才展开，于是「点星标 → 一片勾选列表，不知道该装扩展」——正是用户报的问题。
+   */
+  function syncSkillsInstallHint() {
+    if (!elements.skillsInstallHint) return;
+    elements.skillsInstallHint.hidden = Boolean(state.quickLaunchInstalled);
+    syncSkillsSourceNote();
+  }
+
+  /** 面板底部的说明随安装状态切换：装了才谈「只影响本次对话」。 */
+  function syncSkillsSourceNote() {
+    const note = elements.skillsSourceNote;
+    if (!note) return;
+    note.textContent = state.quickLaunchInstalled
+      ? t('chat.skillsSourceInstalled')
+      : t('chat.skillsSourceMissing');
+  }
+
+  /** 面板必须可见，用户才可能看到安装提示（勾选时会用到）。 */
+  function showSkillsInstallHint() {
+    if (!elements.skillsInstallHint) return;
+    elements.skillsPanel.hidden = false;
+    elements.skillsInstallHint.hidden = Boolean(state.quickLaunchInstalled);
+    if (!elements.skillsInstallHint.hidden) {
+      elements.skillsInstallHint.scrollIntoView({ block: 'nearest' });
     }
   }
 
@@ -662,24 +790,64 @@
     if (!deferredMessageRenderMode || priority[mode] > priority[deferredMessageRenderMode]) deferredMessageRenderMode = mode;
   }
 
+  /**
+   * 消息列表的「画面签名」。
+   *
+   * 用途：`state` 推送里绝大多数只是设置/控件变了（切预设、切模型、加附件、归档…），
+   * 消息本身一条都没动，但 `renderAll()` 以前无条件 `renderMessages('replace')` ——
+   * 80 条消息实测 **20ms CPU / 次**（重建 1500+ 个 DOM 节点并重新布局）。
+   *
+   * 签名只取「会让画面不同」的字段，且不序列化正文（只看长度），所以对 80 条消息
+   * 是几十微秒。真正的正文变化一定伴随 `updatedAt` / 长度变化，不会被漏掉。
+   */
+  function messageListSignature(messages, conversationId) {
+    const parts = [conversationId || ''];
+    for (const message of messages || []) {
+      const tools = message.toolExecutions || [];
+      const lastTool = tools.length ? tools[tools.length - 1] : null;
+      parts.push([
+        message.id,
+        message.role,
+        message.status || '',
+        message.updatedAt || 0,
+        (message.content || '').length,
+        (message.reasoning || '').length,
+        tools.length,
+        lastTool ? `${lastTool.callId}:${lastTool.status}:${lastTool.finishedAt || 0}:${(lastTool.output || '').length}` : '',
+        (message.usedSkills || []).length,
+        (message.attachments || []).length,
+        message.context ? 1 : 0,
+      ].join('~'));
+    }
+    return parts.join('\n');
+  }
+
+  /** 最近一次真正画进 DOM 的那份消息列表的签名。 */
+  let renderedMessageSignature = '';
+
   function renderMessages(mode = 'keep') {
     if (selectingMessageText || interactingWithMessages || hasMessageSelection()) {
       deferMessageRender(mode);
       return;
     }
     deferredMessageRenderMode = null;
+    // 整段重建会把 DOM 直接对齐 state，此时「只差某一条没重画」的待办已经自动满足。
+    pendingPatchId = null;
     const viewport = elements.messageViewport;
     const previousTop = viewport.scrollTop;
     const previousHeight = viewport.scrollHeight;
     const shouldFollow = mode === 'bottom' || state.autoFollow;
     state.renderingMessages = true;
-    // 消息列表每次都是整段重建（流式输出期间每 70ms 一次）。先记录用户手动展开/收起的
-    // <details> 状态，重建后再恢复，否则点击展开会立刻被下一次渲染收起。
+    // 消息列表整段重建。只在「结构真的变了」时走这条路（切换对话、追加消息、
+    // 补载更早的消息）；流式输出期间每 70ms 那一次改走 patchMessage，
+    // 原因见那里的注释。先记录用户手动展开/收起的 <details> 状态，
+    // 重建后再恢复，否则点击展开会立刻被下一次渲染收起。
     const detailOverrides = captureDetailOverrides();
     elements.messageList.replaceChildren(); elements.emptyState.hidden = state.messages.length > 0;
     elements.loadOlderButton.hidden = !state.hasMore || !state.messages.length;
     for (const message of state.messages) elements.messageList.append(renderMessage(message));
     restoreDetailOverrides(detailOverrides);
+    renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
     requestAnimationFrame(() => {
       if (shouldFollow) viewport.scrollTop = viewport.scrollHeight;
       else if (mode === 'prepend') viewport.scrollTop = previousTop + Math.max(0, viewport.scrollHeight - previousHeight);
@@ -689,9 +857,76 @@
     });
   }
 
-  function scheduleMessageRender() {
+  /**
+   * 流式输出期间只重画「正在变的那一条消息」。
+   *
+   * 真实缺陷（用户反馈「输出内容一闪一闪的跳动」）：以前每个 delta 都调
+   * renderMessages()，而它是整段重建——先 `messageList.replaceChildren()` 清空，
+   * 再把 N 条消息全部重新造一遍，70ms 一次。于是每个 tick 都在做 O(N) 的
+   * 销毁 + 重建，长对话里能直接看出来：
+   *   1. `.stream-cursor` 被新造一个，`blink` 动画每 70ms 从头开始 —— 光标在抖；
+   *   2. 其它消息的 <details>（思考过程、步骤详情）被重造，展开状态靠事后回填，
+   *      中间会闪一下，正在展开的那一条尤其明显；
+   *   3. 附件图标、行内 emoji（flattenEmojiIcons 换成 SVG）全部重建一次；
+   *   4. 整个列表的高度在同一个任务里先塌到 0 再涨回去，位置靠 rAF 补，肉眼可见跳动。
+   *
+   * 现在只把这一条 <article> 换掉：节点数从 O(N) 降到 O(1)，其余消息的 DOM
+   * 对象连动画状态都原封不动。光标节点显式复用，动画因此不中断。
+   *
+   * 返回 false 表示没法就地替换（DOM 与 state 顺序对不上），调用方退回整段重建。
+   */
+  function patchMessage(messageId) {
+    const index = state.messages.findIndex((item) => item.id === messageId);
+    if (index < 0) return false;
+    const current = elements.messageList.children[index];
+    // 顺序对不上时不能按索引换：会换错那一条。宁可整段重建一次。
+    if (!current || current.dataset.messageId !== messageId) return false;
+    // 只抓这一条里的展开状态，别的消息根本没动。
+    const detailOverrides = captureDetailOverrides(current);
+    const liveCursor = current.querySelector('.stream-cursor');
+    const next = renderMessage(state.messages[index]);
+    // 复用原光标节点：新造一个会让 blink 动画从头开始，视觉上就是「一闪」。
+    const freshCursor = next.querySelector('.stream-cursor');
+    if (liveCursor && freshCursor) freshCursor.replaceWith(liveCursor);
+    restoreDetailOverrides(detailOverrides, next);
+    const viewport = elements.messageViewport;
+    const previousTop = viewport.scrollTop;
+    state.renderingMessages = true;
+    current.replaceWith(next);
+    renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
+    requestAnimationFrame(() => {
+      // 变的都是最后一条：跟着底部就贴底；用户翻上去看了就一点不动。
+      if (state.autoFollow) viewport.scrollTop = viewport.scrollHeight;
+      else viewport.scrollTop = previousTop;
+      state.renderingMessages = false;
+      updateScrollToBottom();
+    });
+    return true;
+  }
+
+  /**
+   * 攒 70ms 再画一次（同一条消息的多个 delta 合成一次）。
+   *
+   * 时间到了先试局部替换；替换不了、或者用户正在选字（动 DOM 会把选区弄丢，
+   * 而选区丢了就没法复制），才退到整段重建。
+   */
+  function scheduleMessagePatch(messageId) {
+    pendingPatchId = messageId;
     if (state.renderTimer) return;
-    state.renderTimer = setTimeout(() => { state.renderTimer = null; renderMessages('keep'); }, 70);
+    state.renderTimer = setTimeout(runPendingMessageRender, 70);
+  }
+
+  function runPendingMessageRender() {
+    state.renderTimer = null;
+    const messageId = pendingPatchId;
+    pendingPatchId = null;
+    if (selectingMessageText || interactingWithMessages || hasMessageSelection()) {
+      // 用户在选字/拖动：这一轮不碰 DOM，交互结束时补一次整段重建（选区优先）。
+      deferMessageRender('keep');
+      return;
+    }
+    if (messageId && patchMessage(messageId)) return;
+    renderMessages('keep');
   }
 
   /** 用户交互结束后补做被推迟的渲染。 */
@@ -711,10 +946,15 @@
     renderMessages(mode);
   }
 
-  /** 读取当前 DOM 中“与默认状态不同”的展开状态。 */
-  function captureDetailOverrides() {
+  /**
+   * 读取当前 DOM 中“与默认状态不同”的展开状态。
+   *
+   * `root` 默认整段列表（整段重建时用）；局部替换时传那一条 <article>，
+   * 只比对真正要重建的那部分，别的消息的 <details> 根本没被碰过。
+   */
+  function captureDetailOverrides(root = elements.messageList) {
     const overrides = new Map();
-    for (const details of elements.messageList.querySelectorAll('details[data-detail-key]')) {
+    for (const details of root.querySelectorAll('details[data-detail-key]')) {
       const messageId = details.closest('[data-message-id]')?.dataset.messageId;
       const key = details.dataset.detailKey;
       if (!messageId || !key) continue;
@@ -726,9 +966,9 @@
   }
 
   /** 重建后恢复用户的展开/收起状态，保证“点开展开、再点收起”。 */
-  function restoreDetailOverrides(overrides) {
+  function restoreDetailOverrides(overrides, root = elements.messageList) {
     if (!overrides.size) return;
-    for (const details of elements.messageList.querySelectorAll('details[data-detail-key]')) {
+    for (const details of root.querySelectorAll('details[data-detail-key]')) {
       const messageId = details.closest('[data-message-id]')?.dataset.messageId;
       const key = details.dataset.detailKey;
       if (!messageId || !key) continue;
@@ -965,19 +1205,23 @@
    * 规则（对应需求）：
    * - 每份完成的清单是一颗纯色圆角矩形，颜色由扩展按「越新越深」算好（浅蓝 → 深蓝，相邻两颗连续过渡）；
    * - 胶囊内不含任何图标或文字，也不挂 title 悬停提示：颜色深浅和左右顺序就是全部信息；
-   * - 永远不换行，胶囊过多或窗口变窄时按 3:1 的比例同时缩小宽和高；
+   * - 永远不换行，保持 3:1 的固定尺寸；超出栏宽时横向滚动；
    * - 点一颗胶囊展开/收起那份清单：展开中的那颗显示红色边框，鼠标悬停的那颗显示浅红色边框
    *   （边框用内阴影画，不改变胶囊尺寸，见 media/chat.css）。
    */
   // 初始高度 10.67px = 原来 16px 的 2/3（胶囊只是一条颜色提示，不需要那么厚）。
-  // 宽高比固定 3:1，所以宽度跟着从 48px 变成 32px；下限 6px 保持不变，
-  // 它表示「再挤也要留住可点的方块」，不是常规尺寸。
+  // 宽高比固定 3:1，所以宽度跟着从 48px 变成 32px。
   const CAPSULE_BASE_HEIGHT = (16 * 2) / 3;
-  const CAPSULE_MIN_HEIGHT = 6;
   const CAPSULE_RATIO = 3;
+  /** 上一次渲染的归档条数：只用来判断「是不是又完成了一份新的」。 */
+  let lastArchiveCount = 0;
 
   function renderTodoArchives() {
     const archives = Array.isArray(state.todoArchives) ? state.todoArchives : [];
+    // 归档数变多 = 末尾补上了一份新的。它排在整条栏的最右端，
+    // 栏窄到需要横向滚动时正好落在视野之外，所以下面要跟过去一次。
+    const grew = archives.length > lastArchiveCount;
+    lastArchiveCount = archives.length;
     // 被展开的那份归档没了（对话被清理、删档、切换对话）：立刻退出聚焦，
     // 否则任务树和任务清单会一直锁着，用户看不到正在跑的那份。
     if (state.expandedArchiveId && !archives.some((item) => item.id === state.expandedArchiveId)) {
@@ -1004,6 +1248,8 @@
       capsule.setAttribute('aria-label', `${label}。${active ? t('todo.archive.hintOpen') : t('todo.archive.hint')}`);
       // 点同一颗 = 收起并解锁；点另一颗 = 换成那份，仍然只有一个面板展开。
       capsule.addEventListener('click', () => {
+        // 按住拖动松手时浏览器补发的那个 click 不算点击，否则拖一下就多展开一个面板。
+        if (consumeArchiveDragClick()) return;
         const nextId = todoPanelState.nextArchiveFocus({ currentId: state.expandedArchiveId, clickedId: archive.id });
         if (nextId) enterArchiveFocus(nextId);
         else exitArchiveFocus();
@@ -1011,34 +1257,103 @@
       elements.todoArchiveBar.append(capsule);
     });
     layoutTodoArchives();
+    // 只在「多了一份」时跟到末尾：展开/收起、切换对话、重载都会重渲染，
+    // 每次都跳回最右会把用户自己往回滚的位置抢走。scrollWidth 由浏览器夹到
+    // 真正的上限（stop 在 max = scrollWidth - clientWidth），放得下时等于没动。
+    if (grew) elements.todoArchiveBar.scrollLeft = elements.todoArchiveBar.scrollWidth;
   }
 
   /**
-   * 按可用宽度算胶囊尺寸：宽 = 3 × 高，间距 = 0.25 × 高。
-   * 永远不换行（CSS `flex-wrap: nowrap`），放不下就一起缩小，缩到下限仍放不下就裁掉右侧。
+   * 固定胶囊尺寸：宽 = 3 × 高，间距 = 0.25 × 高。
+   * 超出可视宽度的部分由归档栏横向滚动访问。
    */
-  let lastCapsuleBarWidth = 0;
   function layoutTodoArchives() {
     const bar = elements.todoArchiveBar;
     if (!bar || bar.hidden) return;
-    const count = bar.children.length;
-    if (!count) return;
-    const available = bar.clientWidth || 0;
-    if (!available) return;
-    lastCapsuleBarWidth = available;
-    // 总宽 = count 条 × (3h) 宽 + (count-1) 个间距，间距 = max(2px, 0.25h)（缩到很小时间距托底）。
-    // 先按未托底的公式反解；若解出来已经小到触底，再用固定 2px 间距重解一次，避免差几像素就溢出。
-    const perUnit = count * CAPSULE_RATIO + Math.max(0, count - 1) * 0.25;
-    let height = Math.min(CAPSULE_BASE_HEIGHT, available / perUnit);
-    if (height < 8) {
-      height = Math.min(height, (available - 2 * (count - 1)) / (count * CAPSULE_RATIO));
-    }
-    height = Math.max(CAPSULE_MIN_HEIGHT, height);
+    const height = CAPSULE_BASE_HEIGHT;
     bar.style.setProperty('--capsule-h', `${height.toFixed(2)}px`);
     bar.style.setProperty('--capsule-w', `${(height * CAPSULE_RATIO).toFixed(2)}px`);
-    bar.style.setProperty('--capsule-gap', `${Math.max(2, height * 0.25).toFixed(2)}px`);
+    bar.style.setProperty('--capsule-gap', `${(height * 0.25).toFixed(2)}px`);
     // 圆角矩形：半径跟着高度缩放（不是 999px 的整圆胶囊）。
     bar.style.setProperty('--capsule-radius', `${todoPanelState.capsuleRadius(height)}px`);
+  }
+
+  /**
+   * 按住鼠标横向拖动胶囊栏。
+   *
+   * 为什么需要它：滚动条已经隐藏（见 media/chat.css），滚轮是最快的一种滚法，
+   * 但触控板用户和习惯拖拽的人会本能地按住内容往左拉 —— 没有拖动就成了「滚不动」。
+   *
+   * 拖动结束后浏览器仍会补发一个 click，落在胶囊上就会把「拖一下」当成「点这一颗」，
+   * 于是拖完莫名多展开一个面板。所以位移超过阈值时在栏的 dataset 上打一个一次性标记，
+   * 由 consumeArchiveDragClick 把这个 click 吞掉。
+   */
+  function bindTodoArchiveDrag(bar) {
+    if (!bar) return;
+    // 起点抖动不算拖动：按下时手总会晃几像素，没超过这个距离仍按「点击胶囊」处理。
+    const DRAG_THRESHOLD = 3;
+    let pointerId = null;
+    let startX = 0;
+    let startScrollLeft = 0;
+    // 是否已经捕获指针（只有真的拖起来之后才捕获，见下面 pointermove）。
+    let captured = false;
+    bar.addEventListener('pointerdown', (event) => {
+      // 触摸屏交给浏览器原生滚动（带惯性、能甩），这里只接管鼠标和触控笔。
+      if (event.pointerType === 'touch' || event.button !== 0) return;
+      pointerId = event.pointerId;
+      startX = event.clientX;
+      startScrollLeft = bar.scrollLeft;
+      captured = false;
+      // 每次按下先清掉上一次的吞点击标记：拖到栏内空白处松手不会有 click 来清它，
+      // 留着会让下一次正常点击白白失效。
+      delete bar.dataset.dragMoved;
+    });
+    bar.addEventListener('pointermove', (event) => {
+      if (pointerId === null || event.pointerId !== pointerId) return;
+      const dx = event.clientX - startX;
+      if (bar.dataset.dragMoved !== '1' && Math.abs(dx) < DRAG_THRESHOLD) return;
+      bar.dataset.dragMoved = '1';
+      bar.classList.add('dragging');
+      // 确认是拖动之后才捕获指针，而不是按下就捕获：捕获会把后续的事件（包括 click）
+      // 改派给栏本身，胶囊就再也收不到点击了。轻微抖动（不是拖动）不该让点击失效。
+      if (!captured && typeof bar.setPointerCapture === 'function') {
+        captured = true;
+        bar.setPointerCapture(event.pointerId);
+      }
+      // 手往左拖 = 内容跟着往左走 = scrollLeft 增大，所以是「起点位置 − 位移」。
+      // 从按下时的位置算，拖动过程中不会因为每次赋值而累积误差；越界由浏览器自己夹住。
+      bar.scrollLeft = startScrollLeft - dx;
+      event.preventDefault();
+    });
+    const release = (event) => {
+      if (pointerId === null) return;
+      if (event && event.pointerId !== undefined && event.pointerId !== pointerId) return;
+      pointerId = null;
+      bar.classList.remove('dragging');
+      if (captured && typeof bar.releasePointerCapture === 'function'
+        && typeof bar.hasPointerCapture === 'function'
+        && event && event.pointerId !== undefined && bar.hasPointerCapture(event.pointerId)) {
+        captured = false;
+        bar.releasePointerCapture(event.pointerId);
+      }
+    };
+    bar.addEventListener('pointerup', release);
+    bar.addEventListener('pointercancel', release);
+    // 兜底：指针在窗口外松开时可能收不到 up，失去捕获后一律当作已松手，别卡在拖动状态。
+    bar.addEventListener('lostpointercapture', release);
+  }
+
+  /**
+   * 拖动结束后的那个 click 要吞掉。
+   *
+   * 标记存在归档栏的 dataset 上、读到即清，所以只有紧跟拖动的那一次点击被吃掉；
+   * 正常点击（按下没移动）根本不会留下标记。
+   */
+  function consumeArchiveDragClick() {
+    const bar = elements.todoArchiveBar;
+    if (!bar || bar.dataset.dragMoved !== '1') return false;
+    delete bar.dataset.dragMoved;
+    return true;
   }
 
   /**
@@ -1667,8 +1982,12 @@
   /**
    * 造一个文件引用节点；认出不是文件时返回 null，调用方按原样渲染。
    *
+   * 注意这里造出来的节点是**待核实**状态：上面拼出的绝对路径是按项目根猜的
+   * （`extension.js` 可能其实指 `out/extension.js`，也可能根本不存在）。
+   * 节点登记进 `pendingFileReferences`，等扩展回话再决定升级还是降级。
+   *
    * @param {string|object} input 反引号里的原文，或 scanPlainText 的解析结果
-   * @param {{ compact?: boolean, allowSpaces?: boolean }} [options]
+   * @param {{ compact?: boolean, allowSpaces?: boolean, original?: string }} [options]
    */
   function fileReferenceNode(input, options = {}) {
     if (!fileRef) return null;
@@ -1690,18 +2009,119 @@
     node.setAttribute('role', 'button');
     node.tabIndex = 0;
     node.title = `${resolved.absolute}${suffix}\n${t('chat.fileRefHint', { target: fileTargetLabel() })}`;
-    node.append(iconNode('file'), textElement('span', 'file-ref-label', label));
-    node.addEventListener('click', () => post('openFileReference', fileReferencePayload(resolved)));
+    const labelNode = textElement('span', 'file-ref-label', label);
+    node.append(iconNode('file'), labelNode);
+
+    const entry = {
+      node,
+      labelNode,
+      reference,
+      resolved,
+      compact: Boolean(options.compact),
+      original: typeof input === 'string' ? input : (options.original || reference.path),
+    };
+    node.hwFileReference = entry;
+    node.addEventListener('click', () => post('openFileReference', fileReferencePayload(entry.resolved)));
     node.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
-      post('openFileReference', fileReferencePayload(resolved));
+      post('openFileReference', fileReferencePayload(entry.resolved));
     });
     node.addEventListener('contextmenu', (event) => {
       event.preventDefault();
-      openFileReferenceMenu(event, resolved);
+      openFileReferenceMenu(event, entry.resolved);
     });
+    pendingFileReferences.push(entry);
+    scheduleFileReferenceCheck();
     return node;
+  }
+
+  /*
+   * 引用核实的批处理。
+   *
+   * 为什么不在造节点时就发请求：一条消息里可能有一二十个引用，逐个发就是
+   * 一二十次往返。渲染是同步完成的，用一个微任务就能把它们合成一次请求。
+   */
+  let pendingFileReferences = [];
+  let fileReferenceBatchSeq = 0;
+  let fileReferenceFlushScheduled = false;
+  const fileReferenceBatches = new Map();
+
+  function scheduleFileReferenceCheck() {
+    if (fileReferenceFlushScheduled) return;
+    fileReferenceFlushScheduled = true;
+    Promise.resolve().then(() => {
+      fileReferenceFlushScheduled = false;
+      flushFileReferenceCheck();
+    });
+  }
+
+  function flushFileReferenceCheck() {
+    if (!pendingFileReferences.length) return;
+    const batch = pendingFileReferences;
+    pendingFileReferences = [];
+    fileReferenceBatchSeq += 1;
+    const requestId = `ref-${fileReferenceBatchSeq}`;
+    fileReferenceBatches.set(requestId, batch);
+    // 扩展没回话的批次（窗口正在关、旧版本没有这条协议）不该无限堆积。
+    if (fileReferenceBatches.size > 40) {
+      const oldest = fileReferenceBatches.keys().next();
+      if (!oldest.done) fileReferenceBatches.delete(oldest.value);
+    }
+    post('verifyFileReferences', {
+      requestId,
+      items: batch.map((entry) => ({ path: entry.reference.path, root: state.fileRoots.preferred })),
+    });
+  }
+
+  /** 扩展回话：`resolved[i]` 是真实文件，`null` 表示判不出来。 */
+  function applyFileReferenceVerification(message) {
+    const batch = fileReferenceBatches.get(message.requestId);
+    if (!batch) return;
+    fileReferenceBatches.delete(message.requestId);
+    const resolved = Array.isArray(message.resolved) ? message.resolved : [];
+    batch.forEach((entry, index) => {
+      const absolute = typeof resolved[index] === 'string' && resolved[index] ? resolved[index] : '';
+      if (absolute) upgradeFileReference(entry, absolute); else demoteFileReference(entry);
+    });
+  }
+
+  /**
+   * 换成真实文件。
+   *
+   * 扩展查到的可能是**另一个文件**（`extension.js` → `out/extension.js`），
+   * 所以整条重新解析一遍：标签、悬停提示、点击目标一起换成真实路径。
+   * 否则标签写着 `extension.js`、点开却是 `out/extension.js`，两边对不上。
+   */
+  function upgradeFileReference(entry, absolute) {
+    const next = fileRef.resolveReference({ ...entry.reference, path: absolute }, fileReferenceContext());
+    if (!next) return;
+    entry.resolved = next;
+    const suffix = fileRef.locationSuffix(entry.reference);
+    entry.labelNode.textContent = entry.compact && next.relative
+      ? `${next.relative}${suffix}`
+      : `${next.absolute}${suffix}`;
+    entry.node.title = `${next.absolute}${suffix}\n${t('chat.fileRefHint', { target: fileTargetLabel() })}`;
+  }
+
+  /**
+   * 判不出真实文件：还原成原文。
+   *
+   * 用户看到的还是同一串字符，只是不再带图标和右键菜单——点开一个不存在的
+   * 路径比不给菜单更糟，用户会以为是自己点错了。
+   */
+  function demoteFileReference(entry) {
+    const node = entry.node;
+    const replacement = entry.compact
+      ? textElement('code', '', entry.original)
+      : document.createTextNode(entry.original);
+    const parent = node.parentNode || node.parent;
+    if (!parent) return;
+    if (typeof node.replaceWith === 'function') {
+      node.replaceWith(replacement);
+      return;
+    }
+    if (typeof parent.replaceChild === 'function') parent.replaceChild(replacement, node);
   }
 
   /** 正文里裸写的路径：扫描出来逐个替换成引用，其余部分保持纯文本。 */
@@ -1712,7 +2132,7 @@
     let cursor = 0;
     for (const hit of hits) {
       if (hit.index > cursor) parent.append(document.createTextNode(text.slice(cursor, hit.index)));
-      const node = fileReferenceNode(hit.reference, { compact: false });
+      const node = fileReferenceNode(hit.reference, { compact: false, original: hit.text });
       if (node) parent.append(node); else parent.append(document.createTextNode(hit.text));
       cursor = hit.index + hit.length;
     }
@@ -1859,12 +2279,14 @@
     elements.promptInput.disabled = archived; elements.attachButton.disabled = archived;
     elements.profileInput.disabled = state.streaming || archived; elements.modelInput.disabled = state.streaming || archived; elements.modeInput.disabled = state.streaming || archived; elements.skillsButton.disabled = state.streaming || archived;
     elements.refreshModelsButton.disabled = state.streaming || archived || Boolean(state.modelLoadingProfileId);
-    elements.permissionPresetInput.disabled = state.streaming || archived || state.permissionPresetPending;
+    // 预设允许在任务运行中改（只对下一次对话生效）；步数与思考深度仍然锁在当前任务上。
+    elements.permissionPresetInput.disabled = archived || state.permissionPresetPending;
     elements.agentMaxStepsInput.disabled = state.streaming || archived;
     elements.reasoningEffortInput.disabled = state.streaming || archived || elements.reasoningEffortInput.dataset.support !== 'configurable';
     elements.voiceButton.disabled = archived;
     elements.detachHistoryButton.disabled = state.streaming || archived;
     elements.promptInput.placeholder = archived ? t('chat.promptPlaceholderArchived') : state.streaming ? t('chat.promptPlaceholderStreaming') : t('chat.promptPlaceholderAgent');
+    syncPermissionHint();
   }
 
   function autoResize() { elements.promptInput.style.height = 'auto'; elements.promptInput.style.height = `${Math.min(elements.promptInput.scrollHeight, 180)}px`; updateComposerState(); }
@@ -1887,6 +2309,70 @@
   function restoreDraft(conversationId) {
     const value = state.drafts[draftKey(conversationId)];
     elements.promptInput.value = typeof value === 'string' ? value : '';
+  }
+
+  /**
+   * 「新建对话」的即时反馈。
+   *
+   * 为什么要在本地先切（真实故障）：以前点击只发一条 `newChat`，界面要等扩展把一整份
+   * 状态算完（读对话列表 + 读首页 80 条消息 + 序列化约 3MB）再推回来才有变化。扩展
+   * 正在跑 Agent 或搜索队列满时，这个往返可能几百毫秒甚至直接失败，用户看到的就是
+   * **「点了没反应」，只能重载窗口**。草稿是纯本地状态（没有对话、没有消息），
+   * 完全可以立刻画出来；随后到达的 `state` 会把它校准成权威值。
+   */
+  /** 「新建对话」点击后、扩展回话之前的占位卡片 id 前缀（每次点击各插一张）。 */
+  const PENDING_NEW_CHAT_PREFIX = '__hwchat_pending_new_chat__';
+  let pendingNewChatSeq = 0;
+
+  function enterDraftLocally() {
+    /**
+     * 当前就是一条没用过的空对话：什么都不做，只把焦点还给输入框。
+     * 扩展侧 `newChat()` 的判据完全一致（0 条消息），所以这里不做占位卡；
+     * 否则会出现「UI 画了一张卡、服务端没建」的错位。
+     */
+    const currentEmpty = Boolean(state.conversation)
+      && (state.conversation.messageCount ?? state.messages.length) === 0
+      && state.messages.length === 0;
+    if (currentEmpty) {
+      elements.promptInput.focus();
+      return;
+    }
+    saveDraft(state.conversation?.id);
+    state.conversation = null;
+    state.messages = [];
+    state.hasMore = false;
+    state.pendingAttachments = [];
+    state.pendingApprovals = [];
+    state.taskTree = null;
+    state.todos = [];
+    state.todosInterrupted = false;
+    state.todosIncomplete = false;
+    state.autoFollow = true;
+    state.expandedArchiveId = null;
+    state.archiveRestore = null;
+    state.showArchived = false;
+    // 侧边栏立刻出现这张卡片：扩展会真的建一条对话，随后推送的权威列表会把它替换掉。
+    // 万一扩展失败，任何一次状态推送都会整体替换列表，占位卡不会残留。
+    // 每次点击各插一张：连点三次就该看到三张卡片，而不是三张挤成一张。
+    pendingNewChatSeq += 1;
+    state.conversations = [{
+      id: `${PENDING_NEW_CHAT_PREFIX}${pendingNewChatSeq}`,
+      title: t('common.newChat'),
+      preview: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messageCount: 0,
+      pinned: false,
+      totalTokens: 0,
+      mode: state.mode,
+      skillIds: [],
+      archived: false,
+      pending: true,
+    }, ...state.conversations];
+    restoreDraft(null);
+    autoResize();
+    renderAll();
+    elements.promptInput.focus();
   }
 
   function submit() {
@@ -1955,7 +2441,7 @@
       togglePanel(key, panel);
     });
   }
-  elements.newChatButton.addEventListener('click', () => { post('newChat'); closeMobileHistory(); });
+  elements.newChatButton.addEventListener('click', () => { enterDraftLocally(); post('newChat'); closeMobileHistory(); });
   elements.historyButton.addEventListener('click', () => elements.app.classList.toggle('history-open'));
   elements.closeHistoryButton.addEventListener('click', closeMobileHistory);
   elements.archiveViewButton.addEventListener('click', () => post('showArchived', { value: !state.showArchived }));
@@ -1978,6 +2464,8 @@
   };
   bindSummaryAction('resumeTodosButton', 'resumeTodos');
   bindSummaryAction('cancelTodosButton', 'cancelTodos'); elements.skillsButton.addEventListener('click', () => { elements.skillsPanel.hidden = !elements.skillsPanel.hidden; });
+  // 安装按钮只把请求转给扩展（webview 自己开不了外部链接）。
+  if (elements.skillsInstallButton) elements.skillsInstallButton.addEventListener('click', () => post('installQuickLaunch'));
   elements.approvalAllowButton.addEventListener('click', () => {
     const requestId = elements.approvalCard.dataset.requestId;
     if (requestId) post('approvalResponse', { requestId, allow: true });
@@ -1986,20 +2474,25 @@
     const requestId = elements.approvalCard.dataset.requestId;
     if (requestId) post('approvalResponse', { requestId, allow: false });
   });
-  // 胶囊尺寸跟着面板宽度走：拖动侧边栏、切换分栏都会触发，重算一次即可（不重建 DOM）。
-  let capsuleResizeTimer = null;
+  // 鼠标滚轮悬停在胶囊栏时转为横向滚动；到达边缘后保留页面的纵向滚动。
+  elements.todoArchiveBar.addEventListener('wheel', (event) => {
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    const maxScroll = elements.todoArchiveBar.scrollWidth - elements.todoArchiveBar.clientWidth;
+    if (maxScroll <= 0) return;
+    const movingLeft = event.deltaY < 0;
+    if ((movingLeft && elements.todoArchiveBar.scrollLeft <= 0)
+      || (!movingLeft && elements.todoArchiveBar.scrollLeft >= maxScroll)) return;
+    event.preventDefault();
+    elements.todoArchiveBar.scrollLeft = Math.min(maxScroll, Math.max(0, elements.todoArchiveBar.scrollLeft + event.deltaY));
+  }, { passive: false });
+  // 滚动条是隐藏的（见 media/chat.css），所以除了滚轮，还要支持按住鼠标横向拖动。
+  bindTodoArchiveDrag(elements.todoArchiveBar);
+
+  let resizeTimer = null;
   window.addEventListener('resize', () => {
-    clearTimeout(capsuleResizeTimer);
-    capsuleResizeTimer = setTimeout(() => { layoutTodoArchives(); updateScrollToBottom(); }, 60);
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(updateScrollToBottom, 60);
   });
-  if (typeof ResizeObserver === 'function') {
-    const observer = new ResizeObserver(() => {
-      // 只看宽度：胶囊缩小会改变这一行的高度，用高度触发会自己喂自己。
-      const width = elements.todoArchiveBar.clientWidth;
-      if (width && width !== lastCapsuleBarWidth) layoutTodoArchives();
-    });
-    observer.observe(elements.todoArchiveBar);
-  }
   elements.historySearch.addEventListener('input', (event) => { state.search = event.target.value; renderHistory(); });
   elements.modelInput.addEventListener('change', (event) => { state.model = event.target.value; syncReasoningSelector(); post('setModel', { model: event.target.value }); });
   elements.profileInput.addEventListener('change', (event) => post('setProfile', { profileId: event.target.value }));
@@ -2014,7 +2507,7 @@
     post('setPermissionPreset', { permissionPreset });
   });
   elements.agentMaxStepsInput.addEventListener('change', (event) => {
-    state.agentMaxSteps = Math.max(0, Math.floor(Number(event.target.value) || 0));
+    state.agentMaxSteps = normalizeStepValue(event.target.value);
     post('setAgentMaxSteps', { agentMaxSteps: state.agentMaxSteps });
     renderHeader();
   });
@@ -2057,9 +2550,18 @@
     updateScrollToBottom();
   });
   window.addEventListener('resize', updateScrollToBottom);
+  // 滚动事件一帧只处理一次：`isNearBottom()` / `updateScrollToBottom()` 都要读
+  // scrollHeight / clientHeight，逐个事件读等于每一帧强制布局多次；
+  // 平滑滚动与触控板惯性下这能堆成几十次/帧的同步布局。
+  let scrollFramePending = false;
   elements.messageViewport.addEventListener('scroll', () => {
-    if (!state.renderingMessages) state.autoFollow = isNearBottom();
-    updateScrollToBottom();
+    if (scrollFramePending) return;
+    scrollFramePending = true;
+    requestAnimationFrame(() => {
+      scrollFramePending = false;
+      if (!state.renderingMessages) state.autoFollow = isNearBottom();
+      updateScrollToBottom();
+    });
   }, { passive: true });
   elements.promptInput.addEventListener('paste', (event) => {
     const files = clipboardFiles(event.clipboardData);
@@ -2230,13 +2732,23 @@
         state.conversation = incoming.conversation; state.messages = incoming.messages || []; state.hasMore = Boolean(incoming.hasMore);
         state.sendOnEnter = incoming.settings?.sendOnEnter !== false; state.pendingAttachments = incoming.pendingAttachments || [];
         state.apiProfiles = incoming.settings?.apiProfiles || []; state.activeApiProfileId = incoming.settings?.activeApiProfileId || ''; state.model = incoming.settings?.model || ''; state.modelOptionsByProfile = incoming.modelOptionsByProfile || {};
-        state.permissionPreset = incoming.settings?.permissionPreset || 'review'; state.agentMaxSteps = Math.max(0, Math.floor(Number(incoming.settings?.agentMaxSteps) || 0)); state.reasoningEffort = incoming.settings?.reasoningEffort || 'default';
+        state.permissionPreset = incoming.settings?.permissionPreset || 'askAll'; state.agentMaxSteps = normalizeStepValue(incoming.settings?.agentMaxSteps); state.reasoningEffort = incoming.settings?.reasoningEffort || 'default';
         state.permissionPresetPending = false;
-        state.skills = incoming.skills || []; state.selectedSkillIds = incoming.selectedSkillIds || []; state.mode = incoming.mode || 'agent';
+        state.skills = incoming.skills || []; state.selectedSkillIds = incoming.selectedSkillIds || [];
+        // 没装「本地skill快捷调用」时勾选入口改为引导安装，所以这个标记必须随 state 下发。
+        state.quickLaunchInstalled = incoming.quickLaunchInstalled !== false;
+        state.mode = incoming.mode || 'agent';
         state.workspaceTrusted = Boolean(incoming.workspaceTrusted); state.agentAvailable = Boolean(incoming.agentAvailable); state.availableToolCount = Number(incoming.availableToolCount) || 0; state.showArchived = Boolean(incoming.showArchived); state.taskTree = incoming.taskTree || (message.streamingConversationId ? state.taskTree : null); state.todos = Array.isArray(incoming.todos) ? incoming.todos : [];
         state.project = incoming.project && typeof incoming.project === 'object'
-          ? { name: incoming.project.name || null, bound: Boolean(incoming.project.bound) }
-          : { name: null, bound: false };
+          ? {
+            name: incoming.project.name || null,
+            // 徽标要显示「涉及的全部项目」：除了主项目之外的都从这里来。
+            others: Array.isArray(incoming.project.others)
+              ? incoming.project.others.filter((name) => typeof name === 'string' && name)
+              : [],
+            bound: Boolean(incoming.project.bound),
+          }
+          : { name: null, others: [], bound: false };
         state.fileRoots = incoming.fileRoots && typeof incoming.fileRoots === 'object'
           ? {
             roots: Array.isArray(incoming.fileRoots.roots) ? incoming.fileRoots.roots.filter((value) => typeof value === 'string' && value) : [],
@@ -2258,7 +2770,12 @@
           // 切过来了：贴回这条对话自己的草稿（没有就是空的），并让输入框重新量一次高度。
           restoreDraft(incoming.conversation?.id); autoResize();
         }
-        setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId); renderAll(); break;
+        setStreaming(Boolean(message.streamingConversationId), message.streamingConversationId);
+        // 消息内容没变（例如只切换了预设 / 模型 / 附件）时不再重建整个消息区：
+        // 这就是「点一下界面卡半拍」的主要来源。
+        const nextSignature = messageListSignature(state.messages, state.conversation?.id);
+        renderAll({ skipMessages: nextSignature === renderedMessageSignature });
+        break;
       }
       case 'draft': elements.promptInput.value = message.text || ''; saveDraft(state.conversation?.id); state.pendingAttachments = message.attachments || []; renderAttachments(); autoResize(); elements.promptInput.focus(); break;
       case 'attachments': state.pendingAttachments = message.attachments || []; renderAttachments(); break;
@@ -2272,10 +2789,10 @@
         setStreaming(true, message.conversationId); renderMessages('bottom'); renderAttachments(); renderHistory(); break;
       }
       case 'messageAdded': if (message.conversationId === state.conversation?.id) { state.messages.push(message.message); state.pendingAttachments = []; renderMessages(state.autoFollow ? 'bottom' : 'keep'); renderAttachments(); } break;
-      case 'streamDelta': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.content = `${target.content || ''}${message.content || ''}`; target.reasoning = `${target.reasoning || ''}${message.reasoning || ''}`; scheduleMessageRender(); } break; }
-      case 'toolExecutions': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.toolExecutions = message.tools || []; scheduleMessageRender(); } break; }
-      case 'skillUsage': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.usedSkills = message.skills || []; scheduleMessageRender(); } break; }
-      case 'messageComplete': { if (message.conversationId !== state.conversation?.id) break; if (state.renderTimer) { clearTimeout(state.renderTimer); state.renderTimer = null; } const index = state.messages.findIndex((item) => item.id === message.message.id); if (index >= 0) state.messages[index] = message.message; else state.messages.push(message.message); renderMessages('keep'); break; }
+      case 'streamDelta': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.content = `${target.content || ''}${message.content || ''}`; target.reasoning = `${target.reasoning || ''}${message.reasoning || ''}`; scheduleMessagePatch(message.messageId); } break; }
+      case 'toolExecutions': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.toolExecutions = message.tools || []; scheduleMessagePatch(message.messageId); } break; }
+      case 'skillUsage': { if (message.conversationId !== state.conversation?.id) break; const target = state.messages.find((item) => item.id === message.messageId); if (target) { target.usedSkills = message.skills || []; scheduleMessagePatch(message.messageId); } break; }
+      case 'messageComplete': { if (message.conversationId !== state.conversation?.id) break; if (state.renderTimer) { clearTimeout(state.renderTimer); state.renderTimer = null; } pendingPatchId = null; const index = state.messages.findIndex((item) => item.id === message.message.id); if (index >= 0) state.messages[index] = message.message; else state.messages.push(message.message); renderMessages('keep'); break; }
       case 'streamIdle': markRunning(message.conversationId, false); if (!message.conversationId || message.conversationId === state.conversation?.id) { setStreaming(false); renderTaskTree(); elements.promptInput.focus(); } renderHistory(); break;
       case 'runs': state.runningConversationIds = Array.isArray(message.runningConversationIds) ? message.runningConversationIds : []; updateStreamingFromRuns(); renderHistory(); break;
       case 'history': state.conversations = message.conversations || []; state.archivedConversations = message.archivedConversations || []; state.runningConversationIds = Array.isArray(message.runningConversationIds) ? message.runningConversationIds : state.runningConversationIds; renderHistory(); updateStreamingFromRuns(); break;
@@ -2299,13 +2816,22 @@
         break;
       }
       case 'modeChanged': state.mode = message.mode; renderHeader(); break;
-      case 'skillsChanged': state.selectedSkillIds = message.skillIds || []; renderSkills(); renderHeader(); break;
+      // 勾选由扩展侧按「这条对话」算好再回推，界面只照着画。
+      case 'skillsChanged':
+        state.selectedSkillIds = message.skillIds || [];
+        if (Array.isArray(message.skills)) state.skills = message.skills;
+        if (typeof message.quickLaunchInstalled === 'boolean') state.quickLaunchInstalled = message.quickLaunchInstalled;
+        renderSkills(); renderHeader();
+        break;
+
+
       case 'permissionPresetPending': state.permissionPresetPending = Boolean(message.active); updateComposerState(); break;
-      case 'permissionPresetChanged': state.permissionPreset = message.permissionPreset || 'review'; elements.permissionPresetInput.value = state.permissionPreset; syncPermissionHint(); break;
-      case 'agentMaxStepsChanged': state.agentMaxSteps = Math.max(0, Math.floor(Number(message.agentMaxSteps) || 0)); ensureStepOption(state.agentMaxSteps); elements.agentMaxStepsInput.value = String(state.agentMaxSteps); break;
+      case 'permissionPresetChanged': state.permissionPreset = message.permissionPreset || 'askAll'; elements.permissionPresetInput.value = state.permissionPreset; syncPermissionHint(); break;
+      case 'agentMaxStepsChanged': state.agentMaxSteps = normalizeStepValue(message.agentMaxSteps); ensureStepOption(state.agentMaxSteps); elements.agentMaxStepsInput.value = String(state.agentMaxSteps); break;
       case 'reasoningEffortChanged': state.reasoningEffort = message.reasoningEffort || 'default'; elements.reasoningEffortInput.value = state.reasoningEffort; break;
       case 'taskTreeChanged': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.taskTree = message.taskTree || null; renderTaskTree(); updateComposerState(); break;
       case 'todos': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.todos = Array.isArray(message.todos) ? message.todos : []; state.todosInterrupted = Boolean(message.interrupted); state.todosIncomplete = Boolean(message.incomplete); renderTodos(); break;
+      case 'fileReferencesVerified': applyFileReferenceVerification(message); break;
       case 'todoArchives': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.todoArchives = Array.isArray(message.todoArchives) ? message.todoArchives : []; renderArchivePanel(); renderTodoArchives(); break;
       case 'voiceInputAllowed': startVoiceRecognition(); break;
       case 'clipboardWriteResult': finishClipboardWrite(message.requestId, Boolean(message.ok), message.error); break;

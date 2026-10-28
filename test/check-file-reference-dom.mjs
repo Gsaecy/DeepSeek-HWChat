@@ -57,6 +57,22 @@ check('定位后把资源管理器视图调出来（否则选中了也看不见�
 check('工作区外的文件先拦一道（revealInExplorer 对它静默无效）',
   PANEL.includes('isInsideWorkspace(uri.fsPath, roots)') && PANEL.includes("tt('error.fileRefOutsideWorkspace')"));
 check('「在系统中显示」与「在资源管理器视图中显示」是两条独立消息', CHAT_JS.includes("post('revealFile', fileReferencePayload(reference))") && CHAT_JS.includes("post('revealFileInExplorer', fileReferencePayload(reference))"));
+check('消息协议里有 verifyFileReferences（渲染后回问真实文件）',
+  /\| \{ type: 'verifyFileReferences'; requestId: string; items: FileReferenceQuery\[\] \}/.test(PANEL) && /case 'verifyFileReferences':/.test(PANEL));
+check('扩展侧按「候选存在性」判定，不靠猜', PANEL.includes('chooseReferenceMatch') && PANEL.includes('exists: (candidate) => existsSync(candidate)'));
+check('裸文件名合并成一次搜索（经统一搜索调度层与批量核实模块）',
+  PANEL.includes('resolveFileReferences(') && PANEL.includes('searchWorkspace(')
+  && readFileSync('src/agent/fileReferenceBatch.ts', 'utf8').includes('filenameSearchName'));
+/*
+ * 这条盯的是一处差点写错的地方：排除列表里原本有 `out`，
+ * 而 `extension.js` 的真实位置就是 `out/extension.js` —— 排掉它，
+ * 这条主用例就永远只能降级，功能等于没修。
+ */
+check('按文件名搜索用 minimal 排除档，不排除构建产物目录（`extension.js` 就在 out 里）',
+  PANEL.includes("exclude: 'minimal'") && !PANEL.includes('{node_modules,.git,out'));
+check('同名多份只认唯一命中（猜错文件比不给引用更糟）', /unique\.size !== 1/.test(readFileSync('src/agent/fileReferenceResolve.ts', 'utf8')));
+check('核实结论回给界面', /case 'fileReferencesVerified': applyFileReferenceVerification\(message\); break;/.test(CHAT_JS));
+check('判不出来就降级成普通文本', CHAT_JS.includes('function demoteFileReference(') && CHAT_JS.includes('function upgradeFileReference('));
 
 /* ── 2. 最小 DOM ─────────────────────────────────────────── */
 
@@ -93,6 +109,19 @@ class FakeElement {
   }
   remove() {
     if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this);
+  }
+  /**
+   * 降级时要把引用节点换成普通文本节点。
+   *
+   * 真实的 DOM 有 `replaceWith`，这个最小实现只提供 `replaceChild`，
+   * 顺带验证了 chat.js 里的降级代码在两种写法下都能工作。
+   */
+  replaceChild(next, current) {
+    const index = this.children.indexOf(current);
+    if (index < 0) return;
+    next.parent = this;
+    this.children[index] = next;
+    current.parent = null;
   }
   getBoundingClientRect() { return { width: 180, height: 96, left: 0, top: 0 }; }
   fire(type, event = {}) {
@@ -183,7 +212,7 @@ function buildHarness(fileTarget) {
   const factory = new Function(
     'fileRef', 'state', 't', 'iconNode', 'textElement', 'post', 'requestClipboardWrite', 'document', 'window',
     `${extractBlock(CHAT_JS)}
-     return { fileReferenceNode, appendPlainText, openFileReferenceMenu, closeFileReferenceMenu, fileTargetLabel };`,
+     return { fileReferenceNode, appendPlainText, openFileReferenceMenu, closeFileReferenceMenu, fileTargetLabel, flushFileReferenceCheck, applyFileReferenceVerification };`,
   );
   return factory(loadFileRef(), state, t, iconNode, textElement, post, requestClipboardWrite, fakeDocument, fakeWindow);
 }
@@ -308,8 +337,73 @@ function textOf(node) {
   harness.closeFileReferenceMenu();
 }
 
-/* ── 7. 退化：没有工作区根时不造假引用 ──────────────────── */
+/* ── 7. 核实：判不出来的引用降级成普通文本 ─────────────── */
 
+/*
+ * 这一节盯的是真实缺陷：模型正文里裸写的 `extension.js` 只是**裸文件名**，
+ * 原来「有扩展名就当文件、直接拼到项目根上」，于是它变成了一个指向
+ * `<根>/extension.js` 的引用，点开报「文件不存在」。
+ * 现在渲染后会回问扩展侧，判不出来就还原成原文。
+ */
+{
+  const harness = buildHarness('finder');
+  const parent = new FakeElement('p');
+  harness.appendPlainText(parent, '另外中文在 extension.js 里被 transcode 了');
+  const refs = collectRefs(parent);
+  check('裸文件名先按引用渲染（等扩展核实）', refs.length === 1, `实际 ${refs.length} 个`);
+
+  harness.flushFileReferenceCheck();
+  const request = posted.filter((item) => item.type === 'verifyFileReferences').pop();
+  check('渲染完发出一条核实请求（不是每个引用各发一条）', Boolean(request), JSON.stringify(posted.map((item) => item.type)));
+  check('请求里带的是**正文原始写法**与项目根',
+    request?.items?.[0]?.path === 'extension.js' && request?.items?.[0]?.root === ROOT,
+    JSON.stringify(request?.items));
+
+  posted.length = 0;
+  harness.applyFileReferenceVerification({ requestId: request.requestId, resolved: [null] });
+  check('核实不到 → 引用消失（不再是可点标签）', collectRefs(parent).length === 0);
+  check('降级后原文一字不差地保留',
+    textOf(parent).includes('extension.js') && textOf(parent).includes('被 transcode 了'),
+    textOf(parent));
+}
+
+/* ── 8. 核实到另一个文件：标签与点击目标一起换 ─────────── */
+
+{
+  const harness = buildHarness('finder');
+  const parent = new FakeElement('p');
+  harness.appendPlainText(parent, '中文在 extension.js 里被转义了');
+  const chip = collectRefs(parent)[0];
+  check('核实前标签是按项目根猜的完整路径', labelOf(chip) === `${ROOT}/extension.js`, labelOf(chip));
+
+  harness.flushFileReferenceCheck();
+  const request = posted.filter((item) => item.type === 'verifyFileReferences').pop();
+  harness.applyFileReferenceVerification({ requestId: request.requestId, resolved: [`${ROOT}/out/extension.js`] });
+  check('核实到 `out/extension.js` 后标签换成真实路径',
+    labelOf(chip) === `${ROOT}/out/extension.js`, labelOf(chip));
+  check('悬停提示也同步换成真实路径', String(chip.title).includes(`${ROOT}/out/extension.js`), String(chip.title));
+
+  posted.length = 0;
+  chip.fire('click');
+  const open = posted.find((item) => item.type === 'openFileReference');
+  check('点开的是核实过的真实路径（不是猜的那个）',
+    open?.path === `${ROOT}/out/extension.js`, open?.path);
+}
+
+/* ── 9. 反引号引用同样走核实，且保持短的相对写法 ────────── */
+
+{
+  const harness = buildHarness('finder');
+  const chip = harness.fileReferenceNode('extension.js', { compact: true, allowSpaces: true });
+  check('反引号里的裸文件名先渲染成引用', Boolean(chip));
+  harness.flushFileReferenceCheck();
+  const request = posted.filter((item) => item.type === 'verifyFileReferences').pop();
+  harness.applyFileReferenceVerification({ requestId: request.requestId, resolved: [`${ROOT}/out/extension.js`] });
+  check('引用格式下仍显示相对路径（不显示整条绝对路径）',
+    labelOf(chip) === 'out/extension.js', labelOf(chip));
+}
+
+/* ── 10. 退化：没有工作区根时不造假引用 ─────────────────── */
 {
   const sandbox = {};
   sandbox.globalThis = sandbox;

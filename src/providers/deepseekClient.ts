@@ -96,9 +96,19 @@ export class DeepSeekClient {
     if (settings.reasoningEffort !== 'default') {
       const isDeepSeek = new URL(endpoint).hostname === 'api.deepseek.com';
       if (isDeepSeek) {
+        /*
+         * 按 DeepSeek 官方 Chat Completions 文档：
+         * - `thinking.type` 是思考模式的开关（enabled / disabled，默认 enabled）；
+         * - `reasoning_effort` 取 `none | low | high | max`，同时明确接受
+         *   `minimal`（→ low）与 `medium` / `xhigh`（→ high）作为兼容值。
+         * 所以四档（低/中/高/最大）原样发出去即可，服务端自己折算，
+         * 这里**不要**再私自把 medium 折成 high 或把 max 折成 high。
+         */
         body.thinking = { type: settings.reasoningEffort === 'none' ? 'disabled' : 'enabled' };
-        if (settings.reasoningEffort !== 'none') body.reasoning_effort = settings.reasoningEffort;
+        body.reasoning_effort = settings.reasoningEffort;
       } else {
+        // OpenAI 兼容接口的 reasoning_effort 通常只有 minimal/low/medium/high，
+        // 没有 max 这一档：把「最大」折成它的最高档 high，其余原样透传。
         body.reasoning_effort = settings.reasoningEffort === 'max' ? 'high' : settings.reasoningEffort;
       }
     }
@@ -315,7 +325,7 @@ function reasoningCapability(item: Record<string, unknown>): Pick<DiscoveredMode
   if (['none', 'disabled', 'unsupported'].includes(mode)) return { reasoningSupport: 'unsupported' };
   if (['fixed', 'always', 'always_on', 'required'].includes(mode)) return { reasoningSupport: 'fixed', reasoningEfforts: efforts.length ? efforts : undefined };
   if (efforts.length > 1 || ['configurable', 'optional', 'hybrid'].includes(mode)) {
-    return { reasoningSupport: 'configurable', reasoningEfforts: efforts.length ? efforts : ['default', 'none', 'low', 'high', 'max'] };
+    return { reasoningSupport: 'configurable', reasoningEfforts: efforts.length ? efforts : ['low', 'medium', 'high', 'max'] };
   }
   if (efforts.length === 1) return { reasoningSupport: 'fixed', reasoningEfforts: efforts };
   if (explicit === true) return { reasoningSupport: 'fixed' };
@@ -334,7 +344,14 @@ function reasoningEfforts(item: Record<string, unknown>): ReasoningEffort[] {
   if (!candidates) return [];
   const normalized = candidates
     .map((value) => String(value).toLocaleLowerCase())
-    .map((value): ReasoningEffort | undefined => value === 'off' || value === 'disabled' ? 'none' : value === 'medium' ? 'high' : ['default', 'none', 'low', 'high', 'max'].includes(value) ? value as ReasoningEffort : undefined)
+    // 各家 /models 元数据用的别名：off/disabled = 关闭，minimal = 低，
+    // xhigh / extra-high = 最高。别名落到我们的四档上，界面才不会出现认不出的值。
+    .map((value): ReasoningEffort | undefined => {
+      if (value === 'off' || value === 'disabled') return 'none';
+      if (value === 'minimal') return 'low';
+      if (value === 'xhigh' || value === 'extra-high' || value === 'extra_high') return 'max';
+      return ['default', 'none', 'low', 'medium', 'high', 'max'].includes(value) ? value as ReasoningEffort : undefined;
+    })
     .filter((value): value is ReasoningEffort => Boolean(value));
   return [...new Set(normalized)];
 }

@@ -244,7 +244,7 @@ test('replans after related runtime guidance and skips stale pending tool calls'
   assert.match(result.content, /重新规划并完成/);
 });
 
-test('allows more than twelve agent rounds when the step limit is unlimited', async () => {
+test('0 no longer means unlimited: it falls back to the default finite budget', async () => {
   let round = 0;
   let executed = 0;
   const client = {
@@ -277,9 +277,11 @@ test('allows more than twelve agent rounds when the step limit is unlimited', as
     callbacks: { onDelta: () => undefined, onToolsChanged: () => undefined, requestApproval: async () => true },
   });
 
+  // 13 轮 < 默认 24 步：照常完成，证明有限预算不会误伤正常任务。
   assert.equal(executed, 13);
   assert.equal(round, 14);
   assert.equal(result.stoppedByStepLimit, false);
+  assert.equal(result.stopReason, 'complete');
   assert.match(result.content, /完成全部步骤/);
 });
 

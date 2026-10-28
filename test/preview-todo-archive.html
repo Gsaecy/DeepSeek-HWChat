@@ -6,7 +6,7 @@
   <title>HWChat · 归档胶囊 / 面板内审批 预览</title>
   <link rel="stylesheet" href="../media/chat.css">
   <style>
-    /* 只用截图检查两件事：胶囊缩放的几何关系，和审批卡片的可读性。 */
+    /* 只用截图检查横向滚动胶囊栏和审批卡片的可读性。 */
     body { padding: 14px; background: var(--bg); }
     .preview-frame { width: 420px; max-width: 100%; margin: 0 0 18px; border: 1px dashed var(--border); border-radius: 8px; padding: 10px; }
     .preview-label { margin: 0 0 6px; color: var(--muted); font-size: 10px; }
@@ -15,14 +15,14 @@
 </head>
 <body>
   <div class="preview-frame" id="frame-narrow">
-    <p class="preview-label">窄栏 + 12 颗胶囊（应当一起缩小、仍是一行、宽高比 3:1）</p>
+    <p class="preview-label">窄栏 + 12 颗胶囊（保持尺寸；无滚动条，滚轮或按住拖动横向滚动）</p>
     <div class="demo-composer">
       <div class="todo-archive-bar" id="bar-narrow"></div>
     </div>
   </div>
 
   <div class="preview-frame" id="frame-wide">
-    <p class="preview-label">宽栏 + 3 颗胶囊（应当保持初始高度 16px）</p>
+    <p class="preview-label">宽栏 + 3 颗胶囊（固定高度 10.67px）</p>
     <div class="demo-composer">
       <div class="todo-archive-bar" id="bar-wide"></div>
     </div>
@@ -70,8 +70,6 @@
       const ch = (i) => Math.round(fromColor[i] + (toColor[i] - fromColor[i]) * local).toString(16).padStart(2, '0');
       return `#${ch(0)}${ch(1)}${ch(2)}`;
     }
-    const BASE_H = 16, MIN_H = 6, RATIO = 3;
-
     function fill(bar, count) {
       bar.replaceChildren();
       for (let index = 0; index < count; index += 1) {
@@ -79,34 +77,73 @@
         capsule.type = 'button';
         capsule.className = 'todo-capsule';
         capsule.style.backgroundColor = colorHex(count <= 1 ? 0 : index / (count - 1));
-        const mark = document.createElement('span');
-        mark.className = 'todo-capsule-mark';
-        mark.textContent = '▤';
-        capsule.append(mark);
         bar.append(capsule);
       }
-      layout(bar);
-    }
-
-    function layout(bar) {
-      const count = bar.children.length;
-      if (!count) return;
-      const available = bar.clientWidth;
-      const perUnit = count * RATIO + Math.max(0, count - 1) * 0.25;
-      let height = Math.min(BASE_H, available / perUnit);
-      if (height < 8) height = Math.min(height, (available - 2 * (count - 1)) / (count * RATIO));
-      height = Math.max(MIN_H, height);
-      bar.style.setProperty('--capsule-h', `${height.toFixed(2)}px`);
-      bar.style.setProperty('--capsule-w', `${(height * RATIO).toFixed(2)}px`);
-      bar.style.setProperty('--capsule-gap', `${Math.max(2, height * 0.25).toFixed(2)}px`);
-      bar.classList.toggle('compact', height < 11);
     }
 
     const narrow = document.getElementById('bar-narrow');
     const wide = document.getElementById('bar-wide');
     fill(narrow, 12);
     fill(wide, 3);
-    window.addEventListener('resize', () => { layout(narrow); layout(wide); });
+    // 下面两段是 media/chat.js 里滚轮映射与 bindTodoArchiveDrag 的等价镜像：
+    // 这个预览页不加载 chat.js（它要扩展注入的 API），复制一份才能真的滚起来。
+    // 行为以 chat.js 为准，改那边记得同步这里。
+    for (const bar of [narrow, wide]) {
+      bar.addEventListener('wheel', (event) => {
+        if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+        const maxScroll = bar.scrollWidth - bar.clientWidth;
+        if (maxScroll <= 0) return;
+        const movingLeft = event.deltaY < 0;
+        if ((movingLeft && bar.scrollLeft <= 0) || (!movingLeft && bar.scrollLeft >= maxScroll)) return;
+        event.preventDefault();
+        bar.scrollLeft = Math.min(maxScroll, Math.max(0, bar.scrollLeft + event.deltaY));
+      }, { passive: false });
+
+      // 按住拖动：滚动条是隐藏的，这是第二种滚法（触屏走浏览器原生滚动）。
+      // 指针捕获要等确认拖动之后再设，否则 click 会被改派给栏，胶囊点不动。
+      let pointerId = null;
+      let startX = 0;
+      let startScrollLeft = 0;
+      let captured = false;
+      bar.addEventListener('pointerdown', (event) => {
+        if (event.pointerType === 'touch' || event.button !== 0) return;
+        pointerId = event.pointerId;
+        startX = event.clientX;
+        startScrollLeft = bar.scrollLeft;
+        captured = false;
+        delete bar.dataset.dragMoved;
+      });
+      bar.addEventListener('pointermove', (event) => {
+        if (pointerId === null || event.pointerId !== pointerId) return;
+        const dx = event.clientX - startX;
+        if (bar.dataset.dragMoved !== '1' && Math.abs(dx) < 3) return;
+        bar.dataset.dragMoved = '1';
+        bar.classList.add('dragging');
+        if (!captured) { captured = true; bar.setPointerCapture(event.pointerId); }
+        bar.scrollLeft = startScrollLeft - dx;
+        event.preventDefault();
+      });
+      const release = (event) => {
+        if (pointerId === null) return;
+        if (event && event.pointerId !== undefined && event.pointerId !== pointerId) return;
+        pointerId = null;
+        bar.classList.remove('dragging');
+        if (captured && bar.hasPointerCapture(event.pointerId)) {
+          captured = false;
+          bar.releasePointerCapture(event.pointerId);
+        }
+      };
+      bar.addEventListener('pointerup', release);
+      bar.addEventListener('pointercancel', release);
+      bar.addEventListener('lostpointercapture', release);
+      // 拖动后的那个 click 不算点击（chat.js 里由 consumeArchiveDragClick 吞掉）。
+      bar.addEventListener('click', (event) => {
+        if (bar.dataset.dragMoved !== '1') return;
+        delete bar.dataset.dragMoved;
+        event.preventDefault();
+        event.stopPropagation();
+      }, true);
+    }
   </script>
 </body>
 </html>

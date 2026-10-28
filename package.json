@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek: approval-controlled workspace tools, plan-tracking task lists, copyable local/server commands and durable local history.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -39,10 +39,7 @@
     "reasoner",
     "assistant"
   ],
-  "activationEvents": [
-    "onStartupFinished",
-    "onView:hwchat.chatView"
-  ],
+  "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -132,6 +129,12 @@
         "title": "HWChat: %command.showPermissionScope%",
         "category": "HWChat",
         "icon": "$(eye)"
+      },
+      {
+        "command": "hwchat.showResourceStats",
+        "title": "HWChat: %command.showResourceStats%",
+        "category": "HWChat",
+        "icon": "$(pulse)"
       }
     ],
     "viewsContainers": {
@@ -355,28 +358,40 @@
         },
         "hwchat.agentMaxSteps": {
           "type": "number",
-          "default": 0,
+          "default": 24,
           "minimum": 0,
-          "description": "%config.agentMaxSteps%"
+          "maximum": 200,
+          "description": "%config.agentMaxSteps%",
+          "deprecationMessage": "%config.agentMaxSteps.deprecated%"
+        },
+        "hwchat.searchExclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "description": "%config.searchExclude%"
         },
         "hwchat.reasoningEffort": {
           "type": "string",
           "enum": [
             "default",
-            "none",
             "low",
+            "medium",
             "high",
             "max"
           ],
           "enumDescriptions": [
+            "%config.reasoningEffort.enumDefault%",
             "%config.reasoningEffort.enum0%",
             "%config.reasoningEffort.enum1%",
             "%config.reasoningEffort.enum2%",
-            "%config.reasoningEffort.enum3%",
-            "%config.reasoningEffort.enum4%"
+            "%config.reasoningEffort.enum3%"
           ],
           "default": "default",
-          "description": "%config.reasoningEffort%"
+          "description": "%config.reasoningEffort%",
+          "deprecationMessage": "%config.reasoningEffort.deprecated%"
         },
         "hwchat.permissionPreset": {
           "type": "string",
@@ -393,8 +408,9 @@
             "%config.permissionPreset.enum2%",
             "%config.permissionPreset.enum3%"
           ],
-          "default": "review",
-          "description": "%config.permissionPreset%"
+          "default": "askAll",
+          "description": "%config.permissionPreset%",
+          "deprecationMessage": "%config.permissionPreset.deprecated%"
         },
         "hwchat.fileReadPolicy": {
           "type": "string",

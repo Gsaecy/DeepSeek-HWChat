@@ -5,7 +5,7 @@ export type PermissionPolicy = 'allow' | 'ask' | 'deny';
 /** 敏感文件与危险命令使用的三态策略：允许 / 逐次确认 / 禁止。 */
 export type GuardedPolicy = 'allow' | 'ask' | 'deny';
 export type PermissionPreset = 'askAll' | 'review' | 'autopilot' | 'full';
-export type ReasoningEffort = 'default' | 'none' | 'low' | 'high' | 'max';
+export type ReasoningEffort = 'default' | 'none' | 'low' | 'medium' | 'high' | 'max';
 import type { LanguageSetting } from './i18n';
 export type { Language, LanguageSetting } from './i18n';
 
@@ -162,6 +162,15 @@ export interface ConversationSummary {
    */
   projectRoot?: string;
   /**
+   * 本对话改过文件的**其它**项目根（绝对路径，按首次触达顺序，不含 `projectRoot`）。
+   *
+   * 一个对话经常横跨多个项目（在 A 里做功能、顺手把 B 的对接改一下）。只留一个
+   * `projectRoot` 时，标题旁的项目徽标永远只显示第一个项目，用户看不出这条对话
+   * 到底动过哪些地方。`projectRoot` 仍然是「相对路径与 git 写操作归属哪个项目」的
+   * 唯一依据，这个字段只用于展示，不参与路径解析。
+   */
+  projectRoots?: string[];
+  /**
    * 本对话自己的运行时设置。
    *
    * 以前这三项直接写 `hwchat.*` 全局设置，多线程对话时互相污染：在 A 调成
@@ -226,6 +235,10 @@ export interface CleanupOptions {
 
 export interface CleanupResult extends StorageStats {
   deletedMessageCacheBytes: number;
+  /** 本次真正读盘的对话数：0 表示内容没变、整轮被跳过（用于日志与测试断言）。 */
+  scannedConversations?: number;
+  /** 其中「建了但从没初始化、也没有消息」的残骸条数（已包含在 deletedConversations 里）。 */
+  prunedDrafts?: number;
 }
 
 export interface ChatRequestMessage {
@@ -360,9 +373,17 @@ export interface PendingApprovalView {
   risk: 'read' | 'write' | 'command';
 }
 
-/** 标题旁的项目徽标：`name` 只在已绑定时有值。 */
+/**
+ * 标题旁的项目徽标。
+ *
+ * 一个对话可以改到多个项目，所以这里是一组名字而不是一个：
+ * - `name`：本次对话的主项目（相对路径与 git 写操作的归属），未绑定时为 null；
+ * - `others`：本对话改过文件、但不是主项目的其它项目，按首次触达顺序；
+ * - `bound`：是否已落到某个工作区文件夹（为假表示 git 写操作会被拒绝）。
+ */
 export interface ProjectBadgeView {
   name: string | null;
+  others: string[];
   bound: boolean;
 }
 
@@ -377,12 +398,23 @@ export interface WebviewConversationState {
   modelOptionsByProfile: Record<string, ModelOption[]>;
   archivedConversations: ConversationSummary[];
   skills: SkillSummary[];
+  /**
+   * 当前生效的 Skill（勾选的）：来自共享清单的全局勾选 + 本对话的非共享选择。
+   *
+   * 勾选框直接照这个渲染，界面不自己维护一份——两份状态一定会漂。
+   */
   selectedSkillIds: string[];
+  /**
+   * 「本地skill快捷调用」扩展是否已安装。
+   *
+   * 那扩展是全局勾选状态的唯一落盘方，没装就没有地方存，界面改为引导安装。
+   */
+  quickLaunchInstalled: boolean;
   mode: ConversationMode;
   workspaceTrusted: boolean;
   agentAvailable: boolean;
   /**
-   * 对话标题旁的项目徽标。
+   * 对话标题旁的项目徽标（本对话涉及的全部项目）。
    *
    * `bound` 为假表示这条对话还没落到任何工作区文件夹上（`projectRootFor` 返回 undefined）——
    * 这个状态下 git 写操作会被拒绝，所以必须让用户看得见，而不是显示一个猜的目录名。
