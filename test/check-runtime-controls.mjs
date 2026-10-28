@@ -86,9 +86,15 @@ const unlimitedMatch = CHAT_JS.match(/const STEPS_UNLIMITED = ([^;]+);/);
 if (!unlimitedMatch) throw new Error('chat.js 里找不到 STEPS_UNLIMITED');
 
 const prelude = `const REASONING_DEPTHS = [${depthsMatch[1]}];\nconst STEPS_UNLIMITED = ${unlimitedMatch[1]};`;
+/*
+ * 抽出来的都是 chat.js 里的**真实函数**，包括被调用的依赖。
+ * syncReasoningSelector 末尾会调 applyReasoningTitle()（把「下一次发送生效」写进
+ * title），漏掉它这段真代码在桩环境里会直接 ReferenceError —— 以前一直坏在这里。
+ */
 const body = [
   'replaceSelectOptions',
   'syncReasoningSelector',
+  'applyReasoningTitle',
   'normalizeStepValue',
   'stepsLabel',
   'ensureStepOption',
@@ -99,38 +105,50 @@ const ui = new Function(
   `${prelude}\n${body}\n return { syncReasoningSelector, normalizeStepValue, stepsLabel, ensureStepOption, REASONING_DEPTHS, STEPS_UNLIMITED };`,
 )(elements, state, t, document);
 
-/* ── ① 思考深度：四档，且旧值落到「高」 ───────────────────────── */
-
+/* ── ① 思考深度：常驻「默认 + 无」+ 模型声明的档位 ─────────────
+ *
+ * 契约依据（DeepSeek 官方 /models 文档）：
+ *  - `default` 永远第一档：表示「不发参数、用模型官方默认」，也是新对话初始值；
+ *  - `none` 常驻第二档：= 关闭思考（DeepSeek 走 thinking.type=disabled），
+ *    任何支持思考的模型都能关。官方 `effort.supported_levels` 明确**不含** none
+ *    （文档原话：`none`, which turns thinking off, is not included），
+ *    所以「无」只能由我们自己补在最前面，不能只按声明列表过滤。
+ *  - 其余档位按 REASONING_DEPTHS（low/medium/high/max）与模型声明求交集。
+ */
 check('chat.js 的四档深度就是 low/medium/high/max', JSON.stringify(ui.REASONING_DEPTHS) === JSON.stringify(['low', 'medium', 'high', 'max']), `实测 ${JSON.stringify(ui.REASONING_DEPTHS)}`);
 check('chat.js 的「无限制」表示值是 0', ui.STEPS_UNLIMITED === 0);
+
+const FIVE = ['default', 'none', 'low', 'medium', 'high', 'max'];
 
 state.reasoningEffort = 'high';
 state.modelOptionsByProfile = { default: [{ id: 'deepseek-flash', reasoningSupport: 'configurable', reasoningEfforts: ['low', 'medium', 'high', 'max'] }] };
 ui.syncReasoningSelector();
 const depthValues = elements.reasoningEffortInput.options.map((option) => option.value);
-check('可调模型的下拉框只有四档深度', JSON.stringify(depthValues) === JSON.stringify(['low', 'medium', 'high', 'max']), `实测 ${JSON.stringify(depthValues)}`);
-check('四档文案走 chat.reasoning.* 键', JSON.stringify(elements.reasoningEffortInput.options.map((option) => option.textContent)) === JSON.stringify(['chat.reasoning.low', 'chat.reasoning.medium', 'chat.reasoning.high', 'chat.reasoning.max']), `实测 ${JSON.stringify(elements.reasoningEffortInput.options.map((option) => option.textContent))}`);
+check('可调模型的下拉框 = 默认 + 无 + 四档深度', JSON.stringify(depthValues) === JSON.stringify(FIVE), `实测 ${JSON.stringify(depthValues)}`);
+check('文案全部走 chat.reasoning.* 键', JSON.stringify(elements.reasoningEffortInput.options.map((option) => option.textContent)) === JSON.stringify(FIVE.map((value) => `chat.reasoning.${value}`)), `实测 ${JSON.stringify(elements.reasoningEffortInput.options.map((option) => option.textContent))}`);
 check('可调模型的下拉框可用（dataset.support = configurable）', elements.reasoningEffortInput.dataset.support === 'configurable');
 check('当前值 high 被正确选中', elements.reasoningEffortInput.value === 'high');
 
-// 旧对话存着 'none' / 'default'：这两档已不在四档深度里，但不能静默改成「高」
-// （那等于替用户打开思考、多花 token）。它们要原样保留并临时显示出来，
-// 避免 select.value 被赋成不存在的值而显示空白。
-for (const legacy of ['none', 'default']) {
-  state.reasoningEffort = legacy;
-  state.modelOptionsByProfile = { default: [{ id: 'deepseek-flash', reasoningSupport: 'configurable', reasoningEfforts: ['low', 'medium', 'high', 'max'] }] };
-  ui.syncReasoningSelector();
-  const values = elements.reasoningEffortInput.options.map((option) => option.value);
-  check(`旧值 ${legacy} 被原样保留并显示`, state.reasoningEffort === legacy && elements.reasoningEffortInput.value === legacy, `state=${state.reasoningEffort}, options=${JSON.stringify(values)}`);
-  check(`旧值 ${legacy} 之外仍是四档`, JSON.stringify(values.filter((value) => value !== legacy)) === JSON.stringify(['low', 'medium', 'high', 'max']), `实测 ${JSON.stringify(values)}`);
-}
+// 旧对话存着 'none'：它现在就是常驻的第二档，不该被改写成别的值
+// （改成「高」等于替用户打开思考、多花 token）。
+state.reasoningEffort = 'none';
+ui.syncReasoningSelector();
+check('旧值 none 原样保留并选中', state.reasoningEffort === 'none' && elements.reasoningEffortInput.value === 'none', `state=${state.reasoningEffort}`);
 
-// 模型声明的档位里若还带 default/none，也要被过滤掉。
+// 模型声明里带了 default/none：去重后仍是同一份列表，不会出现两个「无」。
 state.reasoningEffort = 'medium';
 state.modelOptionsByProfile = { default: [{ id: 'deepseek-flash', reasoningSupport: 'configurable', reasoningEfforts: ['default', 'none', 'low', 'medium', 'high', 'max'] }] };
 ui.syncReasoningSelector();
-check('能力数据里的 default/none 被过滤', JSON.stringify(elements.reasoningEffortInput.options.map((option) => option.value)) === JSON.stringify(['low', 'medium', 'high', 'max']), `实测 ${JSON.stringify(elements.reasoningEffortInput.options.map((option) => option.value))}`);
+check('声明里带 default/none 时去重（不会出现两份「无」）', JSON.stringify(elements.reasoningEffortInput.options.map((option) => option.value)) === JSON.stringify(FIVE), `实测 ${JSON.stringify(elements.reasoningEffortInput.options.map((option) => option.value))}`);
 check('medium 能被选中', elements.reasoningEffortInput.value === 'medium');
+
+// 模型只声明部分档位：只保留交集，但「无」必须还在（否则关不掉思考）。
+state.reasoningEffort = 'high';
+state.modelOptionsByProfile = { default: [{ id: 'deepseek-flash', reasoningSupport: 'configurable', reasoningEfforts: ['low', 'high'] }] };
+ui.syncReasoningSelector();
+const narrowed = elements.reasoningEffortInput.options.map((option) => option.value);
+check('按模型声明收窄档位', JSON.stringify(narrowed) === JSON.stringify(['default', 'none', 'low', 'high']), `实测 ${JSON.stringify(narrowed)}`);
+check('收窄后「无」仍在（否则关不掉思考）', narrowed.includes('none'), JSON.stringify(narrowed));
 
 // 不支持 / 固定 / 未知：单选项说明文字，保持原行为。
 for (const [support, label] of [['unsupported', 'chat.reasoningUnsupportedShort'], ['fixed', 'chat.reasoningFixedShort'], ['unknown', 'chat.reasoningUnknownShort']]) {
@@ -169,9 +187,17 @@ check('补「无限制」选项时文案是「无限制」', elements.agentMaxSt
 /* ── ③ 源码级接线 ─────────────────────────────────────────────── */
 
 check('工具条的步数选项由 AGENT_STEP_PRESETS 生成', /AGENT_STEP_PRESETS\.map\(/.test(CHAT_PANEL) && !/\{\[12, 24, 40, 80, 120\]\.map/.test(CHAT_PANEL));
-check('工具条的思考深度由 REASONING_DEPTHS 生成', /REASONING_DEPTHS\.map\(/.test(CHAT_PANEL));
-check('工具条不再出现「默认 / 无」两档选项', !/\['default', 'none', 'low', 'high', 'max'\]/.test(CHAT_PANEL));
-check('设置页的步数也是同一份预设（不是自由填数字）', /AGENT_STEP_PRESETS\.map\(/.test(SETTINGS_PANEL) && /<select id="agentMaxSteps"/.test(SETTINGS_PANEL));
+// 档位列表的生成在 webview（media/chat.js），扩展侧只负责下发能力数据。
+// 以前这条断言查的是 chatPanel.ts 的 `REASONING_DEPTHS.map(` —— 生成位置搬到
+// webview 之后它就永远命不中了，属于断言跟丢了实现。
+check('工具条的档位列表由 REASONING_DEPTHS 过滤生成', /REASONING_DEPTHS\.filter\(/.test(CHAT_JS));
+check('扩展侧不自己再拼一份档位列表（避免两套真相）',
+  !/\['low', 'medium', 'high', 'max'\]\s*\.map\(/.test(CHAT_PANEL));
+// 步数与思考深度在「新对话默认值固定」那次改动里从设置页移到了对话工具条
+// （设置页只剩权限预设之外的下发逻辑），所以这里断言的是「设置页不再重复提供控件」。
+check('设置页不再重复提供步数控件（已移到对话工具条）',
+  !/<select id="agentMaxSteps"/.test(SETTINGS_PANEL) && /AGENT_STEP_PRESETS/.test(CHAT_PANEL));
+check('设置页仍会校验传上来的步数（不是放任非法值）', /values\.agentMaxSteps < 0/.test(SETTINGS_PANEL));
 check('设置页允许 0（无限制），只挡负数', /values\.agentMaxSteps < 0/.test(SETTINGS_PANEL));
 check('设置页的思考深度校验接受 medium', /'low', 'medium', 'high', 'max'/.test(SETTINGS_PANEL));
 

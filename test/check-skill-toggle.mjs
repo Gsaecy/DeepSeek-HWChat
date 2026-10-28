@@ -44,6 +44,9 @@ function extract(name) {
 
 const renderSkillsSource = extract('renderSkills');
 const syncHintSource = extract('syncSkillsInstallHint');
+// syncSkillsInstallHint 末尾会调 syncSkillsSourceNote()（底部说明随安装状态切换），
+// 漏掉它这段真代码在桩环境里会 ReferenceError —— 以前一直坏在这里。
+const syncNoteSource = extract('syncSkillsSourceNote');
 const showHintSource = extract('showSkillsInstallHint');
 
 /* ── 断言 ────────────────────────────────────────────────────── */
@@ -108,8 +111,8 @@ const document = { createElement: (tag) => new StubNode(tag) };
 const sent = [];
 const factory = new Function(
   'elements', 'state', 'document', 't', 'textElement', 'post',
-  `${renderSkillsSource}\n${syncHintSource}\n${showHintSource}\n` +
-  'return { renderSkills, syncSkillsInstallHint, showSkillsInstallHint };',
+  `${renderSkillsSource}\n${syncHintSource}\n${syncNoteSource}\n${showHintSource}\n` +
+  'return { renderSkills, syncSkillsInstallHint, syncSkillsSourceNote, showSkillsInstallHint };',
 );
 
 function buildPanel({ installed }) {
@@ -171,35 +174,35 @@ function checkboxOf(elements, index) {
   check('界面仍然没动本地状态', state.selectedSkillIds.length === 1, JSON.stringify(state.selectedSkillIds));
 }
 
-/* ── 场景 2：没装扩展 → 仍可勾（只影响本对话），旁边展开安装提示 ── */
+/* ── 场景 2：没装扩展 → 不列技能，只显示安装提示 ────────────────
+ *
+ * 这是**有意的产品决定**（用户反馈：「本地skill快捷调用」卸载后星标面板里还挂着
+ * 一整屏技能 + 「默认启用」打勾，看起来像扩展残留）。所以未安装时面板的职责只有
+ * 一个：告诉用户去装那个扩展。装好后 `extensions.onDidChange` 会立刻回推、列表接上。
+ */
 
 {
   sent.length = 0;
   const { elements, state, ui } = buildPanel({ installed: false });
   ui.renderSkills();
 
-  const box = checkboxOf(elements, 0);
-  box.toggleFromUser();
-  check('未安装时照样发 toggleSkill（勾的是本对话）', sent.length === 1 && sent[0]?.payload?.skillId === 'sha-apple' && sent[0]?.payload?.enabled === false, JSON.stringify(sent));
-  check('未安装时不把勾选框退回', box.checked === false, '应保持用户点后的状态');
-  check('未安装时展开安装提示（说明默认值从哪来）', elements.skillsInstallHint.hidden === false, '提示块应可见');
-  check('提示展开时顺带把面板打开', elements.skillsPanel.hidden === false, '面板应可见，否则用户看不到提示');
-  check('界面依然没动本地状态', state.selectedSkillIds.length === 1, JSON.stringify(state.selectedSkillIds));
-
-  sent.length = 0;
-  checkboxOf(elements, 1).toggleFromUser();
-  check('未安装时工作区 Skill 也能勾', sent.length === 1 && sent[0]?.payload?.skillId === 'sha-workspace', JSON.stringify(sent));
+  check('未安装时不列任何技能', elements.skillsList.children.length === 0 && elements.skillsList.hidden === true, `children=${elements.skillsList.children.length}, hidden=${elements.skillsList.hidden}`);
+  check('未安装时展开安装提示（说明装好之后才有列表）', elements.skillsInstallHint.hidden === false, '提示块应可见');
+  check('未安装时不发任何勾选意图', sent.length === 0, JSON.stringify(sent));
+  check('界面没动本地状态', state.selectedSkillIds.length === 1, JSON.stringify(state.selectedSkillIds));
 }
 
-/* ── 场景 3：装上扩展后重渲染，提示自动收起 ───────────────────── */
+/* ── 场景 3：装上之后重渲染 → 列表与勾选一起接上，提示自动收起 ── */
 
 {
   const { elements, state, ui } = buildPanel({ installed: false });
   ui.renderSkills();
-  checkboxOf(elements, 0).toggleFromUser(); // 展开提示
+  check('未安装时列表为空', elements.skillsList.children.length === 0);
   state.quickLaunchInstalled = true;        // 用户装完扩展，扩展侧回推 state
   ui.renderSkills();
-  check('已安装后重渲染收起提示', elements.skillsInstallHint.hidden === true, '提示块应被收起');
+  check('装上后重渲染：列表回来了', elements.skillsList.children.length === 2 && elements.skillsList.hidden === false, `children=${elements.skillsList.children.length}`);
+  check('装上后重渲染：提示收起', elements.skillsInstallHint.hidden === true, '提示块应被收起');
+  check('装上后重渲染：勾选状态按 selectedSkillIds 恢复', checkboxOf(elements, 0).checked === true && checkboxOf(elements, 1).checked === false);
 }
 
 /* ── 场景 4：源码层 ──────────────────────────────────────────── */

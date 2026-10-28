@@ -98,7 +98,13 @@ check('结算时主动断开管道', EXECUTOR.includes('child.stdout?.destroy()'
 
 check('执行器把进度回调接进命令执行', EXECUTOR.includes('scope?.onCommandProgress'));
 check('停滞提示每 10 秒刷新秒数（不再冻在 30）', EXECUTOR.includes('COMMAND_STALL_REFRESH_SECONDS'));
-check('刷新节奏抽成纯函数，可被单测覆盖到秒级', EXECUTOR.includes('export function shouldReportStall(') && EXECUTOR.includes('shouldReportStall(idle, lastStallIdle)'));
+// 签名在「可配置停滞阈值」那次改动里多了第三个参数（stallAfterSeconds），
+// 断言要跟着真实签名走，否则会误报成「没抽出来」。
+check('刷新节奏抽成纯函数，可被单测覆盖到秒级',
+  /export function shouldReportStall\(\s*idleSeconds: number,\s*lastReportedIdle: number,/.test(EXECUTOR)
+  && EXECUTOR.includes('stallAfterSeconds: number = COMMAND_STALL_SECONDS')
+  && /shouldReportStall\(idle, lastStallIdle, stallAfter\)/.test(EXECUTOR));
+check('停滞阈值从调用点传进来（可按模型/命令调整）', EXECUTOR.includes('COMMAND_STALL_SECONDS') && EXECUTOR.includes('COMMAND_STALL_REFRESH_SECONDS'));
 check('toast 每条命令只弹一次（否则每 10 秒弹一次等于噪音）', RUNNER.includes('stallToastSent'));
 check('toast 文案带出超时上限（用户知道它什么时候会被终止）', I18N.includes('到达 {timeout} 秒上限'));
 check('面板把超时上限传给 toast 文案', PANEL.includes('timeout: info.timeoutSeconds'));
