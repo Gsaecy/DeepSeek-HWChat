@@ -388,6 +388,31 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .message.user .message-meta span { color: var(--fg); }
 .message.user .message-body { padding: 11px 13px; border-radius: 8px; color: var(--fg); background: var(--user-bg); border: 1px solid var(--user-border); }
 .message.error .message-body { border-left: 2px solid var(--danger); padding-left: 12px; }
+/* 长用户消息折叠：只留开头几行，底部渐隐提示「下面还有」，右下角「展开全文」。
+   用 mask 而不是叠一层渐变遮罩：用户消息有底色 + 边框，叠遮罩要自己配底色，
+   换主题（含半透明窗口）就会露出接缝；mask 直接作用于文字本身，跟任何底色都对得上。 */
+.message.user .message-content.is-clamped {
+  max-height: 216px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, #000 62%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 62%, transparent 100%);
+}
+.message-clamp-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--link) 30%, var(--border));
+  border-radius: 999px;
+  color: var(--link);
+  background: color-mix(in srgb, var(--link) 8%, transparent);
+  font-size: 10px;
+  cursor: pointer;
+}
+.message-clamp-toggle:hover { border-color: var(--link); background: color-mix(in srgb, var(--link) 16%, transparent); }
+.message-clamp-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .message-clamp-toggle { transition: none; } }
 .message-content > :first-child, .reasoning-content > :first-child { margin-top: 0; }
 .message-content > :last-child, .reasoning-content > :last-child { margin-bottom: 0; }
 .message-content p, .reasoning-content p { margin: 0 0 12px; white-space: pre-wrap; }

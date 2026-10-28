@@ -287,6 +287,12 @@ const DICTIONARY: Record<string, Entry> = {
   'chat.taskStatus.error': { zh: '失败', en: 'Failed' },
   'chat.you': { zh: '你', en: 'You' },
   'chat.copyMessage': { zh: '复制这条消息', en: 'Copy this message' },
+  'chat.expandMessage': { zh: '展开全文', en: 'Show full message' },
+  'chat.collapseMessage': { zh: '收起', en: 'Collapse' },
+  'chat.expandMessageHint': {
+    zh: '这条消息较长，已折叠显示；展开后可以看完整内容',
+    en: 'This message is long and shown collapsed; expand to read all of it',
+  },
   'chat.generating': { zh: '生成中', en: 'Generating' },
   'chat.queuedWaiting': { zh: '已加入任务队列，等待当前分支完成…', en: 'Queued; waiting for the current branch to finish…' },
   'chat.continuing': { zh: '正在继续处理…', en: 'Continuing…' },

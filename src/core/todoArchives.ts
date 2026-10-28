@@ -11,8 +11,17 @@ import { normalizeTodos, settleInterruptedTodos } from './todos';
  * 本模块只做纯数据处理（不认识 UI），配色也只算一个 0..1 的比例，方便单测。
  */
 
-/** 一份对话最多保留多少条归档胶囊。太多会让输入框上方变成一排细线，反而不如不显示。 */
-export const MAX_TODO_ARCHIVES = 12;
+/**
+ * 归档胶囊**不设数量上限**。
+ *
+ * 以前这里卡在 12 条，理由是「太多会让输入框上方变成一排细线」。现在胶囊栏已经
+ * 支持横向滚动（滚轮 / 拖动 / 触摸惯性），一排排不下也不再挤坏版面，限量的理由
+ * 就不成立了 —— 而限量带来的后果是真实的：一个跑到第 13 份清单的长任务里，
+ * 最早那几份归档会被静默挤掉，用户回头就找不到「刚才做了哪几步」。
+ *
+ * 存储上仍然是有界的：单条归档最多 40 项（`MAX_ARCHIVED_ITEMS`），而一条归档对应
+ * 一份**已完成**的清单，所以 manifest 的增长与用户实际完成的任务数同阶。
+ */
 
 /** 单条归档里最多保留的条目数，与 `todos.ts` 的上限保持一致。 */
 const MAX_ARCHIVED_ITEMS = 40;
@@ -56,12 +65,10 @@ export function createTodoArchive(todos: readonly TodoItem[] | undefined, create
 export function appendTodoArchive(
   existing: readonly TodoArchive[] | undefined,
   archive: TodoArchive | undefined,
-  limit = MAX_TODO_ARCHIVES,
 ): TodoArchive[] {
   const list = [...(existing ?? [])];
-  if (!archive) return list.slice(-limit);
-  list.push(archive);
-  return list.slice(-limit);
+  if (archive) list.push(archive);
+  return list;
 }
 
 /** 0（最早，浅蓝）到 1（最新，深蓝）之间的比例；只有一条时取 0，保持浅蓝起点。 */
@@ -96,7 +103,7 @@ export function archiveColorHex(ratio: number): string {
 export function normalizeTodoArchives(input: unknown): TodoArchive[] {
   if (!Array.isArray(input)) return [];
   const archives: TodoArchive[] = [];
-  for (const raw of input.slice(-MAX_TODO_ARCHIVES)) {
+  for (const raw of input) {
     if (!raw || typeof raw !== 'object') continue;
     const record = raw as Record<string, unknown>;
     const todos = normalizeTodos(record.todos).slice(0, MAX_ARCHIVED_ITEMS);
@@ -108,7 +115,7 @@ export function normalizeTodoArchives(input: unknown): TodoArchive[] {
       todos,
     });
   }
-  return archives.slice(-MAX_TODO_ARCHIVES);
+  return archives;
 }
 
 /**

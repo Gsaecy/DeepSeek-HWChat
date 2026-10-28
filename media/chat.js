@@ -353,6 +353,26 @@
   let pasteFallbackTimer = null;
   let pendingPaste = null;
   let deferredMessageRenderMode = null;
+  /**
+   * 长用户消息默认折叠。
+   *
+   * 用户贴进来的长篇需求（一份 ADR、一整段决策表）会把整个对话框顶成几屏，
+   * 自己刚才说的话反倒把后面的回复挤出视野。所以超过阈值就折起来，只留开头几行
+   * 加一层渐隐，右下角给一个「展开全文」。
+   *
+   * 阈值同时看字符数与行数：一张 Markdown 表格字符不多但行很多，只看字符数会漏；
+   * 反过来一整段没有换行的长文又只看行数会漏。
+   */
+  const USER_CLAMP_CHARS = 480;
+  const USER_CLAMP_LINES = 12;
+  /**
+   * 用户手动展开过的消息 id。
+   *
+   * 放在模块级而不是 DOM 上：整段重建（新消息到达、状态回推）会把 article 重造一遍，
+   * 若把状态存在节点上，用户刚展开的一条下一帧又缩回去了。
+   */
+  const expandedUserMessages = new Set();
+
   /** 正在行内编辑的排队任务节点 id / 草稿内容（见 renderTaskTree）。 */
   let editingTaskId = null;
   let editingTaskDraft = '';
@@ -361,6 +381,8 @@
   let selectingMessageText = false;
   let interactingWithMessages = false;
   let interactionTimer = null;
+  /** 本次按下落在哪个 `<summary>` 上（见 pointerdown 里的 click 委托兜底）。 */
+  let pressedSummary = null;
 
   function post(type, payload = {}) { vscode.postMessage({ type, ...payload }); }
 
@@ -1043,7 +1065,19 @@
     const groups = groupToolsByOffset(tools, (message.content || '').length);
     return JSON.stringify([
       tools.map((tool) => [tool.callId, tool.status, tool.summary, tool.contentOffset, tool.output, tool.finishedAt]),
-      groups ? groups.map((group) => [group.offset, group.tools.map((tool) => tool.callId)]) : null,
+      /*
+       * 分组签名只回答「工具归属于哪一段正文之后」，**不**回答「因为正文还没写到，
+       * 它现在临时贴在末尾的哪个字符位置」。
+       *
+       * 后者是 `min(contentOffset, 正文长度)` 的结果，正文每长一个字它就变一次；
+       * 把它算进签名，就等于每一帧都宣布「结构变了」→ 每一帧整条消息重排 →
+       * 悬停高亮被销毁重建（颜色一闪一闪）、点击落在正要被替换的节点上（点不动）。
+       * 实测：20 帧里 tool-execution 节点被换掉 19 次，hover 状态 119 帧里丢 117 帧。
+       *
+       * 抹平成 `pending` 之后，只有两种情况会真的变：工具集合/状态变化，
+       * 或者正文终于写到那个位置（pending → 真实 offset，一次真实的重排）。
+       */
+      groups ? groups.map((group) => [group.pending ? 'pending' : group.offset, group.tools.map((tool) => tool.callId)]) : null,
     ]);
   }
 
@@ -1694,6 +1728,8 @@
     if (message.usedSkills?.length) body.append(renderSkillUsage(message.usedSkills));
     if (message.reasoning) body.append(renderReasoning(message.reasoning, message.status === 'streaming'));
     const flow = appendMessageFlow(body, message);
+    // 用户消息太长就折叠：只留开头几行 + 渐隐 + 「展开全文」。
+    if (message.role === 'user' && flow?.tail?.node) attachUserMessageClamp(flow.tail.node, message);
     // 用户自己贴进来的明文凭据：在界面层直接认出来，不等模型提醒。
     // 放在消息正文之后，顺序上与「你说的话 → 系统的警告」一致。
     if (message.role === 'user') {
@@ -1708,6 +1744,47 @@
     // 流式增量更新要靠这份定位信息：正文最后一段的源起点 + 里面每个块的起始行。
     article.hwchatFlow = flow;
     return article;
+  }
+
+  /** 这条用户消息是否需要折叠（够长才折，短消息一点界面都不动）。 */
+  function isLongUserMessage(message) {
+    if (message.role !== 'user') return false;
+    const raw = String(message.content || '');
+    if (!raw.trim()) return false;
+    return raw.length > USER_CLAMP_CHARS || raw.split('\n').length > USER_CLAMP_LINES;
+  }
+
+  /**
+   * 给一条长用户消息装上折叠。
+   *
+   * 折叠只改一个 class（高度交给 CSS），不重建任何节点：正文、表格、代码块、
+   * 文件标签和选中状态都原样保留，展开时也不会丢失滚动位置。
+   */
+  function attachUserMessageClamp(contentNode, message) {
+    if (!isLongUserMessage(message)) return;
+    const expanded = expandedUserMessages.has(message.id);
+    contentNode.classList.add('is-clampable');
+    contentNode.classList.toggle('is-clamped', !expanded);
+    const toggle = textElement('button', 'message-clamp-toggle', expanded ? t('chat.collapseMessage') : t('chat.expandMessage'));
+    toggle.type = 'button';
+    toggle.title = t('chat.expandMessageHint');
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.addEventListener('click', () => {
+      const next = !expandedUserMessages.has(message.id);
+      if (next) expandedUserMessages.add(message.id); else expandedUserMessages.delete(message.id);
+      contentNode.classList.toggle('is-clamped', !next);
+      toggle.textContent = next ? t('chat.collapseMessage') : t('chat.expandMessage');
+      toggle.setAttribute('aria-expanded', String(next));
+      // 展开/收起会大幅改变高度：跟底就重新贴底，翻上去了就保持原位。
+      const viewport = elements.messageViewport;
+      const previousTop = viewport.scrollTop;
+      requestAnimationFrame(() => {
+        if (state.autoFollow) viewport.scrollTop = viewport.scrollHeight;
+        else viewport.scrollTop = previousTop;
+        updateScrollToBottom();
+      });
+    });
+    contentNode.after(toggle);
   }
 
   /**
@@ -1781,10 +1858,16 @@
     const groups = [];
     for (const tool of tools) {
       const raw = typeof tool.contentOffset === 'number' ? tool.contentOffset : limit;
+      /*
+       * `pending` = 这一步工具的位置还在**正文之后**（正文还没写到那里），
+       * 所以它只能贴在末尾。这个状态会随着正文增长一帧一帧变化，
+       * 但它不是「结构变了」—— 见 toolGroupSignature 里为什么要把它抹平。
+       */
+      const pending = raw >= limit;
       const offset = Math.max(0, Math.min(raw, limit));
       const last = groups[groups.length - 1];
       if (last && last.offset === offset) last.tools.push(tool);
-      else groups.push({ offset, tools: [tool] });
+      else groups.push({ offset, pending, tools: [tool] });
     }
     return groups;
   }
@@ -3026,11 +3109,94 @@
     // 避免点击展开后被紧随其后的流式渲染立刻收起。
     interactingWithMessages = true;
     if (event.target instanceof Element && event.target.closest('.message-body')) selectingMessageText = true;
+    /*
+     * 记下「按下的那个折叠标题」，供下面的 click 委托兜底。
+     *
+     * 依据（W3C / WHATWG）：
+     *  - HTML 规范 `<summary>` 的 activation behavior 挂在 **summary 元素自己** 上：
+     *    「If this summary element is not the summary for its parent details, then return.」
+     *  - MDN《Element: click event》：*If the button is pressed on one element and the pointer
+     *    is moved outside the element before the button is released, the event is fired on the
+     *    most specific ancestor element that contained both elements.*
+     * 两者合起来意味着：只要按下之后那个 summary 被换掉（流式重排重建 DOM），click 就会落到
+     * 共同祖先上、summary 收不到激活 → 用户看到「点了没反应」。所以按下时先记一指。
+     */
+    pressedSummary = summarizePressTarget(event.target);
     // 兜底：指针在窗口外松开时可能收不到 pointerup，超时后恢复渲染。
     clearTimeout(interactionTimer);
     interactionTimer = setTimeout(releaseMessageInteraction, 3000);
   });
-  document.addEventListener('pointerup', releaseMessageInteraction);
+
+  /**
+   * 把一次按下的落点折成「稳定标识 + 矩形」。
+   *
+   * 存标识而不是节点：重排会把节点换掉，标识（`data-detail-key`）跟着业务数据走，不会变。
+   * 矩形用于判断松开时指针是否还在同一处（防止「按住拖走再松开」被当成点击）。
+   */
+  function summarizePressTarget(target) {
+    if (!(target instanceof Element)) return null;
+    const summary = target.closest('summary');
+    if (!summary) return null;
+    const details = summary.parentElement;
+    if (!details || details.tagName !== 'DETAILS') return null;
+    const key = details.dataset.detailKey;
+    if (!key) return null;
+    const box = summary.getBoundingClientRect();
+    return { key, node: summary, left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+  }
+
+  /** 在当前 DOM 里按 `data-detail-key` 找回那个折叠块（节点可能已经被重建过）。 */
+  function findDetailsByKey(root, key) {
+    if (!key) return null;
+    for (const details of root.querySelectorAll('details[data-detail-key]')) {
+      if (details.dataset.detailKey === key) return details;
+    }
+    return null;
+  }
+
+  document.addEventListener('pointerup', (event) => {
+    const pressed = pressedSummary;
+    pressedSummary = null;
+    /*
+     * 兜底：按下与松开之间那个 `<summary>` 被重排换掉了。
+     *
+     * 依据（实测 + 规范）：
+     *  - HTML 规范：`<summary>` 的 activation behavior 挂在 summary 元素自己身上，
+     *    只有 **它自己** 收到激活才会切换 `open`。
+     *  - MDN《Element: click event》：按下与松开不在同一个元素上时，click 会派发到
+     *    「同时包含它们的最近祖先」。而旧节点已经被移除、树上找不到共同祖先，
+     *    实测结果是 **click 根本不派发**（`pointerdown` 有、`click` 没有）。
+     *  所以事件委托兜不住 —— 必须挂在 `pointerup` 上：它只取决于释放位置，一定会来。
+     *  判断条件用「按下那个节点是否还在文档里」：还在就说明浏览器会正常派发 click，
+     *  交给原生处理（避免双触发）；不在了才由这里补一次 toggle，等价于规范的 activation。
+     */
+    const stillAlive = pressed?.node?.isConnected === true;
+    if (pressed && !stillAlive) {
+      const inside = event.clientX >= pressed.left && event.clientX <= pressed.right
+        && event.clientY >= pressed.top && event.clientY <= pressed.bottom;
+      if (inside) {
+        /*
+         * 用稳定标识 `data-detail-key`（`tool:<callId>` / `reasoning` / `skills`）
+         * 在**当前** DOM 里找回同一个折叠块 —— 节点换了，用户点的还是那一步。
+         */
+        const details = findDetailsByKey(elements.messageList, pressed.key);
+        if (details) details.open = !details.open;
+      }
+    }
+    /*
+     * 点在可折叠标题（`<summary>`：工具步骤、思考过程、任务面板）上时，别急着恢复渲染。
+     *
+     * 恢复渲染＝允许 70ms 后那一帧重排；如果它恰好是全条替换，刚被点开的 <details>
+     * 会被销毁重建（展开状态靠 override 补回来，但节点已经换了）。这里把暂停窗口
+     * 延到 400ms，让这次展开先落地。
+     */
+    if (pressed) {
+      clearTimeout(interactionTimer);
+      interactionTimer = setTimeout(releaseMessageInteraction, 400);
+      return;
+    }
+    releaseMessageInteraction();
+  });
   document.addEventListener('pointercancel', releaseMessageInteraction);
   window.addEventListener('blur', releaseMessageInteraction);
   document.addEventListener('selectionchange', () => {

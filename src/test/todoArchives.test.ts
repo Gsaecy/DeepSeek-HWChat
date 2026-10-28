@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { TodoArchive, TodoItem } from '../core/types';
 import {
-  MAX_TODO_ARCHIVES,
   allTodosCompleted,
   appendTodoArchive,
   archiveColorHex,
@@ -38,22 +37,23 @@ test('归档：未完成的清单不生成归档（半成品留在面板上）',
   assert.match(archive!.id, /^todo-archive-/);
 });
 
-test('归档：追加保持时间顺序，超出上限丢最早的一条', () => {
+test('归档：追加保持时间顺序，且不设数量上限', () => {
   const makeArchive = (index: number): TodoArchive => ({
     id: `a-${index}`,
     createdAt: index,
     todos: todos('completed'),
   });
   let list: TodoArchive[] = [];
-  for (let index = 0; index < MAX_TODO_ARCHIVES + 3; index += 1) {
+  // 40 份远超原先 12 份的上限：胶囊栏可以横向滚动，没有理由再挤掉最早的归档。
+  for (let index = 0; index < 40; index += 1) {
     list = appendTodoArchive(list, makeArchive(index));
   }
-  assert.equal(list.length, MAX_TODO_ARCHIVES);
-  // 最早的三条被挤掉，队尾是最新的那条。
-  assert.equal(list[0]?.id, 'a-3');
-  assert.equal(list.at(-1)?.id, `a-${MAX_TODO_ARCHIVES + 2}`);
-  // 传 undefined 时不新增，只做裁剪。
-  assert.equal(appendTodoArchive(list, undefined).length, MAX_TODO_ARCHIVES);
+  assert.equal(list.length, 40, '一份都不能丢');
+  assert.equal(list[0]?.id, 'a-0', '最早的一份仍然保留');
+  assert.equal(list.at(-1)?.id, 'a-39', '最新的一份在队尾');
+  // 传 undefined 时不新增，也不改动已有列表。
+  assert.equal(appendTodoArchive(list, undefined).length, 40);
+  assert.equal(appendTodoArchive(undefined, undefined).length, 0, '没有旧归档也不该报错');
 });
 
 test('归档：颜色从浅蓝到深蓝，单条时取浅蓝起点', () => {
@@ -220,16 +220,16 @@ test('清单内容变了（哪怕仍然全绿）就算新的一份，照常归�
   assert.equal(second!.archives.length, 2);
 });
 
-test('归档上限与手动归档一致：超过上限丢最早的一条', () => {
-  const many: TodoArchive[] = Array.from({ length: MAX_TODO_ARCHIVES }, (_, index) => ({
+test('归档不设上限：已有的归档一份都不会被挤掉', () => {
+  const many: TodoArchive[] = Array.from({ length: 30 }, (_, index) => ({
     id: `a-${index}`,
     createdAt: index,
     todos: [{ content: `旧清单 ${index}`, status: 'completed' as const }],
   }));
   const plan = planCompletedList(todos('completed'), many, 999);
-  assert.equal(plan!.archives.length, MAX_TODO_ARCHIVES);
+  assert.equal(plan!.archives.length, 31, '30 份旧归档 + 新归档全部保留');
   assert.equal(plan!.archives[plan!.archives.length - 1]!.createdAt, 999, '最新一条在末尾');
-  assert.ok(!plan!.archives.some((archive) => archive.id === 'a-0'), '最早的一条应被挤掉');
+  assert.ok(plan!.archives.some((archive) => archive.id === 'a-0'), '最早的一条也必须还在');
 });
 
 test('清单比对：顺序与内容都要一致才算同一份', () => {
