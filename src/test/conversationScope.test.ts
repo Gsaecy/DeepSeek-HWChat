@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
+import { grantFromFollowUp,
   argumentsMentionGitWrite,
   gitOperationsIn,
   gitWriteAuthorization,
@@ -129,4 +129,50 @@ test('bridge tools: git writes hidden inside JSON arguments are detected', () =>
   assert.equal(argumentsMentionGitWrite(''), false);
   // 解析失败时按原文判断，宁可多拦一次。
   assert.ok(argumentsMentionGitWrite('{broken json git commit}'));
+});
+
+/**
+ * 「改到一半补一句『提交』，结果被守卫连拦两次」——真实的拦截故障。
+ *
+ * 授权只在运行开始时按第一条消息算一次，后续跟进消息（任务树里的
+ * 「相关指导 / 排队任务」）完全没参与判定；而「先让它改，改完说一句提交」
+ * 恰恰是最常见的用法。
+ */
+test('grantFromFollowUp：跟进消息说「提交」就补上 git 授权', () => {
+  const before = { gitWriteAllowed: false, versionBumpAllowed: false };
+  const after = grantFromFollowUp(before, { gitWriteAllowed: true });
+  assert.equal(after.gitWriteAllowed, true);
+  assert.equal(after.versionBumpAllowed, false, '不该顺带给出别的权限');
+  assert.equal(before.gitWriteAllowed, false, '不能就地改调用方的对象');
+});
+
+test('grantFromFollowUp：只做加法，后面一句闲聊不会撤回已给的授权', () => {
+  const granted = { gitWriteAllowed: true, versionBumpAllowed: true };
+  const after = grantFromFollowUp(granted, {});
+  assert.deepEqual(after, { gitWriteAllowed: true, versionBumpAllowed: true });
+});
+
+test('grantFromFollowUp：先给版本授权、后给 git 授权，两者独立累积', () => {
+  const step1 = grantFromFollowUp({ gitWriteAllowed: false, versionBumpAllowed: false }, { versionBumpAllowed: true });
+  const step2 = grantFromFollowUp(step1, { gitWriteAllowed: true });
+  assert.deepEqual(step2, { gitWriteAllowed: true, versionBumpAllowed: true });
+});
+
+/**
+ * 「为什么提交被拦住了」不是授权请求。
+ *
+ * 用户经常把守卫报错原样贴回来问，而报错文字里就带着 `git commit`；
+ * 只看关键词就会把一句提问当成「帮我提交」，等于凭一句话放开写权限。
+ */
+test('hasGitWriteIntent：提问「为什么被拦」不授予写权限', () => {
+  assert.equal(hasGitWriteIntent('为什么会提示已阻止 git commit？'), false);
+  assert.equal(hasGitWriteIntent('怎么又被拦截了，git push 为什么不行'), false);
+  assert.equal(hasGitWriteIntent('是不是拦截了 git commit'), false);
+});
+
+test('hasGitWriteIntent：正常要求提交照旧放行', () => {
+  assert.equal(hasGitWriteIntent('提交'), true);
+  assert.equal(hasGitWriteIntent('提交一下'), true);
+  assert.equal(hasGitWriteIntent('帮我 push 到远端'), true);
+  assert.equal(hasGitWriteIntent('不要提交'), false);
 });

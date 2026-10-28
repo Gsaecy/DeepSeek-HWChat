@@ -164,10 +164,42 @@ export class AgentTaskQueue {
   }
 }
 
+/**
+ * 任务树给用户消息加的前缀。
+ *
+ * 导出是为了让**权限判定**能把外壳剥掉、只看用户真正说的话：这些前缀是我们自己
+ * 拼上去的说明文字，不该参与「用户是否要求提交」这类判断（否则「提交」两个字
+ * 会不会被认出来，就取决于它是不是刚好处在某个前缀后面）。
+ */
+export const TASK_INSTRUCTION_PREFIXES = {
+  related: '[任务树更新：相关指导]\n立即重新评估当前分支。保留已经完成且仍有效的工作，取消尚未执行且与新要求冲突的旧步骤，并根据这条消息调整计划：\n',
+  queued: '[任务树分支：排队任务]\n前一个分支已经完成。现在开始处理这个独立任务，不要把它与上一分支的目标混淆：\n',
+} as const;
+
+/** 剥掉任务树前缀，返回用户真正输入的那句话。 */
+export function withoutTaskInstruction(text: string): string {
+  let value = text;
+  for (const prefix of Object.values(TASK_INSTRUCTION_PREFIXES)) {
+    if (value.startsWith(prefix)) {
+      value = value.slice(prefix.length);
+      break;
+    }
+  }
+  return value;
+}
+
+/** 从一次任务更新的请求里取出用户原话（纯文本；纯附件消息返回空串）。 */
+export function userTextOfTaskRequest(request: ChatRequestMessage): string {
+  const content = request.content;
+  const raw = typeof content === 'string'
+    ? content
+    // 多段内容里前缀常常自己占一段，拼起来会多一个换行，最后统一 trim。
+    : content.filter((part) => part.type === 'text').map((part) => (part as { text?: string }).text ?? '').join('\n');
+  return withoutTaskInstruction(raw).trim();
+}
+
 function withTaskInstruction(request: ChatRequestMessage, relation: TaskRelation): ChatRequestMessage {
-  const prefix = relation === 'related'
-    ? '[任务树更新：相关指导]\n立即重新评估当前分支。保留已经完成且仍有效的工作，取消尚未执行且与新要求冲突的旧步骤，并根据这条消息调整计划：\n'
-    : '[任务树分支：排队任务]\n前一个分支已经完成。现在开始处理这个独立任务，不要把它与上一分支的目标混淆：\n';
+  const prefix = relation === 'related' ? TASK_INSTRUCTION_PREFIXES.related : TASK_INSTRUCTION_PREFIXES.queued;
   if (typeof request.content === 'string') return { ...request, content: `${prefix}${request.content}` };
   const parts = request.content.map((part) => part.type === 'text' ? { ...part } : { ...part, image_url: { ...part.image_url } });
   const text = parts.find((part): part is Extract<typeof part, { type: 'text' }> => part.type === 'text');

@@ -134,6 +134,16 @@ export function hasGitWriteIntent(text: string): boolean {
   if (!value) return false;
   if (/(?:不要|不用|无需|别|禁止|不得|先不|暂不)\s*(?:提交|推送|commit|push)/i.test(value)) return false;
   if (/(?:don'?t|do not|never|no need to|without)\s+(?:git\s+)?(?:commit|push|add|tag)/i.test(value)) return false;
+  /*
+   * 「为什么会被拦住」这类**提问**不是授权请求。
+   * 用户经常把守卫的报错原样贴回来问（报错里就带着 `git commit`），
+   * 只看关键词就会把「解释一下为什么被拦」当成「帮我提交」，等于凭一句话放开写权限。
+   * 只认明确提到「被拦截 / 被阻止 / 被拒绝 / 被拦下」的句子，不碰「提交」本身。
+   */
+  if (/(?:拦截|阻止|拒绝|拦下|拦掉|挡住)/.test(value)
+    && /(?:为什么|为何|怎么|如何|是不是|是否|能否|什么原因|啥原因)/.test(value)) {
+    return false;
+  }
   return /(?:提交|推送|打\s*tag|打标签|git\s+add|git\s+commit|git\s+push|\bcommit\b|\bpush\b)/i.test(value);
 }
 
@@ -165,6 +175,33 @@ export function gitWriteAuthorization(input: {
   if (hasGitWriteIntent(input.userText ?? '')) return 'user';
   if (hasSkillGitWriteRule(input.skillPrompt ?? '')) return 'skill';
   return undefined;
+}
+
+export interface WriteAuthorization {
+  gitWriteAllowed: boolean;
+  versionBumpAllowed: boolean;
+}
+
+/**
+ * 运行期间收到一条新的用户消息时，更新写操作授权。
+ *
+ * 真实故障：用户让 Agent 改代码，跑到一半补一句「提交」，`git add` 与
+ * `git commit -am` 被守卫连拦两次（提示「本次对话中用户没有要求提交或推送」）。
+ * 原因是授权只在**运行开始时**按第一条消息算一次，后续跟进消息根本没参与判定
+ * ——而「先让它改，改完说一句提交」恰恰是最常见的用法。
+ *
+ * 两条规则：
+ *  1. **只做加法**：已经授权过的不因为后面一句闲聊被收回（git 写权限不是逐条消息的开关）；
+ *  2. 判定用**用户原话**（调用方负责剥掉任务树前缀），我们自己的说明文字不参与判断。
+ */
+export function grantFromFollowUp(
+  current: WriteAuthorization,
+  granted: Partial<WriteAuthorization>,
+): WriteAuthorization {
+  return {
+    gitWriteAllowed: current.gitWriteAllowed || Boolean(granted.gitWriteAllowed),
+    versionBumpAllowed: current.versionBumpAllowed || Boolean(granted.versionBumpAllowed),
+  };
 }
 
 /**

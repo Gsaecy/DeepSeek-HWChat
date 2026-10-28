@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AgentTaskQueue, fallbackTaskRelation } from '../agent/taskQueue';
+import { TASK_INSTRUCTION_PREFIXES, userTextOfTaskRequest, withoutTaskInstruction, AgentTaskQueue, fallbackTaskRelation } from '../agent/taskQueue';
 
 test('merges related guidance before starting queued task branches', async () => {
   const queue = new AgentTaskQueue('修复登录刷新并发问题');
@@ -91,4 +91,25 @@ test('普通队列从不声明续跑语义', async () => {
   );
   await queue.take('complete', () => {});
   assert.deepEqual(flags, [false]);
+});
+
+/**
+ * 任务树给用户消息加的前缀不该影响权限判定。
+ *
+ * 守卫判断「用户有没有要求提交」时必须只看用户原话；这些前缀是我们自己拼的说明文字。
+ */
+test('withoutTaskInstruction：剥掉任务树前缀，只留用户原话', () => {
+  assert.equal(withoutTaskInstruction(`${TASK_INSTRUCTION_PREFIXES.related}提交`), '提交');
+  assert.equal(withoutTaskInstruction(`${TASK_INSTRUCTION_PREFIXES.queued}推送这两处`), '推送这两处');
+  assert.equal(withoutTaskInstruction('提交'), '提交', '没有前缀时原样返回');
+});
+
+test('userTextOfTaskRequest：从请求里取出用户原话（含多段文本）', () => {
+  const request = { role: 'user' as const, content: `${TASK_INSTRUCTION_PREFIXES.related}提交` };
+  assert.equal(userTextOfTaskRequest(request), '提交');
+  const parts = { role: 'user' as const, content: [
+    { type: 'text' as const, text: TASK_INSTRUCTION_PREFIXES.queued },
+    { type: 'text' as const, text: '提交改动' },
+  ] };
+  assert.equal(userTextOfTaskRequest(parts), '提交改动');
 });

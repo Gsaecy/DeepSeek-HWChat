@@ -20,6 +20,8 @@ import { splitTodoScope } from '../agent/todoScope';
 import { COMMAND_BLOCK_PROMPT } from '../agent/commandPrompt';
 import { NOTICE_PROMPT } from '../agent/noticePrompt';
 import { FOLLOW_UP_PROMPT } from '../agent/followUpPrompt';
+import { userTextOfTaskRequest } from '../agent/taskQueue';
+import { grantFromFollowUp } from '../agent/conversationScope';
 import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChangedFiles } from '../agent/workspacePaths';
 import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
@@ -1258,6 +1260,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           takeTaskUpdate: (phase) => taskQueue.take(phase, (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state })),
           callbacks: {
             onTaskUpdate: async (update) => {
+              this.authorizeFollowUp(run, update);
               await this.activateResponse(run, update);
             },
             onDelta: async (delta) => {
@@ -1365,6 +1368,31 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
   private currentActiveResponse(run: ConversationRun): ActiveResponseState | undefined {
     return run.activeResponseTaskId ? run.responses.get(run.activeResponseTaskId) : undefined;
+  }
+
+  /**
+   * 跟进消息（任务树里的「相关指导 / 排队任务」）也要能授予 git / 版本写权限。
+   *
+   * 真实故障：用户在 Agent 跑到一半时补一句「提交」，命令被守卫拦下两次——
+   * 因为授权只在**运行开始时**按第一条消息算一次（`run.scope`），后续跟进消息
+   * 完全没参与判定。而正常使用里「先让它改，改完说一句提交」恰恰是最常见的路径。
+   *
+   * 现在每条跟进消息都重新判定一次，并且只做**加法**（已授权不会被撤回）：
+   * git / 版本这类授权一旦给了，就不该因为后面一句闲聊而收回去。
+   * 判定用的是剥掉任务树前缀之后的用户原话，避免我们自己的说明文字影响结果。
+   */
+  private authorizeFollowUp(run: ConversationRun, update: AgentTaskUpdate): void {
+    const text = userTextOfTaskRequest(update.request);
+    if (!text) return;
+    const next = grantFromFollowUp(
+      { gitWriteAllowed: Boolean(run.scope.gitWriteAllowed), versionBumpAllowed: Boolean(run.scope.versionBumpAllowed) },
+      {
+        gitWriteAllowed: gitWriteAuthorization({ userText: text }) !== undefined,
+        versionBumpAllowed: versionBumpAuthorization({ userText: text }) !== undefined,
+      },
+    );
+    run.scope.gitWriteAllowed = next.gitWriteAllowed;
+    run.scope.versionBumpAllowed = next.versionBumpAllowed;
   }
 
   private async activateResponse(run: ConversationRun, update: AgentTaskUpdate): Promise<void> {
