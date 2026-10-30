@@ -1,3 +1,4 @@
+import { fetchUrl, searchGitHubRepos, searchWeb } from './webResearch';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { basename, dirname, extname, resolve } from 'node:path';
@@ -202,8 +203,42 @@ export class ToolExecutor implements vscode.Disposable {
     private readonly onDiagnostic: (event: ToolDiagnostic) => void = () => undefined,
   ) {}
 
-  definitions(mode: ConversationMode): ToolDefinition[] {
+  /**
+   * 工具清单。
+   *
+   * `internetReference` 打开时才追加三个联网工具：这是用户显式开启的能力，
+   * 关着的时候工具清单里就不该出现（否则模型会自己去查网，而用户以为它没联网）。
+   */
+  definitions(mode: ConversationMode, options: { internetReference?: boolean } = {}): ToolDefinition[] {
+    const research: ToolDefinition[] = options.internetReference
+      ? [
+        this.definition('search_github_repos', tt('tool.searchGithubRepos.description'), {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: tt('tool.searchGithubRepos.queryParam') },
+            language: { type: 'string', description: tt('tool.searchGithubRepos.languageParam') },
+            sort: { type: 'string', enum: ['stars', 'updated', 'best-match'], description: tt('tool.searchGithubRepos.sortParam') },
+            limit: { type: 'integer', description: tt('tool.searchGithubRepos.limitParam') },
+          },
+          required: ['query'],
+          additionalProperties: false,
+        }),
+        this.definition('search_web', tt('tool.searchWeb.description'), {
+          type: 'object',
+          properties: { query: { type: 'string' }, limit: { type: 'integer' } },
+          required: ['query'],
+          additionalProperties: false,
+        }),
+        this.definition('fetch_url', tt('tool.fetchUrl.description'), {
+          type: 'object',
+          properties: { url: { type: 'string' }, maxChars: { type: 'integer' } },
+          required: ['url'],
+          additionalProperties: false,
+        }),
+      ]
+      : [];
     const readOnly: ToolDefinition[] = [
+      ...research,
       this.definition('list_workspace_roots', tt('tool.listWorkspaceRoots.description'), {
         type: 'object', properties: {}, additionalProperties: false,
       }),
@@ -275,7 +310,13 @@ export class ToolExecutor implements vscode.Disposable {
     const tier: CommandRiskTier | undefined = risk === 'command'
       ? classifyCommandTier(String(args.command ?? ''))
       : undefined;
-    const policy = policyFor(risk, settings, tier);
+    const policy = isResearchTool(name)
+      // 联网工具不走「文件读取」策略：它读的不是你的文件，探不探网由「互联网参考」
+      // 开关决定（每对话、默认关、来源与 SSRF 过滤另有硬检查）。若沿用 fileReadPolicy，
+      // 默认的 askAll 档位下每搜一次都要点一次批准，一次调研十几次调用 —— 这一项
+      // 的授权已经由开关本身给出，再逐次问一遍只是噪声。
+      ? 'allow' as PermissionPolicy
+      : policyFor(risk, settings, tier);
     const denied = this.checkAccess(name, args, mode, settings, policy, tier, scope);
     if (denied) {
       const result = deniedResult(denied);
@@ -326,6 +367,31 @@ export class ToolExecutor implements vscode.Disposable {
     const startedAt = Date.now();
     try {
       switch (name) {
+        case 'search_github_repos': {
+          const outcome = await searchGitHubRepos(stringArg(args, 'query'), {
+            language: typeof args.language === 'string' ? args.language : undefined,
+            sort: typeof args.sort === 'string' ? args.sort : undefined,
+            limit: typeof args.limit === 'number' ? args.limit : undefined,
+          });
+          result = outcome.ok
+            ? success(outcome.summary, outcome.content)
+            : { status: 'error', summary: outcome.summary, content: outcome.content, approval: 'not-required' };
+          break;
+        }
+        case 'search_web': {
+          const outcome = await searchWeb(stringArg(args, 'query'), typeof args.limit === 'number' ? args.limit : undefined);
+          result = outcome.ok
+            ? success(outcome.summary, outcome.content)
+            : { status: 'error', summary: outcome.summary, content: outcome.content, approval: 'not-required' };
+          break;
+        }
+        case 'fetch_url': {
+          const outcome = await fetchUrl(stringArg(args, 'url'), typeof args.maxChars === 'number' ? args.maxChars : undefined);
+          result = outcome.ok
+            ? success(outcome.summary, outcome.content)
+            : { status: 'error', summary: outcome.summary, content: outcome.content, approval: 'not-required' };
+          break;
+        }
         case 'list_workspace_roots':
           result = await this.listWorkspaceRoots();
           break;
@@ -1118,9 +1184,8 @@ export class ToolExecutor implements vscode.Disposable {
     tier?: CommandRiskTier,
     scope?: ToolExecutionScope,
   ): string | undefined {
-    if (!['list_workspace_roots', 'list_directory', 'list_files', 'search_files', 'read_file', 'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name)) {
-      return tt('tool.toolNotAllowed', { name });
-    }
+    const accessError = toolAccessError(name, settings);
+    if (accessError) return accessError;
     if (policy === 'deny') {
       return tier === 'severe'
         ? tt('tool.dangerousDenied')
@@ -1269,6 +1334,48 @@ function riskFor(name: string): ToolApprovalRequest['risk'] {
   if (['write_file', 'replace_in_file', 'rename_file', 'delete_file'].includes(name)) return 'write';
   if (name === 'run_command') return 'command';
   return 'read';
+}
+
+/**
+ * 本地工具（工作区读写与命令）。模型只能调用清单里的名字，凭空编出来的名字一律拒绝。
+ *
+ * 这张表与 `definitions()` 下发的清单必须一致：只要有一边漏了，就会出现
+ * 「工具明明在清单里、真调用却回一句『未被允许』」的哑故障 —— `search_web`
+ * 就是这么坏过一次（三个联网工具加进了 `definitions()`，忘了加进这里的白名单）。
+ * `toolAccess.test.ts` 有一条不变量测试盯着：**凡是下发给模型的工具都必须能执行**。
+ */
+const LOCAL_TOOL_NAMES: readonly string[] = [
+  'list_workspace_roots', 'list_directory', 'list_files', 'search_files', 'read_file',
+  'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file',
+  'delete_file', 'run_command',
+];
+
+/**
+ * 联网工具。只在「互联网参考」打开时下发，所以访问检查要**再问一次开关**：
+ * 关着的时候这些名字根本没告诉过模型，真收到就是模型自己编的，不能替它联网。
+ */
+const RESEARCH_TOOL_NAMES: readonly string[] = ['search_github_repos', 'search_web', 'fetch_url'];
+
+/** 是否是联网工具（联网工具不受「文件读取」策略管辖，见 `execute` 里的说明）。 */
+export function isResearchTool(name: string): boolean {
+  return RESEARCH_TOOL_NAMES.includes(name);
+}
+
+/**
+ * 「这个工具名能不能执行」的唯一判据：能执行返回 `undefined`，否则返回拒绝原因。
+ * 抽成纯函数是为了让「下发的工具清单」和「执行时的准入」可以用同一条测试对齐。
+ */
+export function toolAccessError(
+  name: string,
+  settings: Pick<ChatSettings, 'internetReference'>,
+): string | undefined {
+  if (LOCAL_TOOL_NAMES.includes(name)) return undefined;
+  if (isResearchTool(name)) {
+    // 读的是**本次运行开始时**的快照（`applyRuntimeControls`），所以这里的状态
+    // 就是用户点这一轮时看到的状态，中途拨开关不会让同一轮前后不一致。
+    return settings.internetReference ? undefined : tt('tool.internetReferenceRequired', { name });
+  }
+  return tt('tool.toolNotAllowed', { name });
 }
 
 function policyFor(

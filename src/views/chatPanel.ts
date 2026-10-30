@@ -8,7 +8,8 @@ import { chooseReferenceMatch } from '../agent/fileReferenceResolve';
 import { resolveFileReferences, type ReferenceQuery } from '../agent/fileReferenceBatch';
 import { SkillRegistry, type PreparedSkillContext } from '../agent/skillRegistry';
 import { classifyTaskRelation } from '../agent/taskRouter';
-import { AgentTaskQueue, type AgentTaskUpdate } from '../agent/taskQueue';
+import { reviewQueuedTasks } from '../agent/taskReview';
+import { AgentTaskQueue, type AgentTaskUpdate, type TaskRelation } from '../agent/taskQueue';
 import { resolveResumeScope } from '../agent/resumeScope';
 import { ToolExecutor, type ToolExecutionScope } from '../agent/toolExecutor';
 import { VscodeToolBridge } from '../agent/vscodeTools';
@@ -25,6 +26,8 @@ import { grantFromFollowUp } from '../agent/conversationScope';
 import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChangedFiles } from '../agent/workspacePaths';
 import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
+import { withInternetReference } from '../core/research';
+import { checkReuseLimits, planAttachmentReuse } from '../core/attachmentReuse';
 import { NEW_CONVERSATION_CONTROLS, controlChangeScope, isReasoningEffort, presetChangeScope, resolveConversationControls, resolveNewConversationControls, type ConversationControls } from '../core/conversationControls';
 import { PERMISSION_PRESET_IDS, permissionPresetDetail, permissionPresetDetails } from '../core/permissions';
 import { currentLanguage, messageScriptTag, t, tt, type Language } from '../core/i18n';
@@ -51,6 +54,7 @@ import {
   ConversationMode,
   ConversationSummary,
   MessageContext,
+  MessageExecutionStatus,
   ModelOption,
   PendingApprovalView,
   PermissionPreset,
@@ -166,6 +170,14 @@ interface FileReferenceQuery {
 
 type IncomingMessage =
   | { type: 'ready' }
+  /**
+   * 界面把一次布局自检的结果报上来（用户主动执行「复制布局诊断」时触发）。
+   *
+   * 为什么需要它：面板「右边被切」这类问题可能是我们的 CSS，也可能是 webview 的
+   * 宽度与可见区域不同步。两件事在同一条症状下完全分不出来，而扩展侧看不到
+   * webview 里的任何尺寸 —— 只能让界面把真实数字报上来，别再靠猜。
+   */
+  | { type: 'layoutReport'; report: Record<string, unknown> }
   | { type: 'newChat' }
   | { type: 'selectConversation'; id: string }
   | { type: 'continueConversation'; id: string }
@@ -173,6 +185,10 @@ type IncomingMessage =
   | { type: 'send'; text: string; mode?: ConversationMode; skillIds?: string[]; permissionPreset?: PermissionPreset; agentMaxSteps?: number; reasoningEffort?: ReasoningEffort }
   | { type: 'sendWhileRunning'; text: string }
   | { type: 'editTaskMessage'; nodeId: string; text: string }
+  /** 打开悬浮编辑框：在队列里挂一道闸门，agent 走到这条会停下来等。 */
+  | { type: 'beginEditTaskMessage'; nodeId: string }
+  /** 关掉编辑框但没保存：放行等待中的 agent，内容保持原样。 */
+  | { type: 'cancelEditTaskMessage'; nodeId: string }
   | { type: 'removeTaskMessage'; nodeId: string }
   | { type: 'stop' }
   | { type: 'resumeTodos' }
@@ -200,6 +216,7 @@ type IncomingMessage =
   | { type: 'setPermissionPreset'; permissionPreset: PermissionPreset }
   | { type: 'setAgentMaxSteps'; agentMaxSteps: number }
   | { type: 'setReasoningEffort'; reasoningEffort: ReasoningEffort }
+  | { type: 'setInternetReference'; enabled: boolean }
   | { type: 'loadOlder'; before: string }
   | { type: 'openSettings' }
   | { type: 'removeContext' }
@@ -240,6 +257,21 @@ type IncomingMessage =
   | { type: 'verifyFileReferences'; requestId: string; items: FileReferenceQuery[] }
 
   | { type: 'attachFiles' }
+  /**
+   * 把**已经发出去**的附件再拿一份放进输入框（拖动图片/文件到输入框，或点「添加到输入框」）。
+   *
+   * 只传标识、不传内容：图片可能有几 MB，而扩展侧本来就按 `id` 索引着完整附件
+   * （见 `attachmentIndex`）。索引里已经被淘汰的（长时间没被用到）再按 `path` 从磁盘读。
+   */
+  | { type: 'attachMessageAttachment'; id?: string; path?: string }
+  /**
+   * 要一条图片附件的**原始** base64，供 webview 把「文字 + 图片」一起写进剪贴板。
+   *
+   * 为什么要专门要一次：界面手里只有 160×120 的缩略图（`thumbnailDataUrl`），
+   * 拿它去复制等于把用户的截图压成糊的。原图一直在扩展侧（`attachmentIndex`）。
+   * 只回标识不回内容的老约定在这里反过来用：界面明确开口要，才给。
+   */
+  | { type: 'requestAttachmentData'; requestId: string; id?: string }
   | { type: 'attachClipboardFiles'; files: ClipboardFile[] }
   | { type: 'copyText'; text: string; requestId?: string }
   | { type: 'readClipboardText'; requestId: string }
@@ -270,6 +302,15 @@ const FILE_REFERENCE_MISS_TTL_MS = 10 * 60_000;
 
 /** 引用解析缓存的上限，防止长会话里无限增长。 */
 const FILE_REFERENCE_CACHE_LIMIT = 500;
+
+/**
+ * 模型列表自动刷新的两个时间参数。
+ *
+ * 成功之后 10 分钟内不再重拉（清单变化很慢）；失败后 1 分钟就允许重试
+ * （断网、临时 5xx 都属于这类，用户不该为此手动点按钮）。
+ */
+const MODEL_LIST_TTL_MS = 10 * 60_000;
+const MODEL_LIST_RETRY_MS = 60_000;
 
 export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable {
   static readonly viewType = 'hwchat.chatView';
@@ -336,7 +377,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private renderedLanguage?: Language;
   private readonly agentRunner: AgentRunner;
   private readonly vscodeTools: VscodeToolBridge;
-  private readonly modelDiscoveryAttempts = new Set<string>();
+  /**
+   * 自动刷新模型列表的节流表（键 → 上次尝试时间与结果）。
+   *
+   * 以前是一个「试过一次就永不重试」的 Set：同一 profile + baseUrl 只拉一次，
+   * 于是 ① 换了 API Key 不会重拉；② 第一次因为断网失败之后永远不再试。
+   * 这两种情况用户只能用那个手动刷新按钮补救 —— 现在按钮去掉了，改成：
+   * 成功结果缓存 `MODEL_LIST_TTL_MS`，失败只退避 `MODEL_LIST_RETRY_MS` 就会再试。
+   */
+  private readonly modelDiscoveryState = new Map<string, { at: number; ok: boolean }>();
   private readonly modelDiscoveryInFlight = new Set<string>();
   private readonly discoveredModelOptions = new Map<string, ModelOption[]>();
   /**
@@ -576,6 +625,125 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     });
   }
 
+  /**
+   * 读附件时用的设置：**按这条对话当前的预设**判定，而不是读全局设置。
+   *
+   * 全局 `hwchat.permissionPreset` 只是新对话的默认值：用户完全可能已经在当前
+   * 对话里切到更宽的档位。拿全局值去判会出现两种反向错误——全局是「每次询问」
+   * 时，刚切到「完全访问」的用户附 `.env` 仍被敏感文件禁止挡住；全局是
+   * 「完全访问」时，停在「每次询问」的用户又能静默附上敏感文件，绕过确认。
+   *
+   * 抽成方法是因为「选文件」和「把已发出的附件再拿一份」两条入口都要读盘，
+   * 两处各写一遍迟早会走样。
+   */
+  private async attachmentSettings(): Promise<ChatSettings> {
+    const configured = readSettings();
+    const conversation = this.activeConversationId
+      ? await this.storage.getConversation(this.activeConversationId)
+      : undefined;
+    const controls = this.currentControls(conversation);
+    return applyRuntimeControls(configured, controls.permissionPreset, controls.agentMaxSteps, controls.internetReference);
+  }
+
+  /**
+   * 把一条**已经发出去**的附件复制进输入框，成为一条新的待发附件。
+   *
+   * 需求（用户原话）：「已经发到聊天框的消息里面的图片，想要拖动，或者复制到输入框
+   * 显示成新的附件」。界面侧两条入口都通到这里：拖到输入框、点图片上的「添加到输入框」。
+   *
+   * 取内容的优先级：
+   *  1. `attachmentIndex` 里的原始副本（图片的 `dataBase64`、文本的 `content`）——
+   *     同一次会话里几乎总是命中，不用碰磁盘；
+   *  2. 索引被淘汰了（按字符数 LRU，几 MB 的图会先出队）但有 `path` → 从磁盘重读，
+   *     走和「选文件」完全相同的读取器（大小上限、二进制判定、敏感文件策略都一致）；
+   *  3. 都没有 → 明确告诉用户这条附件已经不可用，不要静默失败。
+   */
+  /**
+   * 回一条图片附件的原始 base64（给 webview 写剪贴板用）。
+   *
+   * 上限 8 MB（原图上限是 6 MB，base64 后约 8.2 MB；这里按 base64 长度算，留一点余量）。
+   * 超过就回 `ok: false`，界面降级成「只复制文字」—— 把十几 MB 的字符串塞进一次
+   * postMessage 会让面板卡顿几秒，不值得。
+   */
+  private async provideAttachmentData(message: { requestId: string; id?: string }): Promise<void> {
+    const known = message.id ? this.attachmentIndex.get(message.id) : undefined;
+    const base64 = known?.dataBase64;
+    if (!base64) {
+      await this.post({ type: 'attachmentData', requestId: message.requestId, ok: false });
+      return;
+    }
+    if (base64.length > 11 * 1024 * 1024) {
+      await this.post({ type: 'attachmentData', requestId: message.requestId, ok: false, tooLarge: true });
+      return;
+    }
+    await this.post({
+      type: 'attachmentData',
+      requestId: message.requestId,
+      ok: true,
+      mimeType: known.mimeType || 'image/png',
+      dataBase64: base64,
+    });
+  }
+
+  private async attachMessageAttachment(message: { id?: string; path?: string }): Promise<void> {
+    const id = message.id?.trim();
+    const known = id ? this.attachmentIndex.get(id) : undefined;
+    const settings = await this.attachmentSettings();
+    const maxTotalBytes = Math.min(12 * 1024 * 1024, Math.max(2 * 1024 * 1024, settings.maxReadBytes * 16));
+    const pendingBytes = this.pendingAttachments.reduce((total, item) => total + (item.bytes ?? 0), 0);
+    const plan = planAttachmentReuse({
+      known,
+      path: message.path,
+      pendingCount: this.pendingAttachments.length,
+      pendingBytes,
+      maxTotalBytes,
+    });
+
+    if (plan.action === 'too-many') {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('error.tooManyAttachments') });
+      return;
+    }
+    if (plan.action === 'too-large') {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('error.attachmentCapacity') });
+      return;
+    }
+    if (plan.action === 'unavailable') {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('error.attachmentUnavailable') });
+      return;
+    }
+
+    let attachment: MessageContext;
+    if (plan.action === 'add') {
+      attachment = plan.attachment;
+    } else {
+      // 索引里已经没有内容了：从磁盘重读，走和「选文件」完全相同的读取器
+      // （大小上限、二进制判定、敏感文件策略一致）。
+      try {
+        attachment = await this.toolExecutor.readAttachment(this.absoluteAttachmentUri(plan.path), settings);
+      } catch (error) {
+        await this.post({
+          type: 'toast',
+          tone: 'warning',
+          text: `${plan.path}：${error instanceof Error ? error.message : String(error)}`,
+        });
+        return;
+      }
+      const limit = checkReuseLimits(attachment.bytes ?? 0, this.pendingAttachments.length, pendingBytes, maxTotalBytes);
+      if (limit !== 'ok') {
+        await this.post({
+          type: 'toast',
+          tone: 'warning',
+          text: tt(limit === 'too-many' ? 'error.tooManyAttachments' : 'error.attachmentCapacity'),
+        });
+        return;
+      }
+    }
+
+    this.pendingAttachments.push(attachment);
+    await this.open();
+    await this.post({ type: 'attachments', attachments: this.pendingAttachmentsForWebview() });
+  }
+
   async attachFiles(initialUris?: vscode.Uri[]): Promise<void> {
     const selected = initialUris ?? await vscode.window.showOpenDialog({
         canSelectMany: true,
@@ -593,12 +761,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
      * 时，刚切到「完全访问」的用户附 `.env` 仍被敏感文件禁止挡住；全局是
      * 「完全访问」时，停在「每次询问」的用户又能静默附上敏感文件，绕过确认。
      */
-    const configured = readSettings();
-    const conversation = this.activeConversationId
-      ? await this.storage.getConversation(this.activeConversationId)
-      : undefined;
-    const controls = this.currentControls(conversation);
-    const settings = applyRuntimeControls(configured, controls.permissionPreset, controls.agentMaxSteps);
+    const settings = await this.attachmentSettings();
     const errors: string[] = [];
     const maxTotalBytes = Math.min(12 * 1024 * 1024, Math.max(2 * 1024 * 1024, settings.maxReadBytes * 16));
     for (const uri of selected) {
@@ -728,6 +891,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         case 'ready':
           await this.sendState();
           break;
+        case 'layoutReport':
+          await this.reportLayout(message.report);
+          break;
         case 'newChat':
           // 多线程：另一个对话在跑也允许开新对话——它继续在后台跑，这里只是把面板切到草稿。
           await this.newChat();
@@ -767,6 +933,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           break;
         case 'stop':
           this.stop();
+          break;
+        case 'beginEditTaskMessage':
+          this.beginEditTaskMessage(message.nodeId);
+          break;
+        case 'cancelEditTaskMessage':
+          this.cancelEditTaskMessage(message.nodeId);
           break;
         case 'editTaskMessage':
           await this.editTaskMessage(message.nodeId, message.text);
@@ -814,8 +986,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           break;
         case 'setProfile':
           await this.setProfile(message.profileId);
+          // 换了端点就等于换了一套模型清单，立刻静默重拉。
+          void this.ensureModelsFresh(message.profileId, { force: true });
           break;
         case 'refreshModels':
+          // 兼容旧版 webview 的消息：现在模型列表会自动刷新，不再有手动入口。
           await this.discoverModels(message.profileId, true);
           break;
         case 'setMode':
@@ -835,6 +1010,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           break;
         case 'setReasoningEffort':
           await this.setReasoningEffort(message.reasoningEffort);
+          break;
+        case 'setInternetReference':
+          await this.setInternetReference(message.enabled === true);
           break;
         case 'loadOlder':
           await this.loadOlder(message.before);
@@ -867,6 +1045,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           break;
         case 'attachFiles':
           await this.attachFiles();
+          break;
+        case 'attachMessageAttachment':
+          await this.attachMessageAttachment(message);
+          break;
+        case 'requestAttachmentData':
+          await this.provideAttachmentData(message);
           break;
         case 'attachClipboardFiles':
           await this.attachClipboardFiles(message.files);
@@ -975,6 +1159,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       context,
       attachments,
       model: settings.model,
+      // 排队消息：队列还没把它交给 agent，界面显示「还没执行」；取走执行时改成 running。
+      executionStatus: 'pending',
     });
     const assistant = await this.storage.appendMessage(conversationId, {
       role: 'assistant',
@@ -1050,7 +1236,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         ? controls.reasoningEffort
         : normalizeReasoningEffort(requestedReasoningEffort);
       configuredSettings = {
-        ...applyRuntimeControls(configuredSettings, effectivePreset, effectiveSteps),
+        // 互联网参考按这条对话自己的存档打开；运行开始时快照一次，本轮所有工具与提示词都读它。
+        ...applyRuntimeControls(configuredSettings, effectivePreset, effectiveSteps, controls.internetReference),
         reasoningEffort: requestedReasoning,
       };
       const profile = profileFor(configuredSettings, existingConversation?.apiProfileId);
@@ -1135,6 +1322,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         context,
         attachments,
         model: settings.model,
+        // 这条是发起本轮运行的消息：紧接着 agent 就会读它，所以直接算「执行中」。
+        executionStatus: 'running',
       });
       const preparedSkills = await this.prepareSkillsForSend(skillIds, mode, content || tt('notice.processAttachments'));
       const usedSkills = [...preparedSkills.preloaded];
@@ -1267,7 +1456,19 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
               conversationId!,
             );
           },
-          takeTaskUpdate: (phase) => taskQueue.take(phase, (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state })),
+          takeTaskUpdate: async (phase) => {
+            /*
+             * 每个小任务边界（每一轮模型调用之前）先把「还没在本分支判断过」的新消息重判
+             * 一遍，相关的当场合并进本分支 —— 用户要求「执行完小任务后先读取新消息，
+             * 相关就合并，不管中间隔了多少条消息」。
+             *
+             * 只在 `replan`（分支还在继续）做：`complete` 表示这条分支已经跑完了，
+             * 那时候再按「与当前分支是否相关」去判，等于把本该独立开分支的任务硬并进
+             * 一条已完成的分支，反而把原有行为改坏了。
+             */
+            if (phase === 'replan') await this.reviewQueuedMessages(run, conversationId!, settings);
+            return taskQueue.take(phase, (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
+          },
           callbacks: {
             onTaskUpdate: async (update) => {
               this.authorizeFollowUp(run, update);
@@ -1418,6 +1619,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     next.activated = true;
     next.toolStartIndex = run.globalTools.length;
     run.activeResponseTaskId = next.taskId;
+    // 这一条现在真的在跑了：气泡上的徽标从「还没执行」变成「执行中」。
+    await this.setUserExecutionStatus(run.conversationId, next.userMessageId, 'running');
     const streaming = await this.storage.updateMessage(run.conversationId, next.assistantMessageId, {
       status: 'streaming',
       content: next.content,
@@ -1507,6 +1710,36 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     });
     response.completed = true;
     await this.post({ type: 'messageComplete', conversationId: run.conversationId, message: this.forWebview(completed) });
+    /*
+     * 用户消息的最终状态。
+     *
+     * `activated` 为 false 说明这一轮结束了 agent 都没读过它 —— 也就是「被忽略」的那条，
+     * 标成 `skipped` 而不是 `done`：以前这种情况下界面和任务树都显示「完成」，
+     * 用户根本看不出那句排队的任务其实一次都没跑（多个气泡时最容易漏）。
+     */
+    await this.setUserExecutionStatus(run.conversationId, response.userMessageId, response.activated ? 'done' : 'skipped');
+  }
+
+  /**
+   * 写一条用户消息的执行状态，并把结果推给界面。
+   *
+   * 状态落在消息本身上（而不是只存在内存里的任务树）：运行结束、切对话、
+   * 重启 VS Code 之后仍然能看到「这条跑过 / 这条被跳过」。
+   * 消息已经被删掉（撤回排队消息）时 `updateMessage` 会抛错，这里静默忽略。
+   */
+  private async setUserExecutionStatus(
+    conversationId: string,
+    userMessageId: string,
+    status: MessageExecutionStatus,
+  ): Promise<void> {
+    try {
+      const updated = await this.storage.updateMessage(conversationId, userMessageId, { executionStatus: status });
+      if (this.activeConversationId === conversationId) {
+        await this.post({ type: 'messageUpdated', conversationId, message: this.forWebview(updated) });
+      }
+    } catch {
+      // 消息已被删除（撤回排队消息）：没有状态可记。
+    }
   }
 
   private async requestMessages(
@@ -1561,7 +1794,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     });
     messages.push({
       role: 'system',
-      content: [this.agentSystemPrompt(mode, settings.systemPrompt, skillPrompt, historyPrompt), todoContext]
+      content: [
+        // 互联网参考在**这一层**注入：它是本轮的硬性工作方式，必须随每次请求
+        // （含「继续执行」）重新拼进 system，而不是只在发送那一刻拼一次。
+        withInternetReference(this.agentSystemPrompt(mode, settings.systemPrompt, skillPrompt, historyPrompt), settings.internetReference),
+        todoContext,
+      ]
         .filter(Boolean)
         .join('\n\n'),
     });
@@ -1701,6 +1939,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         permissionPreset: controls.permissionPreset,
         agentMaxSteps: controls.agentMaxSteps,
         reasoningEffort: controls.reasoningEffort,
+        internetReference: controls.internetReference,
       },
       apiKeyConfigured,
       pendingAttachments: this.pendingAttachmentsForWebview(),
@@ -1729,7 +1968,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
       // Chat 模式本轮不下发任何工具，工具数必须是 0，否则状态栏会显示一个用不到的数量。
       availableToolCount: activeMode === 'chat' ? 0 : this.vscodeTools.availableCount()
-        + this.toolExecutor.definitions(activeMode).length
+        + this.toolExecutor.definitions(activeMode, { internetReference: controls.internetReference }).length
         + 1
         + (conversation?.sourceConversationId ? 1 : 0),
       taskTree: conversation?.id && this.runs.has(conversation.id)
@@ -1748,11 +1987,30 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       state,
       streamingConversationId: this.isViewingRunningConversation() ? this.activeConversationId : undefined,
     });
-    const discoveryKey = this.modelDiscoveryKey(activeProfile.id, activeProfile.baseUrl);
-    if (apiKeyConfigured && !this.modelDiscoveryAttempts.has(discoveryKey) && !this.modelDiscoveryInFlight.has(discoveryKey)) {
-      this.modelDiscoveryAttempts.add(discoveryKey);
-      void this.discoverModels(activeProfile.id, false);
+    if (apiKeyConfigured) void this.ensureModelsFresh(activeProfile.id);
+  }
+
+  /**
+   * 静默刷新模型列表：没有按钮，也不打扰用户。
+   *
+   * 三条规则：
+   *  - 同一 profile 正在拉取 → 跳过（不排队，避免切换对话时打连环请求）；
+   *  - 上次**成功**距今不足 `MODEL_LIST_TTL_MS` → 跳过（模型清单不是每秒都变）；
+   *  - 上次**失败**距今不足 `MODEL_LIST_RETRY_MS` → 跳过（失败要能重试，但不能刷屏）。
+   * `force` 用于「刚换了 API Key / baseUrl」这种必须立刻重拉的时刻。
+   */
+  private async ensureModelsFresh(profileId: string | undefined, options: { force?: boolean } = {}): Promise<void> {
+    const settings = readSettings();
+    const profile = profileFor(settings, profileId);
+    const key = this.modelDiscoveryKey(profile.id, profile.baseUrl);
+    if (this.modelDiscoveryInFlight.has(key)) return;
+    const last = this.modelDiscoveryState.get(key);
+    if (!options.force && last) {
+      const ttl = last.ok ? MODEL_LIST_TTL_MS : MODEL_LIST_RETRY_MS;
+      if (Date.now() - last.at < ttl) return;
     }
+    this.modelDiscoveryState.set(key, { at: Date.now(), ok: last?.ok ?? false });
+    await this.discoverModels(profile.id, false);
   }
 
   private async loadOlder(before: string): Promise<void> {
@@ -1829,7 +2087,6 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       }
       return;
     }
-    this.modelDiscoveryAttempts.add(discoveryKey);
     this.modelDiscoveryInFlight.add(discoveryKey);
     await this.post({ type: 'modelsLoading', profileId: profile.id, active: true });
     try {
@@ -1857,6 +2114,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         .filter((model) => !excluded.has(model.id));
       if (!options.length) throw new Error(tt('error.allModelsInvalid'));
       this.discoveredModelOptions.set(profile.id, options);
+      this.modelDiscoveryState.set(discoveryKey, { at: Date.now(), ok: true });
       const nextModels = options.map((model) => model.id);
       const selectedModel = currentModel && nextModels.includes(currentModel) ? currentModel : nextModels[0]!;
       const apiProfiles = settings.apiProfiles.map((item) => item.id === profile.id
@@ -1878,6 +2136,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         await this.post({ type: 'toast', tone: switched ? 'warning' : 'neutral', text: tt('chat.modelsFetched', { profile: profile.name, count: options.length, switched }) });
       }
     } catch (error) {
+      // 自动刷新失败不打扰用户（界面上仍是上一次成功拿到的清单）；
+      // 但要把这次失败记下来，退避之后才会再试，而不是当成「已经成功过」。
+      this.modelDiscoveryState.set(discoveryKey, { at: Date.now(), ok: false });
       if (showFeedback) {
         await this.post({ type: 'toast', tone: 'warning', text: error instanceof Error ? error.message : String(error) });
       }
@@ -1885,6 +2146,16 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       this.modelDiscoveryInFlight.delete(discoveryKey);
       await this.post({ type: 'modelsLoading', profileId: profile.id, active: false });
     }
+  }
+
+  /**
+   * 供扩展侧调用：静默重拉当前 profile 的模型清单。
+   *
+   * 用于「刚保存了 API Key」这类时刻 —— 那时面板不一定重发 state，
+   * 而模型清单此刻还一条都没有。
+   */
+  async refreshModelsQuietly(): Promise<void> {
+    await this.ensureModelsFresh(undefined, { force: true });
   }
 
   /** 当前真正生效的模式，用于把真实值回推给界面（界面可能已经先本地改了下拉）。 */
@@ -2297,6 +2568,23 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     await this.post({ type: 'reasoningEffortChanged', reasoningEffort: normalized });
   }
 
+  /**
+   * 开 / 关「互联网参考」。
+   *
+   * 运行中也允许改（与其它三项一致）：正在跑的这一轮用的是运行开始时的设置快照，
+   * 所以打开后从下一条消息起生效，不会让当前这一轮突然改变工作方式。
+   */
+  private async setInternetReference(enabled: boolean): Promise<void> {
+    const value = enabled === true;
+    await this.persistControls(this.activeConversationId, { internetReference: value });
+    await this.post({ type: 'internetReferenceChanged', enabled: value });
+    await this.post({
+      type: 'toast',
+      tone: 'neutral',
+      text: tt(value ? 'chat.internetReferenceOn' : 'chat.internetReferenceOff'),
+    });
+  }
+
   private async requestVoiceInput(): Promise<void> {
     if (!this.voiceConsentGranted) {
       // 同样是模态框：取消按钮由 VS Code 追加，这里不再自带一个。
@@ -2314,8 +2602,107 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     await this.post({ type: 'voiceInputAllowed' });
   }
 
+  /**
+   * 让界面量一次布局并报回来（命令 `hwchat.reportLayout` 调用）。
+   *
+   * 面板没打开时无从测量，所以顺便把它显示出来再让界面量。
+   */
+  async requestLayoutReport(): Promise<void> {
+    await vscode.commands.executeCommand('hwchat.chatView.focus').then(undefined, () => undefined);
+    await this.post({ type: 'layoutReportRequest' });
+  }
+
+  /**
+   * 接收界面报上来的布局自检结果，并复制到剪贴板。
+   *
+   * 面板布局问题没有别的取证办法：扩展宿主根本不知道 webview 有多宽、
+   * 文档有没有溢出，只能由界面自己量了报上来。
+   */
+  private async reportLayout(report: Record<string, unknown>): Promise<void> {
+    const lines = [
+      '── HWChat 布局诊断 ──',
+      ...Object.entries(report).map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`),
+    ];
+    const text = lines.join('\n');
+    try {
+      await vscode.env.clipboard.writeText(text);
+      void vscode.window.showInformationMessage(tt('ext.layoutReportCopied'));
+    } catch {
+      void vscode.window.showWarningMessage(text);
+    }
+  }
+
   private async postTaskTree(queue: AgentTaskQueue, conversationId: string): Promise<void> {
     await this.post({ type: 'taskTreeChanged', conversationId, taskTree: queue.state() });
+  }
+
+  /**
+   * 小任务边界上的「新消息重判」。
+   *
+   * 用户的要求（原话）：「对话框 agent 正在运行，新消息进来，agent 需要执行完小任务后，
+   * 先读取新消息，如果新消息和正在运行的任务相关，就合并，不管新消息和正在执行的消息
+   * 之间间隔了多少条消息，都要先停下来判断一下再继续。」
+   *
+   * 为什么原来的行为不满足：
+   *  - 相关与否只在**发消息那一刻**判一次，判据只有分支标题；判成「排队」之后就一直压到
+   *    整条分支结束 —— 分支可能跑几十轮，期间这条消息既没被读、也不会被重新考虑。
+   *  - 于是「间隔了多少条消息」变成了隐式规则：只要隔着几条，就等于被无限期搁置。
+   *
+   * 现在的做法：每一次 `takeTaskUpdate`（也就是每一轮模型调用之前、一个小任务做完之后）
+   * 把**所有**还没在本分支判断过的排队消息扫一遍，带上「现在正在做什么」的实时上下文
+   * 重新判；判为相关的当场并进本分支（任务树里显示「已合并」，并且马上交给 agent 读）。
+   *
+   * 成本可控：每条消息在**同一条分支**上只重判一次（`reviewedFor` 记账），
+   * 所以不会把一次分类摊到每一步上；排队的条数就是上限。
+   */
+  private async reviewQueuedMessages(
+    run: ConversationRun,
+    conversationId: string,
+    settings: ChatSettings,
+  ): Promise<void> {
+    await reviewQueuedTasks(run.taskQueue, {
+      classify: async (currentTask, incomingTask, liveContext) => {
+        const classified = await classifyTaskRelation(
+          this.client,
+          settings,
+          currentTask,
+          incomingTask,
+          run.controller.signal,
+          run.taskQueue.isResumeScope(),
+          liveContext,
+        );
+        return classified.relation;
+      },
+      liveContext: () => this.liveTaskContext(run, conversationId),
+      onChange: (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }),
+      signal: run.controller.signal,
+    });
+  }
+
+  /**
+   * 「现在正在做什么」：喂给关系判定，避免它只看一行标题就把消息判成不相干。
+   *
+   * 只放**短而具体**的东西（分支标题、清单进度、最近几步），因为这是每次边界判断都要
+   * 付出的一次小请求；把整段对话塞进去既慢又会被旧内容带偏。
+   */
+  private async liveTaskContext(run: ConversationRun, conversationId: string): Promise<string> {
+    const parts: string[] = [];
+    const conversation = await this.storage.getConversation(conversationId).catch(() => undefined);
+    const todos = conversation?.todos ?? [];
+    if (todos.length) {
+      const done = todos.filter((todo) => todo.status === 'completed').length;
+      const current = todos.find((todo) => todo.status === 'in_progress') ?? todos.find((todo) => todo.status !== 'completed');
+      parts.push(`Task list: ${done}/${todos.length} completed.`);
+      if (current) parts.push(`Working on: ${current.content.trim()}`);
+      const next = todos.filter((todo) => todo.status !== 'completed')[1];
+      if (next) parts.push(`Next up: ${next.content.trim()}`);
+    }
+    const recent = run.globalTools
+      .filter((tool) => tool.status === 'success' || tool.status === 'error')
+      .slice(-3)
+      .map((tool) => `${tool.name}: ${tool.summary}`.slice(0, 160));
+    if (recent.length) parts.push(`Recent steps:\n- ${recent.join('\n- ')}`);
+    return parts.join('\n');
   }
 
   /** 按节点 id 找到它所属的运行（任务树只在内存里，节点 id 全局唯一）。 */
@@ -2324,6 +2711,26 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       if (run.taskQueue.state().nodes.some((node) => node.id === nodeId)) return run;
     }
     return undefined;
+  }
+
+  /**
+   * 打开悬浮编辑框：给这条排队消息挂上编辑闸门。
+   *
+   * 关键点是**后端**也参与：agent 的 `take()` 会在取到这条任务之前等闸门，
+   * 所以「改到一半 agent 就把它读走了」不会发生 —— 它会停在那里，等用户保存
+   * （或取消、或 5 分钟超时）之后再读更新后的内容继续。
+   */
+  private beginEditTaskMessage(nodeId: string): void {
+    const run = this.runOfTask(nodeId);
+    if (!run) return;
+    run.taskQueue.holdForEdit(nodeId, (state) => this.post({ type: 'taskTreeChanged', conversationId: run.conversationId, taskTree: state }));
+  }
+
+  /** 关掉编辑框但没保存：放行，内容不动。 */
+  private cancelEditTaskMessage(nodeId: string): void {
+    const run = this.runOfTask(nodeId);
+    if (!run) return;
+    run.taskQueue.releaseEdit(nodeId, (state) => this.post({ type: 'taskTreeChanged', conversationId: run.conversationId, taskTree: state }));
   }
 
   /**
@@ -2348,6 +2755,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const applied = await run.taskQueue.editPending(nodeId, content, (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
     if (!applied) {
       // 已执行 / 已取消：历史保留原样，把改过的内容重新发一条。
+      run.taskQueue.releaseEdit(nodeId);
       await this.send(content);
       await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.resentAfterEdit') });
       return;
@@ -2357,6 +2765,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       const updated = await this.storage.updateMessage(conversationId, userMessageId, { content });
       await this.post({ type: 'messageUpdated', conversationId, message: this.forWebview(updated) });
     }
+    // 保存完成 = 编辑结束：放行正在等这条的 agent，它读到的就是刚改好的内容。
+    run.taskQueue.releaseEdit(nodeId);
     this.callbacks.onHistoryChanged();
     await this.postTaskTree(run.taskQueue, conversationId);
   }
@@ -2375,6 +2785,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     }
     const conversationId = run.conversationId;
     const node = run.taskQueue.state().nodes.find((candidate) => candidate.id === nodeId);
+    // 撤回前先放行闸门，否则等待中的 take() 会等一个已经不存在的任务。
+    run.taskQueue.releaseEdit(nodeId);
     const removed = await run.taskQueue.removePending(nodeId, (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
     if (!removed) {
       await this.post({ type: 'toast', tone: 'warning', text: tt('taskQueue.removeExecuted') });
@@ -3438,7 +3850,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           <label class="mode-field"><span class="sr-only">${t(lang, 'chat.workspaceMode')}</span><select id="modeInput" aria-label="${t(lang, 'chat.workspaceMode')}"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
           <label class="profile-field"><span class="sr-only">${t(lang, 'chat.apiProfile')}</span><select id="profileInput" aria-label="${t(lang, 'chat.apiProfile')}"></select></label>
           <label class="model-field"><span class="sr-only">${t(lang, 'chat.model')}</span><select id="modelInput" aria-label="${t(lang, 'chat.model')}"></select></label>
-          <button id="refreshModelsButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.refreshModelsFromApi')}" title="${t(lang, 'chat.refreshModels')}">${icon('refresh')}</button>
+          <!--
+            互联网参考开关（占用原来的「刷新模型列表」位置）。
+
+            为什么把刷新按钮去掉：模型列表改成静默自动刷新（见 ensureModelsFresh），
+            用户不需要、也不应该手动点它；而「先上网查成熟方案再动手」是一个需要
+            随手开关的**运行方式**，放在主工具条上比埋进设置页更合理。
+          -->
+          <button id="internetReferenceButton" class="icon-button toolbar-toggle" type="button" aria-pressed="false" aria-label="${t(lang, 'chat.internetReference')}" title="${t(lang, 'chat.internetReferenceOff.hint')}">${icon('globe')}</button>
           <button id="skillsButton" class="control-button" type="button" aria-label="${t(lang, 'chat.selectSkill')}" title="${t(lang, 'chat.selectSkill')}">${icon('skills')}<span id="skillsCount">0</span></button>
           <button id="archiveButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.archiveCurrent')}" title="${t(lang, 'chat.archive')}">${icon('archive')}</button>
           <button id="exportButton" class="icon-button" type="button" aria-label="${t(lang, 'chat.exportCurrent')}" title="${t(lang, 'chat.export')}">${icon('export')}</button>
@@ -3522,6 +3941,28 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     </main>
   </div>
   <div id="toast" class="toast" role="status" hidden></div>
+  <!--
+    悬浮编辑框（独立层级，不是消息气泡的一部分）。
+
+    为什么必须浮起来：agent 运行时消息列表每 70ms 就可能重排一次，编辑框如果长在
+    气泡里，会被连同按钮一起销毁重建 —— 表现就是「点了没反应」「光标跳回开头」
+    「中文输入法被打断」。放在 #messageList 之外，重绘永远碰不到它，
+    气泡只在保存后通过 messageUpdated 更新内容。
+  -->
+  <div id="messageEditor" class="message-editor" hidden>
+    <div class="message-editor-panel" role="dialog" aria-modal="true" aria-labelledby="messageEditorTitle">
+      <div class="message-editor-head">
+        <strong id="messageEditorTitle">${t(lang, 'chat.editMessage')}</strong>
+        <span id="messageEditorState" class="message-editor-state"></span>
+      </div>
+      <textarea id="messageEditorInput" class="message-editor-input" rows="8" spellcheck="false" aria-label="${t(lang, 'chat.editMessage')}"></textarea>
+      <div class="message-editor-foot">
+        <span id="messageEditorHint" class="message-editor-hint">${t(lang, 'chat.editMessageKeys')}</span>
+        <button id="messageEditorCancel" class="message-editor-cancel" type="button">${t(lang, 'taskQueue.cancelEdit')}</button>
+        <button id="messageEditorSave" class="message-editor-save" type="button">${t(lang, 'taskQueue.save')}</button>
+      </div>
+    </div>
+  </div>
   ${messageScriptTag(lang)}
   <script nonce="${scriptNonce}" src="${metaScript}"></script>
   <script nonce="${scriptNonce}" src="${todoScript}"></script>

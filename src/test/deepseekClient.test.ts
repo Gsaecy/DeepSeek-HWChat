@@ -23,6 +23,7 @@ const settings: ChatSettings = {
   agentMaxSteps: 12,
   reasoningEffort: 'default',
   permissionPreset: 'review',
+  internetReference: false,
   fileReadPolicy: 'allow',
   fileWritePolicy: 'ask',
   commandPolicy: 'ask',

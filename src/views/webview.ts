@@ -39,10 +39,15 @@ export function icon(name: IconName): string {
     refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
     mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8"/>',
     arrowDown: '<path d="M12 5v14"/><path d="m5 12 7 7 7-7"/>',
+    /*
+     * 互联网参考（地球 + 经线）。关闭时是灰描边，开启时由 CSS 换成强调色实心底。
+     * 24 格网格，墨迹 18×18、中心 (12,12)，与其它工具栏图标同尺寸。
+     */
+    globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18Z"/>',
   };
   // data-icon 供 CSS 做光学尺寸修正：同一个 24 格网格里，回形针、麦克风的墨迹约占 19~20 格，
   // 发送箭头只有 14 格、停止方块只有 12 格；图标框一样大时后两者看起来明显偏小。
   return `<svg class="icon" data-icon="${name}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
 }
 
-type IconName = 'history' | 'plus' | 'settings' | 'send' | 'stop' | 'attach' | 'archive' | 'export' | 'skills' | 'restore' | 'shield' | 'refresh' | 'mic' | 'arrowDown';
+type IconName = 'history' | 'plus' | 'settings' | 'send' | 'stop' | 'attach' | 'archive' | 'export' | 'skills' | 'restore' | 'shield' | 'refresh' | 'mic' | 'arrowDown' | 'globe';

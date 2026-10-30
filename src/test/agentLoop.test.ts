@@ -19,6 +19,7 @@ import { ChatRequestMessage, ChatSettings, ToolExecutionResult } from '../core/t
  */
 
 const baseSettings: ChatSettings = {
+  internetReference: false,
   apiProfiles: [{ id: 'default', name: 'Test', baseUrl: 'https://example.invalid', models: ['deepseek-chat'], requestHeaders: {} }],
   activeApiProfileId: 'default',
   baseUrl: 'https://example.invalid', model: 'deepseek-chat', temperature: 0, maxTokens: 0,
@@ -197,7 +198,7 @@ test('agent loop: cancelling stops any further tool call in the same round', asy
   assert.equal(round, 1);
 });
 
-test('agent loop: too many calls in one round are summarised instead of all executed', async () => {
+test('agent loop: too many calls in one round are summarised and the run continues', async () => {
   let round = 0;
   const client = {
     async streamChat() {
@@ -219,9 +220,45 @@ test('agent loop: too many calls in one round are summarised instead of all exec
   const result = await runAgent({ client, tools, steps: 10 });
 
   assert.equal(tools.calls.length, MAX_TOOL_CALLS_PER_ROUND);
-  assert.equal(result.stopReason, 'toolBudget');
+  // 单轮超限只是节流：被跳过的那些回报给模型，循环继续跑完这一轮之后的回合。
+  assert.equal(result.stopReason, 'complete', '不能再因为单轮调用多就中断整次运行');
+  assert.equal(round, 2, '必须进入下一轮，模型才能看见哪些没执行');
   const skipped = result.tools.filter((item) => item.status === 'denied');
   assert.equal(skipped.length, 3, '超出的调用必须有对应的 tool 结果，否则历史消息序列非法');
+});
+
+test('agent loop: no per-run tool-call cap — runs past the old 200/1000 ceilings', async () => {
+  // 真实故障：跑到第 200 个工具调用时被「工具调用次数已达安全上限」打断，
+  // 用户明确要求「所有档位都不限次」。这里每轮发 2 个不同参数的调用（避开
+  // 「同一调用连续 3 次」的死循环守卫），跑满 150 轮 = 300 次调用，确认一次都
+  // 没有被总量闸门拦下（旧实现在第 200 次就会停）。
+  let round = 0;
+  const client = {
+    get rounds() {
+      return round;
+    },
+    async streamChat() {
+      round += 1;
+      if (round > 150) return { content: '', reasoning: '', toolCalls: [] };
+      return {
+        content: '',
+        reasoning: '',
+        toolCalls: [1, 2].map((slot) => ({
+          id: `call_${round}_${slot}`,
+          type: 'function' as const,
+          function: { name: 'read_file', arguments: `{"path":"r${round}-${slot}.txt"}` },
+        })),
+      };
+    },
+  };
+  const tools = countingTools();
+
+  const result = await runAgent({ client, tools, steps: 200 });
+
+  assert.equal(tools.calls.length, 300, '300 次调用一个都不能被总量闸门拦下');
+  assert.equal(result.stopReason, 'complete', '模型自己停下来，不是因为调用次数');
+  assert.equal(result.tools.filter((item) => item.status === 'denied').length, 0, '不该出现「已达上限」被跳过的调用');
+  assert.equal(/工具调用/.test(result.content), false, '不该再出现工具调用预算的提示');
 });
 
 test('agent loop: consecutive failing rounds stop the automatic retry', async () => {

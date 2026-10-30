@@ -27,7 +27,7 @@ export const AGENT_STEP_PRESETS: readonly number[] = [24, 68, 120, 0];
  *
  * 沿用历史上 `0 = 不限制` 的语义：用户在工具条/设置页显式选「无限制」时才写出 0，
  * 其余一切**脏值**（负数、非数字、空值）仍然回落到默认预算，不会被解释成无限。
- * 循环侧还要靠 `ToolLoopGuard` / 连续无进展 / 工具预算/ 取消这几道闸兜底，
+ * 循环侧还要靠 `ToolLoopGuard` / 连续无进展 / 单轮工具调用上限 / 取消这几道闸兜底，
  * 所以「无限制」不等于「一定会踢死机器」。
  */
 export const AGENT_MAX_STEPS_UNLIMITED = 0;
@@ -65,10 +65,31 @@ export function normalizeAgentMaxSteps(value: unknown): number {
 }
 
 /**
+ * 一次运行里累计的工具调用上限：**不设限**。
+ *
+ * 历史（2026-10-29 起）：
+ * 1. 最初写死 200 —— 用户把最大步骤设成「无限制」仍会在第 200 个调用被打断，
+ *    与设置的字面意思冲突；于是「无限制」档位放宽到 1000、常规档位保持 200。
+ * 2. 用户实测后要求**所有档位都不限次**：「执行次数多了，每次运行命令都弹窗，
+ *    很麻烦」。这道闸的用意本来就是「绝对兜底」，而不是「常用预算」，
+ *    反复打断真实任务比它防住的风险更糟，所以整体移除。
+ *
+ * 仍然是「不限制」而不是「随便跑」：循环里还留着这几道闸——
+ *  - `MAX_TOOL_CALLS_PER_ROUND`：一轮内最多执行多少个调用（超出的跳过并回报模型）；
+ *  - `MAX_IDENTICAL_TOOL_CALLS`：同一个调用连续 3 次即判定死循环；
+ *  - `MAX_FAILED_ROUNDS_WITHOUT_PROGRESS`：连续 3 轮全部失败即停；
+ *  - 有限档位（24 / 68 / 120）依旧由轮数预算封顶；
+ *  - 停止按钮随时可用。
+ *
+ * 留成常量而不是删掉：将来若要重新加回总量兜底，改这一个值即可。
+ */
+export const MAX_TOOL_CALLS_PER_RUN = Number.POSITIVE_INFINITY;
+
+/**
  * 交给工具循环的实际轮数预算。
  *
  * 无限制在循环里就是 `Infinity`：循环只在模型不再调用工具时结束，
- * 或由循环守卫 / 取消 / 工具预算提前终止。有限预算保持原样。
+ * 或由循环守卫 / 取消提前终止。有限预算保持原样。
  */
 export function agentStepBudget(value: unknown): number {
   const steps = normalizeAgentMaxSteps(value);

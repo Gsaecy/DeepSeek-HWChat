@@ -311,7 +311,7 @@
     'historySearch', 'archiveViewButton', 'conversationList', 'settingsButton',
     'settingsButtonSide', 'exportButton', 'archiveButton', 'conversationTitle',
     'conversationTitleInput', 'projectBadge', 'editTitleButton', 'saveTitleButton', 'cancelTitleButton',
-    'connectionState', 'profileInput', 'modelInput', 'modeInput', 'refreshModelsButton', 'skillsButton', 'skillsCount',
+    'connectionState', 'profileInput', 'modelInput', 'modeInput', 'internetReferenceButton', 'skillsButton', 'skillsCount',
     'skillsPanel', 'skillsList', 'workspaceTrustBadge', 'skillsInstallHint', 'skillsInstallButton', 'skillsSourceNote', 'messageViewport',
     'messageList', 'emptyState', 'loadOlderButton', 'scrollToBottomButton', 'attachmentList', 'contextChip',
     'contextLabel', 'removeContextButton', 'composer', 'promptInput',
@@ -321,6 +321,7 @@
     'todoPanel', 'todoList', 'todoSummary', 'todoSummaryActions', 'resumeTodosButton', 'cancelTodosButton',
     'todoArchivePanel', 'todoArchiveList', 'todoArchiveSummary', 'todoArchiveBar',
     'approvalCard', 'approvalTitle', 'approvalSummary', 'approvalDetail', 'approvalDenyButton', 'approvalAllowButton',
+    'messageEditor', 'messageEditorInput', 'messageEditorState', 'messageEditorHint', 'messageEditorSave', 'messageEditorCancel', 'messageEditorTitle',
     'attachButton', 'sendButton', 'stopButton', 'toast',
   ].map((id) => [id, document.getElementById(id)]));
 
@@ -340,6 +341,8 @@
      */
     fileRoots: { roots: [], preferred: '' }, fileTarget: 'finder',
     taskTree: null, todos: [], todoArchives: [], expandedArchiveId: null, archiveRestore: null, todosInterrupted: false, todosIncomplete: false,
+    /** 互联网参考开关（按对话）：由 state 下发，界面只回显。 */
+    internetReference: false,
     todoSignature: '',
     runningConversationIds: [], pendingApprovals: [],
     /** 每个对话各自的输入框草稿，键是对话 id（还没落库的新对话用 'draft'）。 */
@@ -373,9 +376,23 @@
    */
   const expandedUserMessages = new Set();
 
-  /** 正在行内编辑的排队任务节点 id / 草稿内容（见 renderTaskTree）。 */
-  let editingTaskId = null;
-  let editingTaskDraft = '';
+  /**
+   * 正在**消息气泡里**编辑的那条用户消息。
+   *
+   * 排队消息（还没被 agent 取走）的编辑入口放在气泡里，而不是任务树：任务树一行
+   * 只显示一句话，长内容根本看不清。编辑态存模块级、不存节点上——整段重建会把
+   * article 重造一遍（理由同 expandedUserMessages）。
+   */
+  let editingBubbleMessageId = null;
+  /** 编辑中的那条消息对应的任务节点 id：保存时要把它交给 editTaskMessage。 */
+  let editingBubbleTaskId = null;
+  let editingBubbleDraft = '';
+  /**
+   * 编辑模式：
+   * - `inPlace`：这条还在队列里，保存就是改掉它本身（下一轮直接读新内容）；
+   * - `resend`：这条已经被 agent 执行过，历史不会改写，保存后作为一条新消息发出。
+   */
+  let editingBubbleMode = 'inPlace';
   /** 等着被局部重画的那条消息 id（见 scheduleMessagePatch）。 */
   let pendingPatchId = null;
   let selectingMessageText = false;
@@ -385,6 +402,205 @@
   let pressedSummary = null;
 
   function post(type, payload = {}) { vscode.postMessage({ type, ...payload }); }
+
+  /**
+   * 量一次布局，把「到底是我们的 CSS 还是 webview 宽度本身不对」分清楚。
+   *
+   * 面板右侧被切有两种完全不同的原因，症状却一模一样：
+   *  1. 文档里某个内容太宽，把文档撑出横向滚动 → `文档.scrollWidth > 视口.clientWidth`；
+   *  2. webview 的宽度比可见区域大（宿主没重排），文档自己并不溢出 →
+   *     两个数相等，但 `聊天栏 + 侧栏` 的宽度明显大于窗口应有的宽度。
+   * 光看截图分不出来，所以把原始数字一起报上去（命令：复制布局诊断）。
+   */
+  function collectLayoutReport() {
+    const doc = document.documentElement;
+    const box = (selector) => {
+      const node = document.querySelector(selector);
+      if (!node) return null;
+      const rect = node.getBoundingClientRect();
+      return { left: Math.round(rect.left), right: Math.round(rect.right), width: Math.round(rect.width), scrollWidth: node.scrollWidth, clientWidth: node.clientWidth };
+    };
+    const wide = [];
+    for (const node of document.querySelectorAll('body *')) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width === 0) continue;
+      if (rect.right > doc.clientWidth + 1) {
+        wide.push(`${node.tagName.toLowerCase()}${node.id ? `#${node.id}` : ''}${typeof node.className === 'string' && node.className ? `.${node.className.split(/\s+/)[0]}` : ''} right=${Math.round(rect.right)} w=${Math.round(rect.width)}`);
+        if (wide.length >= 8) break;
+      }
+    }
+    /*
+     * 胶囊归档栏单独量一遍。
+     *
+     * 用户反馈「往左拖到滚不动为止，右侧胶囊还是被截断」——这句话本身信息不足：
+     * 可能是栏的右边界跑到容器外面（滚到头也露不出来），也可能是可达上限被算小了，
+     * 还可能是它上面有东西压着。把「栏自身的滚动账」和「最后一颗胶囊的实际位置」
+     * 一起量出来，就能直接分辨是哪一种，不必再猜。
+     */
+    const capsuleBar = (() => {
+      const bar = document.getElementById('todoArchiveBar');
+      if (!bar || bar.hidden) return null;
+      const rect = bar.getBoundingClientRect();
+      const parent = bar.parentElement;
+      const parentRect = parent ? parent.getBoundingClientRect() : null;
+      const capsules = bar.querySelectorAll('.todo-capsule');
+      const last = capsules.length ? capsules[capsules.length - 1].getBoundingClientRect() : null;
+      // 滚到真正的上限，看最后一颗能不能完整露出来；量完还原，不改用户当前视图。
+      const restore = bar.scrollLeft;
+      bar.scrollLeft = Number.MAX_SAFE_INTEGER;
+      const atEnd = bar.scrollLeft;
+      const max = Math.max(0, bar.scrollWidth - bar.clientWidth);
+      const lastAtEnd = last ? capsules[capsules.length - 1].getBoundingClientRect() : null;
+      bar.scrollLeft = restore;
+      const style = getComputedStyle(bar);
+      return {
+        count: capsules.length,
+        bar: { left: Math.round(rect.left), right: Math.round(rect.right), width: Math.round(rect.width) },
+        parent: parentRect ? { cls: parent.className, right: Math.round(parentRect.right), width: Math.round(parentRect.width) } : null,
+        overflowsParent: parentRect ? Math.round(rect.right - parentRect.right) : null,
+        clientWidth: bar.clientWidth,
+        scrollWidth: bar.scrollWidth,
+        maxScroll: Math.round(max),
+        scrollLeft: Math.round(atEnd),
+        reachedEnd: atEnd >= max - 1,
+        margin: `${style.marginLeft}/${style.marginRight}`,
+        padding: `${style.paddingLeft}/${style.paddingRight}`,
+        lastCapsuleRightAtEnd: lastAtEnd ? Math.round(lastAtEnd.right) : null,
+        lastCapsuleClippedBy: lastAtEnd ? Math.round(lastAtEnd.right - rect.right) : null,
+        lastCapsuleFullyVisible: lastAtEnd ? lastAtEnd.right <= rect.right + 1 : null,
+      };
+    })();
+    return {
+      viewport: `${doc.clientWidth}x${doc.clientHeight}`,
+      devicePixelRatio: window.devicePixelRatio,
+      innerWidth: window.innerWidth,
+      documentScrollWidth: doc.scrollWidth,
+      bodyScrollWidth: document.body.scrollWidth,
+      horizontalOverflow: doc.scrollWidth - doc.clientWidth,
+      appShell: box('#app'),
+      historyPane: box('#historyPane'),
+      chatPane: box('.chat-pane'),
+      messageViewport: box('#messageViewport'),
+      messageList: box('#messageList'),
+      composerWrap: box('.composer-wrap'),
+      chatToolbar: box('.chat-toolbar'),
+      capsuleBar,
+      mediaQueries: {
+        mobile720: window.matchMedia('(max-width: 720px)').matches,
+        narrow860: window.matchMedia('(max-width: 860px)').matches,
+      },
+      wideElements: wide,
+    };
+  }
+
+  /* ── 复制「文字 + 图片」───────────────────────────────────────────────
+   *
+   * 需求（用户原话）：「历史消息里含有图片，点击复制直接连图片和文字一起复制，
+   * 且能一起粘贴到输入框」。
+   *
+   * 为什么不能仍走扩展：VS Code 的剪贴板 API 只有 `writeText`，写不了图片。
+   * 所以带图片的消息改由 webview 自己用异步剪贴板写入（`navigator.clipboard.write`
+   * + `ClipboardItem`），一次写入两种格式：`text/plain` 与 `image/png`。
+   *
+   * 这条路在 VS Code 里是通的 —— 依据是 VS Code 自己的 workbench 源码：
+   * webview 的 iframe 上写着
+   *     allow="cross-origin-isolated; autoplay; local-network-access; clipboard-read; clipboard-write"
+   * （仅 Firefox 会省略最后两项，见 `Qu = userAgent 含 Firefox` 那处判断），
+   * 而 webview 跑的是 Chromium。所以授权这一层不需要额外配置。
+   *
+   * 实测（headless Chromium，同一内核）：写入 文字 + 1×1 PNG 后读回剪贴板得到
+   * `["text/plain","image/png"]`；在 textarea 里粘贴，`clipboardData` 同时给出
+   * `text/plain` 和 `file:image/png` —— 也就是输入框既拿到文字、又拿到一张图。
+   */
+
+  /** 剪贴板里一次只能放一张图片（ClipboardItem 的键是 MIME），多图时只放第一张。 */
+  const pendingAttachmentData = new Map();
+
+  /** 向扩展要附件的原始 base64（前端只有 160×120 的缩略图，复制要用原图）。 */
+  function requestAttachmentData(id) {
+    return new Promise((resolve) => {
+      const requestId = `attdata-${Date.now()}-${++clipboardSequence}`;
+      const timer = setTimeout(() => {
+        if (pendingAttachmentData.delete(requestId)) resolve(null);
+      }, 5_000);
+      pendingAttachmentData.set(requestId, { resolve, timer });
+      post('requestAttachmentData', { requestId, id });
+    });
+  }
+
+  function finishAttachmentData(message) {
+    const pending = pendingAttachmentData.get(message.requestId);
+    if (!pending) return;
+    pendingAttachmentData.delete(message.requestId);
+    clearTimeout(pending.timer);
+    pending.resolve(message.ok && message.dataBase64 ? message : null);
+  }
+
+  /**
+   * 把原图统一转成 PNG。
+   *
+   * `ClipboardItem` 只接受 `text/plain` / `text/html` / `image/png` 三种键：
+   * 直接把 `image/jpeg` 塞进去会抛异常，用户点了复制就什么也没复制到。
+   * 所以非 PNG 的图片先解到 canvas 再导出 PNG。
+   */
+  async function toPngBlob(data) {
+    const mime = (data.mimeType || 'image/png').toLowerCase();
+    const bytes = Uint8Array.from(atob(data.dataBase64), (char) => char.charCodeAt(0));
+    const source = new Blob([bytes], { type: mime });
+    if (mime === 'image/png') return source;
+    const bitmap = await createImageBitmap(source);
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const context = canvas.getContext('2d');
+      if (!context) return null;
+      context.drawImage(bitmap, 0, 0);
+      return await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    } finally {
+      bitmap.close?.();
+    }
+  }
+
+  /** 写入「文字 + 图片」。成功返回 true；环境不支持或写入被拒时返回 false，由调用方降级。 */
+  async function writeRichClipboard(text, data) {
+    if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) return false;
+    try {
+      const png = await toPngBlob(data);
+      if (!png) return false;
+      const entries = { 'text/plain': new Blob([text], { type: 'text/plain' }), 'image/png': png };
+      await navigator.clipboard.write([new ClipboardItem(entries)]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 消息上的「复制」：有图片就连图片一起复制，没有就走原来的纯文字路径。
+   *
+   * 降级是**显式**的：写图片失败时仍然把文字复制成功，并弹一句说明，而不是让用户
+   * 以为复制成功了、粘贴时才发现少了图。
+   */
+  async function copyMessage(button, message) {
+    const text = message?.content || '';
+    const images = (message?.attachments || []).filter((attachment) => attachment.kind === 'image' && attachment.id);
+    if (!images.length) {
+      requestClipboardWrite(text, button);
+      return;
+    }
+    if (button) { button.disabled = true; button.textContent = t('common.copying'); }
+    const data = await requestAttachmentData(images[0].id);
+    const written = data ? await writeRichClipboard(text, data) : false;
+    if (written) {
+      flashCopyLabel(button, true);
+      showToast(images.length > 1 ? t('chat.copyImageFirstOnly') : t('chat.copiedWithImage'), 'neutral');
+      return;
+    }
+    // 图片没能写进剪贴板：文字仍然要复制成功，只是少了图。
+    requestClipboardWrite(text, button);
+    showToast(t('chat.copyImageUnsupported'), 'warning');
+  }
 
   function requestClipboardWrite(text, button, idleLabel = t('common.copy')) {
     if (!text) {
@@ -406,12 +622,22 @@
     if (!pending) return;
     clipboardWrites.delete(requestId);
     clearTimeout(pending.timer);
-    if (pending.button) {
-      pending.button.disabled = false;
-      pending.button.textContent = ok ? t('common.copied') : pending.idleLabel;
-      if (ok) setTimeout(() => { if (pending.button.isConnected) pending.button.textContent = pending.idleLabel; }, 1_200);
-    }
+    flashCopyLabel(pending.button, ok, pending.idleLabel);
     if (!ok) showToast(t('chat.clipboardFailed', { error: error || t('chat.clipboardUnavailable') }), 'warning');
+  }
+
+  /**
+   * 复制按钮的两段式反馈：先变「已复制」，1.2 秒后回到原文案。
+   *
+   * 抽出来是因为现在有**两条**写入路径：纯文字走扩展（`copyText`），
+   * 文字 + 图片走 webview 自己的 `navigator.clipboard.write`（扩展 API 只能写文字）。
+   * 两条路径的按钮反馈必须一致，否则用户会以为其中一种没生效。
+   */
+  function flashCopyLabel(button, ok, idleLabel = t('common.copy')) {
+    if (!button) return;
+    button.disabled = false;
+    button.textContent = ok ? t('common.copied') : idleLabel;
+    if (ok) setTimeout(() => { if (button.isConnected) button.textContent = idleLabel; }, 1_200);
   }
 
   function renderAll(options) {
@@ -523,9 +749,22 @@
     elements.agentMaxStepsInput.value = String(state.agentMaxSteps);
     syncReasoningSelector();
     const activeProfileId = state.conversation?.apiProfileId || state.activeApiProfileId;
-    const modelsLoading = state.modelLoadingProfileId === activeProfileId;
-    elements.refreshModelsButton.classList.toggle('loading', modelsLoading);
-    elements.refreshModelsButton.title = modelsLoading ? t('chat.refreshingModels') : t('chat.refreshModels');
+    syncInternetReferenceButton();
+  }
+
+  /**
+   * 互联网参考开关的显示：`aria-pressed` 是唯一状态来源，样式与提示都由它派生。
+   *
+   * 不加「loading」之类的过渡态：模型列表的刷新已经改成静默自动（见后端
+   * `ensureModelsFresh`），这里不再需要为「正在刷新」显示任何东西。
+   */
+  function syncInternetReferenceButton() {
+    const button = elements.internetReferenceButton;
+    if (!button) return;
+    const enabled = state.internetReference === true;
+    button.setAttribute('aria-pressed', String(enabled));
+    button.classList.toggle('is-on', enabled);
+    button.title = enabled ? t('chat.internetReferenceOn.hint') : t('chat.internetReferenceOff.hint');
   }
 
   /**
@@ -880,11 +1119,16 @@
   /** 最近一次真正画进 DOM 的那份消息列表的签名。 */
   let renderedMessageSignature = '';
 
-  function renderMessages(mode = 'keep') {
-    if (selectingMessageText || interactingWithMessages || hasMessageSelection()) {
+  function renderMessages(mode = 'keep', options = {}) {
+    if (!options.force && (selectingMessageText || interactingWithMessages || hasMessageSelection())) {
       deferMessageRender(mode);
       return;
     }
+    /*
+     * 编辑框已经搬到 `#messageList` 之外的浮层（`#messageEditor`），
+     * 所以这里**不再需要**「编辑中暂停重绘」的守卫：消息列表随便重排，
+     * 浮层与光标都不受影响。保留 `options.force` 参数以兼容既有调用点。
+     */
     deferredMessageRenderMode = null;
     // 整段重建会把 DOM 直接对齐 state，此时「只差某一条没重画」的待办已经自动满足。
     pendingPatchId = null;
@@ -1165,13 +1409,32 @@
     renderMessages('keep');
   }
 
-  /** 用户交互结束后补做被推迟的渲染。 */
-  function releaseMessageInteraction() {
+  /** 用户交互结束后补做被推迟的渲染。
+   *
+   * `afterClick` 的由来（真实故障，2026-10-30 用户报「编辑这条按钮还是不灵敏」）：
+   *
+   * 浏览器把一次点击拆成 `pointerdown` → `pointerup` → `click`，**同一个任务**里依次派发。
+   * 而 `click` 只在「按下目标与松开目标仍有共同祖先」时才派发；按下那个节点一旦被移除，
+   * Chromium 实测**连 click 都不发**（只有 mouseup 落到被重排后的空白处）。
+   *
+   * 原来的代码在 `pointerup` 里**同步**跑 `flushDeferredMessageRender()`，而它就是
+   * `elements.messageList.replaceChildren()` 整段重建。于是只要 agent 正在流式输出
+   * （渲染被 defer 了），松手的一瞬间按钮先被销毁，浏览器随即放弃派发 click ——
+   * 用户看到的就是「点了没反应」，而且**只在 agent 跑的时候才这样**，静态时正常。
+   *
+   * 所以从 `pointerup` 走这条路时必须把重排推到下一个任务：先让 click 落地（按钮还在），
+   * 再重建列表。这不是乐观猜测，是照规范里 click 的合成条件做的顺序安排。
+   */
+  function releaseMessageInteraction(options) {
     clearTimeout(interactionTimer);
     interactionTimer = null;
     if (!interactingWithMessages && !selectingMessageText) return;
     interactingWithMessages = false;
     selectingMessageText = false;
+    if (options && options.afterClick) {
+      setTimeout(flushDeferredMessageRender, 0);
+      return;
+    }
     flushDeferredMessageRender();
   }
 
@@ -1225,18 +1488,6 @@
     elements.agentRunLabel.textContent = current?.title ? t('chat.agentRunningWith', { title: current.title }) : t('chat.agentRunning');
     elements.agentRunMeta.textContent = [routing ? t('chat.routingCount', { count: routing }) : '', queued ? t('chat.queuedCount', { count: queued }) : ''].filter(Boolean).join(' · ');
     elements.taskTreeSummary.textContent = queued ? t('chat.nodeCountWithQueue', { count: nodes.length, queued }) : t('chat.nodeCount', { count: nodes.length });
-    /**
-     * 编辑框已经画在界面上时**不重建节点列表**。
-     *
-     * agent 在后台跑，任务树每完成一步都会重推一次；如果照常 replaceChildren，
-     * 编辑框每几百毫秒被销毁重建一次——光标跳回开头、正在打的字丢失，
-     * 用户根本没法把这句改完。编辑期间只更新上面的标题和计数，收尾时统一重建。
-     *
-     * 判据必须看「DOM 里是否已经有编辑框」而不是只看 editingTaskId：
-     * 刚点下编辑时 editingTaskId 已设置、编辑框还没画出来，这时候若也跳过重建，
-     * 编辑框就永远出不来。
-     */
-    if (editingTaskId && elements.taskTreeList.querySelector('.task-node-edit')) return;
     elements.taskTreeList.replaceChildren();
     const rootId = nodes[0]?.id;
     for (const node of nodes) {
@@ -1246,89 +1497,55 @@
       const statusCell = textElement('span', 'task-node-status', '');
       statusCell.append(iconNode(taskStatusIconName(node.status)));
       const titleCell = textElement('span', 'task-node-title', node.title);
-      if (editingTaskId === node.id) {
-        row.append(statusCell, taskEditBox(node), textElement('small', '', taskStatusLabel(node.status)));
-        elements.taskTreeList.append(row);
-        continue;
-      }
+      // 还没执行的节点在这里不给编辑（只有一行，长内容看不清），入口在消息气泡里。
+      if (node.pending) titleCell.title = t('taskQueue.editInBubble');
       const actions = taskNodeActions(node);
       row.append(statusCell, titleCell, actions || textElement('small', '', taskStatusLabel(node.status)));
       elements.taskTreeList.append(row);
     }
-    // 编辑框刚插进 DOM，这一帧之后自动聚焦并把光标放到末尾。
-    if (editingTaskId && !document.activeElement?.closest('.task-node-edit')) {
-      const input = elements.taskTreeList.querySelector('.task-node-edit');
-      if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
-    }
   }
 
   /**
-   * 排队消息的行内操作：编辑 / 删除。
+   * 任务树节点的行内操作。
    *
-   * `pending`（队列还没被 agent 取走）→ 两个按钮都可用：改完直接生效，删掉不会留下孤儿消息。
-   * 已执行的节点只给「编辑」：历史不能改写，但用户改完可以再发一次（用户明确要求）。
+   * **排队中**只留「删除」：改文字要用多行编辑框看全文，编辑入口在消息气泡里。
+   * **执行中**什么都不给——这是本次修的缺陷：agent 已经把这句话读走并在执行，
+   * 后端也改不了那条 request（`editPending` 返回 false），于是「编辑」实际会走
+   * 「把改过的内容当成新消息再发一遍」，同一件事被排队做第二次。
+   * **已完成**保留「编辑」：历史不改写，改完作为一条新消息发出；编辑框同样开在
+   * 气泡里（任务树一行看不全长内容）。
    */
   function taskNodeActions(node) {
-    const editable = node.pending || node.status === 'active' || node.status === 'complete';
-    if (!editable || !node.userMessageId) return null;
-    const actions = document.createElement('span'); actions.className = 'task-node-actions';
-    const edit = textElement('button', 'task-node-action', t('taskQueue.edit'));
-    edit.type = 'button';
-    edit.title = node.pending ? t('taskQueue.editHint') : t('taskQueue.editExecutedHint');
-    edit.addEventListener('click', (event) => { event.stopPropagation(); beginTaskEdit(node); });
-    actions.append(edit);
+    if (!node.userMessageId) return null;
     if (node.pending) {
+      const actions = document.createElement('span'); actions.className = 'task-node-actions';
       const remove = textElement('button', 'task-node-action is-danger', t('taskQueue.remove'));
       remove.type = 'button';
       remove.title = t('taskQueue.removeHint');
       remove.addEventListener('click', (event) => { event.stopPropagation(); post('removeTaskMessage', { nodeId: node.id }); });
       actions.append(remove);
+      return actions;
     }
+    if (node.status !== 'complete') return null;
+    const actions = document.createElement('span'); actions.className = 'task-node-actions';
+    const edit = textElement('button', 'task-node-action', t('taskQueue.edit'));
+    edit.type = 'button';
+    edit.title = t('taskQueue.editExecutedHint');
+    edit.addEventListener('click', (event) => { event.stopPropagation(); beginResendEdit(node); });
+    actions.append(edit);
     return actions;
   }
 
-  /** 打开行内编辑框；初值取存档里那条用户消息的原话，而不是被截断的标题。 */
-  function beginTaskEdit(node) {
-    editingTaskId = node.id;
+  /**
+   * 打开气泡编辑（「改完作为新消息发出」模式）。
+   *
+   * 入口在任务树，编辑界面在气泡：任务树一行放不下长内容，而这条消息本身就在
+   * 气泡里，整条宽度都能用。
+   */
+  function beginResendEdit(node) {
     const message = state.messages.find((item) => item.id === node.userMessageId);
-    editingTaskDraft = message?.content ?? node.title;
-    renderTaskTree();
-  }
-
-  function taskEditBox(node) {
-    const wrap = document.createElement('span'); wrap.className = 'task-node-edit-wrap';
-    const input = document.createElement('input');
-    input.className = 'task-node-edit';
-    input.type = 'text';
-    input.value = editingTaskDraft;
-    input.addEventListener('input', () => { editingTaskDraft = input.value; });
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); commitTaskEdit(node); }
-      else if (event.key === 'Escape') { event.preventDefault(); cancelTaskEdit(); }
-    });
-    const save = textElement('button', 'task-node-action is-primary', t('taskQueue.save'));
-    save.type = 'button';
-    save.addEventListener('click', () => commitTaskEdit(node));
-    const cancel = textElement('button', 'task-node-action', t('taskQueue.cancelEdit'));
-    cancel.type = 'button';
-    cancel.addEventListener('click', () => cancelTaskEdit());
-    wrap.append(input, save, cancel);
-    return wrap;
-  }
-
-  function commitTaskEdit(node) {
-    const text = String(editingTaskDraft || '').trim();
-    if (!text) return;
-    if (text !== (state.messages.find((item) => item.id === node.userMessageId)?.content ?? '')) {
-      post('editTaskMessage', { nodeId: node.id, text });
-    }
-    cancelTaskEdit();
-  }
-
-  function cancelTaskEdit() {
-    editingTaskId = null;
-    editingTaskDraft = '';
-    renderTaskTree();
+    if (!message) { showToast(t('taskQueue.editExpired'), 'warning'); return; }
+    openMessageEditor(message, node, 'resend');
   }
 
   /** 任务树节点的状态 → 图标名（形状定义见 media/ui-icons.js）。 */
@@ -1711,6 +1928,33 @@
     elements.approvalDetail.textContent = request.detail || '';
   }
 
+  /**
+   * 这条用户消息对应的任务节点（**不区分**是否已执行）。
+   *
+   * 用 `userMessageId` 对应，不用标题/顺序去猜：标题是截断过的，顺序会随排队变化。
+   * 传入 `nodes` 而不是直接读 `state`，是为了让这条判定能脱离界面单独验证。
+   */
+  function taskNodeForMessage(nodes, messageId) {
+    if (!messageId) return null;
+    return (nodes || []).find((node) => node.userMessageId === messageId) || null;
+  }
+
+  /**
+   * 这条用户消息是不是「还没被执行」——只有这种能原地改。
+   *
+   * 判断依据是队列状态 `pending`（队列还持有那条 request），不是消息状态：消息写进
+   * 存档时就是 complete，从状态上看不出它排没排队。
+   */
+  function pendingTaskForBubble(nodes, messageId) {
+    const node = taskNodeForMessage(nodes, messageId);
+    return node && node.pending ? node : null;
+  }
+
+  /** 当前所有「排队中」节点的用户消息 id：用来判断气泡里的编辑入口要不要重画。 */
+  function pendingBubbleMessageIds(nodes) {
+    return (nodes || []).filter((node) => node.pending && node.userMessageId).map((node) => node.userMessageId).sort();
+  }
+
   function renderMessage(message) {
     const article = document.createElement('article');
     article.className = `message ${message.role}${message.status === 'error' ? ' error' : ''}`; article.dataset.messageId = message.id;
@@ -1719,7 +1963,7 @@
     const time = textElement('time', '', formatTime(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); meta.append(author, time);
     if (message.content) {
       const copy = textElement('button', 'message-copy-button', t('common.copy')); copy.type = 'button'; copy.title = t('chat.copyMessage');
-      copy.addEventListener('click', () => requestClipboardWrite(message.content, copy));
+      copy.addEventListener('click', () => { void copyMessage(copy, message); });
       meta.append(copy);
     }
     const body = document.createElement('div'); body.className = 'message-body';
@@ -1730,6 +1974,11 @@
     const flow = appendMessageFlow(body, message);
     // 用户消息太长就折叠：只留开头几行 + 渐隐 + 「展开全文」。
     if (message.role === 'user' && flow?.tail?.node) attachUserMessageClamp(flow.tail.node, message);
+    // 每条用户消息都带执行状态徽标（还没执行 / 执行中 / 已执行 / 已跳过）。
+    if (message.role === 'user') {
+      const execution = renderExecutionRow(message);
+      if (execution) body.append(execution);
+    }
     // 用户自己贴进来的明文凭据：在界面层直接认出来，不等模型提醒。
     // 放在消息正文之后，顺序上与「你说的话 → 系统的警告」一致。
     if (message.role === 'user') {
@@ -1744,6 +1993,163 @@
     // 流式增量更新要靠这份定位信息：正文最后一段的源起点 + 里面每个块的起始行。
     article.hwchatFlow = flow;
     return article;
+  }
+
+  /**
+   * 用户消息的执行状态徽标：还没执行 / 执行中 / 已执行 / 已跳过。
+   *
+   * 为什么要给**每一条**用户消息都画：一次运行里可能排了七八条消息，中途中断、
+   * 之后再点「继续」，光看气泡根本分不清哪条跑过、哪条被跳过 —— 而漏掉一条任务
+   * 往往就是这样发生的。状态存在消息本身（`message.executionStatus`），所以运行结束、
+   * 切对话、重启之后都还在。
+   *
+   * 没有这个字段的老消息不画徽标：认不出状态就不猜，写成「已执行」会让人以为跑过了。
+   */
+  const EXECUTION_STATUSES = ['pending', 'running', 'done', 'skipped'];
+
+  function executionStatusOf(message) {
+    const status = message?.executionStatus;
+    return typeof status === 'string' && EXECUTION_STATUSES.includes(status) ? status : null;
+  }
+
+  function renderExecutionRow(message) {
+    const status = executionStatusOf(message);
+    if (!status) return null;
+    const row = document.createElement('div'); row.className = 'message-execution';
+    const badge = textElement('span', `message-execution-badge is-${status}`, t(`chat.execution.${status}`));
+    badge.title = t(`chat.execution.${status}.hint`);
+    badge.setAttribute('data-execution-status', status);
+    row.append(badge);
+    // 编辑入口只在「还没执行」时给：队列还持有它，改完下一轮直接读新内容。
+    const node = status === 'pending' ? pendingTaskForBubble(state.taskTree?.nodes, message.id) : null;
+    if (node) {
+      const edit = textElement('button', 'message-execution-edit', t('chat.editMessage'));
+      edit.type = 'button';
+      edit.title = t('chat.editMessageHint');
+      // 稳定标识：按钮所在的消息 id。流式重排会把按钮换掉（pointerdown 之后换掉就
+      // 不会派发 click），所以 pointerup 兜底要靠它重新找回那条消息。
+      edit.dataset.editMessage = message.id;
+      edit.dataset.editNode = node.id;
+      edit.addEventListener('click', () => {
+        // 指针路径已经处理过这次点击 → 吞掉，避免重复打开（见 consumeEditClick）。
+        if (consumeEditClick(message.id)) return;
+        openMessageEditor(message, node);
+      });
+      row.append(edit);
+    }
+    return row;
+  }
+
+  /**
+   * 打开悬浮编辑框。
+   *
+   * 需求（用户原话）：「点击编辑后显示编辑界面在新的层级显示，比如显示一个悬浮编辑窗口，
+   * 不被 agent 运行输出内容影响，更改内容会影响输入框气泡内容。编辑结束之前，如果 agent
+   * 刚好运行到这个正在编辑的消息，会暂停等待，修改完，编辑框消失，才会读取更新后的
+   * 消息内容继续执行。」
+   *
+   * 三件事一起解决：
+   *  1. **不被重绘影响**：编辑框在 `#messageList` 之外（`#messageEditor`），流式输出重排
+   *     消息列表时它一个节点都不会被碰到；
+   *  2. **保存后同步气泡**：后端回推 `messageUpdated`，气泡内容跟着换；
+   *  3. **agent 会等**：打开时先发 `beginEditTaskMessage`，后端在任务队列上挂闸门，
+   *     agent 取到这条任务时会停住，直到保存 / 取消（或 5 分钟超时）。
+   */
+  const MESSAGE_EDITOR_IDS = ['messageEditor', 'messageEditorInput', 'messageEditorState', 'messageEditorHint', 'messageEditorSave', 'messageEditorCancel', 'messageEditorTitle'];
+
+  function openMessageEditor(message, node, mode = 'inPlace') {
+    const editor = elements.messageEditor;
+    if (!editor) return;
+    editingBubbleMessageId = message.id;
+    editingBubbleTaskId = node?.id || null;
+    editingBubbleDraft = message.content || '';
+    editingBubbleMode = mode === 'resend' ? 'resend' : 'inPlace';
+    elements.messageEditorTitle.textContent = mode === 'resend' ? t('chat.editResend') : t('chat.editMessage');
+    elements.messageEditorHint.textContent = mode === 'resend' ? t('chat.editResendHint') : t('chat.editMessageKeys');
+    elements.messageEditorInput.value = editingBubbleDraft;
+    // 只有「还在队列里」的那条才会让 agent 停下来等；已执行的只是重发，不需要闸门。
+    elements.messageEditorState.textContent = '';
+    editor.hidden = false;
+    editor.classList.toggle('is-resend', mode === 'resend');
+    document.body.classList.add('editor-open');
+    if (node && mode !== 'resend') {
+      post('beginEditTaskMessage', { nodeId: node.id });
+    }
+    growMessageEditor();
+    syncMessageEditorState();
+    requestAnimationFrame(() => {
+      const input = elements.messageEditorInput;
+      if (!input || typeof input.focus !== 'function') return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  }
+
+  /** 编辑框最多长到多高，再长就自己滚（再高会把对话顶出视野）。 */
+  const MESSAGE_EDIT_MAX_HEIGHT = 420;
+
+  function growMessageEditor() {
+    const input = elements.messageEditorInput;
+    if (!input) return;
+    input.style.height = 'auto';
+    const next = Math.min(input.scrollHeight || 0, MESSAGE_EDIT_MAX_HEIGHT);
+    input.style.height = next ? `${next}px` : '';
+  }
+
+  /** 关掉浮层：保存与取消共用，差别只在有没有发编辑请求。 */
+  function closeMessageEditor() {
+    const editor = elements.messageEditor;
+    const nodeId = editingBubbleTaskId;
+    const wasPending = editingBubbleMode !== 'resend';
+    editingBubbleMessageId = null;
+    editingBubbleTaskId = null;
+    editingBubbleDraft = '';
+    editingBubbleMode = 'inPlace';
+    if (editor) { editor.hidden = true; editor.classList.remove('is-resend'); }
+    document.body.classList.remove('editor-open');
+    // 取消 / 保存后关闭：都要放行闸门，否则 agent 会一直等这条。
+    if (nodeId && wasPending) post('cancelEditTaskMessage', { nodeId });
+    flushDeferredMessageRender();
+  }
+
+  /**
+   * 浮层标题右侧的状态：agent 是否已经走到这条、正停着等用户改完。
+   *
+   * 这一条是**后端**的真实状态（`waitingForEdit`），不是界面猜的：
+   * 队列在 `take()` 里等闸门时才会置位，所以显示「正在等你改完」就一定真的停住了。
+   */
+  function syncMessageEditorState() {
+    const label = elements.messageEditorState;
+    if (!label) return;
+    const nodeId = editingBubbleTaskId;
+    if (!nodeId) { label.textContent = ''; label.dataset.state = ''; return; }
+    const node = (state.taskTree?.nodes || []).find((item) => item.id === nodeId);
+    if (node?.waitingForEdit) {
+      label.textContent = t('chat.editorAgentWaiting');
+      label.dataset.state = 'waiting';
+      elements.messageEditorHint.textContent = t('chat.editorAgentWaitingHint');
+      return;
+    }
+    label.dataset.state = '';
+    label.textContent = editingBubbleMode === 'resend' ? '' : t('chat.editorAgentWillWait');
+    elements.messageEditorHint.textContent = editingBubbleMode === 'resend' ? t('chat.editResendHint') : t('chat.editMessageKeys');
+  }
+
+  function saveMessageEditor() {
+    const text = elements.messageEditorInput ? String(elements.messageEditorInput.value || '').trim() : '';
+    const nodeId = editingBubbleTaskId;
+    const messageId = editingBubbleMessageId;
+    const live = state.messages.find((item) => item.id === messageId);
+    const changed = Boolean(text) && text !== (live?.content || '');
+    if (!text) {
+      // 空内容不保存：提示一下，编辑框留着，别让用户以为改没了。
+      showToast(t('taskQueue.saveEmpty'), 'warning');
+      return;
+    }
+    closeMessageEditor();
+    if (!changed) return;
+    if (!nodeId) { showToast(t('taskQueue.editExpired'), 'warning'); return; }
+    post('editTaskMessage', { nodeId, text });
   }
 
   /** 这条用户消息是否需要折叠（够长才折，短消息一点界面都不动）。 */
@@ -1923,14 +2329,78 @@
       if (attachment.kind === 'image' && attachment.thumbnailDataUrl) {
         const figure = document.createElement('figure'); figure.className = 'message-image-attachment';
         const image = document.createElement('img'); image.src = attachment.thumbnailDataUrl; image.alt = attachment.label;
-        figure.append(image, textElement('figcaption', '', attachment.label)); row.append(figure);
+        // 图片可以拖回输入框变成新附件：`img` 默认就是可拖的（浏览器会拖出图片本身），
+        // 但那样松手只能落到「拖出 webview」，落不进输入框。关掉原生拖拽、改由 figure
+        // 承担，才能走我们自己的 dragstart/drop 通道（见 makeAttachmentDraggable）。
+        image.draggable = false;
+        figure.append(image, textElement('figcaption', '', attachment.label));
+        // 「添加到输入框」按钮：拖拽在触摸屏和键盘上都不好用，必须另有入口。
+        const reuse = textElement('button', 'message-attachment-reuse', t('chat.attachFromMessage'));
+        reuse.type = 'button';
+        reuse.title = t('chat.attachFromMessageHint');
+        reuse.setAttribute('aria-label', `${t('chat.attachFromMessage')}：${attachment.label}`);
+        reuse.addEventListener('click', (event) => {
+          event.stopPropagation();
+          post('attachMessageAttachment', attachmentOpenPayload(attachment));
+        });
+        figure.append(reuse);
         makeAttachmentOpenable(figure, attachment);
+        makeAttachmentDraggable(figure, attachment);
+        row.append(figure);
       } else {
         const chip = textElement('span', 'message-file-attachment', attachment.label); row.append(chip);
         makeAttachmentOpenable(chip, attachment);
+        makeAttachmentDraggable(chip, attachment);
       }
     }
     return row;
+  }
+
+  /**
+   * 让已经发出去的附件可以**拖回输入框**变成一条新附件。
+   *
+   * 需求（用户原话）：「已经发到聊天框的消息里面的图片，想要拖动，或者复制到输入框
+   * 显示成新的附件」。
+   *
+   * 为什么不靠 `dataTransfer.files`：webview 里拿到的 File 是浏览器从图片元素现造的，
+   * 没有磁盘路径，扩展侧还得靠 base64 反推；而附件本来就在扩展的内存索引里
+   * （`attachmentIndex`，按 `id` 取回原始 `dataBase64`）。所以这里只把**标识**放进
+   * 拖拽数据 —— 内容由扩展侧取，前端不搬运几 MB 的 base64。
+   *
+   * 同时写一份自定义 MIME：`drop` 时用它判断「这是我们自己的附件」，而不是靠一个
+   * 全局变量猜（拖动可能被外部打断，变量会留下过期的值）。
+   */
+  const ATTACHMENT_DRAG_TYPE = 'application/x-hwchat-attachment';
+  /** 拖拽中的附件标识；`dragover` 判断要不要把输入框显示成放置目标时用它。 */
+  let draggingAttachment = null;
+
+  function makeAttachmentDraggable(element, attachment) {
+    const payload = attachmentOpenPayload(attachment);
+    const token = payload.id || payload.path || payload.label;
+    if (!token) return;
+    element.draggable = true;
+    element.addEventListener('dragstart', (event) => {
+      draggingAttachment = payload;
+      element.classList.add('is-dragging');
+      if (!event.dataTransfer) return;
+      event.dataTransfer.effectAllowed = 'copy';
+      // 标识写进去就够了；再附一份纯文本，拖到外部程序时至少能看出拖的是什么。
+      event.dataTransfer.setData(ATTACHMENT_DRAG_TYPE, token);
+      event.dataTransfer.setData('text/plain', attachment.label || '');
+    });
+    const end = () => {
+      draggingAttachment = null;
+      element.classList.remove('is-dragging');
+      elements.composer.classList.remove('is-drop-target');
+    };
+    element.addEventListener('dragend', end);
+  }
+
+  /** 这次拖动是不是「我们自己的附件」（而不是从 Finder / 编辑器拖进来的文件）。 */
+  function isAttachmentDrag(event) {
+    const types = event.dataTransfer?.types;
+    if (types && Array.from(types).includes(ATTACHMENT_DRAG_TYPE)) return true;
+    return Boolean(draggingAttachment);
   }
 
   function renderToolExecutions(tools) {
@@ -2804,7 +3274,8 @@
     elements.sendButton.disabled = !hasText || archived || state.permissionPresetPending; elements.sendButton.hidden = false; elements.stopButton.hidden = !state.streaming;
     elements.promptInput.disabled = archived; elements.attachButton.disabled = archived;
     elements.profileInput.disabled = state.streaming || archived; elements.modelInput.disabled = state.streaming || archived; elements.modeInput.disabled = state.streaming || archived; elements.skillsButton.disabled = state.streaming || archived;
-    elements.refreshModelsButton.disabled = state.streaming || archived || Boolean(state.modelLoadingProfileId);
+    // 互联网参考与权限预设同一套语义：运行中可改，下一次发送生效。
+    if (elements.internetReferenceButton) elements.internetReferenceButton.disabled = archived;
     // 预设允许在任务运行中改（只对下一次对话生效）；步数与思考深度仍然锁在当前任务上。
     elements.permissionPresetInput.disabled = archived || state.permissionPresetPending;
     // 步数与思考深度和权限预设同一套语义：**运行中可改，下一次发送生效**。
@@ -2979,6 +3450,57 @@
   elements.archiveButton.addEventListener('click', () => { if (state.conversation) post('toggleArchive', { id: state.conversation.id, archived: !state.conversation.archived }); });
   elements.detachHistoryButton.addEventListener('click', () => post('detachConversationHistory'));
   elements.attachButton.addEventListener('click', () => post('attachFiles')); elements.removeContextButton.addEventListener('click', () => post('removeContext'));
+
+  /*
+   * 输入框作为「放附件」的落点。
+   *
+   * 两种来源都接：
+   *  1. 消息里已经发出去的附件（我们自己的自定义 MIME，见 makeAttachmentDraggable）；
+   *  2. 从 Finder / 编辑器直接拖进来的文件（`dataTransfer.files`）——
+   *     输入框一旦能被放下东西，不同时支持它会让人以为拖错了。
+   *
+   * 注意 `dragover` 必须 preventDefault，否则浏览器根本不认为这里是合法落点，
+   * `drop` 永远不会有。`dragenter/dragover` 只加高亮，真正取数据在 `drop`。
+   */
+  const setDropTarget = (active) => elements.composer.classList.toggle('is-drop-target', active);
+  elements.composer.addEventListener('dragenter', (event) => {
+    if (!isAttachmentDrag(event) && !hasDroppedFiles(event)) return;
+    event.preventDefault();
+    setDropTarget(true);
+  });
+  elements.composer.addEventListener('dragover', (event) => {
+    if (!isAttachmentDrag(event) && !hasDroppedFiles(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    setDropTarget(true);
+  });
+  elements.composer.addEventListener('dragleave', (event) => {
+    // 移到子元素上也会触发 dragleave：只有真正离开输入框区域才取消高亮。
+    if (event.relatedTarget instanceof Node && elements.composer.contains(event.relatedTarget)) return;
+    setDropTarget(false);
+  });
+  elements.composer.addEventListener('drop', (event) => {
+    if (!isAttachmentDrag(event) && !hasDroppedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDropTarget(false);
+    const payload = draggingAttachment;
+    draggingAttachment = null;
+    if (payload) {
+      post('attachMessageAttachment', payload);
+      return;
+    }
+    const files = event.dataTransfer?.files;
+    if (files && files.length) void readClipboardFiles(files);
+  });
+
+  /** 这次拖进来的是不是磁盘上的文件（Finder、资源管理器、VS Code 资源管理器）。 */
+  function hasDroppedFiles(event) {
+    const types = event.dataTransfer?.types;
+    if (!types) return false;
+    return Array.from(types).includes('Files');
+  }
+
   elements.stopButton.addEventListener('click', () => post('stop'));
   // 按钮在 <summary> 里面：不阻止默认行为的话，点按钮会顺带把清单折叠起来。
   // preventDefault 拦掉 <details> 的切换，stopPropagation 让内层点击不再冒泡到 summary。
@@ -3025,7 +3547,106 @@
   elements.historySearch.addEventListener('input', (event) => { state.search = event.target.value; renderHistory(); });
   elements.modelInput.addEventListener('change', (event) => { state.model = event.target.value; syncReasoningSelector(); post('setModel', { model: event.target.value }); });
   elements.profileInput.addEventListener('change', (event) => post('setProfile', { profileId: event.target.value }));
-  elements.refreshModelsButton.addEventListener('click', () => post('refreshModels', { profileId: elements.profileInput.value }));
+  /*
+   * 悬浮编辑框的交互。
+   *
+   * 打开入口：**以 `pointerup` 为准**，不依赖浏览器是否会派发 `click`。
+   *
+   * 真实故障（用户两次反馈「点击编辑有时候没反应 / 还是不灵敏」）：agent 运行时
+   * 消息列表被反复重排，按下与松开之间按钮时常被换掉。早先的实现只在「按钮已经
+   * 不在文档里」时才兜底，可实测发现还有第三种情形 —— 松手那一刻按钮**还在**，
+   * 但同一个 `pointerup` 里后面的监听器（`releaseMessageInteraction`）立刻把列表
+   * 整段重建，按钮随即消失，浏览器于是**根本不派发 click**（`mouseup` 只能落到
+   * 空白处）。兜底因为「按下时节点还在」提前退出，点击就彻底丢了。
+   *
+   * 所以现在不猜：按下时记下「哪条消息 + 哪个任务 + 按钮矩形」，松开时只要指针
+   * 仍落在同一矩形内（= 一次点击），就直接打开编辑框；随后浏览器若补发 click，
+   * 由 `editClickConsumed` 吞掉，避免双触发。键盘（Enter/空格）不产生 pointer 事件，
+   * 仍走按钮自己的 click 监听，两条路都通。
+   */
+  let pressedEditTarget = null;
+  let editClickConsumed = null;
+  elements.messageList.addEventListener('pointerdown', (event) => {
+    pressedEditTarget = null;
+    // 每次按下都清掉上一次的「已处理」标记：若上一次的 pointerup 打开了编辑框、但浏览器
+    // 没能补发 click（按钮被重排换掉），这个标记就会一直挂着，把**下一次**正常点击吞掉。
+    editClickConsumed = null;
+    if (event.button !== 0) return;
+    const button = event.target instanceof Element ? event.target.closest('.message-execution-edit') : null;
+    if (!button) return;
+    const box = button.getBoundingClientRect();
+    pressedEditTarget = {
+      messageId: button.dataset.editMessage || '',
+      nodeId: button.dataset.editNode || '',
+      left: box.left, right: box.right, top: box.top, bottom: box.bottom,
+    };
+  });
+  document.addEventListener('pointerup', (event) => {
+    const pressed = pressedEditTarget;
+    pressedEditTarget = null;
+    if (!pressed?.messageId) return;
+    const insideRecorded = event.clientX >= pressed.left - 2 && event.clientX <= pressed.right + 2
+      && event.clientY >= pressed.top - 2 && event.clientY <= pressed.bottom + 2;
+    /*
+     * 两种都算点中：
+     *  1. 落点还在**按下时那个矩形**里 —— 人手没动；
+     *  2. 落点下**当前**就是同一条消息的编辑按钮 —— 按住期间流式内容把气泡往下推，
+     *     按钮自己挪到了指针底下。用户看到的是「我点在按钮上」，不能因为布局位移就丢掉。
+     */
+    const underPointer = insideRecorded
+      ? null
+      : document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.message-execution-edit');
+    const sameTarget = underPointer
+      ? underPointer.dataset.editMessage === pressed.messageId
+      : insideRecorded;
+    if (!sameTarget) return;
+    const message = state.messages.find((item) => item.id === pressed.messageId);
+    if (!message) return;
+    // 优先用任务树里那条（拿到最新标题/状态）；列表刚被重建时树里也可能已经变，
+    // 但 id 是稳定的，拿不到就按 id 兜住 —— 打开编辑框只需要它。
+    const node = pendingTaskForBubble(state.taskTree?.nodes, message.id);
+    const nodeId = node?.id || pressed.nodeId;
+    if (!nodeId) return;
+    editClickConsumed = { messageId: pressed.messageId, at: Date.now() };
+    openMessageEditor(message, node || { id: nodeId });
+  });
+  /** 指针路径已经打开过编辑框时，吞掉浏览器随后补发的那个 click（避免重复打开）。 */
+  function consumeEditClick(messageId) {
+    const consumed = editClickConsumed;
+    editClickConsumed = null;
+    if (!consumed) return false;
+    return consumed.messageId === messageId && Date.now() - consumed.at < 800;
+  }
+
+  elements.messageEditorInput.addEventListener('input', () => { editingBubbleDraft = elements.messageEditorInput.value; growMessageEditor(); });
+  /**
+   * 编辑框打开期间的快捷键挂在 **document** 上，而不是输入框自己。
+   *
+   * 原因（实测）：输入框拿焦点靠打开后的 `requestAnimationFrame`，可这中间任何东西
+   * （宿主把焦点抢回输入框、上一个动作的残留焦点、预览/测试脚本的 focus）都可能把
+   * 焦点挪走。焦点一旦不在 textarea 上，`Esc` 与 `⌘Enter` 就静默失效 —— 编辑框明明
+   * 开着却关不掉，用户只会觉得「又点不动了」。挂在 document 上，只要编辑框还开着
+   * 就一定响应，这也是「模态浮层」该有的行为。
+   */
+  document.addEventListener('keydown', (event) => {
+    if (elements.messageEditor.hidden) return;
+    // 中文输入法组字过程中 Esc 是「取消候选」，不能当成关闭编辑框。
+    if (event.isComposing) return;
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); saveMessageEditor(); return; }
+    if (event.key === 'Escape') { event.preventDefault(); closeMessageEditor(); }
+  }, true);
+  elements.messageEditorSave.addEventListener('click', () => saveMessageEditor());
+  elements.messageEditorCancel.addEventListener('click', () => closeMessageEditor());
+  // 点遮罩空白处 = 取消（与 Esc 一致）。
+  elements.messageEditor.addEventListener('mousedown', (event) => { if (event.target === elements.messageEditor) closeMessageEditor(); });
+
+  elements.internetReferenceButton.addEventListener('click', () => {
+    const next = state.internetReference !== true;
+    // 先本地切换，让点击立刻有反馈；后端回来时会以它的值为准（见 internetReferenceChanged）。
+    state.internetReference = next;
+    syncInternetReferenceButton();
+    post('setInternetReference', { enabled: next });
+  });
   elements.modeInput.addEventListener('change', (event) => { state.mode = event.target.value; post('setMode', { mode: state.mode }); renderHeader(); updateComposerState(); });
   elements.permissionPresetInput.addEventListener('change', (event) => {
     const permissionPreset = event.target.value;
@@ -3195,10 +3816,15 @@
       interactionTimer = setTimeout(releaseMessageInteraction, 400);
       return;
     }
-    releaseMessageInteraction();
+    /*
+     * 走 `afterClick`：这次松手之后浏览器还要补一个 click。若在这里同步重排列表，
+     * click 的按下目标就被销毁了，浏览器不会派发 click —— 消息里所有按钮/链接都会
+     * 「点了没反应」。推到下一个任务，click 先落地。
+     */
+    releaseMessageInteraction({ afterClick: true });
   });
-  document.addEventListener('pointercancel', releaseMessageInteraction);
-  window.addEventListener('blur', releaseMessageInteraction);
+  document.addEventListener('pointercancel', () => releaseMessageInteraction());
+  window.addEventListener('blur', () => releaseMessageInteraction());
   document.addEventListener('selectionchange', () => {
     if (!selectingMessageText) flushDeferredMessageRender();
   });
@@ -3340,11 +3966,15 @@
         const previousConversationId = state.conversation?.id;
         // 切对话之前先把 A 的输入存进 A 的草稿槽，否则它会跟着人跑到 B 的输入框里。
         if (previousConversationId !== message.state?.conversation?.id) saveDraft(previousConversationId);
+        // 编辑框属于那条消息，切到别的对话就收掉：草稿留着也没地方保存回去。
+        if (editingBubbleMessageId && previousConversationId !== message.state?.conversation?.id) {
+          editingBubbleMessageId = null; editingBubbleTaskId = null; editingBubbleDraft = '';
+        }
         const incoming = message.state; state.conversations = incoming.conversations || []; state.archivedConversations = incoming.archivedConversations || [];
         state.conversation = incoming.conversation; state.messages = incoming.messages || []; state.hasMore = Boolean(incoming.hasMore);
         state.sendOnEnter = incoming.settings?.sendOnEnter !== false; state.pendingAttachments = incoming.pendingAttachments || [];
         state.apiProfiles = incoming.settings?.apiProfiles || []; state.activeApiProfileId = incoming.settings?.activeApiProfileId || ''; state.model = incoming.settings?.model || ''; state.modelOptionsByProfile = incoming.modelOptionsByProfile || {};
-        state.permissionPreset = incoming.settings?.permissionPreset || 'askAll'; state.agentMaxSteps = normalizeStepValue(incoming.settings?.agentMaxSteps); state.reasoningEffort = incoming.settings?.reasoningEffort || 'default';
+        state.permissionPreset = incoming.settings?.permissionPreset || 'askAll'; state.agentMaxSteps = normalizeStepValue(incoming.settings?.agentMaxSteps); state.reasoningEffort = incoming.settings?.reasoningEffort || 'default'; state.internetReference = incoming.settings?.internetReference === true; syncInternetReferenceButton();
         state.permissionPresetPending = false;
         state.skills = incoming.skills || []; state.selectedSkillIds = incoming.selectedSkillIds || [];
         // 没装「本地skill快捷调用」时勾选入口改为引导安装，所以这个标记必须随 state 下发。
@@ -3428,7 +4058,10 @@
         const gone = new Set([message.userMessageId, message.assistantMessageId].filter(Boolean));
         if (!gone.size) break;
         state.messages = state.messages.filter((item) => !gone.has(item.id));
-        if (editingTaskId && !state.taskTree?.nodes?.some((node) => node.id === editingTaskId)) cancelTaskEdit();
+        // 正在编辑的那条被删了：编辑框必须一起收掉，否则保存会指向一条已经不存在的消息。
+        if (editingBubbleMessageId && gone.has(editingBubbleMessageId)) {
+          editingBubbleMessageId = null; editingBubbleTaskId = null; editingBubbleDraft = '';
+        }
         renderMessages('keep');
         break;
       }
@@ -3472,12 +4105,34 @@
       case 'permissionPresetChanged': state.permissionPreset = message.permissionPreset || 'askAll'; elements.permissionPresetInput.value = state.permissionPreset; syncPermissionHint(); break;
       case 'agentMaxStepsChanged': state.agentMaxSteps = normalizeStepValue(message.agentMaxSteps); ensureStepOption(state.agentMaxSteps); elements.agentMaxStepsInput.value = String(state.agentMaxSteps); break;
       case 'reasoningEffortChanged': state.reasoningEffort = message.reasoningEffort || 'default'; elements.reasoningEffortInput.value = state.reasoningEffort; break;
-      case 'taskTreeChanged': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.taskTree = message.taskTree || null; renderTaskTree(); updateComposerState(); break;
+      case 'internetReferenceChanged': state.internetReference = message.enabled === true; syncInternetReferenceButton(); break;
+      case 'taskTreeChanged': {
+        if (message.conversationId && message.conversationId !== state.conversation?.id) break;
+        const wasPending = pendingBubbleMessageIds(state.taskTree?.nodes);
+        state.taskTree = message.taskTree || null;
+        renderTaskTree(); updateComposerState();
+        syncMessageEditorState();
+        /*
+         * 排队状态一变，气泡里的「还没执行 + 编辑」入口就要跟着出现/消失。
+         * 单独重画受影响的几条，不整段重建：整段重建会把正在编辑的编辑框、
+         * 滚动位置和选区一起丢掉。
+         */
+        const nowPending = pendingBubbleMessageIds(state.taskTree?.nodes);
+        if (wasPending.join(',') !== nowPending.join(',')) {
+          for (const id of new Set([...wasPending, ...nowPending])) {
+            if (id !== editingBubbleMessageId) patchMessage(id);
+          }
+        }
+        break;
+      }
       case 'todos': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.todos = Array.isArray(message.todos) ? message.todos : []; state.todosInterrupted = Boolean(message.interrupted); state.todosIncomplete = Boolean(message.incomplete); renderTodos(); break;
       case 'fileReferencesVerified': applyFileReferenceVerification(message); break;
       case 'todoArchives': if (message.conversationId && message.conversationId !== state.conversation?.id) break; state.todoArchives = Array.isArray(message.todoArchives) ? message.todoArchives : []; renderArchivePanel(); renderTodoArchives(); break;
       case 'voiceInputAllowed': startVoiceRecognition(); break;
+      // 扩展要一份布局诊断（面板「右边被切 / 显示不全」时用来取证）。
+      case 'layoutReportRequest': post('layoutReport', { report: collectLayoutReport() }); break;
       case 'clipboardWriteResult': finishClipboardWrite(message.requestId, Boolean(message.ok), message.error); break;
+      case 'attachmentData': finishAttachmentData(message); break;
       case 'clipboardText':
         if (message.requestId === pendingPaste?.requestId) {
           const snapshot = pendingPaste;

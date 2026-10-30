@@ -29,6 +29,7 @@ const ROOT = process.cwd();
 test('新对话初始值：每次询问 / 24 步 / 模型官方思考默认', () => {
   assert.deepEqual({ ...NEW_CONVERSATION_CONTROLS }, {
     permissionPreset: 'askAll',
+    internetReference: false,
     agentMaxSteps: 24,
     reasoningEffort: 'default',
   });
@@ -61,7 +62,7 @@ test('新对话初始值不受 settings.json 里的旧声明影响（真实故�
 
   // ……草稿（新对话）也只取固定值，不叠加任何环境声明。
   const fresh = resolveNewConversationControls();
-  assert.deepEqual(fresh, { permissionPreset: 'askAll', agentMaxSteps: 24, reasoningEffort: 'default' });
+  assert.deepEqual(fresh, { permissionPreset: 'askAll', agentMaxSteps: 24, reasoningEffort: 'default', internetReference: false });
   assert.deepEqual(resolveNewConversationControls({}), fresh);
   // 脏值不能把初始值带偏：负数 / 非法预设 / 非法深度都回落到固定值。
   assert.deepEqual(
@@ -74,8 +75,8 @@ test('新对话初始值不受 settings.json 里的旧声明影响（真实故�
 
 test('草稿上的临时选择仍然生效（只是不跨对话）', () => {
   assert.deepEqual(
-    resolveNewConversationControls({ permissionPreset: 'review', agentMaxSteps: 68, reasoningEffort: 'high' }),
-    { permissionPreset: 'review', agentMaxSteps: 68, reasoningEffort: 'high' },
+    resolveNewConversationControls({ permissionPreset: 'review', agentMaxSteps: 68, reasoningEffort: 'high', internetReference: false }),
+    { permissionPreset: 'review', agentMaxSteps: 68, reasoningEffort: 'high', internetReference: false },
   );
   // 「不限制」是显式选择，必须原样保留。
   assert.equal(resolveNewConversationControls({ agentMaxSteps: 0 }).agentMaxSteps, 0);
@@ -86,10 +87,11 @@ test('草稿上的临时选择仍然生效（只是不跨对话）', () => {
 test('已有对话的存档值优先于固定初始值（升级不丢用户选择）', () => {
   const controls = resolveConversationControls(NEW_CONVERSATION_CONTROLS, {
     permissionPreset: 'autopilot',
+    internetReference: false,
     agentMaxSteps: 120,
     reasoningEffort: 'max',
   });
-  assert.deepEqual(controls, { permissionPreset: 'autopilot', agentMaxSteps: 120, reasoningEffort: 'max' });
+  assert.deepEqual(controls, { permissionPreset: 'autopilot', agentMaxSteps: 120, reasoningEffort: 'max', internetReference: false });
 });
 
 test('运行中切换预设：只对下一次对话生效', () => {

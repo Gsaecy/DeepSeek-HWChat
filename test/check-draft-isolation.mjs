@@ -100,6 +100,12 @@ function receiveState(state, message) {
     + `const messageListSignature = () => 'sig';\n`
     + `let renderedMessageSignature = '';\n`
     + `let fileRootsSignature = '';\n`
+    // 气泡编辑态：`case 'state'` 切对话时会把编辑框收掉，桩里必须有这三个模块级变量。
+    + `let editingBubbleMessageId = 'msg-1';\n`
+    + `let editingBubbleTaskId = 'task-1';\n`
+    + `let editingBubbleDraft = '半截草稿';\n`
+    // `case 'state'` 会同步「互联网参考」开关的显示；桩里只需要一个空实现。
+    + `const syncInternetReferenceButton = () => {};\n`
     + `const fileReferenceResolution = new Map();\n`
     + `${stateCaseBlock}`,
   );

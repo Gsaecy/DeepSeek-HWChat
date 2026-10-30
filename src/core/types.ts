@@ -1,5 +1,19 @@
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 export type MessageStatus = 'queued' | 'streaming' | 'complete' | 'error';
+/**
+ * 一条**用户消息**被执行到哪一步了。
+ *
+ * 为什么单独记一个字段，而不是从任务树推：任务树只在运行期间存在
+ * （`runs.has(conversationId)` 才下发），运行一结束、或者用户点「继续」开新的一轮，
+ * 上一轮那些消息到底跑没跑就看不出来了 —— 而「哪些被忽略」正是要看的东西。
+ * 所以状态落在消息本身上，重启 VS Code 也还在。
+ *
+ * - `pending`：已发出，还在队列里等 agent 取走；
+ * - `running`：agent 正在执行这一条；
+ * - `done`：执行过（跑完、失败、被停止都算执行过）；
+ * - `skipped`：这一轮结束了它还没被执行 —— 也就是「被忽略」的那条。
+ */
+export type MessageExecutionStatus = 'pending' | 'running' | 'done' | 'skipped';
 export type ConversationMode = 'chat' | 'agent' | 'plan';
 export type PermissionPolicy = 'allow' | 'ask' | 'deny';
 /** 敏感文件与危险命令使用的三态策略：允许 / 逐次确认 / 禁止。 */
@@ -110,6 +124,15 @@ export interface AgentTaskNode {
    * 一旦 `take()` 把它取走变成当前分支，历史已经发生，就只能「改完重新发一条」。
    */
   pending?: boolean;
+  /**
+   * 用户正在**悬浮编辑框**里改这条消息。
+   *
+   * 队列会因此在 `take()` 里挂一道闸门：agent 走到它时暂停等待，
+   * 改完（或取消）才读取内容继续执行。
+   */
+  editing?: boolean;
+  /** agent 已经走到这条、正停着等用户改完。 */
+  waitingForEdit?: boolean;
 }
 
 export interface AgentTaskTreeState {
@@ -141,6 +164,12 @@ export interface ChatMessage {
   usedSkills?: SkillUsage[];
   consumedByAssistantId?: string;
   replyToMessageId?: string;
+  /**
+   * 这条用户消息的执行状态（见 `MessageExecutionStatus`）。
+   *
+   * 只有用户消息会写；老存档里没有这个字段，界面就不画徽标（不猜）。
+   */
+  executionStatus?: MessageExecutionStatus;
 }
 
 export interface ConversationSummary {
@@ -194,6 +223,8 @@ export interface ConversationSummary {
   permissionPreset?: PermissionPreset;
   agentMaxSteps?: number;
   reasoningEffort?: ReasoningEffort;
+  /** 互联网参考：这条对话是否要求先检索网络再执行。 */
+  internetReference?: boolean;
   sourceConversationId?: string;
   sourceConversationTitle?: string;
   sourceHistoryDigest?: string;
@@ -291,6 +322,13 @@ export interface ChatSettings {
   agentMaxSteps: number;
   reasoningEffort: ReasoningEffort;
   permissionPreset: PermissionPreset;
+  /**
+   * 互联网参考（按对话）：开启后 Agent 先检索网络上的成熟项目与官方文档再动手。
+   *
+   * 它不是全局设置：`readSettings()` 恒为 false，只有 `applyRuntimeControls()`
+   * 按对话存档打开。这样「在 A 对话开了查资料」不会让 B 对话也偷偷联网。
+   */
+  internetReference: boolean;
   fileReadPolicy: PermissionPolicy;
   fileWritePolicy: PermissionPolicy;
   commandPolicy: PermissionPolicy;
@@ -406,7 +444,7 @@ export interface WebviewConversationState {
   messages: ChatMessage[];
   hasMore: boolean;
   conversations: ConversationSummary[];
-  settings: Pick<ChatSettings, 'apiProfiles' | 'activeApiProfileId' | 'model' | 'sendOnEnter' | 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort'>;
+  settings: Pick<ChatSettings, 'apiProfiles' | 'activeApiProfileId' | 'model' | 'sendOnEnter' | 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort' | 'internetReference'>;
   apiKeyConfigured: boolean;
   pendingAttachments: Array<Pick<MessageContext, 'id' | 'label' | 'path' | 'kind' | 'bytes' | 'mimeType' | 'thumbnailDataUrl'>>;
   modelOptionsByProfile: Record<string, ModelOption[]>;

@@ -196,6 +196,7 @@ test('保存设置不再把废弃的单项策略写进用户配置', async () =>
 
   await updateSettings({
     permissionPreset: 'review',
+    internetReference: false,
     // 面板传来的整份设置里仍带着这五项（内存里的预设推导值），但落盘时必须忽略：
     // 旧实现会把它们写成用户设置，留下一条「看起来能生效、实际被忽略」的配置。
     fileReadPolicy: 'allow',

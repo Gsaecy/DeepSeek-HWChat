@@ -195,18 +195,27 @@ function methodSource(source: string, declaration: string): string {
 
 test('附件读取按当前对话的预设判定，而不是全局默认值', () => {
   const panel = repositoryFile('src', 'views', 'chatPanel.ts');
+  /*
+   * 判定被抽进了 `attachmentSettings()`（「选文件」与「复用已发出的附件」两条入口共用，
+   * 两处各写一遍迟早走样），所以这里盯**那个方法**的口径，再确认两条入口都经过它。
+   */
+  const resolve = methodSource(panel, 'private async attachmentSettings(');
   const attach = methodSource(panel, 'async attachFiles(');
+  const reuse = methodSource(panel, 'private async attachMessageAttachment(');
 
   // 正例：先取这条对话的生效控件，再用它展开策略。
-  assert.match(attach, /this\.currentControls\(/, 'attachFiles 没有取本对话的生效预设');
-  assert.match(attach, /applyRuntimeControls\(/, 'attachFiles 没有按本对话预设展开策略');
+  assert.match(resolve, /this\.currentControls\(/, 'attachmentSettings 没有取本对话的生效预设');
+  assert.match(resolve, /applyRuntimeControls\(/, 'attachmentSettings 没有按本对话预设展开策略');
   // 反例：直接拿 readSettings() 的结果当判定依据，就会出现“全局是每次询问、
   // 当前对话已切到完全访问”时仍然被敏感文件禁止挡下的情况。
   assert.doesNotMatch(
-    attach,
-    /const settings = readSettings\(\);/,
-    'attachFiles 又直接用全局设置了：附件的敏感文件判定必须跟当前对话的预设走',
+    resolve,
+    /return readSettings\(\);/,
+    'attachmentSettings 又直接用全局设置了：附件的敏感文件判定必须跟当前对话的预设走',
   );
+  // 两条入口都必须经过同一个解析，不能有一条自己拿全局设置。
+  assert.match(attach, /this\.attachmentSettings\(/, 'attachFiles 没有走统一的附件设置解析');
+  assert.match(reuse, /this\.attachmentSettings\(/, '复用已发出的附件也必须走同一个设置解析');
 
   // `readAttachment` 自己也不许再兜底读全局：默认值就是那个漏点。
   const executor = repositoryFile('src', 'agent', 'toolExecutor.ts');

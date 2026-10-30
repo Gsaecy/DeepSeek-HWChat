@@ -41,6 +41,7 @@ after(async () => {
 
 function settings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   return {
+    internetReference: false,
     apiProfiles: [{ id: 'default', name: 'Test', baseUrl: 'https://example.invalid', models: ['deepseek-chat'], requestHeaders: {} }],
     activeApiProfileId: 'default', baseUrl: 'https://example.invalid', model: 'deepseek-chat',
     temperature: 0, maxTokens: 0, systemPrompt: '', sendOnEnter: true, historyRetentionDays: 30,

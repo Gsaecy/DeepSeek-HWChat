@@ -84,5 +84,5 @@ test('对话控制继承「无限制」而不是把它当脏值丢掉', () => {
   assert.equal(resolveConversationControls(defaults, { agentMaxSteps: -3 }).agentMaxSteps, 24);
   // 新对话默认：每次询问 + 24 步 + 高。
   const fresh = resolveConversationControls(defaults, {});
-  assert.deepEqual(fresh, { permissionPreset: 'askAll', agentMaxSteps: 24, reasoningEffort: 'high' });
+  assert.deepEqual(fresh, { permissionPreset: 'askAll', agentMaxSteps: 24, reasoningEffort: 'high', internetReference: false });
 });

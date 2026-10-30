@@ -66,6 +66,7 @@ function settings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   return {
     apiProfiles: [{ id: 'default', name: 'Test', baseUrl: 'https://example.invalid', models: ['deepseek-chat'], requestHeaders: {} }],
     activeApiProfileId: 'default', baseUrl: 'https://example.invalid', model: 'deepseek-chat',
+    internetReference: false,
     temperature: 0, maxTokens: 0, systemPrompt: '', sendOnEnter: true, historyRetentionDays: 30,
     taskCacheRetentionHours: 24, cacheBudgetMB: 100, cleanupIntervalMinutes: 10, maxMessagesInContext: 20,
     requestHeaders: {}, requestTimeoutSeconds: 30, defaultMode: 'agent', agentMaxSteps: 24,

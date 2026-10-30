@@ -31,6 +31,12 @@ export async function classifyTaskRelation(
   incomingTask: string,
   signal: AbortSignal,
   resumeScope = false,
+  /**
+   * 「现在到底在做什么」的实时上下文（正在跑的那条分支的原话、任务清单进度、刚做完的
+   * 步骤）。判是否相关只看一行标题是不够的：同一个标题下，分支的焦点会随着清单推进
+   * 而移动，新消息相关的往往是**眼下这一步**而不是标题里的第一件事。
+   */
+  liveContext = '',
 ): Promise<TaskRelationResult> {
   let content = '';
   const result = await client.streamChat(
@@ -54,7 +60,10 @@ export async function classifyTaskRelation(
           'When unsure whether it is the same deliverable, answer QUEUED.',
         ].join(' '),
       },
-      { role: 'user', content: `CURRENT TASK:\n${currentTask}\n\nINCOMING MESSAGE:\n${incomingTask}` },
+      {
+        role: 'user',
+        content: `CURRENT TASK:\n${currentTask}${liveContext ? `\n\nIN PROGRESS NOW:\n${liveContext}` : ''}\n\nINCOMING MESSAGE:\n${incomingTask}`,
+      },
     ],
     {
       signal,

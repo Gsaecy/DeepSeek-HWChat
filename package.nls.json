@@ -79,5 +79,6 @@
   "config.language.enum1": "Always use Chinese",
   "config.language.enum2": "Always use English",
   "config.searchExclude": "Extra directory names to exclude from HWChat's workspace search, in addition to the built-in list (.git, node_modules, dist, build, out, coverage, .next, .turbo, .venv, venv, __pycache__, DerivedData, .cache).",
-  "command.showResourceStats": "Show active/queued searches and running commands (for diagnosing CPU or EAGAIN issues)"
+  "command.showResourceStats": "Show active/queued searches and running commands (for diagnosing CPU or EAGAIN issues)",
+  "command.reportLayout": "Copy layout report"
 }

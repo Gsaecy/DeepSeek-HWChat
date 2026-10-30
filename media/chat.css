@@ -25,6 +25,12 @@
   --user-bg: color-mix(in srgb, var(--user-accent) 8%, var(--bg));
   --user-border: color-mix(in srgb, var(--user-accent) 32%, var(--border));
   --danger: var(--vscode-errorForeground, #cf222e);
+  /* 用户消息执行状态的四色：橙=还没执行、蓝=执行中、绿=已执行、灰=已跳过。
+     用 VS Code 的图表色系，深浅主题都有对应值；拿不到时退回一组能读的默认色。 */
+  --status-pending: var(--vscode-charts-yellow, #b8860b);
+  --status-running: var(--vscode-charts-blue, #0a84ff);
+  --status-done: var(--vscode-charts-green, #1a7f37);
+  --status-skipped: var(--vscode-charts-lines, #8b8b8b);
   /* 项目徽标（标题右侧）的橘黄色：优先用主题的图表橙，其次给一个在深浅背景下都能读的橙。
      不用 --warning（它默认偏暗黄），因为这里要的是「项目名」这种正向信息的强调色。 */
   --project: var(--vscode-charts-orange, #d18616);
@@ -72,6 +78,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .app-shell {
   display: grid;
   grid-template-columns: 268px minmax(0, 1fr);
+  /* 硬边界：任何子内容（超长不带空格的串、固定宽度的图片行、第三方工具的宽输出）
+     都不许把文档撑宽。用 overflow-x: clip 而不是 hidden —— clip 不建立滚动容器，
+     里面 absolute / sticky 的浮层（技能面板、回到最新消息）定位与吸附都照旧。
+     真实故障：面板较窄 + 侧栏展开时，右侧内容被窗口裁掉、还找不到横向滚动条。 */
+  max-width: 100%;
+  overflow-x: clip;
   /* 必须显式声明行高：只写 columns 时隐式行是 `auto`，会被侧栏内容撑到比容器还高
      （实测 12 条对话时行高 956px > 视口 760px），右栏的输入框就被顶到视口外面，
      看起来像「对话框不见了」。`minmax(0, 1fr)` 让这一行永远等于容器高度。 */
@@ -199,7 +211,14 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .row-action:disabled { opacity: .35; cursor: default; }
 .danger-action:hover { color: var(--danger); }
 
-.chat-pane { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
+/* 列宽必须显式压成 minmax(0, 1fr)：只写 grid-template-rows 时，唯一的**隐式列**是
+   `auto`，会被最宽的那个子元素按 max-content 撑开。实测（headless Chromium，视口 870）：
+   归档胶囊达到 40 颗时，这一列从 602px 涨到 1387.59px，`.composer-wrap` 被推到
+   left=537 → 右侧 514px 落在视口外，而 `.app-shell` 是 overflow-x: clip（不建滚动容器、
+   没有滚动条），那段内容就永远看不见 —— 用户看到的就是「胶囊拖到最右还是被截断」
+   和「面板右边显示不全」。压住列宽之后，横向滚动交还给真正该负责的元素
+   （`.todo-archive-bar` 的 overflow-x: auto，以及 `.message-viewport`）。 */
+.chat-pane { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); min-width: 0; min-height: 0; }
 .chat-toolbar {
   position: relative;
   display: grid;
@@ -320,6 +339,18 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .toolbar-main { display: grid; grid-template-columns: 30px minmax(0, 1fr) minmax(76px, 100px) 45px 30px 30px 30px; gap: 6px; }
 .toolbar-connection { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 30px; gap: 6px; }
 .toolbar-main > *, .toolbar-connection > * { min-width: 0; }
+/* 互联网参考开关：占用原来「刷新模型列表」的槽位。
+   关闭 = 灰描边；开启 = 强调色实心底 + 白色地球（与工具栏其它开关按钮区分开，
+   因为这是一个会改变工作方式的开关，状态必须一眼可辨，不能只靠悬停提示）。 */
+.toolbar-toggle[aria-pressed="true"] {
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: transparent;
+}
+.toolbar-toggle[aria-pressed="true"]:hover { background: color-mix(in srgb, var(--accent) 88%, #fff); color: var(--accent-text); }
+.toolbar-toggle[aria-pressed="false"] { color: var(--muted); }
+.toolbar-toggle[aria-pressed="false"]:hover { color: var(--surface-hover-fg); background: var(--surface-hover); }
+.toolbar-toggle[disabled] { opacity: .45; cursor: default; }
 .control-button { display: flex; align-items: center; justify-content: center; gap: 5px; height: 30px; min-width: 45px; padding: 0 8px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; cursor: pointer; }
 .control-button:hover, .control-button.active { color: var(--surface-hover-fg); background: var(--surface-hover); }
 .control-button span { min-width: 10px; font: 10px var(--mono); }
@@ -328,7 +359,6 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
    现在只留图标（数量挪到悬停提示 / aria-label），宽度与 #refreshModelsButton 一致。 */
 #skillsButton { width: 30px; min-width: 0; padding: 0; }
 #skillsButton span { display: none; }
-#refreshModelsButton.loading .icon { animation: spin .8s linear infinite; }
 
 .skills-panel { position: absolute; top: calc(100% + 4px); right: 10px; z-index: 9; width: min(410px, calc(100vw - 40px)); max-height: min(560px, calc(100vh - 150px)); overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); box-shadow: var(--shadow); }
 .skills-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 1px 2px 10px; border-bottom: 1px solid var(--border); }
@@ -365,7 +395,9 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 
 /* 消息区外壳：给「回到最新消息」按钮提供定位参考。
    按钮必须放在滚动容器之外，否则会跟着内容一起滚走。 */
-.message-area { position: relative; display: grid; grid-template-rows: minmax(0, 1fr); min-height: 0; }
+/* 同上：隐式列是 auto，一段超长不带空格的内容（第三方工具输出、宽表格）会把整列
+   撑出可视区并被 app-shell 裁掉。列宽同样压成 minmax(0, 1fr)，滚动留给 message-viewport。 */
+.message-area { position: relative; display: grid; grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); min-width: 0; min-height: 0; }
 /* 消息区自己管滚动（每帧按 autoFollow 决定贴底还是保持原位），所以显式关掉浏览器的
    滚动锚定：两者同时生效时会互相补偿——浏览器的锚定先按「内容变了」挪一次 scrollTop，
    我们的 rAF 又把它覆盖回自己算的值，肉眼看就是整段文字在轻微跳动。
@@ -375,7 +407,7 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .scroll-to-bottom { position: absolute; bottom: 12px; right: 14px; z-index: 6; border-radius: 999px; background: var(--surface); box-shadow: var(--shadow); }
 /* .icon-button 是 display:grid，会覆盖 [hidden] 的默认 display:none，这里必须显式声明。 */
 .scroll-to-bottom[hidden] { display: none; }
-.message-list { width: min(820px, calc(100% - 40px)); margin: 0 auto; padding: 30px 0 42px; }
+.message-list { width: min(820px, calc(100% - 40px)); max-width: 100%; margin: 0 auto; padding: 30px 0 42px; }
 .message { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 16px; margin-bottom: 30px; }
 .message-meta { display: grid; align-content: start; gap: 3px; padding-top: 2px; color: var(--muted); font-size: 10px; text-align: right; }
 .message-meta span { color: var(--fg); font-weight: 650; font-size: 11px; }
@@ -413,6 +445,111 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .message-clamp-toggle:hover { border-color: var(--link); background: color-mix(in srgb, var(--link) 16%, transparent); }
 .message-clamp-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { .message-clamp-toggle { transition: none; } }
+
+/* 排队消息（agent 还没读）的气泡内操作条：一个「还没执行」标记 + 编辑入口。
+   编辑入口放在气泡里而不是任务树：任务树一行只放得下一句话，长内容根本看不清。 */
+/* 用户消息的执行状态徽标：还没执行（橙，虚线）/ 执行中（蓝，呼吸点）/
+   已执行（绿）/ 已跳过（灰，虚线）。四种颜色是为了一眼扫出「哪条没跑」，
+   多气泡 + 中断继续的时候尤其要看这个。颜色统一走 --exec-color 一个变量。 */
+.message-execution { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.message-execution-badge {
+  --exec-color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--exec-color) 45%, var(--border));
+  border-radius: 999px;
+  color: var(--exec-color);
+  background: color-mix(in srgb, var(--exec-color) 10%, transparent);
+  font-size: 10px;
+  line-height: 1.6;
+}
+/* 圆点用 currentColor：状态一换，点也跟着换色。 */
+.message-execution-badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.message-execution-badge.is-pending { --exec-color: var(--status-pending); border-style: dashed; }
+.message-execution-badge.is-running { --exec-color: var(--status-running); }
+.message-execution-badge.is-running::before { animation: execution-pulse 1.2s ease-in-out infinite; }
+.message-execution-badge.is-done { --exec-color: var(--status-done); }
+.message-execution-badge.is-skipped { --exec-color: var(--status-skipped); border-style: dashed; }
+@keyframes execution-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .message-execution-badge.is-running::before { animation: none; } }
+.message-execution-edit {
+  padding: 2px 10px;
+  border: 1px solid color-mix(in srgb, var(--link) 40%, var(--border));
+  border-radius: 999px;
+  color: var(--link);
+  background: color-mix(in srgb, var(--link) 10%, transparent);
+  font-size: 10px;
+  cursor: pointer;
+}
+.message-execution-edit:hover { border-color: var(--link); background: color-mix(in srgb, var(--link) 18%, transparent); }
+.message-execution-edit:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+/* ── 悬浮编辑框（独立层级，不是消息气泡的一部分）─────────────────
+   为什么必须浮起来：agent 运行时消息列表每 70ms 就可能重排一次，编辑框长在气泡里
+   会被连同按钮一起销毁重建（点击没反应、光标跳回开头、中文输入法被打断）。
+   放在 #messageList 之外，重绘永远碰不到它。 */
+.message-editor {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px 18px;
+  background: rgba(0, 0, 0, .42);
+}
+.message-editor[hidden] { display: none; }
+.message-editor-panel {
+  display: grid;
+  gap: 10px;
+  width: min(720px, 100%);
+  max-height: 100%;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .38);
+}
+.message-editor-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; min-width: 0; }
+.message-editor-head strong { font-size: 12px; }
+.message-editor-state { color: var(--muted); font-size: 10px; }
+/* agent 真的停在这一条上等你时，用强调色 + 呼吸点提示，别让人以为还能慢慢改。 */
+.message-editor-state[data-state="waiting"] { color: var(--status-running); }
+.message-editor-state[data-state="waiting"]::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: execution-pulse 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) { .message-editor-state[data-state="waiting"]::before { animation: none; } }
+.message-editor-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 140px;
+  max-height: 420px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: var(--fg);
+  background: var(--surface);
+  font: 13px/1.55 var(--font);
+  resize: vertical;
+  overflow-y: auto;
+}
+.message-editor-input:focus { outline: none; box-shadow: 0 0 0 1px var(--accent); }
+.message-editor-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.message-editor-hint { flex: 1 1 220px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.message-editor-save, .message-editor-cancel { padding: 4px 14px; border-radius: 6px; font-size: 11px; cursor: pointer; }
+.message-editor-save { border: 1px solid transparent; color: var(--accent-text); background: var(--accent); }
+.message-editor-cancel { border: 1px solid var(--border); color: var(--fg); background: transparent; }
+.message-editor-cancel:hover { background: var(--surface-hover); }
+.message-editor-save:focus-visible, .message-editor-cancel:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+/* 浮层打开时禁止背后的消息区滚动，避免滚轮误滚对话（键盘 Esc 仍可关闭）。 */
+body.editor-open .message-viewport { overflow: hidden; }
 .message-content > :first-child, .reasoning-content > :first-child { margin-top: 0; }
 .message-content > :last-child, .reasoning-content > :last-child { margin-bottom: 0; }
 .message-content p, .reasoning-content p { margin: 0 0 12px; white-space: pre-wrap; }
@@ -500,8 +637,39 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
 .message-file-attachment { max-width: 100%; padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font: 10px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-image-attachment { display: grid; width: 132px; margin: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+/* 定位上下文：把「添加到输入框」按钮叠在缩略图右下角。 */
+.message-image-attachment { position: relative; }
 .message-image-attachment img { display: block; width: 100%; height: 88px; object-fit: cover; background: var(--surface-raised); }
 .message-image-attachment figcaption { overflow: hidden; padding: 4px 6px; color: var(--muted); font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+/* 「添加到输入框」：平时淡出，悬停 / 键盘聚焦时浮现。
+   不能一直显示 —— 每条消息的图片上都压一条按钮会把缩略图挡住一半。 */
+.message-attachment-reuse {
+  position: absolute; right: 4px; top: 4px; z-index: 1;
+  padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--fg); background: color-mix(in srgb, var(--surface) 88%, transparent);
+  font: 9px var(--font); line-height: 1.4; cursor: pointer;
+  opacity: 0; transform: translateY(-2px);
+  transition: opacity .12s ease, transform .12s ease, background .12s ease, border-color .12s ease;
+}
+.message-image-attachment:hover .message-attachment-reuse,
+.message-image-attachment:focus-within .message-attachment-reuse,
+.message-attachment-reuse:focus-visible { opacity: 1; transform: none; }
+.message-attachment-reuse:hover { border-color: var(--accent); background: var(--surface-hover); color: var(--surface-hover-fg); }
+/* 触摸屏没有 hover：直接显示，否则这个入口等于不存在。 */
+@media (hover: none) {
+  .message-attachment-reuse { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .message-attachment-reuse { transition: none; }
+}
+/* 正在被拖动的那张图降低不透明度，明确指出「拖的是它」。 */
+.message-image-attachment.is-dragging,
+.message-file-attachment.is-dragging { opacity: .5; }
+/* 输入框作为落点：整圈高亮 + 轻微内发光，告我「松手就变成附件」。 */
+.composer.is-drop-target {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
 .message-usage { color: var(--muted); font-size: 10px; margin-top: 10px; }
 .message-skills { margin: 0 0 12px; color: var(--muted); }
 .message-skills summary { cursor: pointer; font-size: 10px; }
@@ -654,7 +822,7 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .suggestions button { min-height: 32px; padding: 0 11px; border: 1px solid var(--border); border-radius: 6px; background: transparent; cursor: pointer; }
 .suggestions button:hover { background: var(--surface); }
 
-.composer-wrap { width: min(850px, calc(100% - 28px)); margin: 0 auto; padding: 0 0 14px; }
+.composer-wrap { width: min(850px, calc(100% - 28px)); max-width: 100%; margin: 0 auto; padding: 0 0 14px; }
 .history-link-banner { display: grid; grid-template-columns: 20px minmax(0, 1fr) 24px; align-items: center; gap: 7px; margin: 0 2px 7px; padding: 7px 7px 7px 9px; border: 1px solid var(--border); border-radius: 7px; color: var(--fg); background: var(--surface); }
 .history-link-symbol { color: var(--accent); font: 15px var(--mono); }
 .history-link-banner > div { display: grid; min-width: 0; line-height: 1.35; }
@@ -745,11 +913,19 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
   justify-content: flex-start;
   gap: var(--capsule-gap, 4px);
   width: 100%;
+  /* 不许比父容器宽：下面用 padding 做左右内缩，而不是左右外边距。
+     真实故障（用户反馈「拖到滚不动为止，右侧胶囊还是被截断」）：原来写的是
+     `width: 100%` + `margin: 0 2px` —— width 百分比算的是父容器**内容宽**，
+     再加上左右各 2px 外边距，整条栏就比父容器宽 4px。栏自身能滚到最右，但它的
+     右边界已经跑到容器外面，最后 2px（也就是最后一颗胶囊的右边）永远看不见。 */
+  max-width: 100%;
   height: calc(var(--capsule-h, 10.67px) + 14px);
   min-height: calc(var(--capsule-h, 10.67px) + 14px);
   box-sizing: border-box;
-  margin: 0 2px 7px;
-  padding: 0;
+  margin: 0 0 7px;
+  /* 右内边距同时充当「末尾留白」：它计入 scrollable overflow，所以滚到最右时
+     最后一颗胶囊离裁切边还有 2px，不会贴着边缘被切掉半个像素。 */
+  padding: 0 2px;
   overflow-x: auto;
   overflow-y: hidden;
   /* 不要滚动条：6px 的横条快赶上胶囊本身的一半厚度（10.67px），既挡视线又抢注意力。
@@ -824,13 +1000,18 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
    1. 不允许把输入框挤出窗口 —— 三个面板同时展开时内容会高过侧边栏，
       以前它们是 footer 的直接子元素，footer 撑高就把输入框顶到窗口外；
       现在内容再多也只在这一块里滚，footer 高度有上限。
-   2. 上限同时受视口和固定值约束：侧边栏被拉得很矮时 min() 会取 44vh，
-      不会出现「输入框还在、面板占满整屏」的情况。 */
+   2. 上限受两个约束：28vh（矮窗口按比例让位）与 260px（高窗口不再无限长）。
+      以前是 44vh / 360px —— 实测在 768×830 的侧边栏里，任务树和任务清单都展开时
+      消息区只剩 264px（占 32%），620 高的窗口里更只剩 88px（14%），
+      对话几乎看不见，用户反馈「这种状态下界面对话框显示不全」。
+      面板自己有 overflow-y: auto，内容再多也能滚，所以把空间优先还给对话。
+      试过给消息区加行下限（minmax(120px, 1fr)），实测 430×480 会把输入框顶出视口，
+      那比「消息区小」更糟，所以只下调面板上限。 */
 .panel-stack {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-height: min(44vh, 360px);
+  max-height: min(28vh, 260px);
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -844,6 +1025,11 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
    容器因此从不溢出，overflow-y: auto 不生成滚动条，滚轮也就无事可滚。
    把这三项固定为内容高度，容器才会真正溢出、滚动才生效。 */
 .panel-stack > * { flex: 0 0 auto; }
+/* 很矮的窗口（拉成一条横条）：面板再让一步，否则消息区只剩一行。
+   480 高的窗口实测：28vh 时消息区 101px，22vh 时能到 150px 上下。 */
+@media (max-height: 560px) {
+  .panel-stack { max-height: min(22vh, 180px); }
+}
 /* 滚动条常显：macOS 的覆盖式滚动条不滚动就完全不可见，用户会以为「不能滚」。
    显式设置 ::-webkit-scrollbar 会让它变成常驻样式，兼作「下面还有内容」的提示。 */
 .panel-stack::-webkit-scrollbar { width: 10px; }
@@ -914,9 +1100,6 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 .task-node-action:hover { color: var(--fg); background: var(--surface-raised); }
 .task-node-action.is-danger:hover { color: #ffffff; background: #d32f2f; }
 .task-node-action.is-primary { color: var(--accent-text); background: var(--accent); }
-.task-node-edit-wrap { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.task-node-edit { flex: 1 1 auto; min-width: 0; padding: 3px 6px; border: 1px solid var(--accent); border-radius: 5px; font-size: 10px; color: var(--fg); background: var(--surface); }
-.task-node-edit:focus { outline: none; box-shadow: 0 0 0 1px var(--accent); }
 @media (prefers-reduced-motion: reduce) { .task-node-actions { transition: none; } }
 .composer {
   display: grid;

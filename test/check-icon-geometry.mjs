@@ -310,7 +310,13 @@ for (const icon of measured) {
 //    这里锁 refresh —— 它是目前唯一挂了旋转动画的图标。
 const spinning = measured.find((icon) => icon.name === 'refresh');
 const chatCss = readFileSync('media/chat.css', 'utf8');
-check('refresh 仍是旋转图标（.loading .icon 有 spin）', /#refreshModelsButton\.loading \.icon \{[^}]*animation:\s*spin/.test(chatCss));
+// 刷新模型列表的按钮已经去掉（模型清单改成静默自动刷新），
+// 所以那条 `.loading .icon { animation: spin }` 也一并删掉：留着就是死规则。
+check('已无 #refreshModelsButton 的旋转死规则', !/#refreshModelsButton\.loading/.test(chatCss));
+// 占用它位置的是「互联网参考」开关：必须是 globe 图标，且开启态有独立样式。
+const panelTs = readFileSync('src/views/chatPanel.ts', 'utf8');
+check('工具栏的联网开关用 globe 图标', /id="internetReferenceButton"[\s\S]{0,200}icon\('globe'\)/.test(panelTs));
+check('联网开关有开启态样式', /\.toolbar-toggle\[aria-pressed="true"\]/.test(chatCss));
 if (spinning && spinning.ink.arcs.length > 0) {
   const ring = spinning.ink.arcs[0];
   check(

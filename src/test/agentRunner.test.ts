@@ -4,6 +4,7 @@ import { AgentRunner } from '../agent/agentRunner';
 import { ChatRequestMessage, ChatSettings, ToolExecutionResult } from '../core/types';
 
 const settings: ChatSettings = {
+  internetReference: false,
   apiProfiles: [{ id: 'default', name: 'Test', baseUrl: 'https://example.invalid', models: ['deepseek-chat'], requestHeaders: {} }],
   activeApiProfileId: 'default',
   baseUrl: 'https://example.invalid', model: 'deepseek-chat', temperature: 0, maxTokens: 0,

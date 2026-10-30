@@ -62,7 +62,18 @@ export interface ApprovalLevelDetail {
 export const APPROVAL_TARGETS: readonly ApprovalTarget[] = [
   { id: 'chat.tools.terminal.autoApprove', kind: 'map', label: '终端命令逐条批准表' },
   { id: 'chat.tools.terminal.enableAutoApprove', kind: 'boolean', label: '终端自动批准总开关' },
-  { id: 'chat.tools.edits.autoApprove', kind: 'boolean', label: '文件编辑自动批准' },
+  /*
+   * 刻意不管理 `chat.tools.edits.autoApprove`。
+   *
+   * VS Code 1.144 把它声明成 **对象映射**（`type: "object"`, `additionalProperties: boolean`，
+   * 默认值是「按 glob 逐条放行」：普通文件 true、`.git` 与 `package.json` 等敏感路径 false），
+   * 不是一个布尔开关。早期这里按布尔写入 true/false，在这个版本上就是一条类型错误的值——
+   * VS Code 会标红并忽略它，看起来「设置了但没用」。
+   * 而它的默认值本来就放行所有文件编辑（只排除敏感路径），所以「编辑要不要自动批准」
+   * 不需要我们再写；要全放行用总开关 `chat.tools.global.autoApprove`。
+   * 依据：`/Applications/Visual Studio Code.app/.../out/vs/workbench/workbench.desktop.main.js`
+   * 里的 `"chat.tools.edits.autoApprove":{default:wxt,...,type:"object"}`。
+   */
   { id: 'chat.tools.global.autoApprove', kind: 'boolean', label: '全部工具自动批准' },
   { id: 'chat.tools.autoApprove', kind: 'boolean', label: '（旧命名）全部工具自动批准' },
 ];
@@ -169,7 +180,6 @@ function rulesForLevel(level: ApprovalBridgeLevel): readonly ManagedRule[] {
 /** 布尔型目标在各档位下应该是什么值。未列出的按「关闭」处理。 */
 const BOOLEAN_DESIRED: Readonly<Record<string, (level: ApprovalBridgeLevel) => boolean>> = {
   'chat.tools.terminal.enableAutoApprove': (level) => level !== 'off',
-  'chat.tools.edits.autoApprove': (level) => level === 'standard' || level === 'everything',
   'chat.tools.global.autoApprove': (level) => level === 'everything',
   'chat.tools.autoApprove': (level) => level === 'everything',
 };

@@ -77,7 +77,11 @@ test('签名用 pending 抹平临时位置，正文增长不再改变结构签�
 });
 
 test('点击 summary：pointerup 兜底 + 延后恢复渲染', () => {
-  const start = CHAT_JS.indexOf("document.addEventListener('pointerup'");
+  // 现在有两个 pointerup 监听（summary 兜底 + 悬浮编辑框兜底），
+  // 这里要定位到 **summary 那个**：它带 `pressedSummary`。
+  const anchor = CHAT_JS.indexOf('const pressed = pressedSummary;');
+  assert.ok(anchor > 0, '找不到 summary 的 pointerup 监听');
+  const start = CHAT_JS.lastIndexOf("document.addEventListener('pointerup'", anchor);
   assert.ok(start >= 0, '找不到 pointerup 监听');
   const slice = CHAT_JS.slice(start, start + 2200);
   // 关键：按下时记「稳定标识 + 节点 + 矩形」，松开时按标识在当前 DOM 里重新定位。

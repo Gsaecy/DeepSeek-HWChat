@@ -18,6 +18,7 @@ import {
   ConversationExport,
   ConversationSummary,
   ConversationMode,
+  MessageExecutionStatus,
   StorageStats,
   TodoArchive,
   TodoItem,
@@ -193,6 +194,7 @@ export class ConversationStorage {
       usedSkills: input.usedSkills,
       consumedByAssistantId: input.consumedByAssistantId,
       replyToMessageId: input.replyToMessageId,
+      executionStatus: normalizeExecutionStatus(input.executionStatus),
     };
     await this.enqueueWrite(async () => {
       await writeJsonAtomic(this.messagePath(conversationId, message.id), message);
@@ -219,7 +221,7 @@ export class ConversationStorage {
   async updateMessage(
     conversationId: string,
     messageId: string,
-    patch: Partial<Pick<ChatMessage, 'content' | 'reasoning' | 'usage' | 'status' | 'model' | 'toolExecutions' | 'toolCalls' | 'usedSkills' | 'consumedByAssistantId' | 'replyToMessageId'>>,
+    patch: Partial<Pick<ChatMessage, 'content' | 'reasoning' | 'usage' | 'status' | 'model' | 'toolExecutions' | 'toolCalls' | 'usedSkills' | 'consumedByAssistantId' | 'replyToMessageId' | 'executionStatus'>>,
   ): Promise<ChatMessage> {
     await this.initialize();
     const summary = this.requireSummary(conversationId);
@@ -232,6 +234,7 @@ export class ConversationStorage {
       updated = {
         ...current,
         ...patch,
+        ...(patch.executionStatus === undefined ? {} : { executionStatus: normalizeExecutionStatus(patch.executionStatus) }),
         updatedAt: Date.now(),
       };
       summary.totalTokens = Math.max(
@@ -314,6 +317,8 @@ export class ConversationStorage {
           break;
         }
         bytes += messageBytes;
+        // 存档可能是手改的：认不出来的执行状态在这里就丢掉，别让它流到界面。
+        message.executionStatus = normalizeExecutionStatus(message.executionStatus);
         messages.unshift(message);
       }
     }
@@ -461,7 +466,7 @@ export class ConversationStorage {
 
   async updateConversation(
     conversationId: string,
-    patch: Partial<Pick<ConversationSummary, 'title' | 'model' | 'apiProfileId' | 'mode' | 'skillIds' | 'skillSelectionInitialized' | 'projectRoot' | 'projectRoots' | 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort'>> & {
+    patch: Partial<Pick<ConversationSummary, 'title' | 'model' | 'apiProfileId' | 'mode' | 'skillIds' | 'skillSelectionInitialized' | 'projectRoot' | 'projectRoots' | 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort' | 'internetReference'>> & {
       sourceConversationId?: string | null;
       sourceConversationTitle?: string | null;
       sourceHistoryDigest?: string | null;
@@ -544,6 +549,12 @@ export class ConversationStorage {
       applyOptional(summary, 'permissionPreset', normalizeStoredPreset(patch.permissionPreset));
       applyOptional(summary, 'agentMaxSteps', normalizeStoredSteps(patch.agentMaxSteps));
       applyOptional(summary, 'reasoningEffort', normalizeStoredReasoning(patch.reasoningEffort));
+      // 互联网参考：只认布尔 true。false 时把字段删掉（默认就是关），
+      // 免得存档里留一堆 `internetReference: false` 让「有没有开过」看不出来。
+      if (patch.internetReference !== undefined) {
+        if (patch.internetReference === true) summary.internetReference = true;
+        else delete summary.internetReference;
+      }
       summary.updatedAt = Date.now();
       await this.persistManifest();
     });
@@ -1135,6 +1146,21 @@ export class ConversationStorage {
   private async readMessageForReconcile(path: string, conversationId: string): Promise<ChatMessage | undefined> {
     const message = await readJsonWithBackup<ChatMessage>(path);
     if (!message) return undefined;
+    /*
+     * 用户消息的执行状态也要收口。
+     *
+     * 进程退出、窗口关掉时，正在进行的那一轮来不及把 `running` / `pending` 落定，
+     * 这两个状态就会永远挂在气泡上。启动时已经没有任何运行中的对话了，所以：
+     * `running` → `done`（它确实被 agent 读过、跑过），`pending` → `skipped`（从未被执行）。
+     * 这一步只发生在 `initialize()` 里，不会打断正在进行的运行。
+     */
+    if (message.role === 'user' && (message.executionStatus === 'running' || message.executionStatus === 'pending')) {
+      message.executionStatus = message.executionStatus === 'running' ? 'done' : 'skipped';
+      message.updatedAt = Date.now();
+      await writeJsonAtomic(path, message);
+      this.invalidateMessagePages();
+      this.markConversationChanged(conversationId);
+    }
     if (message.status !== 'streaming' && message.status !== 'queued') return message;
     const previousStatus = message.status;
     message.status = 'error';
@@ -1282,6 +1308,18 @@ function normalizeProjectRoots(value: unknown): string[] {
     if (!roots.includes(canonical)) roots.push(canonical);
   }
   return roots;
+}
+
+/**
+ * 用户消息执行状态的归一化。
+ *
+ * 存档可能是手改的、也可能是未来版本写的：认不出来的值一律**丢掉**（返回 undefined），
+ * 界面就不画徽标 —— 猜一个「已执行」是最糟的方向，那会让用户以为跑过了。
+ */
+export function normalizeExecutionStatus(value: unknown): MessageExecutionStatus | undefined {
+  return value === 'pending' || value === 'running' || value === 'done' || value === 'skipped'
+    ? value
+    : undefined;
 }
 
 function normalizeStoredPreset(value: unknown): ConversationSummary['permissionPreset'] | null | undefined {

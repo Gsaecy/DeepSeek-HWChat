@@ -133,7 +133,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ['hwchat.askSelection', () => chat.openSelection('ask')],
     ['hwchat.explainSelection', () => chat.openSelection('explain')],
     ['hwchat.cleanupNow', () => scheduler.run(true)],
-    ['hwchat.setApiKey', () => setApiKey(context.secrets, settingsPanel)],
+    ['hwchat.setApiKey', () => setApiKey(context.secrets, settingsPanel, chat)],
     ['hwchat.exportHistory', () => exportHistory(storage)],
     ['hwchat.attachFiles', (uri?: unknown, selected?: unknown) => {
       const uris = Array.isArray(selected)
@@ -163,6 +163,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       output.show(true);
       await vscode.window.showInformationMessage(tt('ext.resourceStats', { active: stats.search?.active ?? 0, queued: stats.search?.queued ?? 0, commands: stats.commands.active }));
     }],
+    // 面板布局问题（右边被切 / 显示不全）没法从扩展侧取证：扩展宿主不知道 webview
+    // 有多宽、文档有没有横向溢出。这条命令让界面自己量一遍再把数字报回来。
+    ['hwchat.reportLayout', () => chat.requestLayoutReport()],
     ['hwchat.showPermissionScope', async () => {
       const report = describePermissionScope();
       for (const line of formatPermissionScope(report)) {
@@ -238,7 +241,7 @@ export async function deactivate(): Promise<void> {
   activeStorage = undefined;
 }
 
-async function setApiKey(secrets: vscode.SecretStorage, settingsPanel: SettingsPanel): Promise<void> {
+async function setApiKey(secrets: vscode.SecretStorage, settingsPanel: SettingsPanel, chat?: { refreshModelsQuietly(): Promise<void> }): Promise<void> {
   const settings = readSettings();
   const profile = profileFor(settings);
   const value = await vscode.window.showInputBox({
@@ -254,6 +257,8 @@ async function setApiKey(secrets: vscode.SecretStorage, settingsPanel: SettingsP
   }
   await storeApiKey(secrets, profile.id, value.trim());
   await settingsPanel.refresh();
+  // 刚填好 Key：静默拉一次模型清单，用户不需要再去点刷新按钮。
+  void chat?.refreshModelsQuietly();
   void vscode.window.showInformationMessage(tt('ext.apiKeySaved'));
 }
 

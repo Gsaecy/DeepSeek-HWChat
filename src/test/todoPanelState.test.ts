@@ -230,7 +230,13 @@ test('chat.css 的 .panel-stack 给面板区封顶，输入框不会被挤出窗
   assert.ok(block, '必须有 .panel-stack 规则');
   const body = block![1] ?? '';
   // 上限同时受视口（vh）和固定值约束，侧边栏很矮时也不会占满整屏。
-  assert.match(body, /max-height:\s*min\(44vh,\s*360px\)/);
+  // 2026-10-30：从 44vh / 360px 下调到 28vh / 260px —— 实测两个面板展开时消息区
+  // 只剩 32%（830 高）甚至 14%（620 高），对话看不见。这里只守住「有 vh 也有像素上限」，
+  // 具体数值由 test/check-panel-budget.mjs 把关（它同时锁住矮窗口让步规则）。
+  assert.match(body, /max-height:\s*min\(\d+vh,\s*\d+px\)/);
+  const cap = body.match(/max-height:\s*min\((\d+)vh,\s*(\d+)px\)/)!;
+  assert.ok(Number(cap[1]) <= 30, `面板上限 ${cap[1]}vh 太大，会把对话挤没`);
+  assert.ok(Number(cap[2]) <= 260, `面板上限 ${cap[2]}px 太大`);
   assert.match(body, /overflow-y:\s*auto/);
   // 锁住的面板要有可见反馈。
   assert.match(css, /\.panel-locked > summary\s*\{[^}]*cursor: not-allowed/);

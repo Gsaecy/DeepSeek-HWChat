@@ -41,6 +41,7 @@ after(async () => {
 function settings(preset: PermissionPreset = 'autopilot'): ChatSettings {
   const profile = PERMISSION_PRESET_PROFILES[preset];
   return {
+    internetReference: false,
     apiProfiles: [{ id: 'default', name: 'Test', baseUrl: 'https://example.invalid/v1', models: ['deepseek-chat'], requestHeaders: {} }],
     activeApiProfileId: 'default',
     baseUrl: 'https://example.invalid/v1',

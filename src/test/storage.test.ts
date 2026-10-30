@@ -811,3 +811,69 @@ test('deleteMessage：删不存在的消息不报错、也不改计数', async (
     assert.equal(after?.messageCount, 1, '幂等：重复删同一条不能把计数越减越少');
   });
 });
+
+/* ── 用户消息的执行状态（气泡上的四色徽标） ───────────────────── */
+
+test('执行状态：默认不写、写了能读回、能改', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation();
+    const plain = await storage.appendMessage(conversation.id, {
+      role: 'user', content: '老消息没有状态', status: 'complete',
+    });
+    assert.equal(plain.executionStatus, undefined, '没传就不写，界面据此不画徽标（不猜）');
+
+    const queued = await storage.appendMessage(conversation.id, {
+      role: 'user', content: '排队那条', status: 'complete', executionStatus: 'pending',
+    });
+    assert.equal(queued.executionStatus, 'pending');
+
+    const running = await storage.updateMessage(conversation.id, queued.id, { executionStatus: 'running' });
+    assert.equal(running.executionStatus, 'running');
+    const done = await storage.updateMessage(conversation.id, queued.id, { executionStatus: 'done' });
+    assert.equal(done.executionStatus, 'done');
+
+    // 落盘之后重新读一遍（重启 VS Code 的场景）
+    const reopened = new ConversationStorage(root);
+    await reopened.initialize();
+    const { messages } = await reopened.getMessages(conversation.id, { limit: 20 });
+    assert.equal(messages.find((item) => item.id === queued.id)?.executionStatus, 'done');
+    assert.equal(messages.find((item) => item.id === plain.id)?.executionStatus, undefined);
+  });
+});
+
+test('执行状态：认不出来的值一律丢掉（不猜成「已执行」）', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation();
+    const message = await storage.appendMessage(conversation.id, {
+      role: 'user', content: '脏数据', status: 'complete',
+    });
+    const path = join(root, 'conversations', conversation.id, 'messages', `${message.id}.json`);
+    const raw = JSON.parse(await readFile(path, 'utf8'));
+    raw.executionStatus = 'finished-ish';
+    await writeFile(path, JSON.stringify(raw), 'utf8');
+
+    const reopened = new ConversationStorage(root);
+    await reopened.initialize();
+    const { messages } = await reopened.getMessages(conversation.id, { limit: 20 });
+    assert.equal(messages.find((item) => item.id === message.id)?.executionStatus, undefined, '脏值不该被当成任何状态');
+  });
+});
+
+test('执行状态：重启时把没结算的 running/pending 收口，不永远挂着', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation();
+    const wasRunning = await storage.appendMessage(conversation.id, {
+      role: 'user', content: '进程退出时还在跑', status: 'complete', executionStatus: 'running',
+    });
+    const neverRan = await storage.appendMessage(conversation.id, {
+      role: 'user', content: '还排在队列里就退出了', status: 'complete', executionStatus: 'pending',
+    });
+    await storage.flush();
+
+    const reopened = new ConversationStorage(root);
+    await reopened.initialize();
+    const { messages } = await reopened.getMessages(conversation.id, { limit: 20 });
+    assert.equal(messages.find((item) => item.id === wasRunning.id)?.executionStatus, 'done', '跑过 → 已执行');
+    assert.equal(messages.find((item) => item.id === neverRan.id)?.executionStatus, 'skipped', '没跑过 → 已跳过');
+  });
+});

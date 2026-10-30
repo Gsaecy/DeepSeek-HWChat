@@ -14,11 +14,14 @@ test('controls: a conversation without overrides inherits the global defaults', 
     permissionPreset: 'review',
     agentMaxSteps: 40,
     reasoningEffort: 'high',
+    // 互联网参考不继承任何全局值：没显式打开就是关闭（它会联网，不能靠默认值猜）。
+    internetReference: false,
   });
   assert.deepEqual(resolveConversationControls(defaults, {}), {
     permissionPreset: 'review',
     agentMaxSteps: 40,
     reasoningEffort: 'high',
+    internetReference: false,
   });
 });
 
@@ -28,7 +31,7 @@ test('controls: conversation values win over global defaults (no cross-conversat
     agentMaxSteps: 8,
     reasoningEffort: 'max',
   });
-  assert.deepEqual(controls, { permissionPreset: 'full', agentMaxSteps: 8, reasoningEffort: 'max' });
+  assert.deepEqual(controls, { permissionPreset: 'full', agentMaxSteps: 8, reasoningEffort: 'max', internetReference: false });
   // 全局默认值本身不受影响：这是「互不污染」的关键断言。
   assert.equal(defaults.permissionPreset, 'review');
   assert.equal(defaults.agentMaxSteps, 40);

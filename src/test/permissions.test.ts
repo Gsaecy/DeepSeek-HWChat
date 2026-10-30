@@ -15,6 +15,7 @@ import { ChatSettings, PermissionPreset } from '../core/types';
 
 function settings(permissionPreset: PermissionPreset, overrides: Partial<ChatSettings> = {}): ChatSettings {
   return {
+    internetReference: false,
     apiProfiles: [{ id: 'default', name: 'Test', baseUrl: 'https://example.invalid/v1', models: ['deepseek-chat'], requestHeaders: {} }],
     activeApiProfileId: 'default',
     baseUrl: 'https://example.invalid/v1',

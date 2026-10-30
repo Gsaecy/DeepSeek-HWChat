@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek: approval-controlled workspace tools, plan-tracking task lists, copyable local/server commands and durable local history.",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -545,8 +545,9 @@
     "compile": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "test": "npm run compile && node --test out/test/*.test.js",
-    "package": "npm run compile && npx @vscode/vsce package --no-dependencies",
-    "vscode:prepublish": "npm run compile"
+    "package": "npm run compile && node scripts/third-party-notices.mjs && npx @vscode/vsce package --no-dependencies",
+    "vscode:prepublish": "npm run compile",
+    "notices": "node scripts/third-party-notices.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
@@ -554,5 +555,8 @@
     "@vscode/vsce": "4.0.0",
     "esbuild": "^0.28.0",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "defuddle": "^0.19.6"
   }
 }

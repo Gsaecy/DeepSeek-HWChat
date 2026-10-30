@@ -42,7 +42,7 @@ export interface AgentRunCallbacks {
 }
 
 /** 一次 Agent 运行为什么停下来。 */
-export type AgentStopReason = 'complete' | 'stepLimit' | 'loopDetected' | 'noProgress' | 'toolBudget' | 'cancelled';
+export type AgentStopReason = 'complete' | 'stepLimit' | 'loopDetected' | 'noProgress' | 'cancelled';
 
 export interface AgentRunResult {
   content: string;
@@ -53,10 +53,19 @@ export interface AgentRunResult {
   stopReason: AgentStopReason;
 }
 
-/** 一轮里最多执行多少个工具调用；超出的部分返回说明并结束本轮。 */
+/**
+ * 一轮里最多执行多少个工具调用。
+ *
+ * 超出的部分不执行，但**不再中断整次运行**：它们会以「未执行」的 tool 结果回报给
+ * 模型，循环继续下一轮（见循环里的 overflow 段）。这是防止模型一次吐出几十个调用
+ * 的节流阀，不是运行预算。
+ */
 export const MAX_TOOL_CALLS_PER_ROUND = 12;
-/** 一次运行里最多执行多少个工具调用（绝对上限，独立于步数）。 */
-export const MAX_TOOL_CALLS_PER_RUN = 200;
+/**
+ * 一次运行里累计的工具调用上限：不设限（见 `agentLimits.ts` 里的历史说明）。
+ * 保留导出只是为了让「运行总量」这个概念还有个唯一的落点。
+ */
+export { MAX_TOOL_CALLS_PER_RUN } from '../core/agentLimits';
 /** 连续多少次「完全相同的工具调用」就判定为死循环。 */
 export const MAX_IDENTICAL_TOOL_CALLS = 3;
 /** 连续多少轮「所有工具都失败」就停下，不再让模型空转。 */
@@ -70,8 +79,6 @@ function stopNoticeFor(reason: AgentStopReason, context: { maxSteps: number; loo
       return tt('agent.loopDetected', { count: MAX_IDENTICAL_TOOL_CALLS, tool: context.loopToolName || 'unknown_tool' });
     case 'noProgress':
       return tt('agent.noProgress', { rounds: MAX_FAILED_ROUNDS_WITHOUT_PROGRESS });
-    case 'toolBudget':
-      return tt('agent.toolCallBudget', { count: MAX_TOOL_CALLS_PER_RUN, round: MAX_TOOL_CALLS_PER_ROUND });
     default:
       return '';
   }
@@ -143,20 +150,30 @@ export class AgentRunner {
     let content = '';
     let reasoning = '';
     let usage: UsageInfo | undefined;
-    const definitions = options.mode === 'chat' ? [] : [...this.tools.definitions(options.mode), ...(options.extraTools ?? [])];
+    /*
+     * 联网工具只在「互联网参考」打开时下发。
+     *
+     * 关着的时候工具清单里就不该出现它们：模型不会、也不该自己去查网；
+     * 打开时才把 search_github_repos / search_web / fetch_url 交给它。
+     */
+    const definitions = options.mode === 'chat'
+      ? []
+      : [
+        ...this.tools.definitions(options.mode, { internetReference: options.settings.internetReference }),
+        ...(options.extraTools ?? []),
+      ];
     /**
      * 单轮执行预算。
      *
      * 「无限制」是工具条上的第四档，表示 `0` → 这里换算成 `Infinity`：循环只在模型
      * 不再调用工具时结束，或由 `ToolLoopGuard`（同一调用重复）、连续无进展轮数、
-     * 单次运行工具预算、用户取消这几道闸提前终止。负数 / 非数字这类脏值仍然回落
+     * 用户取消这几道闸提前终止。负数 / 非数字这类脏值仍然回落
      * 到默认预算，不会被解释成无限。
      */
     const maxSteps = agentStepBudget(options.settings.agentMaxSteps);
     const turnId = `${options.conversationId}#${Date.now().toString(36)}`;
     const loopGuard = new ToolLoopGuard();
     let step = 0;
-    let totalToolCalls = 0;
     let consecutiveFailedRounds = 0;
     let stopReason: AgentStopReason = 'complete';
     let stopNotice = '';
@@ -232,15 +249,6 @@ export class AgentRunner {
         // 取消优先于一切：用户点了停止，就绝不再发起新的工具调用。
         this.assertRunning(options.signal);
 
-        if (totalToolCalls >= MAX_TOOL_CALLS_PER_RUN) {
-          stopReason = 'toolBudget';
-          stopAfterRound = true;
-          for (const skippedCall of accepted.slice(callIndex)) {
-            await this.recordSkippedCall(skippedCall, executions, requestMessages, options, 'agent.toolBudgetSkipped');
-          }
-          break;
-        }
-
         const repeat = loopGuard.observe(call);
         if (repeat.blocked) {
           loopToolName = repeat.tool;
@@ -250,7 +258,6 @@ export class AgentRunner {
           break;
         }
 
-        totalToolCalls += 1;
         const execution: ToolExecution = {
           callId: call.id,
           name: call.function.name || 'unknown_tool',
@@ -355,11 +362,19 @@ export class AgentRunner {
         }
       }
 
+      /*
+       * 一轮里超出上限的调用：记一条「未执行」的 tool 结果回报给模型，然后**继续下一轮**。
+       *
+       * 以前这里是 `break`：模型一次吐出 13 个调用，整次运行就停在这里，用户得回
+       * 「继续」才往下走——正是「跑着跑着被打断」的来源之一。现在超出的只是跳过，
+       * 模型下一轮能看见哪些没执行、据此重新组织（这些 tool 结果必须写进
+       * `requestMessages`，否则历史里会出现「有 tool_call 没有对应 tool 消息」的非法序列）。
+       */
       for (const skippedCall of overflow) {
         await this.recordSkippedCall(skippedCall, executions, requestMessages, options, 'agent.toolBudgetSkipped');
       }
-      if (overflow.length) stopReason = 'toolBudget';
-      if (overflow.length || stopAfterRound) break;
+      if (overflow.length) await options.callbacks.onToolsChanged(cloneExecutions(executions));
+      if (stopAfterRound) break;
 
       consecutiveFailedRounds = roundFailed ? consecutiveFailedRounds + 1 : 0;
       if (consecutiveFailedRounds >= MAX_FAILED_ROUNDS_WITHOUT_PROGRESS) {

@@ -23,12 +23,20 @@ export interface ConversationControls {
   permissionPreset: PermissionPreset;
   agentMaxSteps: number;
   reasoningEffort: ReasoningEffort;
+  /**
+   * 互联网参考：开启后 Agent 必须先检索网络上的成熟项目与官方文档，把调研结论
+   * 并入任务清单，再开始执行（提示词与联网工具见 core/research.ts、agent/webResearch.ts）。
+   *
+   * 与其它三项一样**归属这条对话**：一条对话开着查资料，另一条不查，互不影响。
+   */
+  internetReference: boolean;
 }
 
 export interface ConversationControlSource {
   permissionPreset?: unknown;
   agentMaxSteps?: unknown;
   reasoningEffort?: unknown;
+  internetReference?: unknown;
 }
 
 /**
@@ -49,6 +57,8 @@ export const NEW_CONVERSATION_CONTROLS: Readonly<ConversationControls> = Object.
   permissionPreset: DEFAULT_PERMISSION_PRESET,
   agentMaxSteps: DEFAULT_AGENT_MAX_STEPS,
   reasoningEffort: DEFAULT_REASONING_EFFORT,
+  // 默认关闭：联网调研会花掉额外时间与调用，必须由用户在那条对话上显式打开。
+  internetReference: false,
 });
 
 /**
@@ -83,7 +93,7 @@ function isStoredSteps(value: unknown): value is number {
  * 「既不是 review 也不是 full」的第三种状态。
  */
 export function resolveConversationControls(
-  defaults: Pick<ChatSettings, 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort'>,
+  defaults: Pick<ChatSettings, 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort'> & { internetReference?: boolean },
   conversation?: ConversationControlSource,
 ): ConversationControls {
   const preset = conversation?.permissionPreset;
@@ -100,15 +110,29 @@ export function resolveConversationControls(
     // 不用 normalizeReasoningEffort：它会把无效值直接变成 'default'，而调用方给的
     // 初始值可能是别的档（例如旧对话迁移时），脏数据不该静默改写选择。
     reasoningEffort: isReasoningEffort(reasoning) ? reasoning : defaults.reasoningEffort,
+    // 只有显式 true 才算开启：所有认不出来的值（含字符串 "true"、1、null）都当作关闭。
+    // 这一项的方向与预算相反——多查一次网只是慢，误开则会把内容发到第三方检索服务，
+    // 所以「读不懂就当关」。
+    internetReference: conversation?.internetReference === true
+      ? true
+      : conversation?.internetReference === undefined
+        ? defaults.internetReference === true
+        : false,
   };
 }
 
+/** 只认布尔 true 的归一化（存档 / 界面 / 设置三处共用同一套判定）。 */
+export function isInternetReferenceEnabled(value: unknown): boolean {
+  return value === true;
+}
+
 /** 面板显示用的设置快照：对话有值用对话的，没有则用全局默认。 */
-export function conversationControlPatch(controls: ConversationControls): Pick<ConversationControlSource, 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort'> {
+export function conversationControlPatch(controls: ConversationControls): Pick<ConversationControlSource, 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort' | 'internetReference'> {
   return {
     permissionPreset: controls.permissionPreset,
     agentMaxSteps: controls.agentMaxSteps,
     reasoningEffort: controls.reasoningEffort,
+    internetReference: controls.internetReference,
   };
 }
 

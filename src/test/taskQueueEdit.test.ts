@@ -76,6 +76,20 @@ test('editPending：已被 take() 取走执行后返回 false', async () => {
   assert.equal(node?.userMessageId, 'user-1', '执行过的节点仍要能找回原消息，编辑后重发要用它当初值');
 });
 
+test('执行中的节点：状态是 active 且 pending=false —— 界面据此不给编辑入口', async () => {
+  // 现场缺陷：任务树给「执行中」的节点也放了编辑按钮。agent 已经把 request 读走，
+  // editPending 必然返回 false，于是保存走的是「把改过的内容当新消息再发一遍」，
+  // 同一件事被排队做第二次。这里锁住界面的判定依据：active 节点绝不能被当成可编辑。
+  const { queue, nodeId } = queueWithQueued();
+  await settle();
+  const taken = await queue.take('complete', noop);
+  assert.equal(taken.length, 1, '这条被 agent 取走执行');
+  const node = queue.state().nodes.find((candidate) => candidate.id === nodeId);
+  assert.equal(node?.status, 'active', '正在执行');
+  assert.equal(node?.pending, false, '队列不再持有它 → 不能原地改，界面不该给编辑入口');
+  assert.equal(await queue.editPending(nodeId, '改个内容', noop), false, '后端也确认改不了');
+});
+
 test('editPending：空内容不接受', async () => {
   const { queue, nodeId } = queueWithQueued('原始内容');
   await settle();

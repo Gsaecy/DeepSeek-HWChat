@@ -64,6 +64,9 @@ export function readSettings(): ChatSettings {
     agentMaxSteps: DEFAULT_AGENT_MAX_STEPS,
     reasoningEffort: DEFAULT_REASONING_EFFORT,
     permissionPreset,
+    // 只由对话自己的存档打开（见 applyRuntimeControls）。没有全局开关：
+    // 联网会把内容发给第三方检索服务，不能靠一个会被历史残留影响的设置项决定。
+    internetReference: false,
     ...permission,
     maxReadBytes: clamp(configuration.get<number>('maxReadBytes', 512_000), 16_384, 5_242_880),
     maxToolOutputBytes: clamp(configuration.get<number>('maxToolOutputBytes', 200_000), 16_384, 2_097_152),
@@ -259,6 +262,11 @@ export function applyRuntimeControls(
   settings: ChatSettings,
   permissionPreset?: unknown,
   agentMaxSteps?: unknown,
+  /**
+   * 互联网参考（按对话）。只有布尔 `true` 会打开；其余一切（含 undefined、
+   * 字符串 "true"、1）都按关闭处理——这一项的方向是「读不懂就不联网」。
+   */
+  internetReference?: unknown,
 ): ChatSettings {
   const nextPreset = permissionPreset === undefined
     ? settings.permissionPreset
@@ -268,6 +276,7 @@ export function applyRuntimeControls(
     ...settings,
     agentMaxSteps: agentMaxSteps === undefined ? settings.agentMaxSteps : normalizeAgentMaxSteps(agentMaxSteps),
     permissionPreset: nextPreset,
+    internetReference: internetReference === true,
     ...permission,
   };
 }
@@ -296,6 +305,7 @@ export {
   AGENT_STEP_PRESETS,
   AGENT_STEP_SAFETY_CAP,
   DEFAULT_AGENT_MAX_STEPS,
+  MAX_TOOL_CALLS_PER_RUN,
   agentStepBudget,
   isUnlimitedSteps,
   normalizeAgentMaxSteps,

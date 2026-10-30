@@ -25,7 +25,6 @@ function targets(overrides: Partial<Record<string, unknown>> = {}): ApprovalTarg
   return [
     target('chat.tools.terminal.autoApprove', 'map', overrides['map'], true),
     target('chat.tools.terminal.enableAutoApprove', 'boolean', overrides['enable'], true),
-    target('chat.tools.edits.autoApprove', 'boolean', overrides['edits'], true),
     target('chat.tools.global.autoApprove', 'boolean', overrides['global'], true),
   ];
 }
@@ -49,7 +48,6 @@ test('safeCommands 只放行只读命令，并显式禁止删除', () => {
   assert.ok(!keys(map).some((key) => key.includes('npm|pnpm|yarn) (?:test')), '只读档不该放行构建');
 
   assert.equal(operationMap(plan, 'chat.tools.terminal.enableAutoApprove'), true);
-  assert.equal(operationMap(plan, 'chat.tools.edits.autoApprove'), false);
   assert.equal(operationMap(plan, 'chat.tools.global.autoApprove'), false);
 });
 
@@ -67,7 +65,6 @@ test('standard 额外放行构建与类型检查，并给出 postinstall 警告'
   const map = operationMap(plan, 'chat.tools.terminal.autoApprove') as Record<string, unknown>;
   assert.ok(keys(map).some((key) => key.includes('npm|pnpm|yarn) (?:test')));
   assert.ok(keys(map).some((key) => key.includes('tsc')));
-  assert.equal(operationMap(plan, 'chat.tools.edits.autoApprove'), true);
   assert.equal(operationMap(plan, 'chat.tools.global.autoApprove'), false);
   assert.ok(plan.warnings.some((warning) => warning.includes('postinstall')));
 });
@@ -85,13 +82,11 @@ test('关闭档清空自建条目但保留用户自己的条目', () => {
   const plan = planApprovalBridge('off', targets({
     map: { '/^rm\\b/': false, [custom]: true },
     enable: true,
-    edits: true,
     global: true,
   }));
   const map = operationMap(plan, 'chat.tools.terminal.autoApprove') as Record<string, unknown>;
   assert.deepEqual(keys(map), [custom], '只应保留用户自定义条目');
   assert.equal(operationMap(plan, 'chat.tools.terminal.enableAutoApprove'), false);
-  assert.equal(operationMap(plan, 'chat.tools.edits.autoApprove'), false);
   assert.equal(operationMap(plan, 'chat.tools.global.autoApprove'), false);
 });
 
@@ -138,7 +133,6 @@ test('重复应用同一档位不产生新操作（幂等）', () => {
   const second = planApprovalBridge('standard', targets({
     map: applied['chat.tools.terminal.autoApprove'],
     enable: applied['chat.tools.terminal.enableAutoApprove'],
-    edits: applied['chat.tools.edits.autoApprove'],
     global: applied['chat.tools.global.autoApprove'],
   }));
   assert.equal(second.operations.length, 0);
@@ -174,4 +168,22 @@ test('valuesEqual 忽略对象键顺序', () => {
   assert.equal(valuesEqual({ a: 1, b: 2 }, { b: 2, a: 1 }), true);
   assert.equal(valuesEqual({ a: 1 }, { a: 2 }), false);
   assert.equal(valuesEqual(undefined, {}), false);
+});
+
+test('不再管理 chat.tools.edits.autoApprove（VS Code 1.144 声明成对象映射，布尔是类型错误）', () => {
+  assert.equal(
+    APPROVAL_TARGETS.some((item) => item.id === 'chat.tools.edits.autoApprove'),
+    false,
+    '这个键不能出现在目标列表里，否则某个档位会往对象里写 true/false',
+  );
+  // 它的默认值已经放行所有编辑（只排除 .git / package.json 等敏感路径），
+  // 要全放行走总开关 chat.tools.global.autoApprove。
+  for (const level of ['off', 'safeCommands', 'standard', 'everything'] as const) {
+    const plan = planApprovalBridge(level, targets());
+    assert.equal(
+      plan.operations.some((operation) => operation.id === 'chat.tools.edits.autoApprove'),
+      false,
+      `${level} 档不该生成 edits.autoApprove 操作`,
+    );
+  }
 });
