@@ -70,10 +70,16 @@ export class CleanupScheduler implements vscode.Disposable {
          * 回收站里，能通过命令找回 —— 提示必须带上这条出路，否则等于没修。
          */
         const restoreHint = result.deletedConversations > 0 ? tt('cleanup.trashHint', { count: result.deletedConversations }) : '';
-        void vscode.window.showInformationMessage(
-          tt('cleanup.doneVerbose', { compacted: result.compactedMessages, deleted: result.deletedConversations })
-          + restoreHint,
-        );
+        const message = tt('cleanup.doneVerbose', { compacted: result.compactedMessages, deleted: result.deletedConversations })
+          + restoreHint;
+        if (result.deletedConversations > 0) {
+          // 提示里只写命令名等于把找回藏在命令面板里。给一个按钮：清理完当场就能点。
+          void vscode.window.showInformationMessage(message, tt('cleanup.restoreAction')).then((choice) => {
+            if (choice) void vscode.commands.executeCommand('hwchat.restoreDeletedConversations');
+          });
+        } else {
+          void vscode.window.showInformationMessage(message);
+        }
       }
       return result;
     } finally {

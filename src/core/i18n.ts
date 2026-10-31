@@ -719,6 +719,7 @@ const DICTIONARY: Record<string, Entry> = {
 
   // 扩展命令与通知
   'cleanup.doneVerbose': { zh: 'HWChat 清理完成：瘦身 {compacted} 条消息，删除 {deleted} 个过期对话。', en: 'HWChat cleanup finished: compacted {compacted} messages, removed {deleted} expired conversation(s).' },
+  'cleanup.restoreAction': { zh: '恢复已删除的对话', en: 'Restore deleted conversations' },
   'cleanup.trashHint': { zh: '被删的 {count} 个对话已移入回收站，可运行命令「恢复已删除的对话」找回。', en: 'The {count} removed conversation(s) were moved to the recycle bin — run "Restore deleted conversations" to bring them back.' },
   'ext.trashEmpty': { zh: '回收站是空的：没有可恢复的对话。', en: 'The recycle bin is empty — nothing to restore.' },
   'ext.trashPick': { zh: '恢复已删除的对话', en: 'Restore deleted conversations' },
