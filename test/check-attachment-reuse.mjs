@@ -118,6 +118,27 @@ check('扩展侧提供原始 base64，并有大文件兜底',
   && /tooLarge: true/.test(PANEL),
   '十几 MB 塞进一次 postMessage 会卡住面板');
 
+
+// —— 独立审核发现的问题（2026-10-31 修复，逐条守住）——
+check('键盘 Enter/空格 不会被外层容器的 keydown 抢走（否则会打开图片而不是加附件）',
+  /if \(event\.target !== focusTarget\) return;/.test(JS),
+  '缺这条判断时，按钮上的 Enter 会冒泡到容器被 preventDefault，默认激活被取消');
+check('图片卡片不再把 role=button 放在外层容器上（避免可聚焦元素嵌套）',
+  /makeAttachmentOpenable\(figure, attachment, image\)/.test(JS),
+  '焦点必须落在 <img> 上，否则「按钮里套按钮」');
+check('复制前预取原图（避免用户手势 5 秒过期导致大图复制失败）',
+  /prefetchClipboardImage/.test(JS) && /pointerenter/.test(JS) && /clipboardImageCache/.test(JS),
+  '点击路径里再等扩展回传 + canvas 转换，大图会超过 transient activation 窗口');
+check('预取缓存有上限（不无限堆图片 Blob）',
+  /CLIPBOARD_IMAGE_CACHE_MAX/.test(JS),
+  '每份最大约 8 MB，无上限会吃满内存');
+check('FileList 先转数组再 slice（拖文件进来不会抛 files.slice is not a function）',
+  /Array\.from\(files \|\| \[\]\)\.slice\(0, 20\)/.test(JS),
+  'dataTransfer.files 是 FileList，没有 slice');
+check('回传原图的上限只有一个来源（注释与代码不再打架）',
+  /ATTACHMENT_DATA_MAX_BASE64/.test(PANEL) && !/8 \.\.\.\s*$/.test(''),
+  '写成常量，注释与阈值一起改');
+
 // —— 文案 ——
 check('中英文案齐全',
   ['chat.attachFromMessage', 'chat.attachFromMessageHint', 'chat.copiedWithImage', 'chat.copyImageFirstOnly', 'chat.copyImageUnsupported']

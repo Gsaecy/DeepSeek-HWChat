@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+- **独立审核发现的 6 个问题全部修好（含一个键盘完全不可用的功能、一个拖文件静默失败）**。版本号从 0.2.9 升到 0.3.0：0.2.9 已发布，这些是它之后的行为修正。
+  - **F1（严重，已复现）：「添加到输入框」按钮用键盘按 Enter/空格时，打开的是图片**。聚焦那个按钮按 Enter，`keydown` 冒泡到外层图片卡片的处理器，它没判断落点就 `preventDefault()`，按钮的默认激活被取消 → 发出去的是 `openAttachment`。**键盘与读屏用户完全用不了这个功能**（鼠标不受影响）。修法：处理函数里加 `if (event.target !== focusTarget) return;`。
+  - **F2：可聚焦元素嵌套**。图片卡片原来是 `role="button"` + `tabIndex=0`，又内含真 `<button>` —— 读屏会把整张卡读成复合控件，Tab 顺序也乱。修法：焦点角色移到 `<img>` 上（`makeAttachmentOpenable(figure, attachment, image)`），卡片只负责鼠标点击。
+  - **F3：大图复制可能因「用户手势过期」静默降级**。Chrome 的 transient activation 约 5 秒；原来点「复制」后才去要原图（超时 5 s）再 canvas 转 PNG，大图很容易超窗 → `clipboard.write` 抛 `NotAllowedError` → 只复制到文字。修法：**悬停/聚焦复制按钮时就预取并转好 PNG**（`prefetchClipboardImage`，最多缓存 2 份），点击路径只剩一次写入，手势必然有效。实测：悬停后点击不再多发一次 `requestAttachmentData`，剪贴板仍同时有 `text/plain` 与 `image/png`。
+  - **F4：注释与阈值打架**。注释写「上限 8 MB」，代码是 `11 * 1024 * 1024`。修法：抽成常量 `ATTACHMENT_DATA_MAX_BASE64`，注释与阈值只保留一个来源。
+  - **F5：拖拽只用合成事件验证过**。补上真实输入验证：`dragTo` 走 CDP 派发真实拖拽，确认能落到输入框、拖完高亮复位、且不误触发「打开附件」。
+  - **F6（新发现，真机测出来的）：「从 Finder 拖文件进输入框」会静默失败**。`dataTransfer.files` 是 **FileList**，没有 `.slice`，`readClipboardFiles` 直接 `files.slice(0, 20)` 抛 `files.slice is not a function` —— 界面毫无反应，只有控制台一行红字。修法：先 `Array.from(files || [])` 再切。实测拖 `sample.txt` 进来能变成附件。
+  - **测试**：新增 `test/check-attachment-keyboard.mjs`（**8 项真实浏览器验证**，可重复运行：真实键盘 Enter/空格、角色归属、图片上 Enter 仍打开、真实鼠标拖拽、拖后高亮复位与不误触、FileList 拖放、无控制台异常）；`check-attachment-reuse.mjs` 增加 6 条守护（落点判断、角色归属、预取缓存及其上限、FileList 转数组、阈值单一来源）；修正 `check-attachment-open.mjs` 里跟丢实现搬家的旧断言。全量 **807/807**、**25** 个 `check-*.mjs` 全绿。
+
 ## 0.2.9
 
 - **复制带图片的消息时，文字和图片一起进剪贴板，粘到输入框里两者都在**（用户原话：「历史消息里含有图片，点击复制直接连图片和文字一起复制，且能一起粘贴到输入框，能做到吗」）。

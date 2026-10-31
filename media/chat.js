@@ -516,6 +516,38 @@
   /** 剪贴板里一次只能放一张图片（ClipboardItem 的键是 MIME），多图时只放第一张。 */
   const pendingAttachmentData = new Map();
 
+  /**
+   * 已经取回并转好 PNG 的图片（按附件 id）。
+   *
+   * 为什么要有它：`navigator.clipboard.write` 需要**用户手势仍然有效**，Chrome 的
+   * transient activation 只有约 5 秒。点「复制」后如果才去要原图（最多 5 秒超时）
+   * 再 canvas 转 PNG，大图很容易超过窗口 → 写入抛 `NotAllowedError` → 静默退化成
+   * 只复制文字。所以把这段准备工作挪到**悬停/聚焦复制按钮**时（用户还没点），
+   * 点下去时只剩一次写入，手势必然有效。
+   *
+   * 只留 2 份：每份最大约 8 MB，多留没有意义（用户几乎不会连点第三张不同的图）。
+   */
+  const clipboardImageCache = new Map();
+  const CLIPBOARD_IMAGE_CACHE_MAX = 2;
+
+  /** 预取某条图片附件并转为 PNG，存进缓存；失败静默忽略（点击时会再试一次）。 */
+  async function prefetchClipboardImage(attachment) {
+    if (!attachment?.id || clipboardImageCache.has(attachment.id)) return;
+    const data = await requestAttachmentData(attachment.id);
+    if (!data) return;
+    let png = null;
+    try {
+      png = await toPngBlob(data);
+    } catch {
+      png = null;
+    }
+    if (!png) return;
+    clipboardImageCache.set(attachment.id, png);
+    while (clipboardImageCache.size > CLIPBOARD_IMAGE_CACHE_MAX) {
+      clipboardImageCache.delete(clipboardImageCache.keys().next().value);
+    }
+  }
+
   /** 向扩展要附件的原始 base64（前端只有 160×120 的缩略图，复制要用原图）。 */
   function requestAttachmentData(id) {
     return new Promise((resolve) => {
@@ -562,15 +594,25 @@
     }
   }
 
-  /** 写入「文字 + 图片」。成功返回 true；环境不支持或写入被拒时返回 false，由调用方降级。 */
+  /** 用已经转好的 PNG Blob 写入剪贴板（点击路径，必须快 —— 见上面手势的说明）。 */
+  async function writeRichClipboardWithBlob(text, png) {
+    if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) return false;
+    try {
+      const entries = { 'text/plain': new Blob([text], { type: 'text/plain' }), 'image/png': png };
+      await navigator.clipboard.write([new ClipboardItem(entries)]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 写入「文字 + 图片」（未预取时的慢路径：先取原图再转 PNG）。 */
   async function writeRichClipboard(text, data) {
     if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) return false;
     try {
       const png = await toPngBlob(data);
       if (!png) return false;
-      const entries = { 'text/plain': new Blob([text], { type: 'text/plain' }), 'image/png': png };
-      await navigator.clipboard.write([new ClipboardItem(entries)]);
-      return true;
+      return await writeRichClipboardWithBlob(text, png);
     } catch {
       return false;
     }
@@ -590,8 +632,14 @@
       return;
     }
     if (button) { button.disabled = true; button.textContent = t('common.copying'); }
-    const data = await requestAttachmentData(images[0].id);
-    const written = data ? await writeRichClipboard(text, data) : false;
+    // 悬停时已经预取过 → 直接写，用户手势一定还有效（见 prefetchClipboardImage）。
+    const cached = clipboardImageCache.get(images[0].id);
+    const written = cached
+      ? await writeRichClipboardWithBlob(text, cached)
+      : await (async () => {
+        const data = await requestAttachmentData(images[0].id);
+        return data ? writeRichClipboard(text, data) : false;
+      })();
     if (written) {
       flashCopyLabel(button, true);
       showToast(images.length > 1 ? t('chat.copyImageFirstOnly') : t('chat.copiedWithImage'), 'neutral');
@@ -1964,6 +2012,12 @@
     if (message.content) {
       const copy = textElement('button', 'message-copy-button', t('common.copy')); copy.type = 'button'; copy.title = t('chat.copyMessage');
       copy.addEventListener('click', () => { void copyMessage(copy, message); });
+      // 悬停/聚焦就预取原图并转 PNG：点下去时不用再等，用户手势不会过期。
+      const firstImage = (message.attachments || []).find((attachment) => attachment.kind === 'image' && attachment.id);
+      if (firstImage) {
+        copy.addEventListener('pointerenter', () => { void prefetchClipboardImage(firstImage); });
+        copy.addEventListener('focus', () => { void prefetchClipboardImage(firstImage); });
+      }
       meta.append(copy);
     }
     const body = document.createElement('div'); body.className = 'message-body';
@@ -2305,21 +2359,41 @@
     return payload;
   }
 
-  function makeAttachmentOpenable(element, attachment) {
+  function openAttachmentFor(attachment) {
+    post('openAttachment', attachmentOpenPayload(attachment));
+  }
+
+  /**
+   * 让一个附件「可打开」。
+   *
+   * `focusTarget` 是真正接收键盘焦点的元素：图片卡片里它必须是 `<img>` 而不是外层
+   * `<figure>`，因为 figure 里还有「添加到输入框」按钮 —— 给容器加 `role="button"`
+   * 等于在按钮里再套一个按钮，读屏软件会读成复合控件，Tab 顺序也会乱。
+   *
+   * 真实缺陷（独立审核发现，2026-10-31）：`keydown` 原来不判断落点，于是焦点在
+   * 「添加到输入框」按钮上按 Enter 时，事件冒泡到外层容器被 `preventDefault()`，
+   * 按钮的默认激活被取消 → **打开的是图片，而不是把图加进输入框**。键盘用户
+   * 完全用不了这个功能。所以这里必须 `event.target !== focusTarget` 就放过。
+   */
+  function makeAttachmentOpenable(container, attachment, focusTarget = container) {
     const base = (attachment && (attachment.path || attachment.label)) || '';
-    element.title = `${base} · ${t('chat.openAttachmentHint')}`;
-    element.classList.add('attachment-openable');
-    element.setAttribute('role', 'button');
-    element.tabIndex = 0;
-    element.addEventListener('click', (event) => {
-      // 删除按钮在同一个容器里，点它不能顺带把附件打开。
+    const hint = `${base} · ${t('chat.openAttachmentHint')}`;
+    container.title = hint;
+    container.classList.add('attachment-openable');
+    // 鼠标：点卡片任意处都算（点内部按钮除外）。
+    container.addEventListener('click', (event) => {
       if (event.target instanceof Element && event.target.closest('button')) return;
-      post('openAttachment', attachmentOpenPayload(attachment));
+      openAttachmentFor(attachment);
     });
-    element.addEventListener('keydown', (event) => {
+    focusTarget.setAttribute('role', 'button');
+    focusTarget.tabIndex = 0;
+    focusTarget.setAttribute('aria-label', hint);
+    focusTarget.addEventListener('keydown', (event) => {
+      // 只处理落在自己身上的按键：内部按钮的 Enter/空格要留给浏览器做默认激活。
+      if (event.target !== focusTarget) return;
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
-      post('openAttachment', attachmentOpenPayload(attachment));
+      openAttachmentFor(attachment);
     });
   }
 
@@ -2344,7 +2418,7 @@
           post('attachMessageAttachment', attachmentOpenPayload(attachment));
         });
         figure.append(reuse);
-        makeAttachmentOpenable(figure, attachment);
+        makeAttachmentOpenable(figure, attachment, image);
         makeAttachmentDraggable(figure, attachment);
         row.append(figure);
       } else {
@@ -3886,8 +3960,16 @@
   }
 
   async function readClipboardFiles(files) {
+    /*
+     * `files` 可能是 File 数组（粘贴路径自己拼的），也可能是**FileList**
+     * （从 Finder / 资源管理器拖进来的 `dataTransfer.files`）。FileList 没有
+     * `.slice` —— 真实故障（2026-10-31 实测）：拖文件进输入框时抛
+     * `files.slice is not a function`，什么都没发生，控制台一行红字很容易被忽略。
+     * 所以统一先转数组。
+     */
+    const list = Array.from(files || []).slice(0, 20);
     const encoded = [];
-    for (const file of files.slice(0, 20)) {
+    for (const file of list) {
       try {
         const buffer = await file.arrayBuffer();
         const thumbnailDataUrl = file.type.startsWith('image/') ? await imageThumbnailDataUrl(file) : undefined;

@@ -149,9 +149,12 @@ const { api, calls } = loadOpenBlock();
 }
 
 // —— 两处渲染都接上了 ——
+// 图片卡片多传一个「焦点目标」：键盘焦点必须落在 <img> 上，不能落在外层 <figure> ——
+// figure 里还有「添加到输入框」按钮，给容器加 role=button 就成了按钮里套按钮
+// （独立审核 2026-10-31 发现，见 check-attachment-keyboard.mjs 的真机验证）。
 check(
   '已发送消息里的图片和文件都接了点击',
-  /function renderMessageAttachments[\s\S]*?makeAttachmentOpenable\(figure, attachment\)[\s\S]*?makeAttachmentOpenable\(chip, attachment\)/.test(CHAT_JS),
+  /function renderMessageAttachments[\s\S]*?makeAttachmentOpenable\(figure, attachment, image\)[\s\S]*?makeAttachmentOpenable\(chip, attachment\)/.test(CHAT_JS),
 );
 check(
   '待发送附件（发送前核对）也接了点击',

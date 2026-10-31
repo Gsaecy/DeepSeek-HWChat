@@ -28,6 +28,14 @@ import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
 import { withInternetReference } from '../core/research';
 import { checkReuseLimits, planAttachmentReuse } from '../core/attachmentReuse';
+
+/**
+ * 回传给 webview 的原图 base64 长度上限（约 11 MB base64 ≈ 8 MB 原图）。
+ *
+ * 图片附件本身限 6 MB 二进制、base64 后约 8.2 MB，这里留约 34% 余量。
+ * 抽成常量是因为上一版把「注释写 8 MB、代码写 11 MB」对不上 —— 阈值必须只有一个来源。
+ */
+const ATTACHMENT_DATA_MAX_BASE64 = 11 * 1024 * 1024;
 import { NEW_CONVERSATION_CONTROLS, controlChangeScope, isReasoningEffort, presetChangeScope, resolveConversationControls, resolveNewConversationControls, type ConversationControls } from '../core/conversationControls';
 import { PERMISSION_PRESET_IDS, permissionPresetDetail, permissionPresetDetails } from '../core/permissions';
 import { currentLanguage, messageScriptTag, t, tt, type Language } from '../core/i18n';
@@ -661,9 +669,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   /**
    * 回一条图片附件的原始 base64（给 webview 写剪贴板用）。
    *
-   * 上限 8 MB（原图上限是 6 MB，base64 后约 8.2 MB；这里按 base64 长度算，留一点余量）。
-   * 超过就回 `ok: false`，界面降级成「只复制文字」—— 把十几 MB 的字符串塞进一次
-   * postMessage 会让面板卡顿几秒，不值得。
+   * 上限见 `ATTACHMENT_DATA_MAX_BASE64`：图片附件本身限 6 MB 二进制，base64 后约
+   * 8.2 MB，取 11 MB 是给「稍大但仍合理」的图留余量。超过就回 `ok: false`，界面降级
+   * 成「只复制文字」—— 把十几 MB 的字符串塞进一次 postMessage 会让面板卡顿几秒，
+   * 不值得。
    */
   private async provideAttachmentData(message: { requestId: string; id?: string }): Promise<void> {
     const known = message.id ? this.attachmentIndex.get(message.id) : undefined;
@@ -672,7 +681,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       await this.post({ type: 'attachmentData', requestId: message.requestId, ok: false });
       return;
     }
-    if (base64.length > 11 * 1024 * 1024) {
+    if (base64.length > ATTACHMENT_DATA_MAX_BASE64) {
       await this.post({ type: 'attachmentData', requestId: message.requestId, ok: false, tooLarge: true });
       return;
     }
