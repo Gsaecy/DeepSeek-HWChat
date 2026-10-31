@@ -28,6 +28,13 @@ import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
 import { withInternetReference } from '../core/research';
 import { checkReuseLimits, planAttachmentReuse } from '../core/attachmentReuse';
+import {
+  DECISION_GATE_PROMPT,
+  DECISION_TOOL_DESCRIPTION,
+  formatDecisionAnswer,
+  normalizeDecision,
+  type DecisionRequest,
+} from '../core/decisionGate';
 
 /**
  * 回传给 webview 的原图 base64 长度上限（约 11 MB base64 ≈ 8 MB 原图）。
@@ -65,6 +72,7 @@ import {
   MessageExecutionStatus,
   ModelOption,
   PendingApprovalView,
+  PendingDecisionView,
   PermissionPreset,
   ReasoningEffort,
   ProjectBadgeView,
@@ -168,6 +176,20 @@ interface PendingApproval {
 }
 
 /**
+ * 一张等用户拍板的方案卡片。
+ *
+ * 与审批卡片的区别：审批问「允不允许做」，这里问「**做哪一个**」。语义不同，
+ * 所以不做成同一种卡片 —— 混在一起会让用户分不清哪张在拦权限、哪张在等决策。
+ * 相同的是「Promise 挂着直到用户回答」：这样 agent 想绕过决策自己往下做也做不到。
+ */
+interface PendingDecision {
+  conversationId: string;
+  request: PendingDecisionView;
+  resolve: (chosenIndex: number, note?: string) => void;
+}
+
+
+/**
  * 一条待核实的文件引用：`path` 是**正文里的原始写法**（可能是裸文件名），
  * `root` 是这条对话绑定的项目根，解析时优先在它下面找。
  */
@@ -202,6 +224,13 @@ type IncomingMessage =
   | { type: 'resumeTodos' }
   | { type: 'cancelTodos' }
   | { type: 'approvalResponse'; requestId: string; allow: boolean }
+  /**
+   * 用户在方案卡片上点了某一项。
+   *
+   * `chosenIndex` 是**选项下标**（0 起）。UI 只回下标、不回内容：内容以扩展侧那次
+   * `ask_user_choice` 的入参为准，避免界面被改写后给模型塞进一份"用户没选过"的方案。
+   */
+  | { type: 'decisionResponse'; requestId: string; chosenIndex: number }
   | { type: 'deleteConversation'; id: string }
   | { type: 'togglePin'; id: string; pinned: boolean }
   | { type: 'renameConversation'; id?: string; title: string }
@@ -362,6 +391,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private readonly runs = new Map<string, ConversationRun>();
   /** 等待用户在面板里点「允许一次 / 拒绝」的工具授权。 */
   private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private readonly pendingDecisions = new Map<string, PendingDecision>();
+  private decisionSequence = 0;
   /**
    * 每条对话最近一次上报过的项目根（已入库或正在入库）。
    *
@@ -877,6 +908,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   dispose(): void {
     for (const run of this.runs.values()) run.controller.abort();
     this.settleAllApprovals();
+    this.settleAllDecisions();
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
@@ -970,6 +1002,17 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           this.pendingApprovals.delete(message.requestId);
           pending.resolve(Boolean(message.allow));
           await this.post({ type: 'approvalResolved', requestId: message.requestId });
+          break;
+        }
+        case 'decisionResponse': {
+          const pending = this.pendingDecisions.get(message.requestId);
+          if (!pending) {
+            await this.post({ type: 'toast', tone: 'neutral', text: tt('decision.expired') });
+            break;
+          }
+          this.pendingDecisions.delete(message.requestId);
+          pending.resolve(Number.isInteger(message.chosenIndex) ? message.chosenIndex! : -1);
+          await this.post({ type: 'decisionResolved', requestId: message.requestId });
           break;
         }
         case 'deleteConversation':
@@ -1433,6 +1476,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           scope,
           extraTools: [
             todoToolDefinition(),
+            decisionToolDefinition(),
             this.skills.toolDefinition(preparedSkills.routableIds),
             historyTool,
             ...this.vscodeTools.definitions(),
@@ -1440,6 +1484,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           executeExtraTool: async (call) => {
             if (call.function.name === 'update_todos') {
               return { result: await this.updateTodos(conversationId!, call, hasTodoReplanIntent(content)) };
+            }
+            if (call.function.name === 'ask_user_choice') {
+              return { result: await this.askUserChoice(call, run) };
             }
             if (call.function.name === 'search_conversation_history') {
               return { result: await this.searchLinkedConversationHistory(conversationId!, call, mode, settings, run) };
@@ -1569,6 +1616,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         await this.settleTodosAfterRun(conversationId, runOutcome);
         this.runs.delete(conversationId);
         this.rejectApprovalsFor(conversationId);
+        // 方案卡片同样要结算：否则那张卡会留在界面上，点它只会得到「已过期」。
+        this.settleDecisionsFor(conversationId);
         this.callbacks.onHistoryChanged();
         await this.post({ type: 'runs', runningConversationIds: [...this.runs.keys()] });
         await this.post({ type: 'streamIdle', conversationId });
@@ -1989,6 +2038,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       todoArchives: this.todoArchiveViews(conversation?.todoArchives),
       runningConversationIds: [...this.runs.keys()],
       pendingApprovals: [...this.pendingApprovals.values()].map((item) => item.request),
+      pendingDecisions: [...this.pendingDecisions.values()].map((item) => item.request),
       showArchived: this.showArchived,
     };
     await this.post({
@@ -3701,6 +3751,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       'Never run git write commands (git add, commit, push, tag, reset, clean, merge, rebase, checkout, restore, stash) unless the user explicitly asked for it in this conversation, or an enabled skill rule instructs you to commit after finishing a task. Do not treat committing as a routine finishing step, and do not commit on your own initiative. Read-only inspection (git status, diff, log, show) is always allowed.',
       // 版本管理规则：不主动升版本 + 明确「什么时候才可以问」。
       VERSION_RULE_PROMPT,
+      // 方案决策闸门：关键岔路口必须停下来问，且每个选项要写清「能做成什么 / 做到什么地步 / 代价」。
+      // 只写「要问」会让 agent 每步都问，所以这段同时给了「不许问」的条件。
+      DECISION_GATE_PROMPT,
       'Every git write must stay inside the project this conversation belongs to. Do not use `-C`, `--git-dir`, or `cd` to reach another workspace project, and never commit or push on behalf of a different project in the workspace. When the target project is ambiguous in a multi-root workspace, pass an explicit cwd (the project root) to run_command instead of relying on the default.',
       'When the user must manually run a terminal command, put every command in a fenced shell code block (bash, zsh, sh, powershell, or cmd) so the UI can label and copy it safely.',
       COMMAND_BLOCK_PROMPT,
@@ -3716,6 +3769,82 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       customPrompt.trim(),
       skillPrompt,
     ].filter(Boolean).join('\n\n');
+  }
+
+  /**
+   * `ask_user_choice`：把方案摆给用户挑，**在用户回答前不返回**。
+   *
+   * 用户原话（2026-10-31）：「hwchat 只会闷着头执行，也不和我沟通，经常导致做出来的
+   * 东西不能用。有没有办法，让它在遇到方案决策的时候，告诉我每个方案能做成什么、
+   * 做到什么地步、代价是什么，让我决策。」
+   *
+   * 「不返回」是关键设计：工具调用挂在这里，agent 想自己猜一个方案继续做也做不到。
+   * 停止按钮、跑完/出错都会通过 `settleDecisionsFor` 把它结算掉，否则那条线程的
+   * finally 永远不跑（和审批卡片同一个坑）。
+   */
+  private async askUserChoice(call: ToolCall, run: ConversationRun): Promise<ToolExecutionResult> {
+    const parsed = normalizeDecision(parseToolArguments(call.function.arguments));
+    if ('error' in parsed) {
+      return { status: 'error', summary: tt('decision.invalid'), content: parsed.error, approval: 'not-required' };
+    }
+    const request: DecisionRequest = parsed.request;
+    const requestId = `decision-${++this.decisionSequence}`;
+    const view: PendingDecisionView = {
+      requestId,
+      conversationId: run.conversationId,
+      question: request.question,
+      why: request.why,
+      options: request.options,
+    };
+    const choice = await new Promise<number>((resolve) => {
+      let settled = false;
+      const finish = (chosenIndex: number): void => {
+        if (settled) return;
+        settled = true;
+        this.pendingDecisions.delete(requestId);
+        run.controller.signal.removeEventListener('abort', onAbort);
+        resolve(chosenIndex);
+      };
+      const onAbort = (): void => finish(-1);
+      run.controller.signal.addEventListener('abort', onAbort, { once: true });
+      this.pendingDecisions.set(requestId, { conversationId: run.conversationId, request: view, resolve: finish });
+      void this.post({ type: 'decisionRequest', request: view });
+      // 用户正在看别的对话时提醒一句，避免这条线程无声地卡在等决策上。
+      if (this.activeConversationId !== run.conversationId) {
+        void this.post({ type: 'toast', tone: 'warning', text: tt('decision.otherConversation') });
+      }
+    });
+
+    if (choice < 0) {
+      return {
+        status: 'error',
+        summary: tt('decision.cancelled'),
+        content: '用户没有选择（任务已停止）。不要自己挑一个方案继续做；需要继续时重新征询。',
+        approval: 'not-required',
+      };
+    }
+    const option = request.options[choice]!;
+    const warnings = parsed.warnings.join(' ');
+    return {
+      status: 'success',
+      summary: tt('decision.chosen', { title: option.title }),
+      content: [formatDecisionAnswer(request, choice), warnings].filter(Boolean).join('\n\n'),
+      approval: 'not-required',
+    };
+  }
+
+  /** 把某条对话里挂着的决策卡片结算掉（停止 / 出错 / 换对话时）。 */
+  private settleDecisionsFor(conversationId: string): void {
+    for (const pending of [...this.pendingDecisions.values()]) {
+      if (pending.conversationId !== conversationId) continue;
+      void this.post({ type: 'decisionResolved', requestId: pending.request.requestId });
+      // resolve 内部会把自己从 pendingDecisions 里删掉。
+      pending.resolve(-1);
+    }
+  }
+
+  private settleAllDecisions(): void {
+    for (const pending of [...this.pendingDecisions.values()]) pending.resolve(-1);
   }
 
   /**
@@ -3921,6 +4050,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         </details>
         </div>
         <div id="todoArchiveBar" class="todo-archive-bar" role="group" aria-label="${t(lang, 'todo.archive.title')}" hidden></div>
+        <section id="decisionCard" class="decision-card" hidden aria-live="assertive">
+          <div class="decision-heading"><span class="decision-badge" aria-hidden="true"></span><strong id="decisionQuestion"></strong></div>
+          <p id="decisionWhy" class="decision-why" hidden></p>
+          <ol id="decisionOptions" class="decision-options"></ol>
+          <p class="decision-note">${t(lang, 'decision.note')}</p>
+        </section>
         <section id="approvalCard" class="approval-card" hidden aria-live="assertive">
           <div class="approval-heading"><span class="approval-badge" aria-hidden="true"></span><strong id="approvalTitle"></strong></div>
           <p id="approvalSummary" class="approval-summary"></p>
@@ -4001,6 +4136,47 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 function changedFilesOf(messages: readonly ChatMessage[]): string[] {
   return [...new Set(messages.flatMap((message) => (message.toolExecutions ?? [])
     .flatMap((tool) => tool.changedFiles ?? [])))];
+}
+
+/**
+ * `ask_user_choice` 的工具定义。
+ *
+ * 三项必填（achieves / extent / cost）是刻意的：用户要的是「能据此拍板」的对比，
+ * 只给「方案 A / 方案 B」等于把决策成本推回给用户。缺字段时 `normalizeDecision`
+ * 会直接报错让模型补，而不是替它编一个。
+ */
+function decisionToolDefinition(): ToolDefinition {
+  return {
+    type: 'function',
+    function: {
+      name: 'ask_user_choice',
+      description: DECISION_TOOL_DESCRIPTION,
+      parameters: {
+        type: 'object',
+        properties: {
+          question: { type: 'string', description: 'One sentence: what the user must decide.' },
+          why: { type: 'string', description: 'Optional one sentence: why this must be decided now / what goes wrong if you guess.' },
+          options: {
+            type: 'array',
+            description: 'Two to five concrete approaches. Never bare labels.',
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string', description: 'What this approach is, in a few words (verb-first).' },
+                achieves: { type: 'string', description: 'What the user visibly gets if you do this.' },
+                extent: { type: 'string', description: 'How far it goes: what is in scope, what is deliberately out, where it is still rough.' },
+                cost: { type: 'string', description: 'Cost: time, blast radius, risk, follow-up maintenance.' },
+              },
+              required: ['title', 'achieves', 'extent', 'cost'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['question', 'options'],
+        additionalProperties: false,
+      },
+    },
+  };
 }
 
 function todoToolDefinition(): ToolDefinition {

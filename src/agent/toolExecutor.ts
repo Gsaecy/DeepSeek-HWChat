@@ -1034,6 +1034,7 @@ export class ToolExecutor implements vscode.Disposable {
       return deniedResult(tt('tool.versionBumpCommandNotAuthorized', { command: versionTool }));
     }
     const timeout = Math.min(settings.maxCommandSeconds, Math.max(5, numberArg(args, 'timeoutSeconds', settings.maxCommandSeconds)));
+    const commandStartedAt = Date.now();
 
     let result: SpawnResult;
     try {
@@ -1081,7 +1082,7 @@ export class ToolExecutor implements vscode.Disposable {
     if (gitWrite && result.code === 0) this.recordProjectRoot(scope, resolvedCwd);
     return {
       status: result.code === 0 ? 'success' : 'error',
-      summary: result.timedOut ? tt('tool.commandTimeout', { seconds: timeout }) : tt('tool.commandExit', { code: result.code ?? 'unknown' }),
+      summary: commandSummary(command, result, timeout, Date.now() - commandStartedAt),
       content: truncate(output || tt('tool.noOutput'), settings.maxToolOutputBytes),
       approval: 'approved',
     };
@@ -1328,6 +1329,53 @@ function imageMimeType(path: string): string | undefined {
     '.webp': 'image/webp',
     '.gif': 'image/gif',
   } as Record<string, string>)[extension];
+}
+
+/**
+ * 命令类工具在界面上的那一行摘要。
+ *
+ * 真实问题（用户截图，2026-10-31）：一次运行里出现 20 多行「命令退出码 0」——
+ * 只写退出码，从列表里**完全看不出在干什么**，这正是「闷头做」在界面上的样子。
+ * 而相邻的 `修改 X：替换 1 处文本` 带了对象，一眼就能读。
+ *
+ * 所以摘要带上**命令本身**（压成一行、默认截断 60 字符，够认出 `npm test` / `tsc`）
+ * 与耗时。用户不必展开就能读懂整条执行流水；模型拿到的 `summary` 也更有信息量。
+ *
+ * 命令里可能出现 token / 密码（`curl -H "Authorization: ..."`），所以调用
+ * `redactCommandForSummary` 先做一次脱敏 —— 摘要是给界面看、并随审计留下的。
+ */
+export function commandSummary(
+  command: string,
+  result: Pick<SpawnResult, 'code' | 'timedOut'>,
+  timeoutSeconds: number,
+  elapsedMs?: number,
+): string {
+  const shown = redactCommandForSummary(command);
+  if (result.timedOut) return tt('tool.commandTimedOutSummary', { command: shown, seconds: timeoutSeconds });
+  const code = result.code ?? 'unknown';
+  const seconds = typeof elapsedMs === 'number' && Number.isFinite(elapsedMs) && elapsedMs >= 0
+    ? ` · ${(elapsedMs / 1000).toFixed(1)}s`
+    : '';
+  return tt('tool.commandExitSummary', { command: shown, code: String(code), seconds });
+}
+
+/** 摘要里显示命令：压成一行、去掉明显的凭据、超长截断。 */
+export function redactCommandForSummary(command: string, limit = 60): string {
+  const flat = String(command ?? '').replace(/\s+/g, ' ').trim();
+  const redacted = flat
+    /*
+     * `-H "Authorization: Bearer xxx"` / `?token=xxx` / `API_KEY=xxx` 之类。
+     *
+     * 注意 `Bearer` / `Basic` 这类认证**方案名**后面紧跟的才是凭据：只脱掉方案名
+     * 会把 `Bearer` 抹掉而把真正的 token 留在摘要里（第一版就漏了）。所以先吃掉
+     * 可选的方案名，再把凭据整段替成 `***`。
+     */
+    .replace(
+      /((?:authorization|token|api[_-]?key|secret|password|passwd|pwd)\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?[^\s"'&]+/gi,
+      '$1***',
+    )
+    .replace(/([?&](?:token|key|secret|signature|sig)=)[^&\s]+/gi, '$1***');
+  return redacted.length <= limit ? redacted : `${redacted.slice(0, Math.max(1, limit - 1))}…`;
 }
 
 function riskFor(name: string): ToolApprovalRequest['risk'] {

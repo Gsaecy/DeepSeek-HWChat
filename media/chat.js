@@ -321,6 +321,7 @@
     'todoPanel', 'todoList', 'todoSummary', 'todoSummaryActions', 'resumeTodosButton', 'cancelTodosButton',
     'todoArchivePanel', 'todoArchiveList', 'todoArchiveSummary', 'todoArchiveBar',
     'approvalCard', 'approvalTitle', 'approvalSummary', 'approvalDetail', 'approvalDenyButton', 'approvalAllowButton',
+    'decisionCard', 'decisionQuestion', 'decisionWhy', 'decisionOptions',
     'messageEditor', 'messageEditorInput', 'messageEditorState', 'messageEditorHint', 'messageEditorSave', 'messageEditorCancel', 'messageEditorTitle',
     'attachButton', 'sendButton', 'stopButton', 'toast',
   ].map((id) => [id, document.getElementById(id)]));
@@ -344,7 +345,7 @@
     /** 互联网参考开关（按对话）：由 state 下发，界面只回显。 */
     internetReference: false,
     todoSignature: '',
-    runningConversationIds: [], pendingApprovals: [],
+    runningConversationIds: [], pendingApprovals: [], pendingDecisions: [],
     /** 每个对话各自的输入框草稿，键是对话 id（还没落库的新对话用 'draft'）。 */
     drafts: {},
     autoFollow: true, renderingMessages: false, voiceRecognition: null, voiceActive: false,
@@ -692,7 +693,7 @@
     const skipMessages = Boolean(options && options.skipMessages);
     renderHistory(); renderHeader(); renderSkills();
     if (!skipMessages) renderMessages('replace');
-    renderHistoryLink(); renderAttachments(); renderTaskTree(); renderTodos(); renderArchivePanel(); renderTodoArchives(); renderApproval(); updateComposerState();
+    renderHistoryLink(); renderAttachments(); renderTaskTree(); renderTodos(); renderArchivePanel(); renderTodoArchives(); renderApproval(); renderDecision(); updateComposerState();
   }
 
   function renderHistory() {
@@ -1975,6 +1976,67 @@
     const conversationId = state.conversation?.id;
     if (!conversationId) return null;
     return state.pendingApprovals.find((item) => item.conversationId === conversationId) || null;
+  }
+
+  /**
+   * 当前这条对话挂着的方案卡片（`ask_user_choice`）。
+   *
+   * 只显示属于当前对话的那一张：另一个对话在等决策时，它自己的线程会一直挂着，
+   * 切回去就能看到卡片 —— 与审批卡片同一套语义。
+   */
+  function currentDecision() {
+    const conversationId = state.conversation?.id;
+    if (!conversationId) return null;
+    return state.pendingDecisions.find((item) => item.conversationId === conversationId) || null;
+  }
+
+  /**
+   * 渲染方案卡片：一个选项一块，每块必须给出「能做成什么 / 做到什么地步 / 代价」。
+   *
+   * 用户原话（2026-10-31）：「让它在遇到方案决策的时候，告诉我每个方案能做成什么、
+   * 做到什么地步，代价是什么，让我决策。而不是闷头做。」
+   * 所以三行是**并列展示**的，不折叠、不缩写 —— 想比较就要能一眼看全。
+   */
+  function renderDecision() {
+    const card = elements.decisionCard;
+    if (!card) return;
+    const request = currentDecision();
+    card.hidden = !request;
+    if (!request) {
+      card.dataset.requestId = '';
+      elements.decisionOptions.replaceChildren();
+      return;
+    }
+    card.dataset.requestId = request.requestId;
+    elements.decisionQuestion.textContent = request.question;
+    elements.decisionWhy.textContent = request.why || '';
+    elements.decisionWhy.hidden = !request.why;
+    elements.decisionOptions.replaceChildren();
+    request.options.forEach((option, index) => {
+      const item = document.createElement('li');
+      item.className = 'decision-option';
+      const title = textElement('strong', 'decision-option-title', `${index + 1}. ${option.title}`);
+      const rows = [
+        ['decision.achieves', option.achieves],
+        ['decision.extent', option.extent],
+        ['decision.cost', option.cost],
+      ];
+      const list = document.createElement('dl');
+      list.className = 'decision-facts';
+      for (const [key, value] of rows) {
+        const term = textElement('dt', `decision-${key.split('.')[1]}`, t(key));
+        list.append(term, textElement('dd', '', value));
+      }
+      const choose = textElement('button', 'decision-choose', t('decision.choose'));
+      choose.type = 'button';
+      choose.addEventListener('click', () => {
+        // 一次点击只能回答一次：卡片随后会被 decisionResolved 移除，这里先禁用防连点。
+        for (const button of elements.decisionOptions.querySelectorAll('button')) button.disabled = true;
+        post('decisionResponse', { requestId: request.requestId, chosenIndex: index });
+      });
+      item.append(title, list, choose);
+      elements.decisionOptions.append(item);
+    });
   }
 
   function renderApproval() {
@@ -3432,6 +3494,7 @@
     state.hasMore = false;
     state.pendingAttachments = [];
     state.pendingApprovals = [];
+    state.pendingDecisions = [];
     state.taskTree = null;
     state.todos = [];
     state.todosInterrupted = false;
@@ -4114,6 +4177,7 @@
         state.todosIncomplete = Boolean(incoming.todosIncomplete);
         state.runningConversationIds = Array.isArray(incoming.runningConversationIds) ? incoming.runningConversationIds : [];
         state.pendingApprovals = Array.isArray(incoming.pendingApprovals) ? incoming.pendingApprovals : [];
+        state.pendingDecisions = Array.isArray(incoming.pendingDecisions) ? incoming.pendingDecisions : [];
         elements.modelInput.value = state.model || 'deepseek-flash';
         if (previousConversationId !== incoming.conversation?.id) {
           state.autoFollow = true; state.expandedArchiveId = null; state.archiveRestore = null;
@@ -4171,6 +4235,14 @@
       case 'history': state.conversations = message.conversations || []; state.archivedConversations = message.archivedConversations || []; state.runningConversationIds = Array.isArray(message.runningConversationIds) ? message.runningConversationIds : state.runningConversationIds; renderHistory(); updateStreamingFromRuns(); break;
       case 'approvalRequest': if (message.request) { state.pendingApprovals = [...state.pendingApprovals.filter((item) => item.requestId !== message.request.requestId), message.request]; renderApproval(); renderHistory(); updateComposerState(); } break;
       case 'approvalResolved': state.pendingApprovals = state.pendingApprovals.filter((item) => item.requestId !== message.requestId); renderApproval(); renderHistory(); break;
+      /*
+       * 方案卡片：来了就渲染，用户点了就移除。
+       *
+       * `updateComposerState()` 要一起调：卡片出现/消失会改变输入框上方的提示语义
+       * （agent 正等你拍板），与审批卡片一致。
+       */
+      case 'decisionRequest': if (message.request) { state.pendingDecisions = [...state.pendingDecisions.filter((item) => item.requestId !== message.request.requestId), message.request]; renderDecision(); updateComposerState(); } break;
+      case 'decisionResolved': state.pendingDecisions = state.pendingDecisions.filter((item) => item.requestId !== message.requestId); renderDecision(); updateComposerState(); break;
       case 'olderMessages': state.messages = [...message.messages, ...state.messages]; state.hasMore = Boolean(message.hasMore); renderMessages('prepend'); break;
       case 'modelChanged': state.model = message.model; if (state.conversation) state.conversation.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; elements.modelInput.value = message.model; syncReasoningSelector(); updateComposerState(); showToast(t('chat.modelChanged', { model: message.model })); break;
       case 'profileChanged': state.activeApiProfileId = message.profileId; state.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; if (state.conversation) { state.conversation.apiProfileId = message.profileId; state.conversation.model = message.model; } elements.modelInput.value = message.model; renderHeader(); showToast(t('chat.profileChanged')); break;

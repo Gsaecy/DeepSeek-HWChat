@@ -138,6 +138,12 @@
         <div id="todoSummaryActions" class="panel-summary-actions" hidden></div>
         <div id="resumeTodosButton" class="panel-action" hidden></div>
         <div id="cancelTodosButton" class="panel-action danger" hidden></div>
+        <section id="decisionCard" class="decision-card" hidden aria-live="assertive">
+          <div class="decision-heading"><span class="decision-badge" aria-hidden="true"></span><strong id="decisionQuestion"></strong></div>
+          <p id="decisionWhy" class="decision-why" hidden></p>
+          <ol id="decisionOptions" class="decision-options"></ol>
+          <p class="decision-note">选之前可以先问我细节；选定后我会按它继续，不会自己换方案。</p>
+        </section>
         <div id="approvalCard" class="approval-card" hidden></div>
         <div id="approvalTitle" class="" hidden></div>
         <div id="approvalSummary" class="approval-summary" hidden></div>
@@ -358,6 +364,11 @@
   "chat.fileRefTarget.explorer": "资源管理器",
   "chat.fileRefTarget.fileManager": "文件管理器",
   "chat.fileRefTarget.finder": "Finder",
+  "decision.achieves": "能做成什么",
+  "decision.extent": "做到什么地步",
+  "decision.cost": "代价",
+  "decision.choose": "选这个",
+  "decision.note": "选之前可以先问我细节；选定后我会按它继续，不会自己换方案。",
   "chat.skillsUseFor": "适用",
   "chat.skillsTriggers": "触发词",
   "chat.openAttachmentHint": "点击在编辑器中查看",

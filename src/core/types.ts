@@ -441,6 +441,30 @@ export interface PendingApprovalView {
 }
 
 /**
+ * 一张等用户拍板的方案卡片（`ask_user_choice`）。
+ *
+ * 与 `PendingApprovalView` 分开而不是复用它：审批问「允不允许做」，这里问
+ * 「**做哪一个**」，后者要按选项渲染成多张对比卡片。混成一种结构会让界面和
+ * 用户都分不清哪张在拦权限、哪张在等决策。
+ */
+export interface PendingDecisionView {
+  requestId: string;
+  conversationId: string;
+  question: string;
+  why?: string;
+  options: Array<{
+    /** 这个方案是什么（动词开头，几个字）。 */
+    title: string;
+    /** 做成之后用户能得到什么。 */
+    achieves: string;
+    /** 做到什么地步：范围内/外，哪里还粗糙。 */
+    extent: string;
+    /** 代价：时间、改动面、风险、后续维护。 */
+    cost: string;
+  }>;
+}
+
+/**
  * 标题旁的项目徽标。
  *
  * 一个对话可以改到多个项目，所以这里是一组名字而不是一个：
@@ -524,4 +548,11 @@ export interface WebviewConversationState {
   runningConversationIds?: string[];
   /** 仍在等待用户确认的工具授权（可能属于别的对话）。 */
   pendingApprovals?: PendingApprovalView[];
+  /**
+   * 仍在等用户拍板的方案卡片。
+   *
+   * 随状态一起重发：面板重载、切对话回来，卡片都还在（否则那条线程会静默卡在
+   * 等决策上，用户只看到「agent 正在执行」却没有任何可点的地方）。
+   */
+  pendingDecisions?: PendingDecisionView[];
 }
