@@ -59,6 +59,9 @@ const MANIFEST_VERSION = 1 as const;
  */
 const ARCHIVED_MARKER = '.archived';
 
+/** 预算瘦身的时间下限：最近这段时间内的消息一律不动，见 `slimConversation`。 */
+const SLIM_MIN_AGE_MS = 6 * 60 * 60 * 1000;
+
 /** 回收站保留上限（条数与天数），到期才真正删除。 */
 const TRASH_KEEP_ENTRIES = 40;
 const TRASH_KEEP_DAYS = 30;
@@ -874,7 +877,17 @@ export class ConversationStorage {
          * 只要再多一条对话，回收就会把**整条**对话搬走。对话本身只有几百 KB，真正撑爆
          * 预算的是可再生的缓存。所以顺序必须反过来：先把这些缓存削掉，实在还超才删。
          */
-        for (const summary of evictable) {
+        /*
+         * 瘦身顺序：先削「本来就可以删的」对话，最后才动置顶与归档。
+         *
+         * 归档/置顶是用户明确表示「这条要留着」的信号，它们的缓存能不动就不动 ——
+         * 先削的应该是那些本来就在候选删除队列里的对话。
+         */
+        const slimOrder = [
+          ...evictable,
+          ...this.manifest.conversations.filter((summary) => !evictable.includes(summary)),
+        ];
+        for (const summary of slimOrder) {
           if (currentBytes <= budgetBytes) {
             break;
           }
@@ -1049,6 +1062,14 @@ export class ConversationStorage {
       const path = join(directory, file);
       const message = await readJsonWithBackup<ChatMessage>(path);
       if (!message || message.status === 'streaming') continue;
+      /*
+       * 最近 `SLIM_MIN_AGE_MS` 内的消息一律不动。
+       *
+       * 保留下限是为了不制造「刚发出去的图变成文件条目」这种当场可见的退化：
+       * 预算压力来自长期堆积的历史，最近几小时的内容还在被用，削掉只会让人以为
+       * 功能坏了。真正紧急时（削完仍超预算）走的还是「移入回收站」，那条路径可恢复。
+       */
+      if (now - message.updatedAt < SLIM_MIN_AGE_MS) continue;
       if (stripMessagePayload(message) <= 0) continue;
       // 按文件真实大小记账：`stripMessagePayload` 返回的是字段原值字节数，包含 JSON
       // 转义/结构开销，用它算预算会让「已释放」大于磁盘实际释放，回收就会提前停下。

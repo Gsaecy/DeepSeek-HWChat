@@ -58,10 +58,15 @@ assert.match(cleanup, /await this\.slimConversation\(/, '预算回收必须先�
 const slimIndex = cleanup.indexOf('await this.slimConversation(');
 const evictIndex = cleanup.search(/await this\.moveToTrash\(summary\.id, summary, 'budget'\)/);
 assert.ok(slimIndex >= 0 && evictIndex > slimIndex, '必须先全部瘦身完，才允许删除整条对话');
+assert.match(cleanup, /const slimOrder = \[/, '瘦身需要显式排序：先削可删的、最后才动归档与置顶');
+assert.match(cleanup, /\.\.\.evictable,\s*\n\s*\.\.\.this\.manifest\.conversations\.filter/, '未受保护的对话必须排在瘦身队列最前面');
 
 const slim = methodBody('slimConversation');
 assert.match(slim, /stripMessagePayload\(/, '瘦身必须复用 stripMessagePayload()，与保留期压缩保持同一字段集合');
 assert.match(slim, /before - after/, '瘦身必须按文件真实大小记账');
+// 时间下限：最近几小时的内容不许削，否则用户看到「刚发的图变成文件条目」。
+assert.match(CODE, /SLIM_MIN_AGE_MS/, '瘦身必须有时间下限常量');
+assert.match(slim, /now - message\.updatedAt < SLIM_MIN_AGE_MS/, '瘦身必须跳过最近的消息');
 
 const strip = CODE.slice(CODE.indexOf('function stripMessagePayload'));
 for (const field of ['dataBase64', 'thumbnailDataUrl', 'delete tool.input', 'delete tool.output', 'delete message.reasoning']) {

@@ -939,16 +939,26 @@ test('keeps archived conversations protected when the manifest is lost', async (
   });
 });
 
+/** 把一条已落盘的消息改成「很久以前」，用来绕过预算瘦身的时间下限。 */
+async function ageMessageOnDisk(root: string, conversationId: string, messageId: string, ageMs: number): Promise<void> {
+  const path = join(root, 'conversations', conversationId, 'messages', `${messageId}.json`);
+  const message = JSON.parse(await readFile(path, 'utf8'));
+  message.updatedAt = Date.now() - ageMs;
+  await writeFile(path, JSON.stringify(message), 'utf8');
+}
+
 test('slims cached payloads before deleting a conversation when over budget', async () => {
-  await withStorage(async (storage) => {
+  await withStorage(async (storage, root) => {
     const conversation = await storage.createConversation('带大附件的对话');
-    await storage.appendMessage(conversation.id, {
+    const message = await storage.appendMessage(conversation.id, {
       role: 'user',
       content: '附件很占地方，但正文不能丢',
       status: 'complete',
       // 8MB 的 base64 缩略图：预算 5MB 一定超，但它是可再生的缓存。
       attachments: [{ label: 'shot.png', kind: 'image', dataBase64: 'A'.repeat(8 * 1024 * 1024) }],
     });
+    // 超过瘦身时间下限（6 小时）才会被削缓存。
+    await ageMessageOnDisk(root, conversation.id, message.id, 7 * 60 * 60 * 1000);
 
     const result = await storage.cleanup({
       historyRetentionDays: 0,
@@ -960,10 +970,37 @@ test('slims cached payloads before deleting a conversation when over budget', as
     assert.equal(result.deletedConversations, 0);
     const ids = (await storage.listConversations()).map((item) => item.id);
     assert.deepEqual(ids, [conversation.id]);
-    const message = (await storage.getAllMessages(conversation.id))[0];
-    assert.equal(message?.content, '附件很占地方，但正文不能丢');
-    assert.equal(message?.attachments?.[0]?.dataBase64, undefined, 'base64 缓存应被削掉');
-    assert.equal(message?.attachments?.[0]?.label, 'shot.png', '附件描述必须保留');
+    const stored = (await storage.getAllMessages(conversation.id))[0];
+    assert.equal(stored?.content, '附件很占地方，但正文不能丢');
+    assert.equal(stored?.attachments?.[0]?.dataBase64, undefined, 'base64 缓存应被削掉');
+    assert.equal(stored?.attachments?.[0]?.label, 'shot.png', '附件描述必须保留');
     assert.ok(result.deletedMessageCacheBytes > 1024 * 1024);
+  });
+});
+
+test('never slims cache of messages from the last few hours, even when over budget', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation('刚发的大附件');
+    await storage.appendMessage(conversation.id, {
+      role: 'user',
+      content: '刚贴了一张图',
+      status: 'complete',
+      attachments: [{ label: 'fresh.png', kind: 'image', dataBase64: 'B'.repeat(8 * 1024 * 1024) }],
+    });
+
+    const result = await storage.cleanup({
+      historyRetentionDays: 0,
+      taskCacheRetentionHours: 24,
+      cacheBudgetMB: 5,
+    });
+
+    // 刚发的内容不许被削：否则用户看到的是「图突然变成文件条目」。
+    assert.equal(result.deletedMessageCacheBytes, 0);
+    // 削不动就只能整条挪进回收站 —— 但内容一个字节都不能少，能原样恢复。
+    assert.equal(result.deletedConversations, 1);
+    assert.equal((await storage.listConversations()).length, 0);
+    assert.equal(await storage.restoreFromTrash(conversation.id), true);
+    const stored = (await storage.getAllMessages(conversation.id))[0];
+    assert.ok(stored?.attachments?.[0]?.dataBase64, '恢复后附件缓存必须原样还在');
   });
 });
