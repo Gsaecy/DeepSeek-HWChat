@@ -321,7 +321,7 @@
     'todoPanel', 'todoList', 'todoSummary', 'todoSummaryActions', 'resumeTodosButton', 'cancelTodosButton',
     'todoArchivePanel', 'todoArchiveList', 'todoArchiveSummary', 'todoArchiveBar',
     'approvalCard', 'approvalTitle', 'approvalSummary', 'approvalDetail', 'approvalDenyButton', 'approvalAllowButton',
-    'decisionCard', 'decisionQuestion', 'decisionWhy', 'decisionOptions', 'decisionToggle', 'decisionToggleLabel', 'decisionBody',
+    'composerPanels', 'decisionCard', 'decisionQuestion', 'decisionWhy', 'decisionOptions', 'decisionToggle', 'decisionToggleLabel', 'decisionBody',
     'messageEditor', 'messageEditorInput', 'messageEditorState', 'messageEditorHint', 'messageEditorSave', 'messageEditorCancel', 'messageEditorTitle',
     'attachButton', 'sendButton', 'stopButton', 'toast',
   ].map((id) => [id, document.getElementById(id)]));
@@ -2004,6 +2004,17 @@
    * 调用；用布尔会在第一帧就被重置回展开，用户永远收不起来。只有换了一张新卡片才回到展开。
    */
   let decisionCollapsedFor = '';
+  /**
+   * 已经自动滚到可见位置的那张卡片（按 requestId 记）。
+   *
+   * 面板区现在自己滚（见 chat.css 的 `.composer-panels`），卡片底部可能落在可视区
+   * 之外；新卡片出现时必须把它滚进来，否则用户只看到「面板闪了一下」而不知道有东西
+   * 在等他决定。同样按 requestId 记而不是布尔：状态每 70ms 重发，布尔会在第一帧被重置，
+   * 导致每帧都强行滚一次、把用户自己的滚动位置顶掉。
+   */
+  let revealedDecisionFor = '';
+  /** 授权卡片同理（按 requestId 记）。 */
+  let revealedApprovalFor = '';
 
   function applyDecisionCollapsed(collapsed) {
     const card = elements.decisionCard;
@@ -2018,6 +2029,23 @@
     elements.decisionToggle.title = t(collapsed ? 'decision.expandHint' : 'decision.collapseHint');
   }
 
+  /**
+   * 把一张卡片滚进面板区的可视范围。
+   *
+   * 只滚 `.composer-panels` 自己的 scrollTop，不动文档、不动消息区：用户正在看历史
+   * 对话时，一张决策卡片不该把上面的对话整段推走。
+   */
+  function revealInPanelArea(element) {
+    const area = elements.composerPanels;
+    if (!area || !element) return;
+    const areaRect = area.getBoundingClientRect();
+    const rect = element.getBoundingClientRect();
+    // 已经完整可见就不动，避免打断用户自己的滚动。
+    if (rect.top >= areaRect.top && rect.bottom <= areaRect.bottom) return;
+    // 对齐到顶部：卡片的问题与第一个选项是最要紧的部分。
+    area.scrollTop += rect.top - areaRect.top - 6;
+  }
+
   function renderDecision() {
     const card = elements.decisionCard;
     if (!card) return;
@@ -2025,10 +2053,12 @@
     card.hidden = !request;
     if (!request) {
       card.dataset.requestId = '';
+      revealedDecisionFor = '';
       elements.decisionOptions.replaceChildren();
       return;
     }
     card.dataset.requestId = request.requestId;
+    const isNewCard = revealedDecisionFor !== request.requestId;
     applyDecisionCollapsed(decisionCollapsedFor === request.requestId);
     elements.decisionQuestion.textContent = request.question;
     elements.decisionWhy.textContent = request.why || '';
@@ -2059,6 +2089,11 @@
       item.append(title, list, choose);
       elements.decisionOptions.append(item);
     });
+    if (isNewCard) {
+      revealedDecisionFor = request.requestId;
+      // 展开态才滚：收起态本来就只有一行，滚它没有意义（收起状态是按 requestId 记住的）。
+      if (decisionCollapsedFor !== request.requestId) revealInPanelArea(card);
+    }
   }
 
   function renderApproval() {
@@ -2066,7 +2101,12 @@
     elements.approvalCard.hidden = !request;
     if (!request) {
       elements.approvalCard.dataset.requestId = '';
+      revealedApprovalFor = '';
       return;
+    }
+    if (revealedApprovalFor !== request.requestId) {
+      revealedApprovalFor = request.requestId;
+      revealInPanelArea(elements.approvalCard);
     }
     elements.approvalCard.dataset.requestId = request.requestId;
     elements.approvalCard.dataset.risk = request.risk;

@@ -4078,6 +4078,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         <button id="scrollToBottomButton" class="icon-button scroll-to-bottom" type="button" aria-label="${t(lang, 'chat.scrollToBottom')}" title="${t(lang, 'chat.scrollToBottom')}" hidden>${icon('arrowDown')}</button>
       </div>
       <footer class="composer-wrap">
+        <!--
+          输入框以外的所有面板都放进这个可滚动区。
+          原因：决策卡片（3 个选项约 470px）与工具授权卡片原本是 footer 的直接子元素，
+          而 footer 是 grid 的 auto 行 —— 卡片一高，footer 就无上限地长高，把输入框
+          整个推到视口外（430×790 实测：消息区 0px、footer 863px、输入框 top=852
+          完全看不见）。现在这个区域自己滚、有上限，输入框（flex: 0 0 auto）永远
+          留在视口里。
+        -->
+        <div id="composerPanels" class="composer-panels">
         <div id="historyLinkBanner" class="history-link-banner" hidden>
           <span class="history-link-symbol" aria-hidden="true">↗</span>
           <div><strong id="sourceHistoryTitle">${t(lang, 'chat.taskHistory')}</strong><small>${t(lang, 'chat.taskHistoryNote')}</small></div>
@@ -4116,6 +4125,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
             <button id="approvalAllowButton" class="approval-allow" type="button">${t(lang, 'notice.approveAllowOnce')}</button>
           </div>
         </section>
+        </div>
         <form id="composer" class="composer">
           <textarea id="promptInput" rows="1" placeholder="${t(lang, 'chat.promptPlaceholder')}" aria-label="${t(lang, 'chat.messageLabel')}"></textarea>
           <div class="composer-footer">

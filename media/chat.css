@@ -824,7 +824,40 @@ body.editor-open .message-viewport { overflow: hidden; }
 .suggestions button { min-height: 32px; padding: 0 11px; border: 1px solid var(--border); border-radius: 6px; background: transparent; cursor: pointer; }
 .suggestions button:hover { background: var(--surface); }
 
-.composer-wrap { width: min(850px, calc(100% - 28px)); max-width: 100%; margin: 0 auto; padding: 0 0 14px; }
+/* ── 输入框永远留在视口里 ──────────────────────────────────────────────
+   现场（用户反馈）：「选择项目会挤压输入框，看不到输入框了」。430×790 实测：
+   决策卡片 3 个选项共 474px，而它是 footer 的直接子元素、footer 又是 grid 的
+   auto 行 —— 卡片一高，footer 无上限长到 863px，消息区被压到 **0px**，输入框
+   top=852 直接落在视口外，用户既看不到对话也看不到输入框。
+
+   现在的分层：
+     .composer-wrap   纵向 flex，整体封顶（最多占 56vh / 560px）
+     .composer-panels 可收缩、自己滚（min-height: 0 是关键，flex 子项默认 auto）
+     .composer        固定高度、不收缩，永远贴在 footer 底部
+   也就是说：卡片再多再长，滚的是面板区，输入框位置不动。 */
+.composer-wrap {
+  display: flex;
+  flex-direction: column;
+  width: min(850px, calc(100% - 28px));
+  max-width: 100%;
+  min-height: 0;
+  /* 上界同时限 vh 与 px：极高窗口里 72vh 会超过 640px，输入框就又开始把对话挤没。 */
+  max-height: min(56vh, 560px);
+  margin: 0 auto;
+  padding: 0 0 14px;
+}
+/* 面板区的滚动条常显（macOS 覆盖式滚动条不滚就看不见，用户会以为「内容被切掉了」）。 */
+.composer-panels { flex: 0 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.composer-panels::-webkit-scrollbar { width: 10px; }
+.composer-panels::-webkit-scrollbar-track { background: transparent; }
+.composer-panels::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+  background-color: color-mix(in srgb, var(--fg) 22%, transparent);
+}
+/* 输入框是 footer 里唯一不许被压缩的元素。 */
+.composer-wrap > .composer { flex: 0 0 auto; }
 .history-link-banner { display: grid; grid-template-columns: 20px minmax(0, 1fr) 24px; align-items: center; gap: 7px; margin: 0 2px 7px; padding: 7px 7px 7px 9px; border: 1px solid var(--border); border-radius: 7px; color: var(--fg); background: var(--surface); }
 .history-link-symbol { color: var(--accent); font: 15px var(--mono); }
 .history-link-banner > div { display: grid; min-width: 0; line-height: 1.35; }
@@ -1031,6 +1064,8 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
    480 高的窗口实测：28vh 时消息区 101px，22vh 时能到 150px 上下。 */
 @media (max-height: 560px) {
   .panel-stack { max-height: min(22vh, 180px); }
+  /* 矮窗口：面板再让一步，保证消息区还能显示几行。 */
+  .composer-wrap { max-height: 58vh; }
 }
 /* 滚动条常显：macOS 的覆盖式滚动条不滚动就完全不可见，用户会以为「不能滚」。
    显式设置 ::-webkit-scrollbar 会让它变成常驻样式，兼作「下面还有内容」的提示。 */
