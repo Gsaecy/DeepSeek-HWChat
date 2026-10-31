@@ -55,6 +55,7 @@ const DICTIONARY: Record<string, Entry> = {
   'common.listSeparator': { zh: '、', en: ', ' },
   'chat.clipboardAttachment': { zh: '剪贴板附件', en: 'Clipboard attachment' },
   'chat.openAttachmentHint': { zh: '点击在编辑器中查看', en: 'Click to open in the editor' },
+  'chat.skillsUseFor': { zh: '适用', en: 'Use for' },
   'chat.skillsTriggers': { zh: '触发词', en: 'Triggers' },
   'chat.attachFromMessage': { zh: '添加到输入框', en: 'Add to composer' },
   'chat.attachFromMessageHint': { zh: '把这张图再放一份到输入框，作为新一轮的附件发出（也可以直接把图片拖进输入框）', en: 'Put another copy of this image in the composer as an attachment for a new message (you can also drag the image into the composer)' },

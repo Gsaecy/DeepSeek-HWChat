@@ -1060,10 +1060,21 @@
       if (skill.defaultEnabled) title.append(textElement('em', 'skill-badge', t('chat.skillDefaultEnabled')));
       if (skill.lastUsedAt) title.append(textElement('em', 'skill-badge used', t('chat.skillUsed')));
       copy.append(title, textElement('small', '', skill.description || skill.relativePath), textElement('code', '', skill.relativePath));
-      // 触发词只在悬停里露出：列表一行放不下，但排查「为什么这个技能没被匹配上」时要看得到。
-      if (Array.isArray(skill.triggers) && skill.triggers.length) {
-        label.title = `${t('chat.skillsTriggers')}：${skill.triggers.join(', ')}`;
-      }
+      /*
+       * 列表里的描述只占**一行**（CSS line-clamp），完整信息放进悬停提示：
+       * 适用场景 + 触发词。理由（实测，570px 宽、38 个技能）：
+       *  * 描述全展开时每行 96px、列表 3643px，面板可视 520px → 要滚 7 屏；
+       *  * 压成一行后每行 65px、列表 2465px → 4.7 屏，而信息一点没丢（都在悬停里）。
+       * 触发词尤其要露出来：它是模型匹配的直接依据，排查「为什么没匹配上」全靠它。
+       */
+      const details = [
+        skill.description || '',
+        skill.useFor ? `${t('chat.skillsUseFor')}：${skill.useFor}` : '',
+        Array.isArray(skill.triggers) && skill.triggers.length
+          ? `${t('chat.skillsTriggers')}：${skill.triggers.join(', ')}`
+          : '',
+      ].filter(Boolean);
+      if (details.length) label.title = details.join('\n');
       label.append(input, copy); elements.skillsList.append(label);
     }
   }

@@ -472,20 +472,22 @@ export class SkillRegistry implements vscode.Disposable {
       ? cleanInline(sharedSkillName(frontmatter.name, candidate.quickLaunchName) ?? '', 80) || undefined
       : undefined;
     /*
-     * 描述拆三段：摘要 / 适用 / 触发词。触发词单独存字段、**不参与截断**，
-     * 否则写在描述末尾的 `Triggers:` 会被 240 字符上限整段吃掉（见 parseSkillDescription）。
+     * 描述拆三段：摘要 / 适用 / 触发词。
      *
-     * `description` 仍是「人看的一句话」：摘要 + 适用场景，仍压到 240 —— 面板列表
-     * 一行放不下更多，而且路由表另有 skillRouteLine 负责把触发词带上。
+     * 三段各有各的去处，**互不挤占**：
+     *  * `description` = 纯摘要（≤240 字符）—— 面板列表只显示它的第一行，
+     *    多了会把 38 个技能的列表撑成 7 屏（实测 3643px / 面板 520px）；
+     *  * `useFor` = 适用场景，面板悬停时显示，路由表里也带着；
+     *  * `triggers` = 触发词，不参与任何截断，路由表里必须出现。
+     *
+     * 早先把三段拼进同一个 description，于是 240 字符一截，末尾的触发词整段消失
+     * （本机 38 个技能里 16 个中招，见 parseSkillDescription 的注释）。
      */
     const parsed = parseSkillDescription(
       frontmatter.description || firstParagraph(frontmatter.body),
       frontmatter.triggers,
     );
-    const description = cleanInline(
-      [parsed.summary, parsed.useFor ? `适用：${parsed.useFor}` : ''].filter(Boolean).join(' '),
-      240,
-    );
+    const description = cleanInline(parsed.summary, 240);
     const id = createHash('sha256').update(`${candidate.source}:${candidate.uri.toString()}`).digest('hex').slice(0, 20);
     return {
       id,

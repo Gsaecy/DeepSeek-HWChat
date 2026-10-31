@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2
+
+- **技能面板不再被描述撑成 7 屏：列表只显示一行摘要，完整信息进悬停**。
+  - **现场（实测，570px 宽、38 个技能）**：`.skill-option small` 没有任何行数限制，240 字符的描述会展开成 3 行 —— 每行 96px、列表内容 **3643px**，而面板可视只有 **520px**，要在技能面板里滚 **7 屏**才能看完；想勾一个技能得先翻很久，且三个玻璃类技能 / 三个上架类技能光看名字分不清。
+  - **改法**：
+    - 列表里的描述用 `-webkit-line-clamp: 1` 压成**一行**（超出省略），实测每行 96 → **65px**，列表 3643 → **2465px**（7 屏 → 4.7 屏）；
+    - **悬停**给出完整信息：摘要全文、`适用：…`、`触发词：…` 三行 —— 信息一条没丢；
+    - `description` 只放**纯摘要**（不再拼「适用：…」），适用场景回归 `useFor` 字段，与 0.3.1 的三段解析保持一致。
+  - **为什么面板要显示描述**：面板是你不打开技能文件就能认出技能的唯一地方 —— `glass-ui-effects` / `liquid-glass-ui` / `liquid-glass-motion`、`apple-appstore-rules` / `apple-appstore-submission-checklist` / `mac-appstore-submission` 这些名字本身分不出用途。所以是「显示，但只占一行」。
+  - **测试**：`check-skill-routing.mjs` 增加 3 条守护（描述必须 `line-clamp: 1`、description 只含摘要、悬停提示同时包含描述/适用/触发词）；`skillDescription.test.ts` 追加「description 不该再拼适用场景」。真机 headless Chromium 复核：每行 65px、列表 2465px、`line-clamp=1`、悬停三行齐全。全量 **820/820**、**26** 个 `check-*.mjs` 全绿。
+
 ## 0.3.1
 
 - **根治：技能描述的「触发词」被 240 字符截断吃掉，模型永远匹配不到那些技能**。

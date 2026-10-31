@@ -377,7 +377,9 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 .skill-option strong { font-size: 11px; }
 .skill-badge { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; color: var(--muted); font-style: normal; font-size: 8px; font-weight: 500; }
 .skill-badge.used { color: var(--success); border-color: color-mix(in srgb, var(--success) 48%, var(--border)); }
-.skill-option small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+/* 描述只占一行：38 个技能时全展开会撑成 7 屏（实测 3643px / 面板可视 520px）。
+   完整描述、适用场景与触发词都在 `.skill-option` 的悬停提示里。 */
+.skill-option small { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .skill-option code { color: var(--muted); font: 9px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skills-panel-note { padding: 8px 3px 2px; border-top: 1px solid var(--border); color: var(--muted); font-size: 9px; }
 /* 两条说明连着放时只让第一条画上分隔线，避免出现两条细线。 */

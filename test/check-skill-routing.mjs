@@ -18,6 +18,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const REGISTRY = readFileSync('src/agent/skillRegistry.ts', 'utf8');
+const CHAT_CSS = readFileSync('media/chat.css', 'utf8');
+const CHAT_JS = readFileSync('media/chat.js', 'utf8');
 
 let failures = 0;
 function check(name, pass, detail) {
@@ -52,12 +54,29 @@ check('两段标记按出现位置排序（顺序写反也能切开）',
   '不排序时 Triggers 写在 USE FOR 前面会把适用场景整段吞掉');
 
 check('摘要仍受 240 上限约束（面板一行放得下）',
-  /const description = cleanInline\([\s\S]*?\n\s*240,\s*\n\s*\);/.test(REGISTRY),
+  /const description = cleanInline\(parsed\.summary, 240\);/.test(REGISTRY),
   '摘要是给人看的一句话，不该无限长');
 
 check('frontmatter 支持显式 triggers: 字段',
   /frontmatter\.triggers/.test(REGISTRY) && /triggers\?: string/.test(REGISTRY),
   '显式字段是以后写新技能的推荐方式');
+
+
+// —— 面板显示：描述一行 + 悬停看全部 ——
+//
+// 实测（570px 宽、38 个技能）：描述全展开时每行 96px、列表 3643px，而面板可视只有
+// 520px → 要滚 7 屏。压成一行后 65px / 2465px → 4.7 屏，信息一条没丢（都在悬停里）。
+check('列表里的描述只占一行（不再把面板撑成 7 屏）',
+  /\.skill-option small \{[^}]*line-clamp: 1/.test(CHAT_CSS),
+  '缺 line-clamp 时 240 字符会展开成 3 行');
+
+check('摘要里不再拼「适用：」，与 useFor 字段各管一段',
+  /const description = cleanInline\(parsed\.summary, 240\);/.test(REGISTRY),
+  'description 只放摘要，适用场景进 useFor');
+
+check('悬停提示同时给出描述 / 适用 / 触发词',
+  /chat\.skillsUseFor/.test(CHAT_JS) && /chat\.skillsTriggers/.test(CHAT_JS) && /details\.join\('\\n'\)/.test(CHAT_JS),
+  '悬停是这些信息唯一的展示位');
 
 if (failures) {
   console.log(`\n${failures} 项不满足`);

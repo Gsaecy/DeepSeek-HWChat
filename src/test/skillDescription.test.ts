@@ -151,6 +151,9 @@ test('端到端：长描述技能的触发词确实进了模型看到的路由�
     assert.deepEqual(skill!.triggers, ['关键触发词甲', '关键触发词乙', 'crash-log'], '触发词应单独解析出来');
     assert.equal(skill!.useFor, '处理日志、排查崩溃');
     assert.ok(skill!.description.length <= 240, '面板描述仍受 240 上限约束');
+    // description 只放摘要：适用场景单独一个字段（面板一行显示摘要，适用与触发词进悬停）
+    assert.doesNotMatch(skill!.description, /适用：/, 'description 不该再拼进适用场景');
+    assert.equal(skill!.useFor, '处理日志、排查崩溃');
 
     // 关键：路由表（模型真正看到的那段提示词）必须带触发词。
     const prepared = registry.prepare([skill!.id], 'agent', '');
