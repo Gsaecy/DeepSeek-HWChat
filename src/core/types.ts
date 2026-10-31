@@ -284,6 +284,12 @@ export interface CleanupResult extends StorageStats {
   scannedConversations?: number;
   /** 其中「建了但从没初始化、也没有消息」的残骸条数（已包含在 deletedConversations 里）。 */
   prunedDrafts?: number;
+  /**
+   * 缓存体积是否已超出 `hwchat.cacheBudgetMB`。
+   *
+   * 超预算**不会**触发删除：清理只做瘦身与统计，空间由用户在设置里自己清。
+   */
+  overBudget?: boolean;
 }
 
 export interface ChatRequestMessage {

@@ -26,9 +26,9 @@
   "config.maxTokens": "Maximum tokens per reply; 0 lets the server decide.",
   "config.systemPrompt": "System prompt prepended to every conversation. Left empty, nothing is sent.",
   "config.sendOnEnter": "Enter sends the message; Shift+Enter inserts a newline.",
-  "config.historyRetentionDays": "Days to keep unpinned conversations; 0 never expires them by age.",
+  "config.historyRetentionDays": "Days after which a conversation is shown as \"past retention\" in the storage section. HWChat never deletes conversations on its own — you clean them up from Settings. 0 disables the reminder.",
   "config.taskCacheRetentionHours": "Hours to keep heavy payloads (reasoning, usage, tool details, attachment bodies) for finished tasks. Afterwards the reply and step summary remain. 0 trims immediately.",
-  "config.cacheBudgetMB": "Total history size budget. The oldest unpinned conversations are evicted first.",
+  "config.cacheBudgetMB": "Warning threshold for total history size. Exceeding it only shows a hint: HWChat never evicts conversations by itself. Recycle-bin contents count toward nothing until you empty it.",
   "config.cleanupIntervalMinutes": "Background cleanup interval in minutes.",
   "config.maxMessagesInContext": "Maximum number of history messages sent to the model, so the context cannot grow without bound. 0 means unlimited.",
   "config.defaultMode": "Default mode for new conversations.",
@@ -81,5 +81,6 @@
   "config.searchExclude": "Extra directory names to exclude from HWChat's workspace search, in addition to the built-in list (.git, node_modules, dist, build, out, coverage, .next, .turbo, .venv, venv, __pycache__, DerivedData, .cache).",
   "command.showResourceStats": "Show active/queued searches and running commands (for diagnosing CPU or EAGAIN issues)",
   "command.reportLayout": "Copy layout report",
-  "command.restoreDeletedConversations": "Restore deleted conversations (recycle bin)"
+  "command.restoreDeletedConversations": "Restore deleted conversations (recycle bin)",
+  "command.emptyTrash": "Empty the recycle bin (permanent)"
 }

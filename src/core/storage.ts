@@ -59,18 +59,37 @@ const MANIFEST_VERSION = 1 as const;
  */
 const ARCHIVED_MARKER = '.archived';
 
-/** 预算瘦身的时间下限：最近这段时间内的消息一律不动，见 `slimConversation`。 */
-const SLIM_MIN_AGE_MS = 6 * 60 * 60 * 1000;
+/**
+ * 「归档守护快照」。
+ *
+ * 记录上一次启动时**归档**的对话。下次启动如果某条归档既不在磁盘上、也不在回收站里，
+ * 就说明它在我们不知情的情况下消失了 —— 立刻告警，而不是等几个月后用户自己发现。
+ * 这是唯一能对「未知的删除路径」兜底的手段。
+ */
+interface SafetySnapshot {
+  version: 1;
+  archived: Array<{ id: string; title: string; archivedAt?: number }>;
+  savedAt: number;
+}
 
-/** 回收站保留上限（条数与天数），到期才真正删除。 */
-const TRASH_KEEP_ENTRIES = 40;
-const TRASH_KEEP_DAYS = 30;
-
-/** 自动删除的原因，用于回收站里的记录与提示文案。 */
-export type TrashReason = 'draft' | 'expired' | 'budget';
+/**
+ * 一条对话为什么进了回收站。
+ *
+ * `'expired'` / `'budget'` 只为兼容旧版本写下的条目保留（那时自动清理会直接搬走对话），
+ * 现在 HWChat 只会产生 `'draft'`（空对话）与 `'manual'`（用户自己删的）两种。
+ */
+export type TrashReason = 'draft' | 'expired' | 'budget' | 'manual';
 
 export interface TrashEntry {
+  /**
+   * 回收站里的目录名。
+   *
+   * 平时就是对话 id；同一条对话被反复删除（恢复后又删）时会带时间后缀，
+   * 这样旧的那份不会被新的覆盖掉 —— 覆盖也是丢数据。
+   */
   id: string;
+  /** 原始的对话 id，恢复时按它落回 `conversations/<id>`。 */
+  conversationId: string;
   title: string;
   messageCount: number;
   archived: boolean;
@@ -86,10 +105,13 @@ export class ConversationStorage {
   private readonly conversationsPath: string;
   /** 自动删除（草稿清理 / 超期 / 预算回收）的对话挪到这里，而不是直接 rm。 */
   private readonly trashPath: string;
+  private readonly safetyPath: string;
+  /** 本次启动发现「归档对话无故消失」时的告警，由宿主取走并提示用户。 */
+  private integrityAlert: { missing: Array<{ id: string; title: string }> } | undefined;
   private manifest: Manifest = { version: MANIFEST_VERSION, conversations: [] };
   private initialized = false;
   private initializing: Promise<void> | undefined;
-  private writeTail: Promise<void> = Promise.resolve();
+  private writeTail: Promise<unknown> = Promise.resolve();
   private lastMessageTimestamp = 0;
   /**
    * 首屏消息页缓存（真实性能缺口）。
@@ -126,6 +148,7 @@ export class ConversationStorage {
     this.manifestPath = join(rootPath, 'manifest.json');
     this.conversationsPath = join(rootPath, 'conversations');
     this.trashPath = join(rootPath, 'trash');
+    this.safetyPath = join(rootPath, 'safety.json');
   }
 
   async initialize(): Promise<void> {
@@ -151,6 +174,8 @@ export class ConversationStorage {
         // 约 130ms CPU）。两个入口本来就要逐条读，顺手修好即可，语义完全一致。
         await this.reconcileManifest();
         await this.reconcileArchiveMarkers();
+        // 必须在 reconcile 之后：先让磁盘状态稳定下来，再判断「谁不见了」。
+        await this.checkArchivedIntegrity();
         this.initialized = true;
       })();
     }
@@ -622,21 +647,56 @@ export class ConversationStorage {
         await rm(this.archivedMarkerPath(conversationId), { force: true }).catch(() => undefined);
       }
       await this.persistManifest();
+      await this.persistSafetySnapshot();
     });
     return { ...summary };
   }
 
+  /**
+   * 删除一条对话 —— 但只是**移入回收站**。
+   *
+   * 用户点「删除」表达的是「从列表里拿掉」，不等于「现在就销毁」。真正的销毁只在
+   * 用户清空回收站（设置里的危险区）时发生，所以删错了永远还能找回来。
+   */
   async deleteConversation(conversationId: string): Promise<void> {
     await this.initialize();
-    this.requireSummary(conversationId);
+    const summary = this.requireSummary(conversationId);
     await this.enqueueWrite(async () => {
       this.invalidateMessagePages();
-      // 整条对话目录一起删：只删 `messages/` 会留下空壳，重载后被 reconcile 复活。
-      await rm(this.conversationDirectory(conversationId), { recursive: true, force: true });
+      if (!await this.moveToTrash(conversationId, summary, 'manual')) {
+        // 搬不进回收站就保持原样：宁可删不掉，也不能把内容弄丢。
+        throw new Error(tt('storage.trashFailed'));
+      }
       this.conversationRevisions.delete(conversationId);
       this.cleanupScanCache.delete(conversationId);
       this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== conversationId);
       await this.persistManifest();
+      // 用户明确删掉的，必须立刻从「归档守护快照」里去掉，否则下次启动会误报缺失。
+      await this.persistSafetySnapshot();
+    });
+  }
+
+  /**
+   * 永久清空回收站（**只有用户明确要求时才能调用**）。
+   *
+   * 传入 `entryIds` 只清指定的几条；不传表示清空。这是整个存储里唯一会销毁
+   * 对话内容的地方（另一处是设置里的「清除本地数据」）。
+   */
+  async purgeTrash(entryIds?: string[]): Promise<number> {
+    await this.initialize();
+    return this.enqueueWrite(async () => {
+      const entries = await this.readTrashIndex();
+      const selected = entryIds ? entries.filter((entry) => entryIds.includes(entry.id)) : entries;
+      let removed = 0;
+      for (const entry of selected) {
+        await this.destroyTrashEntry(entry.id);
+        removed += 1;
+      }
+      const remaining = entryIds
+        ? entries.filter((entry) => !entryIds.includes(entry.id))
+        : [];
+      await writeJsonAtomic(this.trashIndexPath, remaining, false).catch(() => undefined);
+      return removed;
     });
   }
 
@@ -650,6 +710,8 @@ export class ConversationStorage {
       this.conversationRevisions.clear();
       this.cleanupScanCache.clear();
       await this.persistManifest();
+      // 清空是用户明确要求的，快照必须一起清掉，否则下次启动会把它们全报成「无故消失」。
+      await this.persistSafetySnapshot();
     });
   }
 
@@ -712,6 +774,7 @@ export class ConversationStorage {
     let deletedConversations = 0;
     let scannedConversations = 0;
     let prunedDrafts = 0;
+    let overBudget = false;
     let totalBytes = 0;
     let totalMessages = 0;
     await this.enqueueWrite(async () => {
@@ -772,7 +835,7 @@ export class ConversationStorage {
       for (const summary of [...this.manifest.conversations]) {
         if (prunableEmptyIds.has(summary.id)) {
           // 自动删除一律进回收站：出问题时还能找回（用户 2026-10-31 报过数据丢失）。
-          await this.moveToTrash(summary.id, summary, 'draft');
+          if (!await this.moveToTrash(summary.id, summary, 'draft')) continue;
           this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== summary.id);
           this.conversationRevisions.delete(summary.id);
           this.cleanupScanCache.delete(summary.id);
@@ -829,7 +892,7 @@ export class ConversationStorage {
           && !protectedIds.has(summary.id)
           && now - summary.createdAt >= 60_000
         ) {
-          await this.moveToTrash(summary.id, summary, 'draft');
+          if (!await this.moveToTrash(summary.id, summary, 'draft')) continue;
           this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== summary.id);
           this.conversationRevisions.delete(summary.id);
           this.cleanupScanCache.delete(summary.id);
@@ -837,16 +900,6 @@ export class ConversationStorage {
           countById.delete(summary.id);
           deletedConversations += 1;
           prunedDrafts += 1;
-          continue;
-        }
-        if (!summary.pinned && !summary.archived && !protectedIds.has(summary.id) && historyMs > 0 && now - summary.updatedAt >= historyMs) {
-          await this.moveToTrash(summary.id, summary, 'expired');
-          this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== summary.id);
-          this.conversationRevisions.delete(summary.id);
-          this.cleanupScanCache.delete(summary.id);
-          bytesById.delete(summary.id);
-          countById.delete(summary.id);
-          deletedConversations += 1;
           continue;
         }
         const bytes = compactedHere > 0 || !cached || cached.revision !== revision
@@ -864,63 +917,16 @@ export class ConversationStorage {
         return total;
       };
       const budgetBytes = Math.max(5, options.cacheBudgetMB) * 1024 * 1024;
-      let currentBytes = sum(bytesById) + await stat(this.manifestPath).then((value) => value.size).catch(() => 0);
-      if (currentBytes > budgetBytes) {
-        const evictable = this.manifest.conversations
-          .filter((summary) => !summary.pinned && !summary.archived && !protectedIds.has(summary.id))
-          .sort((a, b) => a.updatedAt - b.updatedAt);
-        /*
-         * 先瘦身，再考虑删整条。
-         *
-         * 用户 2026-10-31 报告 13 条归档对话在一次清理后彻底消失。取证显示单条活跃
-         * 对话就有 77MB（几乎全是 base64 缩略图和工具输出），预算是 100MB —— 也就是说
-         * 只要再多一条对话，回收就会把**整条**对话搬走。对话本身只有几百 KB，真正撑爆
-         * 预算的是可再生的缓存。所以顺序必须反过来：先把这些缓存削掉，实在还超才删。
-         */
-        /*
-         * 瘦身顺序：先削「本来就可以删的」对话，最后才动置顶与归档。
-         *
-         * 归档/置顶是用户明确表示「这条要留着」的信号，它们的缓存能不动就不动 ——
-         * 先削的应该是那些本来就在候选删除队列里的对话。
-         */
-        const slimOrder = [
-          ...evictable,
-          ...this.manifest.conversations.filter((summary) => !evictable.includes(summary)),
-        ];
-        for (const summary of slimOrder) {
-          if (currentBytes <= budgetBytes) {
-            break;
-          }
-          const before = bytesById.get(summary.id) ?? 0;
-          const slim = await this.slimConversation(summary.id, now);
-          if (slim.saved <= 0) continue;
-          const after = Math.max(0, before - slim.saved);
-          bytesById.set(summary.id, after);
-          currentBytes = Math.max(0, currentBytes - (before - after));
-          deletedMessageCacheBytes += slim.saved;
-          compactedMessages += slim.messages;
-          const cachedEntry = this.cleanupScanCache.get(summary.id);
-          if (cachedEntry) {
-            this.cleanupScanCache.set(summary.id, { ...cachedEntry, bytes: after });
-          }
-        }
-        for (const summary of evictable) {
-          if (currentBytes <= budgetBytes) {
-            break;
-          }
-          const before = bytesById.get(summary.id) ?? 0;
-          await this.moveToTrash(summary.id, summary, 'budget');
-          this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== summary.id);
-          this.conversationRevisions.delete(summary.id);
-          this.cleanupScanCache.delete(summary.id);
-          bytesById.delete(summary.id);
-          countById.delete(summary.id);
-          currentBytes = Math.max(0, currentBytes - before);
-          deletedConversations += 1;
-        }
-        await this.persistManifest();
-      }
-      await this.pruneTrash();
+      const currentBytes = sum(bytesById) + await stat(this.manifestPath).then((value) => value.size).catch(() => 0);
+      /*
+       * 超预算只是**报告**，不再动手。
+       *
+       * 旧实现在这里把最旧的未保护对话整条搬走 —— 用户 2026-10-31 报的 13 条归档
+       * 丢失就是这条路径（保护字段一失效，它就把归档当普通旧对话挤出去）。现在的规则
+       * 只有一条：HWChat 不会自己让任何一条对话消失；空间不够就告诉用户，由用户在
+       * 设置里决定清什么。
+       */
+      overBudget = currentBytes > budgetBytes;
       this.cleanupScanAt = Date.now();
       this.cleanupScanKey = scanKey;
       totalBytes = currentBytes;
@@ -936,6 +942,7 @@ export class ConversationStorage {
       deletedMessageCacheBytes,
       scannedConversations,
       prunedDrafts,
+      overBudget,
     };
   }
 
@@ -1023,20 +1030,49 @@ export class ConversationStorage {
    * 用户**主动**删除（点 × / 删除命令）仍走 `deleteConversation` 直接删 —— 那是
    * 明确的意图，不该在回收站里留一份让人以为没删掉。
    */
-  private async moveToTrash(conversationId: string, summary: ConversationSummary | undefined, reason: TrashReason): Promise<void> {
-    await mkdir(this.trashPath, { recursive: true });
-    const destination = join(this.trashPath, conversationId);
-    await rm(destination, { recursive: true, force: true });
+  private async moveToTrash(conversationId: string, summary: ConversationSummary | undefined, reason: TrashReason): Promise<boolean> {
+    const source = this.conversationDirectory(conversationId);
+    const sourceMessages = (await this.messageFiles(conversationId)).length;
+    let entryId = conversationId;
+    let destination = join(this.trashPath, entryId);
+    let moved = false;
+    /*
+     * 整段都用 try 包住：`mkdir` 也可能失败（磁盘满、回收站路径被占成普通文件、
+     * 权限被改）。任何一步失败都只意味着「这次别删」，绝不能把异常吞掉后继续删原件，
+     * 更不能让一个搬运失败把整轮清理打断。
+     */
     try {
-      await rename(this.conversationDirectory(conversationId), destination);
+      await mkdir(this.trashPath, { recursive: true });
+      // 同名目录已经在回收站里（恢复后又删一次）→ 换个名字，旧的那份原样留着。
+      if (existsSync(destination)) {
+        entryId = `${conversationId}.${Date.now()}`;
+        destination = join(this.trashPath, entryId);
+      }
+      try {
+        await rename(source, destination);
+        moved = true;
+      } catch {
+        moved = await this.copyDirectoryVerified(source, destination, sourceMessages);
+      }
     } catch {
-      // 目录不存在（或跨设备）：退化为 copy 再删原目录，仍然不直接丢内容。
-      await cp(this.conversationDirectory(conversationId), destination, { recursive: true, errorOnExist: false }).catch(() => undefined);
-      await rm(this.conversationDirectory(conversationId), { recursive: true, force: true });
+      moved = false;
+    }
+    /*
+     * 搬不进去就**什么都不做**。
+     *
+     * 旧实现在 `cp` 失败时用 `.catch(() => undefined)` 吞掉错误，紧接着无条件
+     * `rm` 原目录 —— 拷贝失败等于直接销毁，这正是「删除」本该避免的事。
+     * 现在只有确认目标目录里消息文件数与源一致，才认为搬成功了；否则保留原件、
+     * 返回 false，让调用方把这条对话留在清单里。
+     */
+    if (!moved) {
+      await rm(destination, { recursive: true, force: true }).catch(() => undefined);
+      return false;
     }
     const entries = await this.readTrashIndex();
     entries.push({
-      id: conversationId,
+      id: entryId,
+      conversationId,
       title: summary?.title ?? conversationId,
       messageCount: summary?.messageCount ?? 0,
       archived: Boolean(summary?.archived),
@@ -1044,73 +1080,47 @@ export class ConversationStorage {
       reason,
     });
     await writeJsonAtomic(this.trashIndexPath, entries, false).catch(() => undefined);
+    return true;
   }
 
   /**
-   * 预算超限时的第一手段：把一条对话里的缓存就地削掉，返回**实际释放**的字节数。
+   * 复制一个对话目录到目标位置，并**核对消息文件数**。
    *
-   * 删的是可再生的东西（推理过程、工具输入输出、附件 base64/缩略图、选区原文），
-   * 消息本身、顺序、时间、正文一个字都不动。返回 0 表示这条对话已经没有可削的缓存，
-   * 调用方可以据此决定是否还要删整条。
+   * 用于 `rename` 跨设备失败时的退化路径。只有数量一致才返回 true 并由调用方删除源；
+   * 数量不一致说明拷贝不完整 —— 此时删源就是把对话变成半截，必须放弃。
    */
-  private async slimConversation(id: string, now: number): Promise<{ saved: number; messages: number }> {
-    const directory = this.messageDirectory(id);
-    const files = await this.messageFiles(id);
-    let saved = 0;
-    let touched = 0;
-    for (const file of files) {
-      const path = join(directory, file);
-      const message = await readJsonWithBackup<ChatMessage>(path);
-      if (!message || message.status === 'streaming') continue;
-      /*
-       * 最近 `SLIM_MIN_AGE_MS` 内的消息一律不动。
-       *
-       * 保留下限是为了不制造「刚发出去的图变成文件条目」这种当场可见的退化：
-       * 预算压力来自长期堆积的历史，最近几小时的内容还在被用，削掉只会让人以为
-       * 功能坏了。真正紧急时（削完仍超预算）走的还是「移入回收站」，那条路径可恢复。
-       */
-      if (now - message.updatedAt < SLIM_MIN_AGE_MS) continue;
-      if (stripMessagePayload(message) <= 0) continue;
-      // 按文件真实大小记账：`stripMessagePayload` 返回的是字段原值字节数，包含 JSON
-      // 转义/结构开销，用它算预算会让「已释放」大于磁盘实际释放，回收就会提前停下。
-      const before = await stat(path).then((value) => value.size).catch(() => 0);
-      message.updatedAt = now;
-      await writeJsonAtomic(path, message);
-      await removeIfPresent(`${path}.bak`);
-      const after = await stat(path).then((value) => value.size).catch(() => 0);
-      saved += Math.max(0, before - after);
-      touched += 1;
+  private async copyDirectoryVerified(source: string, destination: string, expectedMessages: number): Promise<boolean> {
+    await rm(destination, { recursive: true, force: true }).catch(() => undefined);
+    try {
+      await cp(source, destination, { recursive: true, errorOnExist: false });
+    } catch {
+      return false;
     }
-    if (touched > 0) {
-      // 瘦身后的对话内容变了：让页缓存失效，避免界面继续显示带附件的旧副本。
-      this.invalidateMessagePages();
-      this.cleanupScanCache.delete(id);
-    }
-    return { saved: Math.max(0, saved), messages: touched };
+    const copied = (await readdir(join(destination, 'messages')).catch(() => [] as string[]))
+      .filter((file) => file.endsWith('.json') && !file.endsWith('.bak')).length;
+    return copied === expectedMessages;
   }
 
   /**
-   * 回收站自身的上限：保留最近 `TRASH_KEEP_ENTRIES` 条、`TRASH_KEEP_DAYS` 天。
+   * 销毁回收站里的**一条**记录。
    *
-   * 不加上限的话，预算回收每次都往回收站里搬 77MB 级别的对话，磁盘会翻倍。
-   * 到期才真正删除（这才是唯一会 `rm -rf` 的自动路径，且有明确的时间窗口）。
+   * 只有 `purgeTrash()` 会走到这里 —— 也就是用户在设置里点「清空回收站」的时候。
+   * 回收站不再有「到期自动清理」：工具替用户决定「这条放 30 天了，可以真删了」，
+   * 和自动删对话是同一类问题 —— 用户报告数据丢失时，看到的正是这种「没人下令就没了」。
    */
-  private async pruneTrash(): Promise<void> {
+  private async destroyTrashEntry(entryId: string): Promise<void> {
+    await rm(join(this.trashPath, entryId), { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  /** 回收站用量（设置页展示用）：条数与实际磁盘占用。 */
+  async trashStats(): Promise<{ count: number; bytes: number }> {
+    await this.initialize();
     const entries = await this.readTrashIndex();
-    if (!entries.length) return;
-    const cutoff = Date.now() - TRASH_KEEP_DAYS * 24 * 60 * 60 * 1000;
-    const sorted = entries.sort((left, right) => right.deletedAt - left.deletedAt);
-    const keep: TrashEntry[] = [];
-    const drop: TrashEntry[] = [];
-    sorted.forEach((entry, index) => {
-      if (index < TRASH_KEEP_ENTRIES && entry.deletedAt >= cutoff) keep.push(entry);
-      else drop.push(entry);
-    });
-    if (!drop.length) return;
-    for (const entry of drop) {
-      await rm(join(this.trashPath, entry.id), { recursive: true, force: true }).catch(() => undefined);
+    let bytes = 0;
+    for (const entry of entries) {
+      bytes += await this.measureDirectory(join(this.trashPath, entry.id));
     }
-    await writeJsonAtomic(this.trashIndexPath, keep, false).catch(() => undefined);
+    return { count: entries.length, bytes };
   }
 
   private get trashIndexPath(): string {
@@ -1135,22 +1145,33 @@ export class ConversationStorage {
    * 目录挪回 `conversations/`，再让 `reconcileManifest` 按磁盘重建摘要 —— 不依赖
    * 当初那份 manifest（那份可能正是出问题的那份）。
    */
-  async restoreFromTrash(conversationId: string): Promise<boolean> {
+  async restoreFromTrash(entryId: string): Promise<boolean> {
     await this.initialize();
     const entries = await this.readTrashIndex();
-    const entry = entries.find((item) => item.id === conversationId);
-    const source = join(this.trashPath, conversationId);
-    if (!entry || !existsSync(source)) return false;
+    const entry = entries.find((item) => item.id === entryId);
+    if (!entry) return false;
+    const source = join(this.trashPath, entryId);
+    if (!existsSync(source)) return false;
     await mkdir(this.conversationsPath, { recursive: true });
-    const destination = this.conversationDirectory(conversationId);
-    await rm(destination, { recursive: true, force: true });
-    await rename(source, destination).catch(async () => {
-      await cp(source, destination, { recursive: true, errorOnExist: false }).catch(() => undefined);
-      await rm(source, { recursive: true, force: true });
-    });
-    await writeJsonAtomic(this.trashIndexPath, entries.filter((item) => item.id !== conversationId), false).catch(() => undefined);
+    const destination = this.conversationDirectory(entry.conversationId);
+    // 同 id 的对话又活在磁盘上（恢复过、又新建了同 id）→ 不动它，也不动回收站里的那份。
+    if (existsSync(destination)) return false;
+    const expected = (await readdir(join(source, 'messages')).catch(() => [] as string[]))
+      .filter((file) => file.endsWith('.json') && !file.endsWith('.bak')).length;
+    let restored = false;
+    try {
+      await rename(source, destination);
+      restored = true;
+    } catch {
+      restored = await this.copyDirectoryVerified(source, destination, expected);
+      // 只有核对通过才允许删源；没拷贝成功就保持回收站原样。
+      if (restored) await rm(source, { recursive: true, force: true }).catch(() => undefined);
+    }
+    if (!restored) return false;
+    await writeJsonAtomic(this.trashIndexPath, entries.filter((item) => item.id !== entryId), false).catch(() => undefined);
     this.invalidateMessagePages();
     await this.reconcileManifest();
+    await this.persistSafetySnapshot();
     return true;
   }
 
@@ -1179,9 +1200,9 @@ export class ConversationStorage {
     await writeJsonAtomic(this.manifestPath, this.manifest);
   }
 
-  private enqueueWrite(task: () => Promise<void>): Promise<void> {
+  private enqueueWrite<T = void>(task: () => Promise<T>): Promise<T> {
     const next = this.writeTail.then(task, task);
-    this.writeTail = next.catch(() => undefined);
+    this.writeTail = next.then(() => undefined, () => undefined);
     return next;
   }
 
@@ -1231,6 +1252,44 @@ export class ConversationStorage {
     }
     this.manifest = { version: MANIFEST_VERSION, conversations };
     await this.persistManifest();
+  }
+
+  /** 取走本次启动的完整性告警（取过一次就清空，避免每个窗口都弹）。 */
+  takeIntegrityAlert(): { missing: Array<{ id: string; title: string }> } | undefined {
+    const alert = this.integrityAlert;
+    this.integrityAlert = undefined;
+    return alert;
+  }
+
+  /**
+   * 对比上次的归档清单，找出「既不在这条磁盘上、也不在回收站里」的对话。
+   *
+   * 只在启动时跑一次，不写任何东西到对话目录；发现异常也**不会**尝试修复 ——
+   * 内容已经没了，能做的只有立刻告诉用户，让用户拿备份、并让我们知道出了新问题。
+   */
+  private async checkArchivedIntegrity(): Promise<void> {
+    const previous = await readJsonWithBackup<SafetySnapshot>(this.safetyPath).catch(() => undefined);
+    if (previous?.version === 1 && Array.isArray(previous.archived)) {
+      const live = new Set(this.manifest.conversations.map((summary) => summary.id));
+      const trashed = new Set((await this.readTrashIndex()).map((entry) => entry.conversationId));
+      const missing = previous.archived.filter((item) => !live.has(item.id) && !trashed.has(item.id));
+      if (missing.length) {
+        this.integrityAlert = { missing: missing.map((item) => ({ id: item.id, title: item.title })) };
+      }
+    }
+    await this.persistSafetySnapshot();
+  }
+
+  /** 把当前归档清单写成下一次启动的对照基准。 */
+  private async persistSafetySnapshot(): Promise<void> {
+    const snapshot: SafetySnapshot = {
+      version: 1,
+      archived: this.manifest.conversations
+        .filter((summary) => summary.archived)
+        .map((summary) => ({ id: summary.id, title: summary.title, archivedAt: summary.archivedAt })),
+      savedAt: Date.now(),
+    };
+    await writeJsonAtomic(this.safetyPath, snapshot, false).catch(() => undefined);
   }
 
   /**

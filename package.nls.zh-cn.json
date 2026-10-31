@@ -26,9 +26,9 @@
   "config.maxTokens": "单次回复的 token 上限，0 表示由服务端决定。",
   "config.systemPrompt": "每次对话前追加的系统提示词。留空则不发送。",
   "config.sendOnEnter": "回车发送，Shift+回车换行。",
-  "config.historyRetentionDays": "未固定的对话保留天数，0 表示永不按时间清理。",
+  "config.historyRetentionDays": "超过这个天数的对话会在设置里标为「已过保留期」，并给出清理入口。HWChat 不会自己删除任何对话，清理由你在设置里执行。0 表示不提示。",
   "config.taskCacheRetentionHours": "已完成任务的重内容（思考、用量、工具详情、附件正文）保留小时数；超时后保留回复与执行摘要。0 表示立即瘦身。",
-  "config.cacheBudgetMB": "历史记录总体积上限。超出后从最久未使用的未固定对话开始淘汰。",
+  "config.cacheBudgetMB": "历史记录总体积的**提示**阈值。超出只给提示，HWChat 不会自己淘汰对话。",
   "config.cleanupIntervalMinutes": "后台清理任务的执行间隔（分钟）。",
   "config.maxMessagesInContext": "发送给模型的历史消息条数上限，避免上下文无限膨胀。0 表示不限制。",
   "config.defaultMode": "新对话的默认工作模式。",
@@ -81,5 +81,6 @@
   "config.searchExclude": "在默认排除列表（.git、node_modules、dist、build、out、coverage、.next、.turbo、.venv、venv、__pycache__、DerivedData、.cache）之外，额外不参与工作区搜索的目录名。",
   "command.showResourceStats": "显示活动/排队的搜索与正在运行的命令（用于诊断 CPU 占用或 EAGAIN 问题）",
   "command.reportLayout": "复制布局诊断",
-  "command.restoreDeletedConversations": "恢复已删除的对话（回收站）"
+  "command.restoreDeletedConversations": "恢复已删除的对话（回收站）",
+  "command.emptyTrash": "清空回收站（永久删除）"
 }

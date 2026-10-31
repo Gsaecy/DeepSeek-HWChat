@@ -149,26 +149,27 @@ test('updates conversation token totals without double-counting streaming checkp
   });
 });
 
-test('keeps pinned history when retention cleanup removes expired conversations', async () => {
+test('never removes a conversation because of the retention window', async () => {
   await withStorage(async (storage) => {
-    const removable = await storage.createConversation('普通对话');
-    await storage.appendMessage(removable.id, { role: 'user', content: 'remove', status: 'complete' });
+    const plain = await storage.createConversation('普通对话');
+    await storage.appendMessage(plain.id, { role: 'user', content: 'remove', status: 'complete' });
     const pinned = await storage.createConversation('固定对话');
     await storage.appendMessage(pinned.id, { role: 'user', content: 'keep', status: 'complete' });
     await storage.setPinned(pinned.id, true);
     await new Promise((resolve) => setTimeout(resolve, 15));
 
-    await storage.cleanup({
+    const result = await storage.cleanup({
       historyRetentionDays: 0.0000001,
       taskCacheRetentionHours: 24,
       cacheBudgetMB: 100,
     });
-    const ids = (await storage.listConversations()).map((item) => item.id);
-    assert.deepEqual(ids, [pinned.id]);
+    assert.equal(result.deletedConversations, 0, '保留期到期不是删除理由');
+    const ids = (await storage.listConversations()).map((item) => item.id).sort();
+    assert.deepEqual(ids, [plain.id, pinned.id].sort(), '置顶与否都不该被自动删掉');
   });
 });
 
-test('evicts old unpinned history before pinned history when over budget', async () => {
+test('reports over-budget instead of evicting conversations', async () => {
   await withStorage(async (storage) => {
     const old = await storage.createConversation('旧对话');
     await storage.appendMessage(old.id, {
@@ -189,9 +190,12 @@ test('evicts old unpinned history before pinned history when over budget', async
       taskCacheRetentionHours: 24,
       cacheBudgetMB: 5,
     });
-    const ids = (await storage.listConversations()).map((item) => item.id);
-    assert.ok(result.deletedConversations >= 1);
-    assert.deepEqual(ids, [pinned.id]);
+    // 超预算只是报告：删哪一条是用户的决定，不是清理器的决定。
+    assert.equal(result.overBudget, true);
+    assert.equal(result.deletedConversations, 0, '超预算不许自动删除任何对话');
+    // 列表按「置顶优先」排，所以这里只比集合，不比顺序。
+    const ids = (await storage.listConversations()).map((item) => item.id).sort();
+    assert.deepEqual(ids, [old.id, pinned.id].sort(), '两条都必须还在');
   });
 });
 
@@ -878,33 +882,50 @@ test('执行状态：重启时把没结算的 running/pending 收口，不永远
   });
 });
 
-test('moves automatically expired conversations to the recycle bin instead of deleting them', async () => {
+test('deleting a conversation moves it to the recycle bin and it can be restored', async () => {
   await withStorage(async (storage) => {
-    const conversation = await storage.createConversation('会被清理的对话');
+    const conversation = await storage.createConversation('会被删掉的对话');
     await storage.appendMessage(conversation.id, { role: 'user', content: '这条内容必须还能找回', status: 'complete' });
-    await new Promise((resolve) => setTimeout(resolve, 15));
 
-    const result = await storage.cleanup({
-      historyRetentionDays: 0.0000001,
-      taskCacheRetentionHours: 24,
-      cacheBudgetMB: 100,
-    });
-    assert.equal(result.deletedConversations, 1);
+    await storage.deleteConversation(conversation.id);
     assert.equal((await storage.listConversations()).length, 0);
 
-    // 「删除」现在是移入回收站：条目在、内容也在。
+    // 「删除」只是移入回收站：条目在、内容也在。
     const trash = await storage.listTrash();
     assert.equal(trash.length, 1);
-    assert.equal(trash[0]?.id, conversation.id);
-    assert.equal(trash[0]?.reason, 'expired');
+    assert.equal(trash[0]?.conversationId, conversation.id);
+    assert.equal(trash[0]?.reason, 'manual');
 
-    assert.equal(await storage.restoreFromTrash(conversation.id), true);
+    assert.equal(await storage.restoreFromTrash(trash[0]!.id), true);
     const restored = await storage.listConversations();
     assert.equal(restored.length, 1);
     assert.equal(restored[0]?.id, conversation.id);
     const messages = await storage.getAllMessages(conversation.id);
     assert.equal(messages[0]?.content, '这条内容必须还能找回');
     assert.equal((await storage.listTrash()).length, 0);
+  });
+});
+
+test('only the user can purge the recycle bin, and cleanup never does it', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation('归档且被删');
+    await storage.appendMessage(conversation.id, { role: 'user', content: 'keep me', status: 'complete' });
+    await storage.setArchived(conversation.id, true);
+    await storage.deleteConversation(conversation.id);
+
+    // 清理跑很多轮也不许碰回收站：这里没有「到期自动清理」。
+    for (let index = 0; index < 3; index += 1) {
+      await storage.cleanup({ historyRetentionDays: 0.0000001, taskCacheRetentionHours: 0, cacheBudgetMB: 5 });
+    }
+    assert.equal((await storage.listTrash()).length, 1, '清理不许清空回收站');
+    assert.equal(await storage.restoreFromTrash((await storage.listTrash())[0]!.id), true);
+
+    // 用户明确清空才是真删除。
+    await storage.deleteConversation(conversation.id);
+    assert.equal(await storage.purgeTrash(), 1);
+    assert.equal((await storage.listTrash()).length, 0);
+    assert.equal((await storage.listConversations()).length, 0);
+    assert.equal(await storage.restoreFromTrash('missing'), false);
   });
 });
 
@@ -918,89 +939,23 @@ test('keeps archived conversations protected when the manifest is lost', async (
     await new Promise((resolve) => setTimeout(resolve, 15));
 
     /*
-     * 复现用户报告的那次数据丢失：manifest 读不出来 → 走 rebuild 重建。
-     * 旧实现在这里会把所有对话重建成 `archived: false`，紧接着的超期清理
+     * 复现用户报告的那次数据丢失：manifest 读不出来 → 走重建。
+     * 旧实现在这里会把所有对话重建成 `archived: false`，紧接着的清理
      * 就把归档对话当普通旧对话删掉了。
      */
     await writeFile(join(root, 'manifest.json'), '{not-json', 'utf8');
     const recovered = new ConversationStorage(root);
     await recovered.initialize();
-    const summaries = await recovered.listConversations().catch(() => []);
+    const summaries = await recovered.listConversations({ includeArchived: true }).catch(() => []);
     const archivedSummary = summaries.find((item) => item.id === archived.id);
     assert.equal(archivedSummary?.archived, true, '重建后归档标记必须保留');
 
     await recovered.cleanup({
       historyRetentionDays: 0.0000001,
       taskCacheRetentionHours: 24,
-      cacheBudgetMB: 100,
-    });
-    const ids = (await recovered.listConversations()).map((item) => item.id);
-    assert.deepEqual(ids, [archived.id]);
-  });
-});
-
-/** 把一条已落盘的消息改成「很久以前」，用来绕过预算瘦身的时间下限。 */
-async function ageMessageOnDisk(root: string, conversationId: string, messageId: string, ageMs: number): Promise<void> {
-  const path = join(root, 'conversations', conversationId, 'messages', `${messageId}.json`);
-  const message = JSON.parse(await readFile(path, 'utf8'));
-  message.updatedAt = Date.now() - ageMs;
-  await writeFile(path, JSON.stringify(message), 'utf8');
-}
-
-test('slims cached payloads before deleting a conversation when over budget', async () => {
-  await withStorage(async (storage, root) => {
-    const conversation = await storage.createConversation('带大附件的对话');
-    const message = await storage.appendMessage(conversation.id, {
-      role: 'user',
-      content: '附件很占地方，但正文不能丢',
-      status: 'complete',
-      // 8MB 的 base64 缩略图：预算 5MB 一定超，但它是可再生的缓存。
-      attachments: [{ label: 'shot.png', kind: 'image', dataBase64: 'A'.repeat(8 * 1024 * 1024) }],
-    });
-    // 超过瘦身时间下限（6 小时）才会被削缓存。
-    await ageMessageOnDisk(root, conversation.id, message.id, 7 * 60 * 60 * 1000);
-
-    const result = await storage.cleanup({
-      historyRetentionDays: 0,
-      taskCacheRetentionHours: 24,
       cacheBudgetMB: 5,
     });
-
-    // 对话必须还在：削缓存已经够用了，不该删整条。
-    assert.equal(result.deletedConversations, 0);
-    const ids = (await storage.listConversations()).map((item) => item.id);
-    assert.deepEqual(ids, [conversation.id]);
-    const stored = (await storage.getAllMessages(conversation.id))[0];
-    assert.equal(stored?.content, '附件很占地方，但正文不能丢');
-    assert.equal(stored?.attachments?.[0]?.dataBase64, undefined, 'base64 缓存应被削掉');
-    assert.equal(stored?.attachments?.[0]?.label, 'shot.png', '附件描述必须保留');
-    assert.ok(result.deletedMessageCacheBytes > 1024 * 1024);
-  });
-});
-
-test('never slims cache of messages from the last few hours, even when over budget', async () => {
-  await withStorage(async (storage) => {
-    const conversation = await storage.createConversation('刚发的大附件');
-    await storage.appendMessage(conversation.id, {
-      role: 'user',
-      content: '刚贴了一张图',
-      status: 'complete',
-      attachments: [{ label: 'fresh.png', kind: 'image', dataBase64: 'B'.repeat(8 * 1024 * 1024) }],
-    });
-
-    const result = await storage.cleanup({
-      historyRetentionDays: 0,
-      taskCacheRetentionHours: 24,
-      cacheBudgetMB: 5,
-    });
-
-    // 刚发的内容不许被削：否则用户看到的是「图突然变成文件条目」。
-    assert.equal(result.deletedMessageCacheBytes, 0);
-    // 削不动就只能整条挪进回收站 —— 但内容一个字节都不能少，能原样恢复。
-    assert.equal(result.deletedConversations, 1);
-    assert.equal((await storage.listConversations()).length, 0);
-    assert.equal(await storage.restoreFromTrash(conversation.id), true);
-    const stored = (await storage.getAllMessages(conversation.id))[0];
-    assert.ok(stored?.attachments?.[0]?.dataBase64, '恢复后附件缓存必须原样还在');
+    const ids = (await recovered.listConversations({ includeArchived: true })).map((item) => item.id).sort();
+    assert.deepEqual(ids, [active.id, archived.id].sort());
   });
 });

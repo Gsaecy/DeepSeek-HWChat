@@ -26,6 +26,8 @@ type IncomingMessage =
   | { type: 'rescanSkills' }
   | { type: 'openSkillFolder' }
   | { type: 'clearLocalData' }
+  | { type: 'emptyTrash' }
+  | { type: 'restoreTrash' }
   | { type: 'openNativeSettings' };
 
 export class SettingsPanel implements vscode.Disposable {
@@ -123,6 +125,12 @@ export class SettingsPanel implements vscode.Disposable {
         case 'clearLocalData':
           await this.clearLocalData();
           break;
+        case 'emptyTrash':
+          await this.emptyTrash();
+          break;
+        case 'restoreTrash':
+          await vscode.commands.executeCommand('hwchat.restoreDeletedConversations');
+          break;
         case 'openNativeSettings':
           await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:honor-world.hwchat');
           break;
@@ -209,6 +217,25 @@ export class SettingsPanel implements vscode.Disposable {
     await this.post({ type: 'toast', tone: 'success', text: tt('settings.exportedAll') });
   }
 
+  private async emptyTrash(): Promise<void> {
+    const stats = await this.storage.trashStats();
+    if (!stats.count) {
+      await this.post({ type: 'toast', tone: 'info', text: tt('settings.storage.trashEmpty') });
+      return;
+    }
+    // 这是唯一会永久销毁对话内容的按钮，必须二次确认。
+    const answer = await vscode.window.showWarningMessage(
+      tt('ext.emptyTrashConfirm', { count: stats.count, size: `${(stats.bytes / 1024 / 1024).toFixed(1)} MB` }),
+      { modal: true, detail: tt('ext.emptyTrashDetail') },
+      tt('ext.emptyTrashAction'),
+    );
+    if (answer !== tt('ext.emptyTrashAction')) return;
+    const removed = await this.storage.purgeTrash();
+    this.callbacks.onChanged();
+    await this.sendState();
+    await this.post({ type: 'toast', tone: 'success', text: tt('ext.emptyTrashDone', { count: removed }) });
+  }
+
   private async clearLocalData(): Promise<void> {
     if (this.callbacks.isAgentBusy()) {
       throw new Error(tt('settings.busy'));
@@ -240,6 +267,7 @@ export class SettingsPanel implements vscode.Disposable {
       apiKeyConfigured: Boolean(apiKeyConfiguredByProfile[settings.activeApiProfileId]),
       apiKeyConfiguredByProfile,
       stats,
+      trash: await this.storage.trashStats(),
       skills: this.skills.list(),
       workspaceTrusted: vscode.workspace.isTrusted,
       workspaceFolderCount: vscode.workspace.workspaceFolders?.length ?? 0,
@@ -361,7 +389,9 @@ export class SettingsPanel implements vscode.Disposable {
             <label class="setting-row"><span><strong>${t(lang, 'settings.storage.budget')}</strong><small>${t(lang, 'settings.storage.budgetHint')}</small></span><span class="stepper"><input id="cacheBudgetMB" type="number" min="5"><span>MB</span></span></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.storage.cleanupInterval')}</strong></span><span class="stepper"><input id="cleanupIntervalMinutes" type="number" min="1"><span>${t(lang, 'common.minutes')}</span></span></label>
           </div>
-          <div class="storage-actions"><button id="cleanupButton" type="button">${t(lang, 'settings.storage.cleanupNow')}</button><button id="exportAllButton" type="button">${t(lang, 'settings.storage.exportAll')}</button></div>
+          <div class="stats-row"><span><strong id="trashCount">0</strong> ${t(lang, 'settings.storage.trashCount')}</span><span id="trashSize">0 MB</span></div>
+          <p class="settings-hint">${t(lang, 'settings.storage.trashHint')}</p>
+          <div class="storage-actions"><button id="cleanupButton" type="button">${t(lang, 'settings.storage.cleanupNow')}</button><button id="restoreTrashButton" type="button">${t(lang, 'settings.storage.restoreTrash')}</button><button id="emptyTrashButton" class="danger" type="button">${t(lang, 'settings.storage.emptyTrash')}</button><button id="exportAllButton" type="button">${t(lang, 'settings.storage.exportAll')}</button></div>
         </section>
       </div>
     </main>

@@ -100,21 +100,26 @@ test('a conversation written after a scan is still compacted', async () => {
   });
 });
 
-test('a conversation that becomes expired is still deleted even without new writes', async () => {
+test('crossing the retention window forces a rescan but never deletes the conversation', async () => {
   await withStorage(async (storage) => {
     const conversation = await storage.createConversation('陈旧记录');
     await storage.appendMessage(conversation.id, { role: 'user', content: '内容', status: 'complete' });
 
     // 1e-5 天 ≈ 864ms：留足余量，避免整套测试并发跑时「第一轮就已经过期」把断言弄成偶发失败。
     const options = { ...baseOptions, historyRetentionDays: 1e-5, protectedConversationIds: [] };
-    const first = await storage.cleanup(options);
-    assert.equal(first.deletedConversations, 0, '刚写完不该被判过期');
+    await storage.cleanup(options);
 
     await new Promise((resolve) => setTimeout(resolve, 900));
     const second = await storage.cleanup(options);
+    // 时间越过窗口必须重新扫一遍（增量记账不能把「时间前进」当成「什么都没变」）。
     assert.equal(second.scannedConversations, 1, '时间越过保留期时必须重新判定，不能因为「没写入」就跳过');
-    assert.equal(second.deletedConversations, 1);
-    assert.equal((await storage.listConversations()).length, 0);
+    /*
+     * 但「保留期到了」只意味着可以瘦身，**不意味着可以消失**。
+     * HWChat 不再因为任何时限自动移除对话：那是用户报告丢数据之后定下的规则。
+     */
+    assert.equal(second.deletedConversations, 0, '保留期到期不许自动删除对话');
+    const ids = (await storage.listConversations()).map((item) => item.id);
+    assert.deepEqual(ids, [conversation.id]);
   });
 });
 

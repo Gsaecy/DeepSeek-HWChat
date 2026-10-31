@@ -41,6 +41,10 @@
     storageSize: document.getElementById('storageSize'),
     storageMeterFill: document.getElementById('storageMeterFill'),
     conversationCount: document.getElementById('conversationCount'),
+    trashCount: document.getElementById('trashCount'),
+    trashSize: document.getElementById('trashSize'),
+    emptyTrashButton: document.getElementById('emptyTrashButton'),
+    restoreTrashButton: document.getElementById('restoreTrashButton'),
     messageCount: document.getElementById('messageCount'),
     trustState: document.getElementById('trustState'),
     skillCount: document.getElementById('skillCount'),
@@ -181,7 +185,7 @@
 
   // 与 src/core/permissions.ts 的 PERMISSION_PRESET_PROFILES 保持一致：
   // [读取, 写入, 只读命令, 正常命令, 危险命令, 敏感文件]
-  function populate(settings, apiKeyConfigured, stats, skills, workspaceTrusted, workspaceFolderCount, keyMap) {
+  function populate(settings, apiKeyConfigured, stats, skills, workspaceTrusted, workspaceFolderCount, keyMap, trash) {
     profiles = Array.isArray(settings.apiProfiles) && settings.apiProfiles.length ? settings.apiProfiles.map((item) => ({ ...item, models: [...(item.models || [])], excludedModels: [...(item.excludedModels || [])], requestHeaders: { ...(item.requestHeaders || {}) } })) : [{ id: 'default', name: 'DeepSeek', baseUrl: settings.baseUrl, models: [settings.model], excludedModels: [], requestHeaders: settings.requestHeaders || {} }];
     activeProfileId = settings.activeApiProfileId || profiles[0].id;
     fields.model.value = settings.model || profiles.find((profile) => profile.id === activeProfileId)?.models?.[0] || '';
@@ -216,7 +220,7 @@
     fields.language.value = settings.language || 'auto';
     elements.temperatureValue.textContent = Number(settings.temperature).toFixed(1);
     loadProfileFields();
-    renderStats(stats, settings.cacheBudgetMB);
+    renderStats(stats, settings.cacheBudgetMB, trash);
     renderSkills(skills || []);
     elements.trustState.textContent = workspaceFolderCount === 0 ? t('settings.noWorkspace') : workspaceTrusted ? t('settings.workspaceTrusted') : t('settings.workspaceUntrusted');
     elements.trustState.classList.toggle('configured', Boolean(workspaceTrusted));
@@ -256,12 +260,15 @@
     const badge = document.createElement('em'); badge.className = `summary-badge ${className}`.trim(); badge.textContent = text; return badge;
   }
 
-  function renderStats(stats, budgetMB) {
+  function renderStats(stats, budgetMB, trash) {
     const bytes = stats?.bytes || 0;
     const budgetBytes = Math.max(1, budgetMB) * 1024 * 1024;
     elements.storageSize.textContent = formatBytes(bytes);
     elements.storageMeterFill.style.width = `${Math.min(100, (bytes / budgetBytes) * 100)}%`;
     elements.conversationCount.textContent = (stats?.conversations || 0).toLocaleString();
+    // 回收站单独展示：用户要能一眼看到「有多少条对话等着我决定」。
+    elements.trashCount.textContent = (trash?.count || 0).toLocaleString();
+    elements.trashSize.textContent = formatBytes(trash?.bytes || 0);
     elements.messageCount.textContent = (stats?.messages || 0).toLocaleString();
   }
 
@@ -344,6 +351,8 @@
   elements.rescanSkillsButton.addEventListener('click', () => post('rescanSkills'));
   elements.openSkillFolderButton.addEventListener('click', () => post('openSkillFolder'));
   elements.clearLocalDataButton.addEventListener('click', () => post('clearLocalData'));
+  elements.emptyTrashButton?.addEventListener('click', () => post('emptyTrash'));
+  elements.restoreTrashButton?.addEventListener('click', () => post('restoreTrash'));
   elements.nativeSettingsButton.addEventListener('click', () => post('openNativeSettings'));
 
   const navButtons = [...document.querySelectorAll('nav [data-target]')];
@@ -416,7 +425,7 @@
     const message = event.data;
     switch (message.type) {
       case 'state':
-        populate(message.settings, message.apiKeyConfigured, message.stats, message.skills, message.workspaceTrusted, message.workspaceFolderCount, message.apiKeyConfiguredByProfile);
+        populate(message.settings, message.apiKeyConfigured, message.stats, message.skills, message.workspaceTrusted, message.workspaceFolderCount, message.apiKeyConfiguredByProfile, message.trash);
         break;
       case 'testing':
         elements.testButton.disabled = message.active;

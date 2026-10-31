@@ -41,6 +41,20 @@ export class CleanupScheduler implements vscode.Disposable {
     }
     const settings = readSettings();
     const startedAt = Date.now();
+    // 启动时的「归档守护」检查：有归档对话无故消失就必须让用户看见，
+    // 而不是等他自己在历史列表里发现少了东西。
+    const integrity = await this.storage.initialize().then(() => this.storage.takeIntegrityAlert());
+    if (integrity?.missing.length) {
+      const titles = integrity.missing.slice(0, 5).map((item) => `· ${item.title}`).join('\n');
+      this.output.appendLine(
+        `[cleanup] integrity: ${integrity.missing.length} 条归档对话不在磁盘、也不在回收站 `
+        + integrity.missing.map((item) => item.id).join(','),
+      );
+      void vscode.window.showWarningMessage(
+        tt('integrity.archivedMissing', { count: integrity.missing.length })
+        + (titles ? `\n${titles}` : ''),
+      );
+    }
     this.running = this.storage.cleanup({
       historyRetentionDays: settings.historyRetentionDays,
       taskCacheRetentionHours: settings.taskCacheRetentionHours,
@@ -64,18 +78,24 @@ export class CleanupScheduler implements vscode.Disposable {
       this.onComplete(result);
       if (verbose) {
         /*
-         * 说清「删到哪里去了」。
+         * 说清「到底动了什么」。
          *
-         * 以前这句只写「删除 N 个过期对话」，用户看到的是对话凭空消失；现在它们都在
-         * 回收站里，能通过命令找回 —— 提示必须带上这条出路，否则等于没修。
+         * 清理只做两件事：瘦身缓存、整理没有任何消息的空对话。带内容的对话一条都不会
+         * 消失（用户报告丢数据之后定下的规则），所以文案里不能再出现「删除 N 个对话」，
+         * 否则用户会以为又有东西被清掉了。超预算只提示，不代替用户做决定。
          */
-        const restoreHint = result.deletedConversations > 0 ? tt('cleanup.trashHint', { count: result.deletedConversations }) : '';
-        const message = tt('cleanup.doneVerbose', { compacted: result.compactedMessages, deleted: result.deletedConversations })
-          + restoreHint;
-        if (result.deletedConversations > 0) {
-          // 提示里只写命令名等于把找回藏在命令面板里。给一个按钮：清理完当场就能点。
-          void vscode.window.showInformationMessage(message, tt('cleanup.restoreAction')).then((choice) => {
-            if (choice) void vscode.commands.executeCommand('hwchat.restoreDeletedConversations');
+        const draftsHint = result.deletedConversations > 0 ? tt('cleanup.draftsHint', { count: result.deletedConversations }) : '';
+        const budgetHint = result.overBudget
+          ? tt('cleanup.overBudget', {
+            size: `${(result.bytes / 1024 / 1024).toFixed(1)} MB`,
+            budget: `${readSettings().cacheBudgetMB} MB`,
+          })
+          : '';
+        const message = tt('cleanup.doneVerbose', { compacted: result.compactedMessages }) + draftsHint + budgetHint;
+        if (result.overBudget) {
+          // 超预算时给一个直接入口：清理是用户的决定，但至少别让他去找设置在哪。
+          void vscode.window.showInformationMessage(message, tt('cleanup.openSettings')).then((choice) => {
+            if (choice) void vscode.commands.executeCommand('hwchat.openSettings');
           });
         } else {
           void vscode.window.showInformationMessage(message);

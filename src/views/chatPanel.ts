@@ -3377,7 +3377,17 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     if (answer !== tt('common.delete')) {
       return;
     }
-    await this.storage.deleteConversation(id);
+    try {
+      await this.storage.deleteConversation(id);
+    } catch (error) {
+      // 搬不进回收站时存储会保持原样并抛错：这里必须让用户知道「没删成」，而不是静默失败。
+      await this.post({
+        type: 'toast',
+        tone: 'error',
+        text: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
     if (this.activeConversationId === id) {
       this.activeConversationId = undefined;
     }

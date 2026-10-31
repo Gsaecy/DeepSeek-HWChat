@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek: approval-controlled workspace tools, plan-tracking task lists, copyable local/server commands and durable local history.",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -80,6 +80,11 @@
       {
         "command": "hwchat.restoreDeletedConversations",
         "title": "HWChat: %command.restoreDeletedConversations%",
+        "category": "HWChat"
+      },
+      {
+        "command": "hwchat.emptyTrash",
+        "title": "HWChat: %command.emptyTrash%",
         "category": "HWChat"
       },
       {

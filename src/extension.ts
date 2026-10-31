@@ -140,6 +140,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * `rm -rf`。用户 2026-10-31 报过 13 条归档对话在一次清理后彻底消失（连废纸篓都
      * 没有），所以必须有一条可用的找回路径，而不是只在日志里留一行数字。
      */
+    ['hwchat.emptyTrash', async () => {
+      const stats = await storage.trashStats();
+      if (!stats.count) {
+        await vscode.window.showInformationMessage(tt('ext.trashEmpty'));
+        return;
+      }
+      // 这是整个扩展里唯一会永久销毁对话内容的入口，必须二次确认并说清不可撤销。
+      const answer = await vscode.window.showWarningMessage(
+        tt('ext.emptyTrashConfirm', { count: stats.count, size: formatBytesForNotice(stats.bytes) }),
+        { modal: true, detail: tt('ext.emptyTrashDetail') },
+        tt('ext.emptyTrashAction'),
+      );
+      if (answer !== tt('ext.emptyTrashAction')) return;
+      const removed = await storage.purgeTrash();
+      await chat.refresh();
+      await vscode.window.showInformationMessage(tt('ext.emptyTrashDone', { count: removed }));
+    }],
     ['hwchat.restoreDeletedConversations', async () => {
       const entries = await storage.listTrash();
       if (!entries.length) {
@@ -251,6 +268,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }), 2_000).unref?.();
 
   output.info('HWChat activated.');
+}
+
+/** 与设置页一致的体积格式（KB/MB），只用于提示文案。 */
+function formatBytesForNotice(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 async function ensurePrivacyConsent(context: vscode.ExtensionContext): Promise<boolean> {
