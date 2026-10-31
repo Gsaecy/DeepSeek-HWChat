@@ -158,6 +158,9 @@ Every conversation runs its own agent thread; they do not block each other:
 
 ### Per-conversation settings
 
+- **A skill's trigger words are a separate field, so description truncation can no longer eat them.** Descriptions are parsed into three parts: summary / when to use (`USE FOR:` `Use when:`) / triggers (`Triggers:`, or an explicit `triggers:` frontmatter field). Triggers are not subject to the 240-character summary cap and are rendered verbatim in the routing table (`- id | name | summary | 适用：… | 触发词：…`), so it no longer matters where in the description you put them; hovering a skill in the panel shows its triggers. The summary itself is capped at 180 characters, the “when to use” at 200 and the triggers at 160, with an explicit ellipsis when something is clipped.
+
+
 Mode, model, permission preset, max steps and reasoning effort belong to **the conversation itself** (`src/core/conversationControls.ts`, `src/core/modes.ts`).
 
 - **A new conversation always starts at “Ask every time” / 24 steps / “Default (model)”**, regardless of older values in `settings.json`. Earlier versions wrote the panel's choice into global settings, so leftovers such as `hwchat.permissionPreset: autopilot` and `hwchat.agentMaxSteps: 0` made every new conversation auto-execute with no step cap. Those keys are still registered (so no "unknown configuration" warning) but marked deprecated and **never read**; `HWChat: Show permission scope` still prints the declared values so you can reconcile them.

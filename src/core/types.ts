@@ -347,7 +347,22 @@ export interface ChatSettings {
 export interface SkillSummary {
   id: string;
   name: string;
+  /**
+   * 给人和给路由看的一句话摘要（已剥掉 `USE FOR:` / `Triggers:` 段落，见下面的字段）。
+   *
+   * 为什么剥：这两个段落原来混在描述里，而描述会被截断到 240 字符 —— 写在末尾的
+   * 触发词**永远到不了模型**（本机 38 个技能里有 16 个中招）。现在它们各有独立字段。
+   */
   description: string;
+  /** `USE FOR:` / `Use when:` / `适用：` 之后的「什么时候该用」。 */
+  useFor?: string;
+  /**
+   * 触发词。来自 `Triggers:` / `触发词：` 段落，或 frontmatter 里显式的 `triggers:`。
+   *
+   * 单独一个字段的意义：它不参与描述截断，路由表里会**原样带上**，所以放在描述
+   * 第几段都不影响模型看不看得见。
+   */
+  triggers?: string[];
   source: 'workspace' | 'user' | 'copilot';
   relativePath: string;
   defaultEnabled?: boolean;

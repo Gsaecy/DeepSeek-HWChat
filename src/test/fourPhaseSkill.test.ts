@@ -50,16 +50,22 @@ test('本机装了「四阶段交付」技能时，HWChat 能正确解析它', a
     assert.equal(skill!.relativePath, `~/.copilot/skills/${SKILL_NAME}/SKILL.md`);
 
     /*
-     * 摘要就是模型唯一的「发现入口」：触发词缺了，技能等于不存在。
+     * 摘要与触发词是两个字段（0.3.1 起）：
+     *  * `description` 只放「人看的一句话」，仍受 240 字符上限约束；
+     *  * `triggers` 是 `Triggers:` 段落解析出来的关键词，**不参与截断**，
+     *    并会原样出现在路由表里（模型据此决定要不要 load_skill）。
      *
-     * 注意要断言的是**解析后**的摘要，不是文件原文 —— HWChat 会把 description
-     * 压成一行并截断到 240 字符（见 skillRegistry 的 cleanInline(..., 240)）。
-     * 触发词写成「放在最后」就会被切掉，文件看着没问题、模型却永远匹配不到。
+     * 之前把触发词混在 description 里，写在末尾就被 240 字符吃掉 ——
+     * 文件看着没问题、模型却永远匹配不到。
      */
     assert.ok(skill!.description.length <= 240, '摘要应不超过 240 字符（超出部分会被丢弃）');
-    for (const trigger of ['四阶段', 'Triggers', '调研', '自审', '别瞎写']) {
-      assert.ok(skill!.description.includes(trigger), `解析后的摘要缺少触发词「${trigger}」：${skill!.description}`);
+    assert.ok(skill!.description.includes('四阶段'), `摘要应说明这是四阶段技能：${skill!.description}`);
+    assert.doesNotMatch(skill!.description, /Triggers\s*[:：]/, '摘要里不该残留 Triggers 标记（已拆到独立字段）');
+    const triggers = skill!.triggers ?? [];
+    for (const trigger of ['四阶段', '分段执行', '别瞎写']) {
+      assert.ok(triggers.includes(trigger), `触发词字段缺少「${trigger}」：${triggers.join(', ')}`);
     }
+    assert.ok((skill!.useFor ?? '').length > 0, 'USE FOR 段应解析进 useFor');
 
     // frontmatter 必须被剥掉，正文直接从标题开始（否则会被当成正文喂给模型）。
     const raw = await readFile(join(root, 'copilot-skills', SKILL_NAME, 'SKILL.md'), 'utf8');

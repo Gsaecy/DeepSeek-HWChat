@@ -23,6 +23,10 @@ import {
 interface SkillRecord extends SkillSummary {
   uri: vscode.Uri;
   content: string;
+  /** `USE FOR:` 那段（独立于 description，避免被 240 字符截断吃掉）。 */
+  useFor: string;
+  /** 触发词（`Triggers:` 段落或 frontmatter 的 `triggers:`）。 */
+  triggers: string[];
   quickLaunchName?: string;
   /**
    * 共享清单里用来指代这条 Skill 的名字。
@@ -302,7 +306,8 @@ export class SkillRegistry implements vscode.Disposable {
     if (routeTable.length) {
       promptParts.push([
         'The user enabled the following routable local skills. When the task matches a skill, call load_skill before acting, then follow the returned instructions. Do not load unrelated skills.',
-        ...routeTable.map((skill) => `- ${skill.id} | ${skill.name} | ${skill.description}`),
+        // 触发词必须出现在这一行里：它就是模型判断「要不要 load_skill」的直接依据。
+        ...routeTable.map((skill) => skillRouteLine(skill)),
       ].join('\n'));
     }
     return {
@@ -466,12 +471,28 @@ export class SkillRegistry implements vscode.Disposable {
     const sharedName = candidate.quickLaunchName
       ? cleanInline(sharedSkillName(frontmatter.name, candidate.quickLaunchName) ?? '', 80) || undefined
       : undefined;
-    const description = cleanInline(frontmatter.description || firstParagraph(frontmatter.body), 240);
+    /*
+     * 描述拆三段：摘要 / 适用 / 触发词。触发词单独存字段、**不参与截断**，
+     * 否则写在描述末尾的 `Triggers:` 会被 240 字符上限整段吃掉（见 parseSkillDescription）。
+     *
+     * `description` 仍是「人看的一句话」：摘要 + 适用场景，仍压到 240 —— 面板列表
+     * 一行放不下更多，而且路由表另有 skillRouteLine 负责把触发词带上。
+     */
+    const parsed = parseSkillDescription(
+      frontmatter.description || firstParagraph(frontmatter.body),
+      frontmatter.triggers,
+    );
+    const description = cleanInline(
+      [parsed.summary, parsed.useFor ? `适用：${parsed.useFor}` : ''].filter(Boolean).join(' '),
+      240,
+    );
     const id = createHash('sha256').update(`${candidate.source}:${candidate.uri.toString()}`).digest('hex').slice(0, 20);
     return {
       id,
       name,
       description: description || tt('skill.localSkill'),
+      useFor: parsed.useFor,
+      triggers: parsed.triggers,
       source: candidate.source,
       relativePath: candidate.relativePath,
       uri: candidate.uri,
@@ -534,7 +555,90 @@ function deduplicate<T extends { uri: vscode.Uri }>(items: T[]): T[] {
   return [...new Map(items.map((item) => [item.uri.toString(), item])).values()];
 }
 
-function parseFrontmatter(value: string): { name?: string; description?: string; body: string } {
+/**
+ * 把技能描述拆成三块：摘要 / 适用场景 / 触发词。
+ *
+ * 为什么必须拆（真实故障，2026-10-31）：`readSkill` 会把 description 压成一行并
+ * **截断到 240 字符**（路由表每个技能只占一行，不截断会把提示词撑成几万字）。
+ * 而本机技能的描述普遍写成 `**标题** — 摘要。USE FOR: … Triggers: …` —— 触发词在
+ * 最末尾，于是被整段切掉：文件看着没问题，模型却永远匹配不到这个技能。实测 38 个
+ * 技能里 16 个中招（含 `search-before-acting`、`work-principles`）。
+ *
+ * 拆开之后，触发词有自己的字段、不参与截断；摘要与适用场景也各自有上限，
+ * 成本可控（38 个技能全当路由项时，路由表从 1191 增到约 1519 字符）。
+ *
+ * 兼容性：标记前后**不要求空格**。中文写作习惯是「…验收。Triggers: …」，句号后面
+ * 直接跟标记，早期按 `\s` 判边界的实现会全部漏掉（这次就是这么踩到的）。
+ */
+export function parseSkillDescription(
+  raw: string,
+  explicitTriggers?: string,
+): { summary: string; useFor: string; triggers: string[] } {
+  const text = (raw || '').replace(/\s+/g, ' ').trim();
+  const markerPattern = /(?:Triggers?|触发词|触发|USE\s+FOR|Use when|适用场景|适用)\s*[:：]/gi;
+  const markers: Array<{ kind: 'triggers' | 'useFor'; start: number; end: number }> = [];
+  for (const match of text.matchAll(markerPattern)) {
+    const label = match[0];
+    const kind = /^(?:Triggers?|触发词|触发)/i.test(label) ? 'triggers' : 'useFor';
+    markers.push({ kind, start: match.index ?? 0, end: (match.index ?? 0) + label.length });
+  }
+  // 按出现位置排序：这样两段的先后顺序写反了也能正确切开（不假定作者一定按
+  // 摘要 → 适用 → 触发词 的顺序写）。
+  markers.sort((left, right) => left.start - right.start);
+
+  const summary = (markers.length ? text.slice(0, markers[0]!.start) : text)
+    .trim().replace(/[.。;；\s]+$/g, '');
+  let useFor = '';
+  const triggers: string[] = [];
+  for (let index = 0; index < markers.length; index += 1) {
+    const marker = markers[index]!;
+    const next = markers[index + 1];
+    const segment = text.slice(marker.end, next ? next.start : text.length).trim();
+    if (marker.kind === 'useFor') {
+      const value = segment.replace(/[.。;；\s]+$/g, '');
+      if (value) useFor = value;
+      continue;
+    }
+    for (const part of segment.split(/[,，、;；|]/)) {
+      const word = part.trim().replace(/^[.。\s]+|[.。\s]+$/g, '');
+      if (word && !triggers.includes(word)) triggers.push(word);
+    }
+  }
+
+  // frontmatter 里显式写的 `triggers:` 合并进来（去重、保序）。
+  if (explicitTriggers) {
+    for (const part of explicitTriggers.split(/[,，、;；|]/)) {
+      const word = part.trim().replace(/^[.。\s]+|[.。\s]+$/g, '');
+      if (word && !triggers.includes(word)) triggers.push(word);
+    }
+  }
+  return { summary, useFor, triggers };
+}
+
+/** 路由表每一段的长度上限：摘要最要紧，触发词其次，适用场景再其次。 */
+const ROUTE_SUMMARY_CHARS = 180;
+const ROUTE_USE_FOR_CHARS = 200;
+const ROUTE_TRIGGERS_CHARS = 160;
+
+function clip(value: string, max: number): string {
+  const flat = value.replace(/\s+/g, ' ').trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
+}
+
+/**
+ * 路由表里的一行：`- id | 名字 | 摘要 | 适用：… | 触发词：…`。
+ *
+ * 触发词必须在这里出现 —— 它是模型判断「该不该 load_skill」的直接依据。
+ * 早先它只是描述的一部分，被 240 字符截断后就没了。
+ */
+export function skillRouteLine(skill: Pick<SkillSummary, 'id' | 'name' | 'description' | 'useFor' | 'triggers'>): string {
+  const parts = [skill.id, skill.name, clip(skill.description, ROUTE_SUMMARY_CHARS)];
+  if (skill.useFor) parts.push(`适用：${clip(skill.useFor, ROUTE_USE_FOR_CHARS)}`);
+  if (skill.triggers?.length) parts.push(`触发词：${clip(skill.triggers.join(', '), ROUTE_TRIGGERS_CHARS)}`);
+  return `- ${parts.join(' | ')}`;
+}
+
+function parseFrontmatter(value: string): { name?: string; description?: string; triggers?: string; body: string } {
   if (!value.startsWith('---\n')) return { body: value };
   const end = value.indexOf('\n---\n', 4);
   if (end < 0 || end > 8_192) return { body: value };
@@ -544,7 +648,7 @@ function parseFrontmatter(value: string): { name?: string; description?: string;
     const match = line.match(/^([A-Za-z][\w-]*):\s*(.*)$/);
     if (match) fields[match[1]!.toLowerCase()] = match[2]!.replace(/^['"]|['"]$/g, '').trim();
   }
-  return { name: fields.name, description: fields.description, body: value.slice(end + 5).trim() };
+  return { name: fields.name, description: fields.description, triggers: fields.triggers, body: value.slice(end + 5).trim() };
 }
 
 function firstHeading(value: string): string {
