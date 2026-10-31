@@ -877,3 +877,93 @@ test('执行状态：重启时把没结算的 running/pending 收口，不永远
     assert.equal(messages.find((item) => item.id === neverRan.id)?.executionStatus, 'skipped', '没跑过 → 已跳过');
   });
 });
+
+test('moves automatically expired conversations to the recycle bin instead of deleting them', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation('会被清理的对话');
+    await storage.appendMessage(conversation.id, { role: 'user', content: '这条内容必须还能找回', status: 'complete' });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    const result = await storage.cleanup({
+      historyRetentionDays: 0.0000001,
+      taskCacheRetentionHours: 24,
+      cacheBudgetMB: 100,
+    });
+    assert.equal(result.deletedConversations, 1);
+    assert.equal((await storage.listConversations()).length, 0);
+
+    // 「删除」现在是移入回收站：条目在、内容也在。
+    const trash = await storage.listTrash();
+    assert.equal(trash.length, 1);
+    assert.equal(trash[0]?.id, conversation.id);
+    assert.equal(trash[0]?.reason, 'expired');
+
+    assert.equal(await storage.restoreFromTrash(conversation.id), true);
+    const restored = await storage.listConversations();
+    assert.equal(restored.length, 1);
+    assert.equal(restored[0]?.id, conversation.id);
+    const messages = await storage.getAllMessages(conversation.id);
+    assert.equal(messages[0]?.content, '这条内容必须还能找回');
+    assert.equal((await storage.listTrash()).length, 0);
+  });
+});
+
+test('keeps archived conversations protected when the manifest is lost', async () => {
+  await withStorage(async (storage, root) => {
+    const active = await storage.createConversation('活跃对话');
+    await storage.appendMessage(active.id, { role: 'user', content: 'active', status: 'complete' });
+    const archived = await storage.createConversation('归档对话');
+    await storage.appendMessage(archived.id, { role: 'user', content: 'archived', status: 'complete' });
+    await storage.setArchived(archived.id, true);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    /*
+     * 复现用户报告的那次数据丢失：manifest 读不出来 → 走 rebuild 重建。
+     * 旧实现在这里会把所有对话重建成 `archived: false`，紧接着的超期清理
+     * 就把归档对话当普通旧对话删掉了。
+     */
+    await writeFile(join(root, 'manifest.json'), '{not-json', 'utf8');
+    const recovered = new ConversationStorage(root);
+    await recovered.initialize();
+    const summaries = await recovered.listConversations().catch(() => []);
+    const archivedSummary = summaries.find((item) => item.id === archived.id);
+    assert.equal(archivedSummary?.archived, true, '重建后归档标记必须保留');
+
+    await recovered.cleanup({
+      historyRetentionDays: 0.0000001,
+      taskCacheRetentionHours: 24,
+      cacheBudgetMB: 100,
+    });
+    const ids = (await recovered.listConversations()).map((item) => item.id);
+    assert.deepEqual(ids, [archived.id]);
+  });
+});
+
+test('slims cached payloads before deleting a conversation when over budget', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation('带大附件的对话');
+    await storage.appendMessage(conversation.id, {
+      role: 'user',
+      content: '附件很占地方，但正文不能丢',
+      status: 'complete',
+      // 8MB 的 base64 缩略图：预算 5MB 一定超，但它是可再生的缓存。
+      attachments: [{ label: 'shot.png', kind: 'image', dataBase64: 'A'.repeat(8 * 1024 * 1024) }],
+    });
+
+    const result = await storage.cleanup({
+      historyRetentionDays: 0,
+      taskCacheRetentionHours: 24,
+      cacheBudgetMB: 5,
+    });
+
+    // 对话必须还在：削缓存已经够用了，不该删整条。
+    assert.equal(result.deletedConversations, 0);
+    const ids = (await storage.listConversations()).map((item) => item.id);
+    assert.deepEqual(ids, [conversation.id]);
+    const message = (await storage.getAllMessages(conversation.id))[0];
+    assert.equal(message?.content, '附件很占地方，但正文不能丢');
+    assert.equal(message?.attachments?.[0]?.dataBase64, undefined, 'base64 缓存应被削掉');
+    assert.equal(message?.attachments?.[0]?.label, 'shot.png', '附件描述必须保留');
+    assert.ok(result.deletedMessageCacheBytes > 1024 * 1024);
+  });
+});

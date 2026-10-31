@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { readSettings } from './settings';
+import { tt } from './i18n';
 import { ConversationStorage } from './storage';
 import { CleanupResult } from './types';
 
@@ -62,8 +63,16 @@ export class CleanupScheduler implements vscode.Disposable {
       }
       this.onComplete(result);
       if (verbose) {
+        /*
+         * 说清「删到哪里去了」。
+         *
+         * 以前这句只写「删除 N 个过期对话」，用户看到的是对话凭空消失；现在它们都在
+         * 回收站里，能通过命令找回 —— 提示必须带上这条出路，否则等于没修。
+         */
+        const restoreHint = result.deletedConversations > 0 ? tt('cleanup.trashHint', { count: result.deletedConversations }) : '';
         void vscode.window.showInformationMessage(
-          `HWChat 清理完成：瘦身 ${result.compactedMessages} 条消息，删除 ${result.deletedConversations} 个过期对话。`,
+          tt('cleanup.doneVerbose', { compacted: result.compactedMessages, deleted: result.deletedConversations })
+          + restoreHint,
         );
       }
       return result;

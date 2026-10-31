@@ -317,6 +317,6 @@ npm run package
 - `hwchat.fileReadPolicy` / `hwchat.fileWritePolicy` / `hwchat.commandPolicy` / `hwchat.dangerousCommandPolicy` / `hwchat.sensitiveFilePolicy`：这五项策略完全由预设推导，只用于设置页展示，手动写入不生效（在 VS Code 设置里已标记为弃用）。
 - 权限类配置是 `resource` 作用域，可以写在某个根目录的 `.vscode/settings.json` 里。生效顺序为「最具体优先」：工作区文件夹 → `.code-workspace` → 用户设置；多个文件夹写了不同值时取最严格的一个（预设严格度 `每次询问` > `风险操作询问` > `Autopilot` > `完全访问`）。
 - `hwchat.allowSensitiveFiles` / `hwchat.allowDangerousCommands`：已废弃的旧布尔开关，仅在未设置上面两项新配置时用作迁移回退。
-- `hwchat.taskCacheRetentionHours` / `hwchat.cacheBudgetMB`：任务缓存和磁盘预算。
+- `hwchat.taskCacheRetentionHours` / `hwchat.cacheBudgetMB`：任务缓存和磁盘预算。**超期清理与预算回收不再直接删除对话**：先削掉可再生的缓存（推理过程、工具输入输出、附件 base64 与缩略图），只有把未受保护的对话都瘦身后仍超预算，才把最旧的挪进 `history-v1/trash/`。回收站保留最近 40 条 / 30 天，可用命令 `HWChat: 恢复已删除的对话` 找回。你自己主动删除的对话仍然是立即删除。
 
-对话数据位于 VS Code 的全局存储目录，不会写入项目目录。
+对话数据位于 VS Code 的全局存储目录，不会写入项目目录。归档会在对话目录里写一份 `.archived` 标记，所以 `manifest.json` 损坏或过期（包括回退读取的 `manifest.json.bak`——那是**上一次**写盘的内容）都不会把归档对话变回可删除的普通历史。

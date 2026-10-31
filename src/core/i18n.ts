@@ -718,6 +718,15 @@ const DICTIONARY: Record<string, Entry> = {
   'history.open': { zh: '打开对话', en: 'Open conversation' },
 
   // 扩展命令与通知
+  'cleanup.doneVerbose': { zh: 'HWChat 清理完成：瘦身 {compacted} 条消息，删除 {deleted} 个过期对话。', en: 'HWChat cleanup finished: compacted {compacted} messages, removed {deleted} expired conversation(s).' },
+  'cleanup.trashHint': { zh: '被删的 {count} 个对话已移入回收站，可运行命令「恢复已删除的对话」找回。', en: 'The {count} removed conversation(s) were moved to the recycle bin — run "Restore deleted conversations" to bring them back.' },
+  'ext.trashEmpty': { zh: '回收站是空的：没有可恢复的对话。', en: 'The recycle bin is empty — nothing to restore.' },
+  'ext.trashPick': { zh: '恢复已删除的对话', en: 'Restore deleted conversations' },
+  'ext.trashPickHint': { zh: '回收站里有 {count} 条（自动清理时挪进来的，用户主动删除的不会在这里）', en: '{count} item(s) in the recycle bin (moved here by automatic cleanup; conversations you deleted yourself are not listed)' },
+  'ext.trashRestored': { zh: '已恢复 {count} 条对话。', en: 'Restored {count} conversation(s).' },
+  'ext.trashReason.draft': { zh: '空草稿清理', en: 'empty draft cleanup' },
+  'ext.trashReason.expired': { zh: '超过保留期', en: 'retention expired' },
+  'ext.trashReason.budget': { zh: '缓存预算回收', en: 'storage budget reclaim' },
   'ext.skillsFound': { zh: '已发现 {count} 个 Skill。', en: 'Found {count} skills.' },
   'ext.permissionScope': { zh: '生效权限预设：{preset}（各层来源见 HWChat 输出面板）', en: 'Effective permission preset: {preset} (per-layer sources in the HWChat output channel)' },
   'ext.resourceStats': { zh: '搜索：活动 {active}、排队 {queued}；命令：活动 {commands}。详细计数已写入 HWChat 输出面板。', en: 'Searches: {active} active, {queued} queued; commands: {commands} active. Full counters were written to the HWChat output panel.' },

@@ -80,5 +80,6 @@
   "config.language.enum2": "固定使用英文",
   "config.searchExclude": "在默认排除列表（.git、node_modules、dist、build、out、coverage、.next、.turbo、.venv、venv、__pycache__、DerivedData、.cache）之外，额外不参与工作区搜索的目录名。",
   "command.showResourceStats": "显示活动/排队的搜索与正在运行的命令（用于诊断 CPU 占用或 EAGAIN 问题）",
-  "command.reportLayout": "复制布局诊断"
+  "command.reportLayout": "复制布局诊断",
+  "command.restoreDeletedConversations": "恢复已删除的对话（回收站）"
 }

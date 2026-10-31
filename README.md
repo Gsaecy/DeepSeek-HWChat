@@ -306,9 +306,9 @@ The extension icon is `resources/logo.png`. Press `F5` in VS Code to launch the 
 - `hwchat.fileReadPolicy` / `hwchat.fileWritePolicy` / `hwchat.commandPolicy` / `hwchat.dangerousCommandPolicy` / `hwchat.sensitiveFilePolicy` — fully derived from the preset; display-only, marked deprecated in the VS Code settings UI.
 - Permission settings are `resource`-scoped and may be set in a folder's `.vscode/settings.json`. Precedence is most-specific-first (workspace folder → `.code-workspace` → user), and when folders disagree the strictest value wins (`Ask every time` > `Ask on risky actions` > `Autopilot` > `Full access`).
 - `hwchat.allowSensitiveFiles` / `hwchat.allowDangerousCommands` — deprecated booleans, used only as a migration fallback when the newer settings are absent.
-- `hwchat.taskCacheRetentionHours` / `hwchat.cacheBudgetMB` — task cache and disk budget.
+- `hwchat.taskCacheRetentionHours` / `hwchat.cacheBudgetMB` — task cache and disk budget. **Expiry and budget reclaim never delete a conversation outright any more**: they first strip regenerable cache (reasoning, tool inputs/outputs, attachment base64 and thumbnails) and only move a conversation to `history-v1/trash/` if the budget still cannot be met from unprotected conversations. Run `HWChat: Restore deleted conversations` to bring anything back (the recycle bin keeps the last 40 entries / 30 days). Conversations you delete yourself are still deleted immediately.
 
-Conversation data lives in the VS Code global storage directory and is never written into your project.
+Conversation data lives in the VS Code global storage directory and is never written into your project. Archiving writes a `.archived` marker inside the conversation folder, so a corrupt or stale `manifest.json` (including the `manifest.json.bak` fallback, which holds the *previous* write) can never turn an archived conversation back into deletable history.
 
 ## Repository layout
 
@@ -320,7 +320,7 @@ Conversation data lives in the VS Code global storage directory and is never wri
 | `src/providers/` | DeepSeek / OpenAI-compatible client |
 | `media/` | webview scripts and styles; `ui-icons.js` holds every interface icon shape (flat inline SVG, `currentColor` only) and is unit-tested; `inline-append.js` decides when a streaming delta can be appended as plain text, `stream-repair.js` completes unterminated tail markdown (both pure functions, unit-tested) |
 | `docs/screenshots/` | screenshot build script and the generated English screenshot |
-| `test/` | browser preview pages (`preview-*.html`) and 21 standalone checks run with plain `node` — DOM / geometry (`check-panel-exclusivity.mjs`, `check-capsule-geometry.mjs`, `check-capsule-drag.mjs`, `check-icons-dom.mjs`, `check-icon-geometry.mjs`, `check-file-reference-dom.mjs`, `check-stream-patch.mjs`), behaviour wiring (`check-todo-actions.mjs`, `check-todo-scope.mjs`, `check-resume-scope.mjs`, `check-runtime-controls.mjs`, `check-skill-toggle.mjs`, `check-command-notify.mjs`, `check-title-editing.mjs`, `check-draft-isolation.mjs`) |
+| `test/` | browser preview pages (`preview-*.html`) and 28 standalone checks run with plain `node` — DOM / geometry (`check-panel-exclusivity.mjs`, `check-capsule-geometry.mjs`, `check-capsule-drag.mjs`, `check-icons-dom.mjs`, `check-icon-geometry.mjs`, `check-file-reference-dom.mjs`, `check-stream-patch.mjs`), behaviour wiring (`check-todo-actions.mjs`, `check-todo-scope.mjs`, `check-resume-scope.mjs`, `check-runtime-controls.mjs`, `check-skill-toggle.mjs`, `check-command-notify.mjs`, `check-title-editing.mjs`, `check-draft-isolation.mjs`), storage safety (`check-storage-trash.mjs`) |
 
 The screenshot is generated with `node docs/screenshots/build.mjs`. It reuses the real webview CSS and the real English dictionary, so the image matches the shipped UI, and it renders an empty new conversation: no conversations, messages, task list, attachments or typed input are included.
 

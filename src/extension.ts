@@ -133,6 +133,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ['hwchat.askSelection', () => chat.openSelection('ask')],
     ['hwchat.explainSelection', () => chat.openSelection('explain')],
     ['hwchat.cleanupNow', () => scheduler.run(true)],
+    /*
+     * 恢复自动删除的对话。
+     *
+     * 自动清理（空草稿 / 超期 / 缓存预算回收）现在都先把对话挪进 `trash/` 而不是
+     * `rm -rf`。用户 2026-10-31 报过 13 条归档对话在一次清理后彻底消失（连废纸篓都
+     * 没有），所以必须有一条可用的找回路径，而不是只在日志里留一行数字。
+     */
+    ['hwchat.restoreDeletedConversations', async () => {
+      const entries = await storage.listTrash();
+      if (!entries.length) {
+        await vscode.window.showInformationMessage(tt('ext.trashEmpty'));
+        return;
+      }
+      const items = entries.map((entry) => ({
+        label: entry.title || entry.id,
+        description: `${new Date(entry.deletedAt).toLocaleString()} · ${tt(`ext.trashReason.${entry.reason}`)} · ${entry.messageCount} 条消息${entry.archived ? ' · 归档' : ''}`,
+        id: entry.id,
+        picked: true,
+      }));
+      const picked = await vscode.window.showQuickPick(items, {
+        canPickMany: true,
+        title: tt('ext.trashPick'),
+        placeHolder: tt('ext.trashPickHint', { count: entries.length }),
+      });
+      if (!picked?.length) return;
+      let restored = 0;
+      for (const item of picked) {
+        if (await storage.restoreFromTrash(item.id)) restored += 1;
+      }
+      await chat.refresh();
+      await vscode.window.showInformationMessage(tt('ext.trashRestored', { count: restored }));
+    }],
     ['hwchat.setApiKey', () => setApiKey(context.secrets, settingsPanel, chat)],
     ['hwchat.exportHistory', () => exportHistory(storage)],
     ['hwchat.attachFiles', (uri?: unknown, selected?: unknown) => {
