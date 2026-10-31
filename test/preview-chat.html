@@ -139,10 +139,13 @@
         <div id="resumeTodosButton" class="panel-action" hidden></div>
         <div id="cancelTodosButton" class="panel-action danger" hidden></div>
         <section id="decisionCard" class="decision-card" hidden aria-live="assertive">
-          <div class="decision-heading"><span class="decision-badge" aria-hidden="true"></span><strong id="decisionQuestion"></strong></div>
-          <p id="decisionWhy" class="decision-why" hidden></p>
-          <ol id="decisionOptions" class="decision-options"></ol>
-          <p class="decision-note">选之前可以先问我细节；选定后我会按它继续，不会自己换方案。</p>
+          <button id="decisionToggle" class="decision-toggle" type="button" aria-expanded="true" aria-controls="decisionBody" title="收起方案细节，先翻上面的对话"><span class="decision-badge" aria-hidden="true"></span><strong id="decisionQuestion"></strong><span class="decision-toggle-label" id="decisionToggleLabel">收起</span><span class="decision-chevron" aria-hidden="true"></span></button>
+          <div id="decisionBody" class="decision-body">
+            <p id="decisionWhy" class="decision-why" hidden></p>
+            <ol id="decisionOptions" class="decision-options"></ol>
+            <p class="decision-custom-hint">都不合适？不用先选 —— 直接在输入框里写下你的做法发出来，我就按你的做。</p>
+            <p class="decision-note">选之前可以先问我细节；选定后我会按它继续，不会自己换方案。</p>
+          </div>
         </section>
         <div id="approvalCard" class="approval-card" hidden></div>
         <div id="approvalTitle" class="" hidden></div>
@@ -364,6 +367,11 @@
   "chat.fileRefTarget.explorer": "资源管理器",
   "chat.fileRefTarget.fileManager": "文件管理器",
   "chat.fileRefTarget.finder": "Finder",
+  "decision.customHint": "都不合适？不用先选 —— 直接在输入框里写下你的做法发出来，我就按你的做。",
+  "decision.collapse": "收起",
+  "decision.expand": "展开",
+  "decision.collapseHint": "收起方案细节，先翻上面的对话",
+  "decision.expandHint": "展开方案细节并选择",
   "decision.achieves": "能做成什么",
   "decision.extent": "做到什么地步",
   "decision.cost": "代价",

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { commandSummary, redactCommandForSummary } from '../agent/toolExecutor';
-import { formatDecisionAnswer, normalizeDecision } from '../core/decisionGate';
+import { formatCustomDecisionAnswer, formatDecisionAnswer, normalizeDecision } from '../core/decisionGate';
 
 /**
  * 两件事一起测：
@@ -159,4 +159,32 @@ test('决策：下标越界（界面传了脏数据）不崩，返回可读结�
   assert.ok(!('error' in result));
   if ('error' in result) return;
   assert.match(formatDecisionAnswer(result.request, 99), /没有选择任何方案/);
+});
+
+test('用户自己写方案：工具结果原样带回他的做法，并禁止套成预设方案', () => {
+  const result = normalizeDecision({ question: '怎么做？', options: [goodOption, { ...goodOption, title: '嵌进面板' }] });
+  assert.ok(!('error' in result));
+  if ('error' in result) return;
+  const mine = '我在设置页加一个开关，默认关闭；不要动演示流程。';
+  const text = formatCustomDecisionAnswer(result.request, mine);
+  assert.match(text, /用户没有采用你给的任何方案/);
+  assert.ok(text.includes(mine), '用户原话必须原样带上');
+  assert.match(text, /不要把它套成上面某个方案/, '必须禁止套用预设方案');
+  assert.match(text, /不要擅自补充用户没说过的范围/, '必须禁止自行扩大范围');
+});
+
+test('用户自己写方案：空白输入退回「没有选择」，不产生空引用', () => {
+  const result = normalizeDecision({ question: '怎么做？', options: [goodOption, goodOption] });
+  assert.ok(!('error' in result));
+  if ('error' in result) return;
+  assert.match(formatCustomDecisionAnswer(result.request, '   '), /没有选择任何方案/);
+});
+
+test('用户自己写方案：换行与缩进原样保留（做法常常是多行步骤）', () => {
+  const result = normalizeDecision({ question: '怎么做？', options: [goodOption, goodOption] });
+  assert.ok(!('error' in result));
+  if ('error' in result) return;
+  const mine = '第一步：改 A\n第二步：跑 B 验证\n第三步：不要提交';
+  const text = formatCustomDecisionAnswer(result.request, mine);
+  assert.ok(text.includes('改 A\n第二步：跑 B 验证'), '多行做法不能被压成一行');
 });

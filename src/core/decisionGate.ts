@@ -98,6 +98,7 @@ export const DECISION_TOOL_DESCRIPTION = [
   'Use it when different approaches lead to materially different results, scope or cost, when the requirement leaves a real choice open, or when the work is hard to undo.',
   'Do NOT use it for trivial or single-obvious-way decisions, for things you can settle by reading the code, or when the user already decided.',
   'While the user is deciding, the tool does not return — do not start implementing, do not guess a default, and do not send the same question twice.',
+  'Keep question and the three per-option fields short (one line each): the card must stay readable, and it can be collapsed by the user while they re-read the conversation.',
   'Every option MUST fill in: achieves (what the user visibly gets), extent (how far it goes, including what it deliberately leaves out and where it is rough), cost (time, blast radius, risk, follow-up maintenance).',
 ].join(' ');
 
@@ -118,7 +119,29 @@ export const DECISION_GATE_PROMPT = [
   'When you ask, every option must state three things in the user\'s terms: what it will be able to do (achieves), how far it goes and where it is still rough (extent), and what it costs (cost: time, blast radius, risk, follow-up). Never present bare labels like "Option A / Option B".',
   'State plainly which option you recommend and why, but never act before the answer arrives. If the user picks an option, follow it; if the user says "you decide", pick the recommended one and say so in one line.',
   'If you already started implementing and then discover a decision point, stop at the next safe boundary (a completed, verified step), explain what is done, and ask before continuing.',
+  'The user may answer in their own words instead of picking an option — that answer replaces the options entirely. Follow their approach, do not map it onto one of your options, and do not add scope they did not ask for.',
 ].join(' ');
+
+/**
+ * 用户没选任何预设、自己写了做法时，回给模型的工具结果。
+ *
+ * 这是必须支持的一条路：三个方案都不合意时，用户不该被逼着选一个「最不差」的。
+ * 而且要**明确禁止**模型把它硬套进某个预设方案 —— 用户给的是自己的做法，不是
+ * 「方案 2 的变体」。
+ */
+export function formatCustomDecisionAnswer(request: DecisionRequest, custom: string): string {
+  const text = String(custom ?? '').trim();
+  if (!text) return formatDecisionAnswer(request, -1);
+  return [
+    '用户没有采用你给的任何方案，而是自己给出了做法：',
+    '<<<用户原话',
+    text,
+    '用户原话>>>',
+    '',
+    '按用户这个做法继续。不要把它套成上面某个方案，也不要擅自补充用户没说过的范围；'
+    + '如果你认为这个做法做不到、或与已完成的改动冲突，先说明原因再重新征询，不要自己改成别的方案。',
+  ].join('\n');
+}
 
 /** 把用户的选择变成工具结果：模型据此继续，且知道「用户亲手选的」不许擅自改。 */
 export function formatDecisionAnswer(request: DecisionRequest, chosenIndex: number): string {

@@ -321,7 +321,7 @@
     'todoPanel', 'todoList', 'todoSummary', 'todoSummaryActions', 'resumeTodosButton', 'cancelTodosButton',
     'todoArchivePanel', 'todoArchiveList', 'todoArchiveSummary', 'todoArchiveBar',
     'approvalCard', 'approvalTitle', 'approvalSummary', 'approvalDetail', 'approvalDenyButton', 'approvalAllowButton',
-    'decisionCard', 'decisionQuestion', 'decisionWhy', 'decisionOptions',
+    'decisionCard', 'decisionQuestion', 'decisionWhy', 'decisionOptions', 'decisionToggle', 'decisionToggleLabel', 'decisionBody',
     'messageEditor', 'messageEditorInput', 'messageEditorState', 'messageEditorHint', 'messageEditorSave', 'messageEditorCancel', 'messageEditorTitle',
     'attachButton', 'sendButton', 'stopButton', 'toast',
   ].map((id) => [id, document.getElementById(id)]));
@@ -1997,6 +1997,27 @@
    * 做到什么地步，代价是什么，让我决策。而不是闷头做。」
    * 所以三行是**并列展示**的，不折叠、不缩写 —— 想比较就要能一眼看全。
    */
+  /**
+   * 卡片是否被用户收起（按 requestId 记）。
+   *
+   * 为什么按 requestId 记而不是一个布尔：状态每 70ms 重发一次、`renderDecision` 会被反复
+   * 调用；用布尔会在第一帧就被重置回展开，用户永远收不起来。只有换了一张新卡片才回到展开。
+   */
+  let decisionCollapsedFor = '';
+
+  function applyDecisionCollapsed(collapsed) {
+    const card = elements.decisionCard;
+    if (!card) return;
+    card.classList.toggle('is-collapsed', collapsed);
+    elements.decisionBody.hidden = collapsed;
+    elements.decisionToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    if (elements.decisionToggleLabel) {
+      elements.decisionToggleLabel.textContent = t(collapsed ? 'decision.expand' : 'decision.collapse');
+    }
+    // 收起时提示文案改成「展开后可选择」，否则按钮上的字与提示会互相矛盾。
+    elements.decisionToggle.title = t(collapsed ? 'decision.expandHint' : 'decision.collapseHint');
+  }
+
   function renderDecision() {
     const card = elements.decisionCard;
     if (!card) return;
@@ -2008,6 +2029,7 @@
       return;
     }
     card.dataset.requestId = request.requestId;
+    applyDecisionCollapsed(decisionCollapsedFor === request.requestId);
     elements.decisionQuestion.textContent = request.question;
     elements.decisionWhy.textContent = request.why || '';
     elements.decisionWhy.hidden = !request.why;
@@ -3669,6 +3691,19 @@
   bindSummaryAction('cancelTodosButton', 'cancelTodos'); elements.skillsButton.addEventListener('click', () => { elements.skillsPanel.hidden = !elements.skillsPanel.hidden; });
   // 安装按钮只把请求转给扩展（webview 自己开不了外部链接）。
   if (elements.skillsInstallButton) elements.skillsInstallButton.addEventListener('click', () => post('installQuickLaunch'));
+  /*
+   * 方案卡片的收起/展开。
+   *
+   * 现场（用户反馈 2026-10-31）：卡片占掉小半个面板，想先翻上面的对话再决定，
+   * 却没有收起按钮 —— 只能硬滚或在被压扁的消息区里找内容。
+   */
+  elements.decisionToggle.addEventListener('click', () => {
+    const request = currentDecision();
+    if (!request) return;
+    decisionCollapsedFor = decisionCollapsedFor === request.requestId ? '' : request.requestId;
+    applyDecisionCollapsed(decisionCollapsedFor === request.requestId);
+  });
+
   elements.approvalAllowButton.addEventListener('click', () => {
     const requestId = elements.approvalCard.dataset.requestId;
     if (requestId) post('approvalResponse', { requestId, allow: true });

@@ -49,7 +49,7 @@ check('明确禁止在等回答期间自己往下做',
 
 // —— 2. 在用户回答前不返回 ——
 check('工具调用挂在 Promise 上直到用户选择',
-  /const choice = await new Promise<number>/.test(PANEL),
+  /const answer = await new Promise<\{ chosenIndex: number; custom\?: string \}>/.test(PANEL),
   '必须真的阻塞，模型才无法绕过决策');
 
 check('停止 / 出错 / 释放时结算掉卡片',
@@ -59,6 +59,26 @@ check('停止 / 出错 / 释放时结算掉卡片',
 check('方案卡片随状态重发（面板重载不丢）',
   /pendingDecisions: \[\.\.\.this\.pendingDecisions\.values\(\)\]/.test(PANEL),
   '丢了卡片用户只看到「正在执行」却无处可点');
+
+check('卡片可收起（先翻对话再决定）',
+  /decision-toggle/.test(PANEL) && /is-collapsed/.test(CSS) && /decisionCollapsedFor/.test(JS),
+  '用户反馈：卡片占掉大半个面板，想先看对话却没有收起按钮');
+
+check('收起状态按 requestId 记（不会被每 70ms 的状态重发冲回展开）',
+  /decisionCollapsedFor === request\.requestId/.test(JS),
+  '用布尔会在第一帧就被重置，用户永远收不起来');
+
+check('用户可以直接用一句话代替选项（自己想的做法）',
+  /answerDecisionWithText/.test(PANEL) && /formatCustomDecisionAnswer/.test(PANEL),
+  '不接这条路，用户"自己想的方案"只会安静排队，而 agent 卡在工具里永远读不到');
+
+check('自己写的做法会原样回给模型，且禁止套成预设方案',
+  /不要把它套成上面某个方案/.test(GATE),
+  '否则模型会把用户的做法硬归到某个选项下继续做');
+
+check('卡片里写明「不用先选，直接写下你的做法」',
+  /decision\.customHint/.test(I18N) && /decision-custom-hint/.test(PANEL),
+  '不写出来用户不知道这条路存在');
 
 check('回答只回下标，内容以扩展侧入参为准',
   /decisionResponse'; requestId: string; chosenIndex: number/.test(PANEL) && /Number\.isInteger\(message\.chosenIndex\)/.test(PANEL),

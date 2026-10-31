@@ -31,6 +31,7 @@ import { checkReuseLimits, planAttachmentReuse } from '../core/attachmentReuse';
 import {
   DECISION_GATE_PROMPT,
   DECISION_TOOL_DESCRIPTION,
+  formatCustomDecisionAnswer,
   formatDecisionAnswer,
   normalizeDecision,
   type DecisionRequest,
@@ -185,7 +186,7 @@ interface PendingApproval {
 interface PendingDecision {
   conversationId: string;
   request: PendingDecisionView;
-  resolve: (chosenIndex: number, note?: string) => void;
+  resolve: (chosenIndex: number, custom?: string) => void;
 }
 
 
@@ -1193,6 +1194,20 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private async queueRunningMessage(text: string): Promise<void> {
     const run = this.viewedRun;
     const content = text.trim();
+    /*
+     * 有方案卡片正等着用户拍板时，用户敲进来的这句话**就是答案**（自己想的做法）。
+     *
+     * 为什么必须在这里拦截：`ask_user_choice` 没返回之前，agent 卡在工具调用里，
+     * 根本走不到 `takeTaskUpdate` —— 排队消息要等下一个边界才被读，而那个边界永远
+     * 不会来。不拦截的话，用户"我自己想了个方案"只会安静地排进队列，看起来就是
+     * agent 卡死。
+     */
+    if (content && run && this.answerDecisionWithText(run.conversationId, content)) {
+      this.pendingContext = undefined;
+      this.pendingAttachments = [];
+      await this.post({ type: 'attachments', attachments: this.pendingAttachmentsForWebview() });
+      return;
+    }
     if (!run || !run.taskQueue.isAccepting()) {
       if (content) await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentFinishing') });
       return;
@@ -3796,14 +3811,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       why: request.why,
       options: request.options,
     };
-    const choice = await new Promise<number>((resolve) => {
+    const answer = await new Promise<{ chosenIndex: number; custom?: string }>((resolve) => {
       let settled = false;
-      const finish = (chosenIndex: number): void => {
+      const finish = (chosenIndex: number, custom?: string): void => {
         if (settled) return;
         settled = true;
         this.pendingDecisions.delete(requestId);
         run.controller.signal.removeEventListener('abort', onAbort);
-        resolve(chosenIndex);
+        resolve({ chosenIndex, custom });
       };
       const onAbort = (): void => finish(-1);
       run.controller.signal.addEventListener('abort', onAbort, { once: true });
@@ -3815,7 +3830,17 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       }
     });
 
-    if (choice < 0) {
+    // 用户自己写了做法（没选预设）：按他的做，不套任何方案。
+    const custom = answer.custom?.trim();
+    if (custom) {
+      return {
+        status: 'success',
+        summary: tt('decision.customChosen'),
+        content: [formatCustomDecisionAnswer(request, custom), parsed.warnings.join(' ')].filter(Boolean).join('\n\n'),
+        approval: 'not-required',
+      };
+    }
+    if (answer.chosenIndex < 0) {
       return {
         status: 'error',
         summary: tt('decision.cancelled'),
@@ -3823,14 +3848,27 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         approval: 'not-required',
       };
     }
-    const option = request.options[choice]!;
+    const option = request.options[answer.chosenIndex]!;
     const warnings = parsed.warnings.join(' ');
     return {
       status: 'success',
       summary: tt('decision.chosen', { title: option.title }),
-      content: [formatDecisionAnswer(request, choice), warnings].filter(Boolean).join('\n\n'),
+      content: [formatDecisionAnswer(request, answer.chosenIndex), warnings].filter(Boolean).join('\n\n'),
       approval: 'not-required',
     };
+  }
+
+  /**
+   * 用户用一句话代替选项（自己想的做法）。
+   *
+   * 返回 `true` 表示这句话已经被当成方案答案吃掉了（不要再排队成新任务）。
+   */
+  private answerDecisionWithText(conversationId: string, text: string): boolean {
+    const pending = [...this.pendingDecisions.values()].find((item) => item.conversationId === conversationId);
+    if (!pending) return false;
+    void this.post({ type: 'decisionResolved', requestId: pending.request.requestId });
+    pending.resolve(-1, text);
+    return true;
   }
 
   /** 把某条对话里挂着的决策卡片结算掉（停止 / 出错 / 换对话时）。 */
@@ -4051,10 +4089,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         </div>
         <div id="todoArchiveBar" class="todo-archive-bar" role="group" aria-label="${t(lang, 'todo.archive.title')}" hidden></div>
         <section id="decisionCard" class="decision-card" hidden aria-live="assertive">
-          <div class="decision-heading"><span class="decision-badge" aria-hidden="true"></span><strong id="decisionQuestion"></strong></div>
-          <p id="decisionWhy" class="decision-why" hidden></p>
-          <ol id="decisionOptions" class="decision-options"></ol>
-          <p class="decision-note">${t(lang, 'decision.note')}</p>
+          <button id="decisionToggle" class="decision-toggle" type="button" aria-expanded="true" aria-controls="decisionBody" title="${t(lang, 'decision.collapseHint')}"><span class="decision-badge" aria-hidden="true"></span><strong id="decisionQuestion"></strong><span class="decision-toggle-label" id="decisionToggleLabel">${t(lang, 'decision.collapse')}</span><span class="decision-chevron" aria-hidden="true"></span></button>
+          <div id="decisionBody" class="decision-body">
+            <p id="decisionWhy" class="decision-why" hidden></p>
+            <ol id="decisionOptions" class="decision-options"></ol>
+            <p class="decision-custom-hint">${t(lang, 'decision.customHint')}</p>
+            <p class="decision-note">${t(lang, 'decision.note')}</p>
+          </div>
         </section>
         <section id="approvalCard" class="approval-card" hidden aria-live="assertive">
           <div class="approval-heading"><span class="approval-badge" aria-hidden="true"></span><strong id="approvalTitle"></strong></div>
