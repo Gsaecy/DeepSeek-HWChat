@@ -19,7 +19,15 @@ import { SKILL_REFRESH_TTL_MS, SkillRegistry } from '../agent/skillRegistry';
 import { invalidateWorkspaceSearch, workspaceSearchStats } from '../agent/workspaceSearch';
 import { fireWorkspaceWatchers, setWorkspaceRoots } from './support/vscodeMock';
 
-const WORKSPACE_PATTERNS = 3;
+/**
+ * 一次扫描只允许发**一次**工作区遍历。
+ *
+ * 旧实现是三条 pattern 各发一次 `findFiles`（= 三次全工作区遍历）。本机 21 个目录 /
+ * 64GB 的多根工作区实测 3.2 秒/条，三条串行约 9.6 秒 —— 用户看到的「启动一直在转、
+ * 一分钟才加载好」有它一份。三条 pattern 的文件集合互不相交，合并成一个花括号 glob
+ * 后结果完全一致（实测合并 3.35s）。
+ */
+const WORKSPACE_TRAVERSALS_PER_SCAN = 1;
 
 let root: string;
 let skills: SkillRegistry;
@@ -49,14 +57,14 @@ after(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-test('skills: one scan costs exactly one search per workspace pattern', async () => {
+test('skills: one scan costs exactly one workspace traversal', async () => {
   invalidateWorkspaceSearch();
   const before = searchCount();
   const list = await skills.refresh({ force: true });
   const after = searchCount();
 
   assert.ok(list.some((skill) => skill.name === 'Alpha Skill'), '扫描应发现工作区技能');
-  assert.equal(after - before, WORKSPACE_PATTERNS, '一次扫描只应发三条 pattern 的搜索');
+  assert.equal(after - before, WORKSPACE_TRAVERSALS_PER_SCAN, '一次扫描只许发一次工作区遍历（三条 pattern 已合并成一个 glob）');
 });
 
 test('skills: repeated refreshes inside the freshness window do not scan again', async () => {
@@ -78,7 +86,7 @@ test('skills: concurrent refreshes share a single scan (single-flight)', async (
   const results = await Promise.all(Array.from({ length: 5 }, () => skills.refresh({ force: true })));
   const after = searchCount();
 
-  assert.equal(after - before, WORKSPACE_PATTERNS, '五个并发刷新只应真正扫描一次');
+  assert.equal(after - before, WORKSPACE_TRAVERSALS_PER_SCAN, '五个并发刷新只应真正扫描一次');
   for (const list of results) {
     assert.ok(list.some((skill) => skill.name === 'Alpha Skill'));
   }
@@ -126,7 +134,51 @@ test('skills: 200 rapid file events collapse into at most one rescan', async () 
 
   const after = searchCount();
   assert.ok(
-    after - before <= WORKSPACE_PATTERNS,
-    `200 次文件事件最多只应触发一次扫描（${WORKSPACE_PATTERNS} 次搜索），实际 ${after - before} 次`,
+    after - before <= WORKSPACE_TRAVERSALS_PER_SCAN,
+    `200 次文件事件最多只应触发一次扫描（${WORKSPACE_TRAVERSALS_PER_SCAN} 次遍历），实际 ${after - before} 次`,
   );
+});
+
+test('skills: hydrate never traverses the workspace', async () => {
+  invalidateWorkspaceSearch();
+  const before = searchCount();
+  const list = await skills.hydrate();
+  const after = searchCount();
+
+  assert.equal(after - before, 0, '水合不许发任何工作区搜索：它就是「不遍历」的那条路径');
+  // 本地目录里的技能会照常出现；workspace 里的要靠缓存或后台扫描。
+  assert.ok(Array.isArray(list));
+});
+
+test('skills: hydrate still reuses the last scanned workspace skills from cache', async () => {
+  await skills.refresh({ force: true });
+  assert.ok(skills.list().some((skill) => skill.name === 'Alpha Skill'));
+
+  // 新实例 = 新进程：内存里什么都没有，只能靠磁盘缓存。
+  const fresh = new SkillRegistry(
+    vscode.Uri.file(join(root, 'user-skills')),
+    vscode.Uri.file(join(root, 'copilot-skills')),
+    vscode.Uri.file(join(root, 'quick-launch.json')),
+  );
+  invalidateWorkspaceSearch();
+  const before = searchCount();
+  const hydrated = await fresh.hydrate();
+  const after = searchCount();
+  fresh.dispose();
+
+  assert.equal(after - before, 0, '水合不许遍历工作区');
+  assert.ok(hydrated.some((skill) => skill.name === 'Alpha Skill'), '上次扫到的 workspace 技能必须能从缓存水合出来');
+});
+
+test('skills: hydrate does not mark the registry as scanned', async () => {
+  const fresh = new SkillRegistry(
+    vscode.Uri.file(join(root, 'user-skills')),
+    vscode.Uri.file(join(root, 'copilot-skills')),
+    vscode.Uri.file(join(root, 'quick-launch.json')),
+  );
+  assert.equal(fresh.hasScanned, false);
+  await fresh.hydrate();
+  fresh.dispose();
+  // 水合并不可信：后台的真实扫描必须照样跑，否则新建的工作区技能永远看不到。
+  assert.equal(fresh.hasScanned, false);
 });

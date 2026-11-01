@@ -50,7 +50,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   skills.onError = (error) => {
     output.warn(`[skills] 扫描失败（保留上一份清单）：${error instanceof Error ? error.message : String(error)}`);
   };
-  await skills.refresh();
+  /**
+   * **激活只做「水合」，不做全工作区扫描。**
+   *
+   * 真实故障（用户反馈）：「0.3.1 安装后一直在启动中，过了一分钟才加载好」。
+   * 旧实现在这里 `await skills.refresh()`，而一次扫描是三条 `findFiles`；本机
+   * 21 个目录 / 64GB 的多根工作区实测 3.2 秒/条，三条串行 ≈ 9.6 秒，VS Code 全新
+   * 窗口里的首次搜索还要等它自己的文件索引爬完 —— 一分钟就是这么来的。
+   *
+   * 现在：`hydrate()` 只读两个本地技能目录 + 上次扫描存下的路径（毫秒级），
+   * 面板立刻有完整清单；真实扫描在后台跑，扫完通过 `onDidChangeSkills` 让面板
+   * 重推一次状态补上差异（新增/删掉的工作区技能）。
+   */
+  await skills.hydrate().catch((error: unknown) => {
+    output.warn(`[skills] 水合失败（稍后由后台扫描补齐）：${error instanceof Error ? error.message : String(error)}`);
+  });
   const toolExecutor = new ToolExecutor(
     audit,
     () => vscode.workspace.isTrusted,
@@ -87,6 +101,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log: (line) => output.debug(line),
     },
   );
+  // 后台真实扫描：不 await，不挡激活，也不挡面板第一次渲染。
+  void skills.refresh().catch((error: unknown) => {
+    output.warn(`[skills] 后台扫描失败（保留水合结果）：${error instanceof Error ? error.message : String(error)}`);
+  });
   const scheduler = new CleanupScheduler(
     storage,
     output,

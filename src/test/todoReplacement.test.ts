@@ -127,7 +127,11 @@ async function submitTodoList(
       if (patch.todos !== undefined) todos = patch.todos ?? [];
     },
   };
-  const skills = { sharedActiveIds: () => [], onDidChangeSharedState: { event: () => ({ dispose() { /* noop */ } }) } };
+  const skills = {
+    sharedActiveIds: () => [],
+    onDidChangeSharedState: { event: () => ({ dispose() { /* noop */ } }) },
+    onDidChangeSkills: { event: () => ({ dispose() { /* noop */ } }) },
+  };
   const panel = new ChatPanel(
     {} as never, {} as never, storage as never, {} as never, {} as never,
     skills as never, {} as never, {} as never,

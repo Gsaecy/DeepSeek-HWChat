@@ -57,6 +57,18 @@ const WORKSPACE_PATTERNS = [
   '.agents/skills/**/SKILL.md',
   '.claude/skills/**/SKILL.md',
 ];
+/**
+ * 三条 workspace pattern 合成**一次**遍历。
+ *
+ * 它们的文件集合互不相交，并成一个花括号 glob 后结果完全一致（本机实测：合并
+ * 3.35s，三条独立各 3.2s ≈ 9.6s），而 `findFiles` 的成本几乎全在一次全工作区遍历上。
+ * 用途见 `scanWorkspaceSkills()`；watcher 仍然按三条分别注册（事件要能分辨哪条变了）。
+ */
+const WORKSPACE_SKILL_GLOB = '{**/.hwchat/skills/*.md,**/.agents/skills/**/SKILL.md,**/.claude/skills/**/SKILL.md}';
+
+/** 上次扫描到的 workspace 技能路径缓存，放在扩展自己的 globalStorage 里。 */
+const WORKSPACE_CACHE_NAME = '.workspace-skills.json';
+
 const MAX_SKILL_BYTES = 160 * 1024;
 const MAX_ENABLED_BYTES = 320 * 1024;
 
@@ -76,6 +88,13 @@ export class SkillRegistry implements vscode.Disposable {
    * 自动勾选、或我们写入）：面板据此重画勾选框，不必手动刷新。
    */
   readonly onDidChangeSharedState = new vscode.EventEmitter<void>();
+  /**
+   * 技能清单变了（真实扫描完成、或水合完成）。
+   *
+   * 面板订阅它重推一次状态：扫描可能比激活晚几十秒才结束，结束时不通知，
+   * 用户就得自己重新打开面板才能看到workspace 里的技能。
+   */
+  readonly onDidChangeSkills = new vscode.EventEmitter<void>();
 
   constructor(
     private readonly userSkillRoot: vscode.Uri,
@@ -158,7 +177,6 @@ export class SkillRegistry implements vscode.Disposable {
     }
     const running = this.scan()
       .then((summaries) => {
-        this.lastRefreshAt = Date.now();
         return summaries;
       }, (error: unknown) => {
         // 不更新 lastRefreshAt：下次调用会立刻重试，而不是把一个坏结果缓存 30 秒。
@@ -176,43 +194,135 @@ export class SkillRegistry implements vscode.Disposable {
   onError: ((error: unknown) => void) | undefined;
 
   private async scan(): Promise<SkillSummary[]> {
-    /**
-     * 没装「本地skill快捷调用」时**不读**它的状态文件。
-     *
-     * 真实故障：用户卸载了那个扩展，但 `~/.copilot/.skill-quick-launch.json` 还在
-     * （卸载扩展不会删它，本机残留着 35 个 active）。旧实现照样读，于是 HWChat 把
-     * 每个技能标成「默认启用」并自动勾选 —— 用户看到的就是「扩展都卸了，怎么还有
-     * 一堆勾选」，以为是扩展残留。它确实是残留，但**不该由 HWChat 来读**。
-     *
-     * 现在：没装就当成「没有全局勾选」，一切从空白开始，等用户重新装上再对接。
-     * 技能本身仍会从 `~/.copilot/skills/` 扫出来（那是 Copilot 的技能目录，
-     * 不随扩展安装/卸载变化），只是不再被这份无主的状态文件影响。
-     */
+    const { installed, quickState } = await this.sharedState();
+    const candidates = await this.localCandidates();
+    const workspaceCandidates = await this.scanWorkspaceSkills();
+    candidates.push(...workspaceCandidates);
+    // 记住这次扫到的 workspace 路径：下次激活能直接水合，不必再遍历工作区。
+    await this.writeWorkspaceCache(workspaceCandidates);
+    const summaries = await this.commit(candidates, installed, quickState);
+    this.lastRefreshAt = Date.now();
+    this.onDidChangeSkills.fire();
+    return summaries;
+  }
+
+  /**
+   * 快速水合：只用**不需要遍历工作区**的数据把清单铺上。
+   *
+   * 真实故障（用户反馈）：「0.3.1 安装后一直在启动中，过了一分钟才加载好」。
+   * 根因是 `activate()` 里 `await skills.refresh()` —— 一次真实的 `findFiles` 在
+   * 21 个目录、64GB 的多根工作区里实测 3.2 秒/条，旧实现三条串行 ≈ 9.6 秒，
+   * VS Code 全新窗口里首次搜索还要等它自己的索引爬完，能到一分钟。
+   *
+   * 水合拿的是：本地两个目录的 `readDirectory`（毫秒级）+ 上次扫描存下的
+   * workspace 路径（读一个小 JSON 再逐个读文件）。所以面板能立刻有完整技能列表，
+   * 真实扫描随后在后台校正新增/删除。
+   *
+   * **不更新 `lastRefreshAt`**：水合不是一次可信的扫描，后台的 `refresh()` 必须照样跑。
+   */
+  async hydrate(): Promise<SkillSummary[]> {
+    const { installed, quickState } = await this.sharedState();
+    const candidates = await this.localCandidates();
+    candidates.push(...await this.readWorkspaceCache());
+    const summaries = await this.commit(candidates, installed, quickState);
+    this.onDidChangeSkills.fire();
+    return summaries;
+  }
+
+  /** 「本地skill快捷调用」的安装状态与勾选状态（两次小文件读，与工作区大小无关）。 */
+  private async sharedState(): Promise<{ installed: boolean; quickState: QuickLaunchState }> {
     const installed = this.quickLaunchInstalled();
-    const quickState: QuickLaunchState = installed
-      ? await this.readQuickLaunchState()
-      : { raw: {}, active: new Set<string>(), lastUsed: {} };
+    return {
+      installed,
+      quickState: installed
+        ? await this.readQuickLaunchState()
+        : { raw: {}, active: new Set<string>(), lastUsed: {} },
+    };
+  }
+
+  /** 两个本地技能目录：直接 `readDirectory`，不做工作区遍历。 */
+  private async localCandidates(): Promise<Array<{
+    uri: vscode.Uri;
+    source: SkillSummary['source'];
+    relativePath: string;
+    quickLaunchName?: string;
+  }>> {
     const candidates: Array<{
       uri: vscode.Uri;
       source: SkillSummary['source'];
       relativePath: string;
       quickLaunchName?: string;
     }> = [];
-    for (const pattern of WORKSPACE_PATTERNS) {
-      // 走统一搜索调度层：一次保存会触发多个 watcher 事件，旧实现每次都直接
-      // findFiles（= 每次拉起 rg），三条 pattern 就是三次。
-      const found = await searchWorkspace({ include: pattern, limit: 200, operation: 'skill_registry' });
-      for (const uri of found.outcome.files) {
-        candidates.push({
-          uri,
-          source: 'workspace',
-          relativePath: vscode.workspace.asRelativePath(uri, false),
-        });
-      }
-    }
     await this.addFlatMarkdownSkills(candidates);
     await this.addCopilotSkills(candidates);
+    return candidates;
+  }
 
+  /** workspace 里的技能：一次遍历（见 `WORKSPACE_SKILL_GLOB`）。 */
+  private async scanWorkspaceSkills(): Promise<Array<{
+    uri: vscode.Uri;
+    source: SkillSummary['source'];
+    relativePath: string;
+    quickLaunchName?: string;
+  }>> {
+    const found = await searchWorkspace({ include: WORKSPACE_SKILL_GLOB, limit: 200, operation: 'skill_registry' });
+    return found.outcome.files.map((uri) => ({
+      uri,
+      source: 'workspace' as const,
+      relativePath: vscode.workspace.asRelativePath(uri, false),
+    }));
+  }
+
+  private get workspaceCacheUri(): vscode.Uri {
+    return vscode.Uri.file(join(dirname(this.userSkillRoot.fsPath), WORKSPACE_CACHE_NAME));
+  }
+
+  private async readWorkspaceCache(): Promise<Array<{
+    uri: vscode.Uri;
+    source: SkillSummary['source'];
+    relativePath: string;
+  }>> {
+    try {
+      const raw = new TextDecoder().decode(await vscode.workspace.fs.readFile(this.workspaceCacheUri));
+      const parsed = JSON.parse(raw) as { version?: number; skills?: Array<{ path?: unknown; relativePath?: unknown }> };
+      if (parsed?.version !== 1 || !Array.isArray(parsed.skills)) return [];
+      return parsed.skills
+        .filter((item) => typeof item?.path === 'string')
+        .map((item) => ({
+          uri: vscode.Uri.file(item.path as string),
+          source: 'workspace' as const,
+          relativePath: typeof item.relativePath === 'string' ? item.relativePath : (item.path as string),
+        }));
+    } catch {
+      // 没有缓存 / 缓存坏了都只是「这次水合少几项」，后台扫描会补上。
+      return [];
+    }
+  }
+
+  private async writeWorkspaceCache(candidates: Array<{ uri: vscode.Uri; relativePath: string }>): Promise<void> {
+    const payload = JSON.stringify({
+      version: 1,
+      savedAt: Date.now(),
+      skills: candidates.map((candidate) => ({ path: candidate.uri.fsPath, relativePath: candidate.relativePath })),
+    }, null, 2);
+    try {
+      await vscode.workspace.fs.writeFile(this.workspaceCacheUri, new TextEncoder().encode(payload));
+    } catch {
+      // 写不进去只是「下次还要再遍历一遍」，不能影响本次结果。
+    }
+  }
+
+  /** 读文件、解析、落进 `records`。扫描与水合共用这一段，保证两者结果口径一致。 */
+  private async commit(
+    candidates: Array<{
+      uri: vscode.Uri;
+      source: SkillSummary['source'];
+      relativePath: string;
+      quickLaunchName?: string;
+    }>,
+    installed: boolean,
+    quickState: QuickLaunchState,
+  ): Promise<SkillSummary[]> {
     const next = new Map<string, SkillRecord>();
     for (const candidate of deduplicate(candidates)) {
       const record = await this.readSkill(candidate).catch(() => undefined);

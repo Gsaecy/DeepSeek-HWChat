@@ -473,6 +473,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     this.disposables.push(this.skills.onDidChangeSharedState.event(() => {
       void this.adoptSharedSkills();
     }));
+    /**
+     * 后台扫描结束 → 重推一次状态。
+     *
+     * 激活时只做水合（不做全工作区遍历），所以真实扫描可能在面板已经画好之后才结束；
+     * 不通知的话，用户得自己重开面板才能看到工作区里新加的技能。
+     */
+    this.disposables.push(this.skills.onDidChangeSkills.event(() => {
+      if (this.view) void this.sendState().catch(() => undefined);
+    }));
   }
 
   /**
@@ -524,7 +533,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   async open(conversationId?: string, options: { skipState?: boolean } = {}): Promise<void> {
-    await this.skills.refresh();
+    // 没扫过就水合一次（毫秒级）；真实扫描放后台，不挡面板打开。
+    if (!this.skills.hasScanned) await this.skills.hydrate();
+    void this.skills.refresh().catch(() => undefined);
     if (conversationId && await this.storage.getConversation(conversationId)) {
       this.activeConversationId = conversationId;
       const summary = await this.storage.getConversation(conversationId);
@@ -576,7 +587,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     this.activeSkillIds = this.skills.sharedActiveIds();
     this.skillDraftTouched = false;
 
-    await this.skills.refresh();
+    // 点「新建对话」不该等一次全工作区遍历（实测 6.7s）。没扫过就水合（毫秒级），
+    // 真实扫描放后台；勾选列表已经从水合结果里拿到了。
+    if (!this.skills.hasScanned) await this.skills.hydrate().catch(() => undefined);
+    void this.skills.refresh().catch(() => undefined);
     const settings = readSettings();
     const mode = resolveActiveMode({ draftOverride: undefined, defaultMode: settings.defaultMode });
 
@@ -1979,20 +1993,16 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
      * 工作区实测：冷缓存 3.0–3.8 秒/条，热缓存 0.04–0.12 秒/条。旧实现每发一条
      * 消息都 `await refresh()`，正好对上用户报的「发送到显示有 2-3 秒延迟」。
      *
-     * 现在的规则：
-     *  - 已经扫过 → 直接用缓存清单组装（`prepare` 是纯内存操作），后台顺手刷新给下一次用；
-     *  - 还没扫过（刚激活的窗口）→ 这一次仍要等，否则路由表是空的、勾选的技能会被静默忽略。
-     * 技能文件真的变了有 watcher 兜底，所以「用缓存」不会漏掉新技能。
+     * 现在的规则（全部**不等全工作区遍历**）：
+     *  - 内存里已有清单（激活时水合过）→ 直接拿去组装，后台顺手刷新给下一次用；
+     *  - 内存里是空的（理论上不该发生）→ 先水合一次（读本地目录 + 上次的缓存路径，毫秒级），
+     *    仍然不等遍历：路由表少一个刚新增的工作区技能，比每条消息都卡 6.7 秒划算得多，
+     *    而 watcher + 后台扫描会把它补进来。
      */
-    if (this.skills.hasScanned) {
-      void this.skills.refresh().catch(() => undefined);
-    } else {
-      try {
-        await this.skills.refresh();
-      } catch {
-        // 扫描失败只意味着清单可能旧一点，不能让这条消息发不出去。
-      }
+    if (!this.skills.list().length) {
+      await this.skills.hydrate().catch(() => undefined);
     }
+    void this.skills.refresh().catch(() => undefined);
     return this.skills.prepare(skillIds, mode, text);
   }
 

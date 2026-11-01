@@ -320,10 +320,13 @@ const prepareBody = PANEL_TS.slice(
   PANEL_TS.indexOf('private async prepareSkillsForSend('),
   PANEL_TS.indexOf('private async prepareSkillsForSend(') + 1600,
 );
-check('技能准备不再无条件 await 全工作区扫描（已扫过就用缓存 + 后台刷新）',
-  prepareBody.includes('if (this.skills.hasScanned)')
-  && prepareBody.includes('void this.skills.refresh()'),
-  prepareBody.includes('if (this.skills.hasScanned)') ? 'ok' : '缺少 hasScanned 分支');
+// 契约（0.3.2 更新）：发送路径**永远**不 await 全工作区遍历 —— 内存里没清单就先水合
+// （毫秒级），然后一律后台刷新。旧写法「没扫过就 await refresh()」会让首条消息卡 6.7 秒。
+check('技能准备不再 await 全工作区扫描（水合兜底 + 后台刷新）',
+  prepareBody.includes('void this.skills.refresh()')
+  && prepareBody.includes('await this.skills.hydrate()')
+  && !/await this\.skills\.refresh\(/.test(prepareBody),
+  prepareBody.includes('await this.skills.hydrate()') ? 'ok' : '缺少水合兜底');
 check('所有提前返回都给界面发 sendRejected',
   (sendBody.match(/rejectSend\(/g) ?? []).length >= 3 && sendBody.includes("type: 'sendRejected'"),
   `rejectSend 调用 ${(sendBody.match(/rejectSend\(/g) ?? []).length} 处`);

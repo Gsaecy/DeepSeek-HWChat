@@ -265,11 +265,17 @@ function globToRegExp(glob: string): RegExp {
         out += '\\{';
         continue;
       }
-      const parts = glob
-        .slice(index + 1, end)
-        .split(',')
-        .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-      out += `(?:${parts.join('|')})`;
+      /*
+       * 花括号里的每一段**也是 glob**，不是字面量。
+       *
+       * 权威依据（`vscode.d.ts`，`workspace.findFiles` 的 GlobPattern 说明）：
+       * `{}` 用于分组，官方示例就是 `**​/*.{js,ts}`。旧替身把括号内容整体当字面量
+       * 转义，于是 `{**​/.a/**,**​/.b/**}` 这类真正的分组 pattern 永远匹配不到任何
+       * 文件 —— 测试会以「扫描发现不了技能」的形式失败，却看不出是这个原因。
+       * 现在递归翻译每一段，与真实行为一致。
+       */
+      const parts = glob.slice(index + 1, end).split(',');
+      out += `(?:${parts.map((part) => globToRegExp(part).source.replace(/^\^|\$$/g, '')).join('|')})`;
       index = end;
       continue;
     }

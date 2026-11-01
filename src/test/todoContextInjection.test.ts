@@ -34,6 +34,8 @@ function fakePanel(conversation: Record<string, unknown>, stored: Record<string,
   const skills = {
     sharedActiveIds: () => [],
     onDidChangeSharedState: { event: () => ({ dispose() { /* noop */ } }) },
+    // 后台扫描结束会通知面板重推状态；桩里给一个可订阅的空事件。
+    onDidChangeSkills: { event: () => ({ dispose() { /* noop */ } }) },
   };
   const panel = new ChatPanel(
     {} as never, {} as never, storage as never, {} as never, {} as never,
