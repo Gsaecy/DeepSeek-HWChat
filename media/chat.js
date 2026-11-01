@@ -1225,6 +1225,91 @@
   }
 
   /**
+   * 把一条消息**追加**到列表末尾（不重建整屏）。
+   *
+   * 为什么要单独一个函数：`renderMessages()` 是 `replaceChildren()` + 全量重造，
+   * 200 条消息实测 129ms —— 而「发一条消息」「排队消息被放进来」都只需要多一个
+   * 节点。真实反馈：「用户发送消息到对话框显示消息有 2-3 秒延迟」。这条路径上的
+   * 每一毫秒都在用户眼前，所以追加必须走增量。
+   */
+  function appendMessageToList(message) {
+    const article = renderMessage(message);
+    rememberRender(article, message);
+    elements.messageList.append(article);
+    elements.emptyState.hidden = state.messages.length > 0;
+    elements.loadOlderButton.hidden = !state.hasMore || !state.messages.length;
+    // 增量改动之后必须重算「画面签名」，否则下一次全量状态会拿旧签名比较，
+    // 判断成「消息没变」而跳过重绘 —— 界面上就会留下已经不该存在的节点。
+    syncRenderedSignature();
+    return article;
+  }
+
+  /** 把「当前 DOM 对应的那份列表签名」对齐到 state.messages。 */
+  function syncRenderedSignature() {
+    renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
+  }
+
+  function followBottom() {
+    if (!state.autoFollow) return;
+    requestAnimationFrame(() => {
+      const viewport = elements.messageViewport;
+      viewport.scrollTop = viewport.scrollHeight;
+      updateScrollToBottom();
+    });
+  }
+
+  /**
+   * 乐观气泡：点发送的**同一帧**就把用户这条消息画出来。
+   *
+   * 真实反馈：「用户发送消息，到对话框显示消息，有 2-3 秒延迟，这延迟很久」。
+   * 旧实现里 `submit()` 只把文字丢给扩展宿主，然后什么都不画 —— 用户看着输入框
+   * 清空、界面静止 2-3 秒，才等到气泡出现。宿主那一侧要落盘、读上下文、组装
+   * 请求、必要时还要扫描技能，这些时间消不掉，但**不需要用户盯着空屏幕等**。
+   *
+   * 诚实性：气泡带 `optimistic` 标记，只活到宿主确认（`messageStart` 用真消息替换）
+   * 或拒绝（`sendRejected` 撤掉并还原文字）。中途切走/重载都会被清理，不会留下
+   * 一条磁盘上不存在的消息。
+   */
+  /** 还没被宿主确认的乐观消息（对象本身：状态到达时要按内容判断是否已收录）。 */
+  let optimisticMessages = [];
+  let optimisticSeq = 0;
+
+  function appendOptimisticUserMessage(text, attachments) {
+    if (!text && !attachments.length) return;
+    const now = Date.now();
+    const message = {
+      id: `optimistic-${(optimisticSeq += 1)}`,
+      role: 'user',
+      content: text || t('notice.processAttachments'),
+      createdAt: now,
+      updatedAt: now,
+      status: 'complete',
+      // 让状态徽标显示「还没执行」：这条确实还没被 agent 读到。
+      executionStatus: 'pending',
+      attachments: attachments.map((item) => ({ ...item })),
+      optimistic: true,
+    };
+    optimisticMessages.push(message);
+    state.messages.push(message);
+    appendMessageToList(message);
+    followBottom();
+  }
+
+  /** 撤掉所有还没被宿主确认的乐观气泡。 */
+  function clearOptimisticMessages() {
+    if (!optimisticMessages.length) return;
+    const gone = new Set(optimisticMessages.map((message) => message.id));
+    optimisticMessages = [];
+    state.messages = state.messages.filter((message) => !gone.has(message.id));
+    // 用 `data-message-id` 定位：`hwchatRender` 里没有 id 字段。
+    for (const article of [...elements.messageList.children]) {
+      if (gone.has(article.dataset.messageId)) article.remove();
+    }
+    elements.emptyState.hidden = state.messages.length > 0;
+    syncRenderedSignature();
+  }
+
+  /**
    * 流式输出期间只重画「正在变的那一条消息」。
    *
    * 真实缺陷（用户反馈「输出内容一闪一闪的跳动」）：以前每个 delta 都调
@@ -3589,12 +3674,30 @@
     elements.promptInput.focus();
   }
 
+  /**
+   * 这一刻正在等宿主确认的那次发送。
+   *
+   * 双击/连按回车会在宿主还没回话时再触发一次 `submit()`：宿主那边有 `pendingSends`
+   * 兜底，但界面这里会画出第二个乐观气泡。所以先在这个标志上挡一次。
+   */
+  let sendAwaitingHost = false;
+
   function submit() {
     const text = elements.promptInput.value.trim();
     if ((!text && !state.pendingAttachments.length) || state.conversation?.archived || state.permissionPresetPending) return;
+    if (sendAwaitingHost) return;
+    // 附件快照要在清空 pendingAttachments 之前取，乐观气泡要显示它们。
+    const attachments = state.pendingAttachments.map((item) => ({ ...item }));
     elements.promptInput.value = ''; saveDraft(state.conversation?.id); state.autoFollow = true; autoResize();
-    if (state.streaming) post('sendWhileRunning', { text });
-    else post('send', { text, mode: state.mode, skillIds: state.selectedSkillIds, permissionPreset: state.permissionPreset, agentMaxSteps: state.agentMaxSteps, reasoningEffort: state.reasoningEffort });
+    if (state.streaming) {
+      // 运行中插入的消息由宿主决定排队/合并，位置不确定，这里不抢先画。
+      post('sendWhileRunning', { text });
+      return;
+    }
+    sendAwaitingHost = true;
+    // 同一帧画出来：用户点发送就等于看到了自己的消息，不再盯着空屏幕。
+    appendOptimisticUserMessage(text, attachments);
+    post('send', { text, mode: state.mode, skillIds: state.selectedSkillIds, permissionPreset: state.permissionPreset, agentMaxSteps: state.agentMaxSteps, reasoningEffort: state.reasoningEffort });
   }
   function setStreaming(value, conversationId = null) { state.streaming = value; state.streamingConversationId = value ? conversationId : null; renderHeader(); renderTaskTree(); updateComposerState(); }
 
@@ -4207,6 +4310,24 @@
         }
         const incoming = message.state; state.conversations = incoming.conversations || []; state.archivedConversations = incoming.archivedConversations || [];
         state.conversation = incoming.conversation; state.messages = incoming.messages || []; state.hasMore = Boolean(incoming.hasMore);
+        /*
+         * 全量状态到达时，乐观气泡怎么处理？
+         *
+         * - 宿主已经把这条消息收录了（列表里有同角色、同内容、非乐观的消息）→ 作废，
+         *   否则会看到两条一模一样的气泡；
+         * - 还没收录（正在落盘/准备）→ **挂回列表末尾**：这时候撤掉它，用户刚发的话
+         *   会凭空消失一下再回来，比多等几十毫秒更吓人。
+         * 只有真的存在「还没确认的发送」时才这么做，`sendAwaitingHost` 就是那个标志。
+         */
+        if (optimisticMessages.length) {
+          const stored = state.messages.filter((item) => !item.optimistic && item.role === 'user');
+          optimisticMessages = optimisticMessages.filter((item) => !stored.some((real) => real.content === item.content));
+          if (sendAwaitingHost) {
+            for (const item of optimisticMessages) state.messages.push(item);
+          } else {
+            optimisticMessages = [];
+          }
+        }
         state.sendOnEnter = incoming.settings?.sendOnEnter !== false; state.pendingAttachments = incoming.pendingAttachments || [];
         state.apiProfiles = incoming.settings?.apiProfiles || []; state.activeApiProfileId = incoming.settings?.activeApiProfileId || ''; state.model = incoming.settings?.model || ''; state.modelOptionsByProfile = incoming.modelOptionsByProfile || {};
         state.permissionPreset = incoming.settings?.permissionPreset || 'askAll'; state.agentMaxSteps = normalizeStepValue(incoming.settings?.agentMaxSteps); state.reasoningEffort = incoming.settings?.reasoningEffort || 'default'; state.internetReference = incoming.settings?.internetReference === true; syncInternetReferenceButton();
@@ -4272,13 +4393,36 @@
       case 'context': state.pendingAttachments = state.pendingAttachments.filter((item) => item.kind !== 'selection'); renderAttachments(); break;
       case 'messageStart': {
         markRunning(message.conversationId, true);
+        sendAwaitingHost = false;
         // 发送准备期间用户可能已经切到别的对话：那种情况下不要把它塞进当前消息列表。
-        if (state.conversation?.id && state.conversation.id !== message.conversationId) { renderHistory(); break; }
+        if (state.conversation?.id && state.conversation.id !== message.conversationId) { clearOptimisticMessages(); renderHistory(); break; }
         state.conversation = state.conversation || { id: message.conversationId, title: message.userMessage.content, mode: state.mode };
+        // 宿主已经把真消息落盘了：乐观气泡退场，换成带真实 id / 附件 / 状态的那两条。
+        clearOptimisticMessages();
         state.messages.push(message.userMessage, message.assistant); state.pendingAttachments = []; state.autoFollow = true;
-        setStreaming(true, message.conversationId); renderMessages('bottom'); renderAttachments(); renderHistory(); break;
+        setStreaming(true, message.conversationId);
+        // 增量追加而不是整屏重建：200 条消息整屏要 129ms，而这里只是多两个节点。
+        appendMessageToList(message.userMessage);
+        appendMessageToList(message.assistant);
+        followBottom();
+        renderAttachments(); renderHistory(); break;
       }
-      case 'messageAdded': if (message.conversationId === state.conversation?.id) { state.messages.push(message.message); state.pendingAttachments = []; renderMessages(state.autoFollow ? 'bottom' : 'keep'); renderAttachments(); } break;
+      /**
+       * 宿主拒绝了这次发送（没同意数据流、没配 API Key、归档对话不可续写…）。
+       * 把乐观气泡撤掉，并把原文还给输入框 —— 否则用户的话就这么凭空消失了。
+       */
+      case 'sendRejected': {
+        sendAwaitingHost = false;
+        clearOptimisticMessages();
+        if (message.text && !elements.promptInput.value.trim()) {
+          elements.promptInput.value = message.text;
+          saveDraft(state.conversation?.id);
+          autoResize();
+        }
+        renderMessages('keep');
+        break;
+      }
+      case 'messageAdded': if (message.conversationId === state.conversation?.id) { state.messages.push(message.message); state.pendingAttachments = []; appendMessageToList(message.message); followBottom(); renderAttachments(); } break;
       // 排队消息被编辑：原地换掉那一条的文字，不重建整个列表（否则滚动位置和选区都会丢）。
       case 'messageUpdated': {
         if (message.conversationId !== state.conversation?.id || !message.message) break;

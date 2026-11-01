@@ -141,6 +141,16 @@ export class SkillRegistry implements vscode.Disposable {
    * 一份「可能稍旧」的技能清单永远比一个点不动的按钮好，所以这里把错误收住：
    * 保留上一次的清单，把原因交给 `onError` 记录。
    */
+  /**
+   * 是否已经扫过一次（进程内）。
+   *
+   * 发送路径用它判断「现在能不能直接用缓存清单」：扫过一次就够 —— 清单的新鲜度
+   * 由 watcher（文件真变了）与 `SKILL_REFRESH_TTL_MS` 共同保证。
+   */
+  get hasScanned(): boolean {
+    return Boolean(this.lastRefreshAt);
+  }
+
   async refresh(options: { force?: boolean } = {}): Promise<SkillSummary[]> {
     if (this.inFlightRefresh) return this.inFlightRefresh;
     if (!options.force && this.lastRefreshAt && Date.now() - this.lastRefreshAt < SKILL_REFRESH_TTL_MS) {

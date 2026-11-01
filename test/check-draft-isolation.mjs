@@ -104,6 +104,9 @@ function receiveState(state, message) {
     + `let editingBubbleMessageId = 'msg-1';\n`
     + `let editingBubbleTaskId = 'task-1';\n`
     + `let editingBubbleDraft = '半截草稿';\n`
+    // 乐观气泡（点发送先画、宿主确认后替换）同样是 `case 'state'` 要读的模块级状态。
+    + `let optimisticMessages = [];\n`
+    + `let sendAwaitingHost = false;\n`
     // `case 'state'` 会同步「互联网参考」开关的显示；桩里只需要一个空实现。
     + `const syncInternetReferenceButton = () => {};\n`
     + `const fileReferenceResolution = new Map();\n`

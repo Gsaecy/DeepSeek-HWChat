@@ -1263,6 +1263,18 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     await this.postTaskTree(run.taskQueue, conversationId);
   }
 
+  /**
+   * 告诉界面「这次发送没成立」。
+   *
+   * 界面在点发送的同一帧就先画了用户气泡（乐观显示），所以任何提前返回都必须
+   * 回一条拒绝 —— 否则那条气泡会一直挂在那里，像是一条发出去却永远没回复的消息。
+   * 同时把原文还给输入框：用户敲的话不能因为一次校验失败就消失。
+   */
+  private async rejectSend(text: string, messageKey: string, vars?: Record<string, string | number>): Promise<void> {
+    await this.post({ type: 'sendRejected', text });
+    await this.post({ type: 'toast', tone: 'warning', text: tt(messageKey, vars) });
+  }
+
   private async send(
     text: string,
     requestedMode?: ConversationMode,
@@ -1274,7 +1286,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   ): Promise<void> {
     const content = text.trim();
     const sendKey = this.activeConversationId ?? 'draft';
-    if ((!content && !this.pendingAttachments.length && !this.pendingContext) || this.pendingSends.has(sendKey)) {
+    if (!content && !this.pendingAttachments.length && !this.pendingContext) {
+      return;
+    }
+    if (this.pendingSends.has(sendKey)) {
+      // 连点/连按回车：界面那边已经画过乐观气泡了，这里给它一个回执让它退场。
+      await this.post({ type: 'sendRejected', text: content });
       return;
     }
     this.pendingSends.add(sendKey);
@@ -1282,7 +1299,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     let startedConversationId: string | undefined;
     try {
       if (!await this.callbacks.ensurePrivacyConsent()) {
-        await this.post({ type: 'toast', tone: 'warning', text: tt('notice.privacyRequired') });
+        await this.rejectSend(content, 'notice.privacyRequired');
         return;
       }
       let configuredSettings = readSettings();
@@ -1326,7 +1343,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         reasoningEffort: effectiveReasoning,
       };
       if (!await hasApiKey(this.secrets, profile.id, profile.id === 'default')) {
-        await this.post({ type: 'toast', tone: 'warning', text: tt('notice.configureApiKey', { profile: profile.name }) });
+        await this.rejectSend(content, 'notice.configureApiKey', { profile: profile.name });
         this.callbacks.openSettings();
         return;
       }
@@ -1339,7 +1356,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       // 勾选全部按对话存：界面传了就以它为准，没传就用本对话当前的选择。
       const skillIds = this.effectiveSkillIds(requestedSkillIds ?? this.activeSkillIds);
       if (existingConversation?.archived) {
-        await this.post({ type: 'toast', tone: 'warning', text: tt('notice.archivedResume') });
+        await this.rejectSend(content, 'notice.archivedResume');
         return;
       }
       let createdConversationId: string | undefined;
@@ -1382,6 +1399,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       const attachments = this.pendingAttachments.map((item) => ({ ...item }));
       this.pendingContext = undefined;
       this.pendingAttachments = [];
+      const sendTiming: { startedAt: number; visibleAt: number } = { startedAt: Date.now(), visibleAt: 0 };
       const userMessage = await this.storage.appendMessage(conversationId, {
         role: 'user',
         content: content || tt('notice.processAttachments'),
@@ -1392,9 +1410,40 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         // 这条是发起本轮运行的消息：紧接着 agent 就会读它，所以直接算「执行中」。
         executionStatus: 'running',
       });
+      /**
+       * 先把这一问一答推给界面，再去干那些慢活。
+       *
+       * 真实反馈：「用户发送消息，到对话框显示消息，有 2-3 秒延迟」。
+       * 旧顺序是「落盘 → 扫描技能 → 组装上下文（读整条对话）→ 建占位回复 → 才推送」，
+       * 用户点完发送只能盯着空屏幕。现在两条消息一落盘（实测各 ~3ms）就推，
+       * 慢活排到后面；回复占位先用一个空壳对象，`usedSkills` 等技能准备完再补
+       * （`updateMessage`），id 由存储分配，所以它的时间顺序一定是对的。
+       */
+      const assistant = await this.storage.appendMessage(conversationId, {
+        role: 'assistant',
+        content: '',
+        status: 'streaming',
+        model: settings.model,
+        usedSkills: [],
+        replyToMessageId: userMessage.id,
+      });
+      this.callbacks.onHistoryChanged();
+      await this.post({ type: 'runs', runningConversationIds: [...this.runs.keys(), conversationId] });
+      await this.post({
+        type: 'messageStart',
+        conversationId,
+        userMessage: this.forWebview(userMessage),
+        assistant: this.forWebview(assistant),
+        pendingAttachments: [],
+      });
+      sendTiming.visibleAt = Date.now();
       const preparedSkills = await this.prepareSkillsForSend(skillIds, mode, content || tt('notice.processAttachments'));
       const usedSkills = [...preparedSkills.preloaded];
-      if (usedSkills.length) await this.skills.recordUsage(usedSkills.map((skill) => skill.id));
+      if (usedSkills.length) {
+        await this.skills.recordUsage(usedSkills.map((skill) => skill.id));
+        // 技能列表是「准备完才知道」的：补回占位回复上，界面下一次 patch 就会显示。
+        await this.storage.updateMessage(conversationId, assistant.id, { usedSkills }).catch(() => undefined);
+      }
       /**
        * 本次运行的作用域，随每次工具调用传下去：
        * - 项目根：相对路径与命令 cwd 都归属到这条对话的项目，不再落到第一个工作区根；
@@ -1412,14 +1461,6 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       const requestMessages = await this.requestMessages(conversationId, settings, mode, preparedSkills.prompt, options?.resumedTodos === true);
       const linkedConversation = await this.storage.getConversation(conversationId);
       const historyTool = linkedConversation?.sourceConversationId ? conversationHistoryToolDefinition() : undefined;
-      const assistant = await this.storage.appendMessage(conversationId, {
-        role: 'assistant',
-        content: '',
-        status: 'streaming',
-        model: settings.model,
-        usedSkills,
-        replyToMessageId: userMessage.id,
-      });
       const controller = new AbortController();
       /**
        * 续跑绑定：通用续跑指令（「继续执行当前任务清单…」）本身没有交付物，
@@ -1466,16 +1507,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       });
       // 同一个对话不会重复进 send()（界面上按钮已禁用），覆盖写只是防御。
       this.runs.set(conversationId, run);
-      this.callbacks.onHistoryChanged();
       await this.post({ type: 'runs', runningConversationIds: [...this.runs.keys()] });
-      await this.post({
-        type: 'messageStart',
-        conversationId,
-        userMessage: this.forWebview(userMessage),
-        assistant: this.forWebview(assistant),
-        pendingAttachments: [],
-      });
       await this.postTaskTree(taskQueue, conversationId);
+      // 到这里才开始跑 agent；记一笔「看得见到开始跑」的真实耗时，方便以后回归时对比。
+      this.callbacks.log?.(
+        `[send] 气泡可见 +${sendTiming.visibleAt - sendTiming.startedAt}ms，`
+        + `开始执行 +${Date.now() - sendTiming.startedAt}ms（技能准备与上下文组装在这之间）`,
+      );
       // 先把声明了语言模型工具的扩展激活，再生成工具定义，避免工具列表缺项。
       await this.vscodeTools.warmToolContributors();
       // 本轮是怎么结束的：结算清单时要靠它区分「跑完没结清」和「被掐断」。
@@ -1644,6 +1682,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           await this.postHistorySnapshot();
         }
       }
+    } catch (error) {
+      /*
+       * 准备阶段的异常（建对话失败、写盘失败……）以前会直接抛给消息处理层，
+       * 界面那边已经画出的乐观气泡就永远挂在列表上，看起来像「发出去了但没回复」。
+       * 这里补一条拒绝回执，再把错误抛出去照常上报。
+       */
+      await this.post({ type: 'sendRejected', text: content }).catch(() => undefined);
+      throw error;
     } finally {
       this.pendingSends.delete(sendKey);
       if (startedConversationId) this.startingConversationIds.delete(startedConversationId);
@@ -1926,10 +1972,26 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * `refresh` 自带新鲜窗口：紧接在打开/新建对话之后发送时通常一次搜索都不发。
    */
   private async prepareSkillsForSend(skillIds: string[], mode: ConversationMode, text: string): Promise<PreparedSkillContext> {
-    try {
-      await this.skills.refresh();
-    } catch {
-      // 扫描失败只意味着清单可能旧一点，不能让这条消息发不出去。
+    /*
+     * 不让技能扫描挡住发送。
+     *
+     * 一次扫描 = 三条 `findFiles`（每条都要遍历整个工作区）。本机 21 个目录的
+     * 工作区实测：冷缓存 3.0–3.8 秒/条，热缓存 0.04–0.12 秒/条。旧实现每发一条
+     * 消息都 `await refresh()`，正好对上用户报的「发送到显示有 2-3 秒延迟」。
+     *
+     * 现在的规则：
+     *  - 已经扫过 → 直接用缓存清单组装（`prepare` 是纯内存操作），后台顺手刷新给下一次用；
+     *  - 还没扫过（刚激活的窗口）→ 这一次仍要等，否则路由表是空的、勾选的技能会被静默忽略。
+     * 技能文件真的变了有 watcher 兜底，所以「用缓存」不会漏掉新技能。
+     */
+    if (this.skills.hasScanned) {
+      void this.skills.refresh().catch(() => undefined);
+    } else {
+      try {
+        await this.skills.refresh();
+      } catch {
+        // 扫描失败只意味着清单可能旧一点，不能让这条消息发不出去。
+      }
     }
     return this.skills.prepare(skillIds, mode, text);
   }
