@@ -127,6 +127,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         output.error(error instanceof Error ? error.message : String(error));
       });
     },
+    // 有对话在跑就让路：自动心跳跳过这一轮（下一次心跳补上）；用户手动「立即清理」照跑。
+    () => chat.hasActiveRuns(),
   );
   settingsPanel = new SettingsPanel(
     context.extensionUri,
@@ -334,9 +336,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   scheduler.start();
   void audit.cleanup(readSettings().auditRetentionDays);
+  /*
+   * 首次清理延后到 20 秒（原来 2 秒）。
+   *
+   * 2 秒时 VS Code 自己还在加载扩展、建文件索引，我们再去读 60MB 历史就是抢盘；
+   * 日志里那次 `took=63911ms` 正是这么来的（同一份档案空跑实测只要 761ms）。
+   * 清理只是缓存瘦身，晚 20 秒没有任何功能影响，而且 `isBusy` 还会在有人聊天时跳过。
+   */
   setTimeout(() => void scheduler.run(false).catch((error) => {
     output.error(error instanceof Error ? error.message : String(error));
-  }), 2_000).unref?.();
+  }), 20_000).unref?.();
 
   output.info('HWChat activated.');
 }

@@ -59,6 +59,29 @@ const MANIFEST_VERSION = 1 as const;
  */
 const ARCHIVED_MARKER = '.archived';
 
+/** 一轮清理的共享上下文：按对话切分任务后，各任务通过它汇总结果。 */
+interface CleanupPlan {
+  now: number;
+  retentionMs: number;
+  historyMs: number;
+  timeRefresh: boolean;
+  optionsChanged: boolean;
+  protectedIds: Set<string>;
+  prunableEmptyIds: Set<string>;
+  bytesById: Map<string, number>;
+  countById: Map<string, number>;
+  counters: {
+    compactedMessages: number;
+    deletedMessageCacheBytes: number;
+    deletedConversations: number;
+    scannedConversations: number;
+    prunedDrafts: number;
+  };
+  overBudget?: boolean;
+  totalBytes?: number;
+  totalMessages?: number;
+}
+
 /**
  * 「归档守护快照」。
  *
@@ -769,147 +792,98 @@ export class ConversationStorage {
 
   async cleanup(options: CleanupOptions): Promise<CleanupResult> {
     await this.initialize();
-    let compactedMessages = 0;
-    let deletedMessageCacheBytes = 0;
-    let deletedConversations = 0;
-    let scannedConversations = 0;
-    let prunedDrafts = 0;
-    let overBudget = false;
-    let totalBytes = 0;
-    let totalMessages = 0;
+    /*
+     * 这一轮清理的整体计划。**放在写锁外面算**：它只读内存里的 manifest，
+     * 不碰磁盘，却要遍历所有对话 —— 没有必要占着写队列。
+     */
+    const now = Date.now();
+    const retentionMs = Math.max(0, options.taskCacheRetentionHours) * 60 * 60 * 1000;
+    const historyMs = Math.max(0, options.historyRetentionDays) * 24 * 60 * 60 * 1000;
+    const protectedIds = new Set(options.protectedConversationIds ?? []);
+    for (const conversation of this.manifest.conversations) {
+      if (conversation.sourceConversationId) protectedIds.add(conversation.sourceConversationId);
+    }
+    /*
+     * 增量扫描的判定：内容没变就跳过整条对话的读盘。
+     *  - 写入序号变了 → 必须重扫（可能新增附件/推理内容要瘦身，也可能要按保留期删）；
+     *  - 保留期是按时间前进的，所以「距上次扫描已超过最短窗口」时整体重扫一次；
+     *  - 保留天数/小时数被改过 → 判定基准变了，整体重扫一次。
+     */
+    const scanKey = `${options.historyRetentionDays}:${options.taskCacheRetentionHours}`;
+    const windows = [retentionMs, historyMs].filter((value) => value > 0);
+    const windowMs = windows.length ? Math.min(...windows) : 0;
+    const elapsed = this.cleanupScanKey === scanKey ? now - this.cleanupScanAt : Number.POSITIVE_INFINITY;
+    const timeRefresh = windowMs > 0 && elapsed >= windowMs;
+    const optionsChanged = this.cleanupScanKey !== scanKey;
+
+    /**
+     * 空对话只保留**最新的一张**。
+     *
+     * 用户反馈：历史里堆了 6 张「新对话 · 空对话」，分不清是哪一条。现在
+     * 新建对话在「当前已是空对话」时不再新建（见 `ChatPanel.newChat`），所以不会再增长；
+     * 这里把历史上已经堆起来的收敛成一张。
+     *
+     * 安全性：只有「一条消息都没有、没置顶、没归档、不是续接副本、不在保护名单里」的
+     * 对话会进这个候选集——这种对话不存在任何可以丢失的内容。另外留
+     * `EMPTY_DRAFT_PRUNE_GRACE_MS` 宽限期，刚建好、用户正要用的那张绝不会被碰。
+     */
+    const emptyDrafts = this.manifest.conversations
+      .filter((summary) => isEmptyDraftConversation(summary)
+        // 只统计「用户正常建出来、初始化也完成了」的空对话。未初始化的属于
+        // 半途失败的残骸，走下面那条更严格的规则（60 秒后一律删），不参与保留竞争。
+        && summary.skillSelectionInitialized === true
+        && !protectedIds.has(summary.id))
+      .sort((a, b) => b.createdAt - a.createdAt);
+    const prunableEmptyIds = new Set(
+      emptyDrafts
+        .slice(1)
+        .filter((summary) => now - summary.createdAt >= EMPTY_DRAFT_PRUNE_GRACE_MS)
+        .map((summary) => summary.id),
+    );
+    const newestEmptyId = emptyDrafts[0]?.id;
+    if (newestEmptyId) {
+      // 最新的那张在这次清理里也不该被当成「未初始化残骸」删掉。
+      protectedIds.add(newestEmptyId);
+    }
+
+    const plan: CleanupPlan = {
+      now,
+      retentionMs,
+      historyMs,
+      timeRefresh,
+      optionsChanged,
+      protectedIds,
+      prunableEmptyIds,
+      bytesById: new Map<string, number>(),
+      countById: new Map<string, number>(),
+      counters: {
+        compactedMessages: 0,
+        deletedMessageCacheBytes: 0,
+        deletedConversations: 0,
+        scannedConversations: 0,
+        prunedDrafts: 0,
+      },
+    };
+
+    /*
+     * **一条对话一个写任务**，不再把整轮清理塞进同一个 `enqueueWrite`。
+     *
+     * 旧实现是一个 154 行的独占任务：整轮扫描期间所有写入（发消息、流式增量、
+     * manifest）都在队列里排队。本机实测同一份 63MB 档案真实清理只要 761ms，
+     * 但日志里出现过 `took=63911ms` —— 冷缓存 + VS Code 启动 I/O + 技能扫描同时
+     * 打盘时，这 60 秒就变成「点发送没反应」。
+     * 切成小任务后，最坏情况只等**当前这一条对话**（实测单条 150ms 量级）。
+     */
+    const ids = this.manifest.conversations.map((summary) => summary.id);
+    // 页缓存整段只失效一次：避免「刚清理完还把带附件的旧消息交给界面」。
+    this.invalidateMessagePages();
+    for (const id of ids) {
+      await this.enqueueWrite(async () => {
+        await this.cleanupConversation(id, plan);
+      });
+    }
+
     await this.enqueueWrite(async () => {
-      // 清理会压缩消息体、删除过期对话：整段任务开始时让页缓存失效一次，
-      // 避免「刚清理完还把带附件的旧消息交给界面」。
-      this.invalidateMessagePages();
-      const now = Date.now();
-      const retentionMs = Math.max(0, options.taskCacheRetentionHours) * 60 * 60 * 1000;
-      const historyMs = Math.max(0, options.historyRetentionDays) * 24 * 60 * 60 * 1000;
-      const protectedIds = new Set(options.protectedConversationIds ?? []);
-      for (const conversation of this.manifest.conversations) {
-        if (conversation.sourceConversationId) protectedIds.add(conversation.sourceConversationId);
-      }
-
-      // 增量扫描的判定：内容没变就跳过整条对话的读盘。
-      //  - 写入序号变了 → 必须重扫（可能新增附件/推理内容要瘦身，也可能要按保留期删）；
-      //  - 保留期是按时间前进的，所以「距上次扫描已超过最短窗口」时整体重扫一次；
-      //  - 保留天数/小时数被改过 → 判定基准变了，整体重扫一次。
-      const scanKey = `${options.historyRetentionDays}:${options.taskCacheRetentionHours}`;
-      const windows = [retentionMs, historyMs].filter((value) => value > 0);
-      const windowMs = windows.length ? Math.min(...windows) : 0;
-      const elapsed = this.cleanupScanKey === scanKey ? now - this.cleanupScanAt : Number.POSITIVE_INFINITY;
-      const timeRefresh = windowMs > 0 && elapsed >= windowMs;
-      const optionsChanged = this.cleanupScanKey !== scanKey;
-      const bytesById = new Map<string, number>();
-      const countById = new Map<string, number>();
-
-      /**
-       * 空对话只保留**最新的一张**。
-       *
-       * 用户反馈：历史里堆了 6 张「新对话 · 空对话」，分不清是哪一条。现在
-       * 新建对话在「当前已是空对话」时不再新建（见 `ChatPanel.newChat`），所以不会再增长；
-       * 这里把历史上已经堆起来的收敛成一张。
-       *
-       * 安全性：只有「一条消息都没有、没置顶、没归档、不是续接副本、不在保护名单里」的
-       * 对话会进这个候选集——这种对话不存在任何可以丢失的内容。另外留
-       * `EMPTY_DRAFT_PRUNE_GRACE_MS` 宽限期，刚建好、用户正要用的那张绝不会被碰。
-       */
-      const emptyDrafts = this.manifest.conversations
-        .filter((summary) => isEmptyDraftConversation(summary)
-          // 只统计「用户正常建出来、初始化也完成了」的空对话。未初始化的属于
-          // 半途失败的残骸，走下面那条更严格的规则（60 秒后一律删），不参与保留竞争。
-          && summary.skillSelectionInitialized === true
-          && !protectedIds.has(summary.id))
-        .sort((a, b) => b.createdAt - a.createdAt);
-      const newestEmptyId = emptyDrafts[0]?.id;
-      const prunableEmptyIds = new Set(
-        emptyDrafts
-          .slice(1)
-          .filter((summary) => now - summary.createdAt >= EMPTY_DRAFT_PRUNE_GRACE_MS)
-          .map((summary) => summary.id),
-      );
-      if (newestEmptyId) {
-        // 最新的那张在这次清理里也不该被当成「未初始化残骸」删掉。
-        protectedIds.add(newestEmptyId);
-      }
-
-      for (const summary of [...this.manifest.conversations]) {
-        if (prunableEmptyIds.has(summary.id)) {
-          // 自动删除一律进回收站：出问题时还能找回（用户 2026-10-31 报过数据丢失）。
-          if (!await this.moveToTrash(summary.id, summary, 'draft')) continue;
-          this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== summary.id);
-          this.conversationRevisions.delete(summary.id);
-          this.cleanupScanCache.delete(summary.id);
-          deletedConversations += 1;
-          prunedDrafts += 1;
-          continue;
-        }
-        const revision = this.conversationRevisions.get(summary.id) ?? 0;
-        const cached = this.cleanupScanCache.get(summary.id);
-        const expired = historyMs > 0 && now - summary.updatedAt >= historyMs;
-        const needsScan = optionsChanged || timeRefresh || expired || !cached || cached.revision !== revision;
-        if (!needsScan && cached) {
-          bytesById.set(summary.id, cached.bytes);
-          countById.set(summary.id, cached.messages);
-          continue;
-        }
-        scannedConversations += 1;
-        const files = await this.messageFiles(summary.id);
-        let compactedHere = 0;
-        let hasStreamingMessage = false;
-        for (const file of files) {
-          const path = join(this.messageDirectory(summary.id), file);
-          const message = await readJsonWithBackup<ChatMessage>(path);
-          if (!message) {
-            continue;
-          }
-          if (message.status === 'streaming') {
-            hasStreamingMessage = true;
-            continue;
-          }
-          const age = now - message.updatedAt;
-          if (retentionMs === 0 || age >= retentionMs) {
-            const heavyBytes = stripMessagePayload(message);
-            if (heavyBytes > 0) {
-              message.updatedAt = now;
-              await writeJsonAtomic(path, message);
-              await removeIfPresent(`${path}.bak`);
-              compactedMessages += 1;
-              compactedHere += 1;
-              deletedMessageCacheBytes += heavyBytes;
-            }
-          }
-        }
-        if (hasStreamingMessage) {
-          protectedIds.add(summary.id);
-        }
-        // 半途失败的残骸：创建成功但从未初始化、也没有任何消息。当前代码在建对话后
-        // 会立刻写入 mode/权限/Skill（`skillSelectionInitialized: true`），所以这种记录
-        // 只可能来自「建了但初始化失败」。它们永远不可能包含内容，留着只会让历史列表
-        // 堆满「新对话 · 空对话」。留 60 秒宽限，避开「刚建好、正在初始化」的窗口。
-        if (
-          isEmptyDraftConversation(summary)
-          && summary.skillSelectionInitialized !== true
-          && !protectedIds.has(summary.id)
-          && now - summary.createdAt >= 60_000
-        ) {
-          if (!await this.moveToTrash(summary.id, summary, 'draft')) continue;
-          this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== summary.id);
-          this.conversationRevisions.delete(summary.id);
-          this.cleanupScanCache.delete(summary.id);
-          bytesById.delete(summary.id);
-          countById.delete(summary.id);
-          deletedConversations += 1;
-          prunedDrafts += 1;
-          continue;
-        }
-        const bytes = compactedHere > 0 || !cached || cached.revision !== revision
-          ? await this.measureDirectory(this.messageDirectory(summary.id))
-          : cached.bytes;
-        bytesById.set(summary.id, bytes);
-        countById.set(summary.id, files.length);
-        this.cleanupScanCache.set(summary.id, { revision, bytes, messages: files.length });
-      }
-
       await this.persistManifest();
       const sum = (values: Map<string, number>): number => {
         let total = 0;
@@ -917,7 +891,7 @@ export class ConversationStorage {
         return total;
       };
       const budgetBytes = Math.max(5, options.cacheBudgetMB) * 1024 * 1024;
-      const currentBytes = sum(bytesById) + await stat(this.manifestPath).then((value) => value.size).catch(() => 0);
+      const currentBytes = sum(plan.bytesById) + await stat(this.manifestPath).then((value) => value.size).catch(() => 0);
       /*
        * 超预算只是**报告**，不再动手。
        *
@@ -926,24 +900,117 @@ export class ConversationStorage {
        * 只有一条：HWChat 不会自己让任何一条对话消失；空间不够就告诉用户，由用户在
        * 设置里决定清什么。
        */
-      overBudget = currentBytes > budgetBytes;
-      this.cleanupScanAt = Date.now();
-      this.cleanupScanKey = scanKey;
-      totalBytes = currentBytes;
-      totalMessages = sum(countById);
+      plan.overBudget = currentBytes > budgetBytes;
+      plan.totalBytes = currentBytes;
+      plan.totalMessages = sum(plan.countById);
     });
+
+    this.cleanupScanAt = Date.now();
+    this.cleanupScanKey = scanKey;
 
     return {
       conversations: this.manifest.conversations.length,
-      messages: totalMessages,
-      bytes: totalBytes,
-      compactedMessages,
-      deletedConversations,
-      deletedMessageCacheBytes,
-      scannedConversations,
-      prunedDrafts,
-      overBudget,
+      messages: plan.totalMessages ?? 0,
+      bytes: plan.totalBytes ?? 0,
+      compactedMessages: plan.counters.compactedMessages,
+      deletedConversations: plan.counters.deletedConversations,
+      deletedMessageCacheBytes: plan.counters.deletedMessageCacheBytes,
+      scannedConversations: plan.counters.scannedConversations,
+      prunedDrafts: plan.counters.prunedDrafts,
+      overBudget: plan.overBudget === true,
     };
+  }
+
+  /**
+   * 清理一条对话（在写任务内执行，会被按条串行调度）。
+   *
+   * 每一步都**重新确认**它还是该被处理的状态：轮次之间用户可能已经把它删了、
+   * 在里面发了新消息、或者把它归档了。旧实现是一整段同步逻辑没有这个窗口；
+   * 切成小任务后窗口出现了，所以必须自己收口，否则会出现「刚发了消息的空对话
+   * 被当空对话清掉」这种事故。
+   */
+  private async cleanupConversation(id: string, plan: CleanupPlan): Promise<void> {
+    const summary = this.findSummary(id);
+    if (!summary) return;
+    const { now, protectedIds } = plan;
+
+    if (plan.prunableEmptyIds.has(id)) {
+      // 轮次之间用户可能已经开始用这张「空对话」了：有消息就绝不能删。
+      if (!isEmptyDraftConversation(summary)) return;
+      // 自动删除一律进回收站：出问题时还能找回（用户 2026-10-31 报过数据丢失）。
+      if (!await this.moveToTrash(id, summary, 'draft')) return;
+      this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== id);
+      this.conversationRevisions.delete(id);
+      this.cleanupScanCache.delete(id);
+      plan.counters.deletedConversations += 1;
+      plan.counters.prunedDrafts += 1;
+      return;
+    }
+
+    const revision = this.conversationRevisions.get(id) ?? 0;
+    const cached = this.cleanupScanCache.get(id);
+    const expired = plan.historyMs > 0 && now - summary.updatedAt >= plan.historyMs;
+    const needsScan = plan.optionsChanged || plan.timeRefresh || expired || !cached || cached.revision !== revision;
+    if (!needsScan && cached) {
+      plan.bytesById.set(id, cached.bytes);
+      plan.countById.set(id, cached.messages);
+      return;
+    }
+
+    plan.counters.scannedConversations += 1;
+    const files = await this.messageFiles(id);
+    let compactedHere = 0;
+    let hasStreamingMessage = false;
+    for (const file of files) {
+      const path = join(this.messageDirectory(id), file);
+      const message = await readJsonWithBackup<ChatMessage>(path);
+      if (!message) continue;
+      if (message.status === 'streaming') {
+        hasStreamingMessage = true;
+        continue;
+      }
+      const age = now - message.updatedAt;
+      if (plan.retentionMs === 0 || age >= plan.retentionMs) {
+        const heavyBytes = stripMessagePayload(message);
+        if (heavyBytes > 0) {
+          message.updatedAt = now;
+          await writeJsonAtomic(path, message);
+          await removeIfPresent(`${path}.bak`);
+          plan.counters.compactedMessages += 1;
+          compactedHere += 1;
+          plan.counters.deletedMessageCacheBytes += heavyBytes;
+        }
+      }
+    }
+    if (hasStreamingMessage) {
+      protectedIds.add(id);
+    }
+    // 半途失败的残骸：创建成功但从未初始化、也没有任何消息。当前代码在建对话后
+    // 会立刻写入 mode/权限/Skill（`skillSelectionInitialized: true`），所以这种记录
+    // 只可能来自「建了但初始化失败」。它们永远不可能包含内容，留着只会让历史列表
+    // 堆满「新对话 · 空对话」。留 60 秒宽限，避开「刚建好、正在初始化」的窗口。
+    if (
+      isEmptyDraftConversation(summary)
+      && summary.skillSelectionInitialized !== true
+      && !protectedIds.has(id)
+      && now - summary.createdAt >= 60_000
+    ) {
+      if (!await this.moveToTrash(id, summary, 'draft')) return;
+      this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== id);
+      this.conversationRevisions.delete(id);
+      this.cleanupScanCache.delete(id);
+      plan.bytesById.delete(id);
+      plan.countById.delete(id);
+      plan.counters.deletedConversations += 1;
+      plan.counters.prunedDrafts += 1;
+      return;
+    }
+    const bytes = compactedHere > 0 || !cached || cached.revision !== revision
+      ? await this.measureDirectory(this.messageDirectory(id))
+      : cached.bytes;
+    plan.bytesById.set(id, bytes);
+    plan.countById.set(id, files.length);
+    this.cleanupScanCache.set(id, { revision, bytes, messages: files.length });
   }
 
   async stats(): Promise<StorageStats> {
@@ -1501,6 +1568,22 @@ export class ConversationStorage {
  * 附件只留 `id`/`label`/`path` 等描述信息：界面退化成文件条目，正文照常显示。
  */
 function stripMessagePayload(message: ChatMessage): number {
+  /*
+   * 先做一次**零成本**的存在性检查，再决定要不要序列化算字节。
+   *
+   * 旧实现无条件 `JSON.stringify` 那几个重字段再判断有没有可删的东西 ——
+   * 实测 1513 条消息光这一步就 175ms，而绝大多数消息其实早就瘦过了（无可删内容）。
+   * 把序列化推到确认有内容之后，全量扫描的固定开销直接消失。
+   */
+  const present = message.reasoning !== undefined
+    || message.usage?.promptTokens !== undefined
+    || message.usage?.completionTokens !== undefined
+    || message.toolExecutions?.some((tool) => tool.input !== undefined || tool.output !== undefined)
+    || message.attachments?.some((attachment) => attachment.content !== undefined || attachment.dataBase64 !== undefined || attachment.thumbnailDataUrl !== undefined)
+    || message.context?.content !== undefined
+    || message.context?.dataBase64 !== undefined
+    || message.context?.thumbnailDataUrl !== undefined;
+  if (!present) return 0;
   const heavyBytes = Buffer.byteLength(JSON.stringify({
     reasoning: message.reasoning,
     usage: message.usage,
@@ -1517,15 +1600,6 @@ function stripMessagePayload(message: ChatMessage): number {
       thumbnailDataUrl: message.context?.thumbnailDataUrl,
     },
   }));
-  const present = message.reasoning !== undefined
-    || message.usage?.promptTokens !== undefined
-    || message.usage?.completionTokens !== undefined
-    || message.toolExecutions?.some((tool) => tool.input !== undefined || tool.output !== undefined)
-    || message.attachments?.some((attachment) => attachment.content !== undefined || attachment.dataBase64 !== undefined || attachment.thumbnailDataUrl !== undefined)
-    || message.context?.content !== undefined
-    || message.context?.dataBase64 !== undefined
-    || message.context?.thumbnailDataUrl !== undefined;
-  if (!present) return 0;
   delete message.reasoning;
   message.usage = message.usage?.totalTokens ? { totalTokens: message.usage.totalTokens } : undefined;
   if (message.toolExecutions) {

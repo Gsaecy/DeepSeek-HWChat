@@ -633,6 +633,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     await this.sendState();
   }
 
+  /** 是否有对话正在跑（清理调度器据此让路，避免和流式写入抢磁盘）。 */
+  hasActiveRuns(): boolean {
+    return this.runs.size > 0;
+  }
+
   getProtectedConversationIds(): string[] {
     // `startingConversationIds`：`send()` 刚建好对话、消息还没落盘的那几毫秒里，
     // 它也是「0 条消息」的空对话，必须一并保护起来。

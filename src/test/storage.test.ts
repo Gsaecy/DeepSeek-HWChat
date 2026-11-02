@@ -959,3 +959,75 @@ test('keeps archived conversations protected when the manifest is lost', async (
     assert.deepEqual(ids, [active.id, archived.id].sort());
   });
 });
+
+test('cleanup does not hold the write queue for the whole scan', async () => {
+  await withStorage(async (storage) => {
+    /*
+     * 现场：日志里出现过 `[cleanup] took=63911ms`，而同一份档案空跑实测 761ms。
+     * 那 60 秒里所有写入（发消息、流式增量、manifest）都排在同一个 `enqueueWrite`
+     * 后面 —— 用户看到的是「点发送没反应」。
+     *
+     * 现在清理按**一条对话一个任务**切片，所以一条写入最多等「当前这轮对话」，
+     * 而不是整轮。这里直接量：清理进行中发一条消息，它必须**先于**清理完成。
+     */
+    const conversations = [] as Array<{ id: string }>;
+    for (let index = 0; index < 12; index += 1) {
+      const conversation = await storage.createConversation(`对话 ${index}`);
+      // 每条都带可瘦身的内容，确保每轮都有实际写盘工作（最容易互相阻塞的情形）。
+      for (let message = 0; message < 12; message += 1) {
+        await storage.appendMessage(conversation.id, {
+          role: 'assistant',
+          content: `第 ${message} 条`,
+          reasoning: '思考'.repeat(2000),
+          status: 'complete',
+          toolExecutions: [{
+            callId: `c${message}`,
+            name: 'read_file',
+            summary: 'f',
+            status: 'success',
+            startedAt: Date.now(),
+            output: 'x'.repeat(4000),
+          }],
+        });
+      }
+      conversations.push(conversation);
+    }
+    const target = conversations[0]!;
+
+    const order: string[] = [];
+    const appendStarted = performance.now();
+    const cleanupPromise = storage
+      .cleanup({ historyRetentionDays: 0, taskCacheRetentionHours: 0, cacheBudgetMB: 100 })
+      .then((result) => {
+        order.push('cleanup');
+        return { result, at: performance.now() };
+      });
+    // 让清理先跑起来（否则 append 可能抢在它前面）。
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const appendPromise = storage
+      .appendMessage(target.id, { role: 'user', content: '清理期间发的消息', status: 'complete' })
+      .then(() => {
+        order.push('append');
+        return performance.now();
+      });
+
+    const [cleanupDone, appendAt] = await Promise.all([cleanupPromise, appendPromise]);
+    const appendWait = appendAt - appendStarted;
+    const cleanupTotal = cleanupDone.at - appendStarted;
+
+    assert.equal(cleanupDone.result.compactedMessages > 0, true, '这轮清理确实做了实际工作');
+    assert.equal(
+      order[0],
+      'append',
+      `发消息必须能插进清理过程（实际顺序：${order.join(' → ')}）。`
+      + '顺序反过来说明清理又变回「一个任务独占整轮」了',
+    );
+    assert.ok(
+      appendWait < cleanupTotal,
+      `发消息等待 ${Math.round(appendWait)}ms 不该接近整轮清理 ${Math.round(cleanupTotal)}ms`,
+    );
+    // 落盘的内容也要正确：清理与写入交错时不能丢消息。
+    const messages = await storage.getAllMessages(target.id);
+    assert.ok(messages.some((message) => message.content === '清理期间发的消息'), '清理期间发的消息必须落盘');
+  });
+});

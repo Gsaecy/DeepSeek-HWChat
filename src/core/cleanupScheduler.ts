@@ -26,6 +26,14 @@ export class CleanupScheduler implements vscode.Disposable {
     private readonly output: Pick<vscode.OutputChannel, 'appendLine'>,
     private readonly protectedConversationIds: () => string[],
     private readonly onComplete: (result: CleanupResult) => void,
+    /**
+     * 「现在正忙吗」—— 有对话在跑时返回 true。
+     *
+     * 清理会读整份历史并重写要瘦身的消息，而 agent 运行期间也在持续写盘；两者撞在
+     * 一起时，用户看到的是「输出卡一下」。空闲时再清，代价最低，而且完全不损失功能
+     * （下一次心跳会补上）。
+     */
+    private readonly isBusy: () => boolean = () => false,
   ) {}
 
   start(): void {
@@ -38,6 +46,19 @@ export class CleanupScheduler implements vscode.Disposable {
   async run(verbose: boolean): Promise<CleanupResult> {
     if (this.running) {
       return this.running;
+    }
+    /*
+     * 有对话在跑就跳过这一轮。
+     *
+     * 用户手动点「立即清理」时照跑（那是明确意图）；自动心跳一律让路 ——
+     * agent 正在流式写消息，此时扫 60MB 历史只会互相拖慢，而清理本身晚 10 分钟
+     * 没有任何损失。
+     */
+    if (!verbose && this.isBusy()) {
+      return {
+        conversations: 0, messages: 0, bytes: 0,
+        compactedMessages: 0, deletedConversations: 0, deletedMessageCacheBytes: 0,
+      };
     }
     const settings = readSettings();
     const startedAt = Date.now();
