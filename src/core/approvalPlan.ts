@@ -217,7 +217,7 @@ export function planApprovalBridge(
     warnings.push('“安装依赖”会执行包里的 postinstall 脚本，属于正常命令档，会一并自动放行。');
   }
   if (level === 'everything') {
-    warnings.push('“全部自动批准”会连删除、强制推送、提权一起放行，仅建议在完全信任的仓库里使用。');
+    warnings.push('“全部自动批准”会连删除、推送远端、提权一起放行，仅建议在完全信任的仓库里使用。');
   }
 
   return { level, operations, unavailable, warnings };

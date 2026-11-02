@@ -1,5 +1,6 @@
 import { ChatSettings, GuardedPolicy, PermissionPolicy, PermissionPreset } from './types';
 import { Language, t } from './i18n';
+import { gitOperationsIn } from '../agent/conversationScope';
 
 /**
  * 权限边界说明
@@ -8,7 +9,7 @@ import { Language, t } from './i18n';
  * 2. 终端命令分成三档：
  *    - 只读命令：ls、git status、grep 等无副作用命令；
  *    - 正常命令：安装、构建、提交等常规命令；
- *    - 危险命令：提权、破坏性删除、磁盘擦写、强制推送、把网络脚本管道给 shell 等。
+ *    - 危险命令：提权、破坏性删除、磁盘擦写、推送远端、把网络脚本管道给 shell 等。
  * 3. 敏感文件（.env、密钥、证书等）单独一列，可取 allow / ask / deny。
  * 4. 硬边界（不随预设放宽）：未受信任工作区禁止写入和执行、工作区外路径隔离。
  */
@@ -50,7 +51,7 @@ export const PERMISSION_PRESET_IDS: readonly PermissionPreset[] = ['askAll', 're
  *
  * 取最严格的一档（每次询问）而不是 `review`：默认值决定了“用户什么都没说的
  * 时候 Agent 能自己做什么”，这类默认值出错是不可撤销的——一条没被确认的
- * 强制推送或递归删除发出去就收不回来。宁可让第一次使用的人多点几次确认，
+ * 推送远端或递归删除发出去就收不回来。宁可让第一次使用的人多点几次确认，
  * 再由他主动放宽到 `风险操作询问` / `Autopilot`，也不该让他先承担一次自动执行。
  *
  * 这里而不是 `settings.ts` 定义，是因为 `settings.ts` 要 import 本文件（单向依赖），
@@ -175,13 +176,39 @@ export function sensitiveFilePolicyFor(settings: ChatSettings): GuardedPolicy {
 export function classifyCommandTier(command: string): CommandRiskTier {
   const text = command.trim();
   if (!text) return 'standard';
+  if (isPushingToRemote(text)) return 'severe';
   if (SEVERE_COMMAND_PATTERNS.some((pattern) => pattern.test(text))) return 'severe';
   return isSafeCommand(text) ? 'safe' : 'standard';
 }
 
 /**
- * “危险命令”判定：提权、破坏性删除、磁盘擦写、强制推送、把远程脚本直接管道给
- * shell、发布制品等。默认预设逐次确认，只有「完全访问」会静默执行。
+ * 只要这条命令会推送到远端，就按危险命令处理。
+ *
+ * 为什么不用一条正则了事（实测出来的绕过）：`/\bgit\s+push\b/` 要求 `git` 后面
+ * 紧跟 `push`，于是下面三种把 git 的全局选项夹在中间的写法都落到 `standard`，
+ * 在「风险操作询问」预设下会被**静默执行**：
+ *
+ *     git -C . push          git --no-pager push          git -c user.name=x push
+ *
+ * 所以再借 `conversationScope` 的 git 解析器判一次 —— 它本来就负责跳过
+ * `-C <path>` / `-c <k=v>` / `--no-pager` / `--git-dir=…` 这些全局选项，
+ * 并且认 `cd repo && git push`、`GIT_DIR=. git push`、`/usr/bin/git push`。
+ *
+ * 正则仍然保留：解析器只看「命令头是 git」的段落，`bash -c "git push"` 这种
+ * 被引号包起来的写法它看不到，而正则能命中。两条互补，取并集。
+ */
+function isPushingToRemote(text: string): boolean {
+  return /\bgit\s+push\b/i.test(text)
+    || gitOperationsIn(text).some((operation) => operation.verb === 'push');
+}
+
+/**
+ * “危险命令”判定：提权、破坏性删除、磁盘擦写、把远程脚本直接管道给 shell、
+ * 发布制品等。四个预设的处置各不相同：`每次询问` **直接拒绝**（不是先问再拒），
+ * `风险操作询问` 逐次确认，`Autopilot` 与 `完全访问` 自动执行。
+ *
+ * 推送远端不在这张表里，见 `isPushingToRemote()` —— 它需要跳过 git 的全局选项，
+ * 一条正则表达不了。
  */
 const SEVERE_COMMAND_PATTERNS: readonly RegExp[] = [
   // 提权命令：sudo / doas / su。原先要求命令名后必须跟一个空白，导致单独一条
@@ -195,9 +222,6 @@ const SEVERE_COMMAND_PATTERNS: readonly RegExp[] = [
   /\b(?:shutdown|reboot|halt|poweroff)\b/i,
   /:\s*\(\s*\)\s*\{/,
   /\bgit\s+(?:reset\s+--hard|clean\s+-[a-z]*[fd]|filter-branch|reflog\s+expire|checkout\s+--\s+\.)/i,
-  // 只要 push 就拦：推出去的提交拿不回来，而 approvalPlan.ts 本来就把 push 列为“不自动批准”。
-  // 之前只拦 --force，普通 push 落到 standard、review 预设下静默执行，两个模块口径不一致。
-  /\bgit\s+push\b/i,
   /\bchmod\s+(?:-r\s+)?777\b/i,
   /\bchown\s+-r\b/i,
   // 同理：approvalPlan.ts 把 curl / wget 整类当成“网络下载，不自动批准”。

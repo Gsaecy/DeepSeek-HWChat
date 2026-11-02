@@ -198,7 +198,7 @@ const settingsReplacements = [
   ['<strong>读取文件</strong>', `<strong>${english['settings.privacy.readFile']}</strong>`],
   ['<strong>修改文件</strong>', `<strong>${english['settings.privacy.writeFile']}</strong>`],
   ['<strong>运行命令</strong><small>只读命令与正常命令（仅“自定义”生效）</small>', `<strong>${english['settings.privacy.command']}</strong><small>${english['settings.privacy.commandHint']}</small>`],
-  ['<strong>危险命令</strong><small>仅“自定义”生效；提权、破坏性删除、强制推送等</small>', `<strong>${english['settings.privacy.dangerous']}</strong><small>${english['settings.privacy.dangerousHint']}</small>`],
+  ['<strong>危险命令</strong><small>由预设决定，此处只读展示；提权、破坏性删除、推送远端等</small>', `<strong>${english['settings.privacy.dangerous']}</strong><small>${english['settings.privacy.dangerousHint']}</small>`],
   ['<strong>敏感文件</strong><small>仅“自定义”生效；.env、证书、密钥和常见凭据目录</small>', `<strong>${english['settings.privacy.sensitive']}</strong><small>${english['settings.privacy.sensitiveHint']}</small>`],
   ['<strong>审计记录保留</strong></span><span class="stepper"><input id="auditRetentionDays"><span>天</span>', `<strong>${english['settings.privacy.audit']}</strong></span><span class="stepper"><input id="auditRetentionDays"><span>${english['common.days']}</span>`],
   ['<strong>删除本地数据</strong><span>删除全部对话和审计记录</span>', `<strong>${english['settings.dangerZone.title']}</strong><span>${english['settings.dangerZone.hint']}</span>`],
@@ -226,7 +226,7 @@ const settingsReplacements = [
   // 预览页里还留着已经删除的「自定义」档位，截图里不能出现。
   ['<tr data-preset="custom"><th scope="row">自定义</th><td>自定义</td><td>自定义</td><td>自定义</td><td>自定义</td><td>自定义</td><td>自定义</td></tr>', ''],
   ['<option value="custom" title="按设置页中的读取 / 写入 / 命令 / 危险命令 / 敏感文件策略逐项组合">自定义</option>', ''],
-  ['<p>硬边界不受预设影响：未受信任工作区禁止写入与命令；工作区外路径隔离。危险命令指提权、破坏性删除、磁盘擦写、强制推送、把网络脚本管道给 shell 等操作。</p>', `<p>${english['matrix.hardBoundary']}</p>`],
+  ['<p>硬边界不受预设影响：未受信任工作区禁止写入与命令；工作区外路径隔离。危险命令指提权、破坏性删除、磁盘擦写、推送远端、把网络脚本管道给 shell 等操作。</p>', `<p>${english['matrix.hardBoundary']}</p>`],
   ['<option value="askAll" title="读取、写入和命令全部逐次确认；危险命令直接拒绝">每次询问</option><option value="review" title="自动读写与常规命令，只有危险命令逐次确认">风险操作询问</option><option value="autopilot" title="自动读写与常规命令，只有危险命令逐次确认">Autopilot</option><option value="full" title="全部自动执行（含危险命令），读取敏感文件时逐次确认">完全访问</option>',
     ['askAll', 'review', 'autopilot', 'full'].map((id) => `<option value="${id}" title="${english[`preset.${id}.summary`]}">${english[`preset.${id}.label`]}</option>`).join('')],
   ['<option value="askAll" title="读取、写入和命令全部逐次确认；危险命令直接拒绝">每次询问</option>', `<option value="askAll" title="${english['preset.askAll.summary']}">${english['preset.askAll.label']}</option>`],

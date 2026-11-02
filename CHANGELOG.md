@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.5
+
+- **推送的拦截补了一个漏判，「危险命令」的文案也不再自相矛盾**（起源是用户问「hwchat 现在的策略会拦住 git pull push 这些拉取和推送命令吗？」——为了回答这个问题，我把真实分级函数跑了一遍，顺手量出了这两处）。
+  - **先回答策略本身**（实测四档预设下每条命令的真实结果，不是读注释推断的）：
+
+    | 命令 | 档位 | 每次询问 | 风险操作询问 | Autopilot | 完全访问 |
+    | --- | --- | --- | --- | --- | --- |
+    | `git pull` / `--rebase` / `--ff-only` | 常规 | 逐次询问 | 直接执行 | 直接执行 | 直接执行 |
+    | `git fetch` / `--all` / `git clone` | 常规 | 逐次询问 | 直接执行 | 直接执行 | 直接执行 |
+    | `git push` | **危险** | **直接拒绝** | 逐次询问 | 直接执行 | 直接执行 |
+
+    也就是说**拉取类不拦**（`风险操作询问` 及以上静默执行），**推送一律拦**；默认预设下 push 是硬拒绝、连弹窗都没有，要推得切到 Autopilot 或完全访问。这个策略本身没有被改动 —— 用户明确要求 pull 保持现状。
+  - **漏判（真 bug）**：`classifyCommandTier` 里判定 push 的是一条 ` /\bgit\s+push\b/i `，它要求 `git` 后面紧跟 `push`。实测下面三种把 git 全局选项夹在中间的写法全部落到 `standard`，于是在 `风险操作询问` 预设下被**静默推送**：
+
+    ```
+    git -C . push          git --no-pager push          git -c user.name=x push
+    ```
+
+    （`cd repo && git push`、`GIT_DIR=. git push`、`/usr/bin/git push` 当时是好的 —— 只有这几种写法漏了。）
+    修法：新增 `isPushingToRemote()`，**取两条判据的并集** —— 正则（能命中 `bash -c "git push"` 这种把 git 藏在引号里的写法）+ `conversationScope` 里现成的 git 解析器（它本来就负责跳过 `-C <path>` / `-c <k=v>` / `--no-pager` / `--git-dir=…` 这些全局选项）。原来那条会漏判的正则从通用表里删掉，避免同一个规则写两遍、改一处漏一处。
+  - **文案与实际行为相反**：拒绝提示写的是「…提权、破坏性删除、磁盘擦写、**强制推送**等」，而规则其实「只要 push 就拦」。推一条普通 push 的人会以为「只有强制推送才被禁止」。现在提示里写明「**普通 git push 也算，不只是强制推送**」，并给出下一步（切到 Autopilot / 完全访问）。同一处措辞在 `matrix.hardBoundary`、`settings.privacy.dangerousHint`、`preset.full` 的确认文案、`approvalPlan` 的告警、两份 README 与截图构建脚本里一并改成「推送远端」。
+  - 顺带改正两处与实际不符的代码注释：`SEVERE_COMMAND_PATTERNS` 上方原写「默认预设逐次确认，只有『完全访问』会静默执行」——实际是默认预设**直接拒绝**、Autopilot 也**自动执行**。
+  - 新增 `test/check-git-push-tier.mjs` **7 项守护**（push 判定必须是独立规则并调用解析器、必须保留正则覆盖引号写法、通用表里不许再留一条会漏判的 push 正则、拒绝文案必须点明普通 push、单测必须钉住穿透写法）；`src/test/permissions.test.ts` 新增 2 条（10 种 push 写法必须 severe 且 review 下 ask；4 种拉取写法必须仍是 standard 且 review 下 allow，守住「不连带收紧」）。
+  - 全量：**885** 条单测、**37** 个 `check-*.mjs` 全绿。
+
 ## 0.3.4
 
 **本版本一次性发布 0.3.3 之后的全部改动**（上一个上架版本是 0.3.3）。开发过程中曾以 0.3.4–0.3.9 作为内部测试版本，均未上架；这里按主题合并成一次发布，细节与实测数据全部保留。

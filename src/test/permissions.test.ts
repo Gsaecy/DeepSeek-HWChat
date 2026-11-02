@@ -76,6 +76,34 @@ test('对外可见的推送与网络下载不再被 review 预设静默放行', 
   }
 });
 
+test('推送的判定要穿透 git 的全局选项', () => {
+  // 实测出来的绕过：早先只靠 `/\bgit\s+push\b/`，下面这些把全局选项夹在
+  // git 与 push 之间的写法都落到 standard，于是在“风险操作询问”下静默推送。
+  const review = settings('review');
+  for (const command of [
+    'git -C . push',
+    'git -C /tmp/repo push',
+    'git -c user.name=x push',
+    'git --no-pager push',
+    'git --git-dir=/tmp/.git push',
+    'git -C . -c a=b --no-pager push origin main',
+    'cd repo && git push',
+    'GIT_DIR=. git push',
+    '/usr/bin/git push',
+    'bash -c "git push"',
+  ]) {
+    assert.equal(classifyCommandTier(command), 'severe', command);
+    assert.equal(commandPolicyFor(review, classifyCommandTier(command)), 'ask', command);
+  }
+});
+
+test('拉取类命令仍是常规命令（不因推送收紧而连带收紧）', () => {
+  for (const command of ['git pull', 'git pull --rebase origin main', 'git pull --ff-only', 'git fetch --all', 'git clone https://example.invalid/y.git']) {
+    assert.equal(classifyCommandTier(command), 'standard', command);
+  }
+  assert.equal(commandPolicyFor(settings('review'), 'standard'), 'allow');
+});
+
 test('autopilot 连危险命令也自动放行，只把敏感文件挡住', () => {
   const autopilot = settings('autopilot');
   assert.equal(commandPolicyFor(autopilot, 'safe'), 'allow');
