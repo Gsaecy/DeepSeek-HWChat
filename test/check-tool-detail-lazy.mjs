@@ -77,7 +77,8 @@ if (!playwrightRoot || !chromium) {
         id: 'c', title: 't', mode: 'agent', createdAt: Date.now() - 9e6, updatedAt: Date.now(),
         messageCount: n, preview: 'p', pinned: false, archived: false,
       });
-      const MESSAGES = 100;
+      // 50 条：低于窗口化阈值，这样量到的「每条消息的节点数」才是这条守护要管的东西。
+      const MESSAGES = 50;
       const STEPS = 6;
       const messages = Array.from({ length: MESSAGES }, (_, i) => ({
         id: `m${i}`, role: 'assistant', content: '正文。',

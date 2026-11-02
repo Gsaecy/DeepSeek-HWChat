@@ -182,6 +182,10 @@ const factory = new Function('ctx', 'FakeNode', `
   let interactingWithMessages = false;
   let deferredMessageRenderMode = null;
   let pendingPatchId = null;
+  // 窗口化之后 patchMessage 按 data-message-id 找节点，展开状态存在跨窗口的 store 里。
+  const virtualList = { active: false, start: 0, end: 0, heights: new Map(), estimate: 240, sampled: false, conversationId: '' };
+  const detailOverrideStore = new Map();
+  const findMessageNode = (messageId) => elements.messageList.children.find((node) => node.dataset.messageId === messageId) || null;
   ${captureSource}
   ${restoreSource}
   ${signatureSource}
@@ -376,7 +380,7 @@ check('接线：整段重建会清掉待办的局部更新', /pendingPatchId = n
 check('接线：messageComplete 先清待办再整段重建', /pendingPatchId = null; const index = state\.messages\.findIndex/.test(CHAT_JS), 'messageComplete 没清待办');
 check('接线：局部替换用 replaceWith，不是 replaceChildren', /current\.replaceWith\(next\)/.test(patchSource), '没找到就地替换');
 check('接线：局部替换不做整段清空', !/replaceChildren\(\)/.test(patchSource), 'patchMessage 里出现了 replaceChildren');
-check('接线：<details> 快照支持局部作用域', /function captureDetailOverrides\(root = elements\.messageList\)/.test(CHAT_JS) && /function restoreDetailOverrides\(overrides, root = elements\.messageList\)/.test(CHAT_JS), '两个快照函数还没接受 root');
+check('接线：<details> 快照支持局部作用域', /function captureDetailOverrides\(root = elements\.messageList\)/.test(CHAT_JS) && /function restoreDetailOverrides\(overrides = detailOverrideStore, root = elements\.messageList\)/.test(CHAT_JS), '两个快照函数还没接受 root');
 
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);

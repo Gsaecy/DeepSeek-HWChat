@@ -410,6 +410,9 @@ select, option { color: var(--dropdown-fg); background: var(--dropdown-bg); }
 /* .icon-button 是 display:grid，会覆盖 [hidden] 的默认 display:none，这里必须显式声明。 */
 .scroll-to-bottom[hidden] { display: none; }
 .message-list { width: min(820px, calc(100% - 40px)); max-width: 100%; margin: 0 auto; padding: 30px 0 42px; }
+/* 窗口化列表的上下占位块：只负责撑出「没渲染的那些消息」的高度。
+   `contain: strict` 让它不参与布局计算，也不被内容影响。 */
+.message-spacer { width: 100%; contain: layout style paint; pointer-events: none; }
 .message { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 16px; margin-bottom: 30px; }
 .message-meta { display: grid; align-content: start; gap: 3px; padding-top: 2px; color: var(--muted); font-size: 10px; text-align: right; }
 .message-meta span { color: var(--fg); font-weight: 650; font-size: 11px; }

@@ -109,7 +109,11 @@ const optimisticIds = () => page.evaluate(() => [...document.querySelectorAll('#
   .filter((id) => id.startsWith('optimistic-')));
 
 const baseline = await countMessages();
-check('夹具就绪：200 条消息已渲染', baseline === MESSAGE_COUNT, `实际 ${baseline}`);
+// 窗口化之后 DOM 里只有视口附近那一屏（200 条整段渲染实测 +92.5 MB 是我们要省掉的），
+// 所以这里断言的是「渲染到了最新一条」，不是「200 条都在 DOM 里」。
+const baselineTail = await page.evaluate(() => [...document.querySelectorAll('#messageList .message')].pop()?.dataset.messageId || '');
+check('夹具就绪：窗口已渲染到最新一条', baseline > 0 && baseline <= 40 && baselineTail === `m${MESSAGE_COUNT - 1}`,
+  `渲染 ${baseline} 条，末条 ${baselineTail}`);
 
 /* ── A. submit() 同步返回时气泡已在 DOM 里 ───────────────────────────────── */
 const sendA = await page.evaluate(async () => {
@@ -130,7 +134,7 @@ const sendA = await page.evaluate(async () => {
   };
 });
 check('点发送 → 同一帧就画出用户气泡（不等宿主）',
-  sendA.count === baseline + 1 && sendA.lastId.startsWith('optimistic-') && sendA.lastText.includes('这是一条新消息'),
+  sendA.lastId.startsWith('optimistic-') && sendA.lastText.includes('这是一条新消息'),
   `count=${sendA.count} id=${sendA.lastId}`);
 check('同步耗时在几十毫秒量级（增量追加，不整屏重建）',
   sendA.elapsed < 150, `实测 ${Math.round(sendA.elapsed)}ms（旧实现整屏重建 129ms 起）`);
@@ -162,8 +166,7 @@ const confirmB = await page.evaluate(async () => {
   };
 });
 check('宿主确认后：乐观气泡退场，尾部是两条真实消息',
-  confirmB.count === baseline + 2 && !confirmB.anyOptimistic
-  && confirmB.tail[0] === 'real-user' && confirmB.tail[1] === 'real-assistant',
+  !confirmB.anyOptimistic && confirmB.tail[0] === 'real-user' && confirmB.tail[1] === 'real-assistant',
   `count=${confirmB.count} tail=${JSON.stringify(confirmB.tail)}`);
 check('宿主确认的渲染也是增量（不整屏重建）', confirmB.elapsed < 150, `实测 ${Math.round(confirmB.elapsed)}ms`);
 
@@ -189,7 +192,7 @@ const rejectC = await page.evaluate(async () => {
     anyOptimistic: nodes.some((node) => (node.dataset.messageId || '').startsWith('optimistic-')),
   };
 });
-check('宿主拒绝后：气泡退场且不残留', rejectC.pending === baseline + 3 && rejectC.after === baseline + 2 && !rejectC.anyOptimistic,
+check('宿主拒绝后：气泡退场且不残留', rejectC.after <= rejectC.pending && !rejectC.anyOptimistic,
   `pending=${rejectC.pending} after=${rejectC.after}`);
 check('宿主拒绝后：用户敲的原文回到输入框（不许凭空吞掉）', rejectC.inputRestored, `input="${rejectC.inputRestored}"`);
 
@@ -198,11 +201,10 @@ const repeatD = await page.evaluate(() => {
   const input = document.getElementById('promptInput');
   input.value = '连点三次';
   const form = document.getElementById('composer');
-  const before = document.querySelectorAll('#messageList .message').length;
   for (let i = 0; i < 3; i += 1) form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
-  return document.querySelectorAll('#messageList .message').length - before;
+  return [...document.querySelectorAll('#messageList .message')].filter((node) => (node.dataset.messageId || '').startsWith('optimistic-')).length;
 });
-check('连点三次只产生一个气泡', repeatD === 1, `新增 ${repeatD} 个`);
+check('连点三次只产生一个气泡', repeatD === 1, `DOM 里有 ${repeatD} 个乐观气泡`);
 
 /* ── F. 发送途中收到全量状态：气泡不闪掉、也不变成两条 ───────────────────
    这两条各自开一个新页面：前面几段会留下乐观气泡、流式状态等残留，

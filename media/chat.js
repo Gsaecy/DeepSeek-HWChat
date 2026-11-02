@@ -1183,6 +1183,330 @@
   /** 最近一次真正画进 DOM 的那份消息列表的签名。 */
   let renderedMessageSignature = '';
 
+  /*
+   * ── 消息列表窗口化（虚拟化） ──────────────────────────────────────────────
+   *
+   * 为什么要有这个东西（用户原话：「参考 copilot 的 agent 模式，为什么 copilot
+   * 能这么流畅并且占用不高不卡」）：Copilot 的聊天列表是 VS Code 的
+   * `WorkbenchObjectTree`（`src/vs/platform/list/browser/listService.ts`）——
+   * 虚拟化列表，视口外的行根本没有 DOM 节点。HWChat 是 webview 里手写的全量列表，
+   * 状态里有多少条消息，DOM 里就有多少条。
+   *
+   * 实测（headless Chromium + 真实 media/chat.js，`ps` 汇总渲染进程 RSS）：
+   *   600 条 × 每条 6 个工具步骤 = 38,400 个节点 = **+231.6 MB**；
+   *   同一份内容每条消息单独看是 **0.39 MB**，而且从 50 条到 600 条完全线性
+   *   （50 → +26.5 MB、200 → +81.1 MB、400 → +157.3 MB）。
+   *   把折叠的工具正文改成「展开才建」只把节点砍了 53%，RSS 只降 4% ——
+   *   内存大头是「每条消息真的被排版/绘制」，不是节点数量本身。
+   *
+   * 所以这里只做一件事：**只把视口附近的那几十条消息放进 DOM**，其余用上下两个
+   * 占位块（spacer）撑出高度。窗口外的消息仍完整地留在 `state.messages` 里，
+   * 滚动到附近时按需重建，所以内容、顺序、展开状态都不受影响。
+   *
+   * 三个必须守住的承诺：
+   *  1. **滚动位置不跳**：换窗口前记下「视口顶部那条消息 + 它相对视口的偏移」，
+   *     换完按同一个偏移放回去（DOM 实测，不用估算高度反推）。
+   *  2. **贴底是精确的**：窗口落在末尾时没有下占位块，`scrollHeight` 就是真实高度。
+   *  3. **展开状态跨窗口保留**：`detailOverrideStore` 记住用户手动开合过的每一步，
+   *     滚出去再滚回来仍然是展开的。
+   *
+   * 少于 `VIRTUAL_LIST_THRESHOLD` 条时整段渲染：那种规模本来就只有几 MB，
+   * 而窗口化会让「跨消息选字」「Ctrl+F 找已滚过的内容」这类行为变复杂，不值得。
+   */
+  const VIRTUAL_LIST_THRESHOLD = 60;
+  /** 视口上下各多渲染几条，给滚动留缓冲，避免边缘出现空白。 */
+  const VIRTUAL_LIST_OVERSCAN = 8;
+  /** 没量过的消息先按这个高度占位，量到真实高度后立刻改用它。 */
+  const VIRTUAL_ROW_ESTIMATE = 240;
+
+  const virtualList = {
+    active: false,
+    start: 0,
+    end: 0,
+    /** messageId → 实测行高（含 margin-bottom）。 */
+    heights: new Map(),
+    /** 未测量行的估算高度：第一次实测直接采用，之后按平均平滑更新。 */
+    estimate: VIRTUAL_ROW_ESTIMATE,
+    /** 是否已经量到过真实高度（决定 estimate 是「首次赋值」还是「平滑」）。 */
+    sampled: false,
+    conversationId: '',
+  };
+
+  /**
+   * 用户手动展开/收起过的 <details>（`${messageId}::${detailKey}` → open）。
+   * 比「每次重建现抓现还原」多活一层：消息滚出窗口后状态还在，滚回来照样是展开的。
+   */
+  const detailOverrideStore = new Map();
+
+  function resetVirtualList(conversationId) {
+    virtualList.heights.clear();
+    virtualList.estimate = VIRTUAL_ROW_ESTIMATE;
+    virtualList.sampled = false;
+    virtualList.start = 0;
+    virtualList.end = 0;
+    virtualList.active = false;
+    virtualList.conversationId = conversationId || '';
+    detailOverrideStore.clear();
+  }
+
+  function virtualRowHeight(message) {
+    const measured = virtualList.heights.get(message.id);
+    return measured > 0 ? measured : virtualList.estimate;
+  }
+
+  /** 每条消息在内容坐标里的起始位置；末尾多一项表示总高度。 */
+  function virtualOffsets() {
+    const offsets = new Array(state.messages.length + 1);
+    offsets[0] = 0;
+    for (let index = 0; index < state.messages.length; index += 1) {
+      offsets[index + 1] = offsets[index] + virtualRowHeight(state.messages[index]);
+    }
+    return offsets;
+  }
+
+  /** 内容坐标 `y` 落在第几条消息上（offsets 单调递增，二分）。 */
+  function virtualIndexAt(offsets, y) {
+    let low = 0;
+    let high = Math.max(0, offsets.length - 2);
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if (offsets[mid] <= y) low = mid; else high = mid - 1;
+    }
+    return low;
+  }
+
+  function messageSpacer(position, height) {
+    const node = document.createElement('div');
+    node.className = 'message-spacer';
+    node.dataset.spacer = position;
+    node.setAttribute('aria-hidden', 'true');
+    node.style.height = `${Math.max(0, Math.round(height))}px`;
+    return node;
+  }
+
+  /** 当前窗口里的消息节点（跳过占位块）。 */
+  function renderedMessageNodes() {
+    return [...elements.messageList.children].filter((node) => node.dataset.messageId);
+  }
+
+  function findMessageNode(messageId) {
+    for (const node of elements.messageList.children) {
+      if (node.dataset.messageId === messageId) return node;
+    }
+    return null;
+  }
+
+  /**
+   * 换窗口前记下「视口顶部那条消息」以及它相对视口的偏移。
+   * 用真实 DOM 位置而不是估算高度：估算值一旦偏了，用户看到的画面就会跳。
+   *
+   * 返回 null 表示当前窗口里没有一条消息真的在视口里（滚动条拖拽、PageUp、
+   * Ctrl+End 这类跳跃滚动）。这种情况下**不能**拿一条屏幕外的节点当锚点 ——
+   * 把它「放回原位」等于把用户刚跳到的位置又拽回去。此时以 scrollTop 为准。
+   */
+  function captureScrollAnchor() {
+    const viewportRect = elements.messageViewport.getBoundingClientRect();
+    for (const node of renderedMessageNodes()) {
+      const rect = node.getBoundingClientRect();
+      const visible = rect.bottom > viewportRect.top + 1 && rect.top < viewportRect.bottom - 1;
+      if (visible) return { id: node.dataset.messageId, top: rect.top - viewportRect.top };
+    }
+    return null;
+  }
+
+  /** 换窗口后把那条消息放回原来的屏幕位置。 */
+  function restoreScrollAnchor(anchor) {
+    if (!anchor) return;
+    const node = findMessageNode(anchor.id);
+    if (!node) return;
+    const viewport = elements.messageViewport;
+    const viewportRect = viewport.getBoundingClientRect();
+    const rect = node.getBoundingClientRect();
+    viewport.scrollTop += (rect.top - viewportRect.top) - anchor.top;
+  }
+
+  /** 量一次窗口内每条消息的真实高度，并据此修正估算值和上下占位块。 */
+  function measureVirtualHeights() {
+    const nodes = renderedMessageNodes();
+    if (!nodes.length) return;
+    const margin = parseFloat(getComputedStyle(nodes[0]).marginBottom) || 0;
+    let sum = 0;
+    for (const node of nodes) {
+      const index = Number(node.dataset.messageIndex);
+      const message = state.messages[index];
+      if (!message || message.id !== node.dataset.messageId) continue;
+      const height = Math.max(1, node.getBoundingClientRect().height + margin);
+      virtualList.heights.set(message.id, height);
+      sum += height;
+    }
+    const average = sum / nodes.length;
+    if (average > 0) {
+      // 第一次量到的高度就是最好的起点：以前拿 240px 去折中，估算值要好几轮才收敛，
+      // 而每一轮收敛都会让滚动条位置和「跳转后的落点」偏一截（实测空出 6,000px 的白）。
+      if (!virtualList.sampled) virtualList.estimate = Math.round(average);
+      else virtualList.estimate = Math.round((virtualList.estimate + average) / 2);
+      virtualList.sampled = true;
+    }
+    syncVirtualSpacers();
+  }
+
+  /** 按最新高度重算上下占位块（追加、测量之后都要调）。 */
+  function syncVirtualSpacers() {
+    if (!virtualList.active) return;
+    const offsets = virtualOffsets();
+    const total = offsets[offsets.length - 1];
+    const top = elements.messageList.querySelector('[data-spacer="top"]');
+    const bottom = elements.messageList.querySelector('[data-spacer="bottom"]');
+    if (top) top.style.height = `${Math.max(0, Math.round(offsets[virtualList.start] || 0))}px`;
+    if (bottom) bottom.style.height = `${Math.max(0, Math.round(total - (offsets[virtualList.end] || 0)))}px`;
+  }
+
+  /**
+   * 清掉已经不在当前对话里的行高与展开状态。
+   *
+   * 同一个对话里消息会被编辑/重发，id 会变；只增不减的 Map 就是一条慢性泄漏。
+   * 超过「消息数 2 倍 + 64」时清一次，正常使用几乎不会触发。
+   */
+  function pruneVirtualCaches() {
+    if (virtualList.heights.size > state.messages.length * 2 + 64) {
+      const live = new Set(state.messages.map((message) => message.id));
+      for (const id of [...virtualList.heights.keys()]) if (!live.has(id)) virtualList.heights.delete(id);
+      for (const key of [...detailOverrideStore.keys()]) {
+        if (!live.has(key.slice(0, key.indexOf('::')))) detailOverrideStore.delete(key);
+      }
+    }
+  }
+
+  /** 只把 [start, end) 这段消息放进 DOM，其余用占位块撑高。 */
+  function buildMessageWindow(start, end) {
+    const from = Math.max(0, Math.min(start, state.messages.length));
+    const to = Math.max(from, Math.min(end, state.messages.length));
+    // 换节点前先把当前窗口里用户手动开合过的状态收进 store，否则滚过去的展开状态会丢。
+    captureDetailOverrides();
+    pruneVirtualCaches();
+    const offsets = virtualOffsets();
+    const total = offsets[offsets.length - 1];
+    const fragment = document.createDocumentFragment();
+    fragment.append(messageSpacer('top', offsets[from]));
+    for (let index = from; index < to; index += 1) {
+      const message = state.messages[index];
+      const article = renderMessage(message);
+      article.dataset.messageIndex = String(index);
+      rememberRender(article, message);
+      fragment.append(article);
+    }
+    fragment.append(messageSpacer('bottom', total - offsets[to]));
+    elements.messageList.replaceChildren(fragment);
+    virtualList.start = from;
+    virtualList.end = to;
+    restoreDetailOverrides();
+    measureVirtualHeights();
+  }
+
+  /** 视口附近需要哪一段（含上下 overscan）。 */
+  function virtualWindowForVisible() {
+    const viewport = elements.messageViewport;
+    const offsets = virtualOffsets();
+    const nodes = renderedMessageNodes();
+    // 内容坐标的零点 = 第一条消息的顶部。用任意一条已渲染消息反推，避免依赖 padding。
+    let base = 0;
+    if (nodes.length) {
+      const index = Number(nodes[0].dataset.messageIndex);
+      const viewportRect = viewport.getBoundingClientRect();
+      base = viewport.scrollTop + (nodes[0].getBoundingClientRect().top - viewportRect.top) - (offsets[index] || 0);
+    }
+    const top = Math.max(0, viewport.scrollTop - base);
+    const bottom = top + Math.max(1, viewport.clientHeight);
+    const first = virtualIndexAt(offsets, top);
+    const last = virtualIndexAt(offsets, bottom);
+    return {
+      start: Math.max(0, first - VIRTUAL_LIST_OVERSCAN),
+      end: Math.min(state.messages.length, last + 1 + VIRTUAL_LIST_OVERSCAN),
+    };
+  }
+
+  /** 以某条消息为中心开窗（准备包住「一屏 + 上下 overscan」）。 */
+  function virtualWindowAround(index) {
+    const viewport = elements.messageViewport;
+    const visible = Math.max(1, Math.ceil(viewport.clientHeight / Math.max(80, virtualList.estimate)));
+    return {
+      start: Math.max(0, index - VIRTUAL_LIST_OVERSCAN),
+      end: Math.min(state.messages.length, index + visible + VIRTUAL_LIST_OVERSCAN),
+    };
+  }
+
+  function virtualWindowAtBottom() {
+    const viewport = elements.messageViewport;
+    const visible = Math.max(1, Math.ceil(viewport.clientHeight / Math.max(80, virtualList.estimate)));
+    const end = state.messages.length;
+    return { start: Math.max(0, end - visible - VIRTUAL_LIST_OVERSCAN), end };
+  }
+
+  /**
+   * 跳跃式滚动（拖滚动条、PageUp、Ctrl+End）之后，窗口可能整段落在视口之外，
+   * 这时窗口边缘会出现一块空白。用「当前 scrollTop 对应的内容坐标」重新开窗，
+   * 直到视口被盖住（估算值收敛后通常一次就够）。
+   */
+  function ensureWindowCoversViewport() {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const nodes = renderedMessageNodes();
+      if (!nodes.length) return;
+      const viewport = elements.messageViewport;
+      const viewportRect = viewport.getBoundingClientRect();
+      const firstRect = nodes[0].getBoundingClientRect();
+      const lastRect = nodes[nodes.length - 1].getBoundingClientRect();
+      const gapTop = firstRect.bottom < viewportRect.top;
+      const gapBottom = lastRect.top > viewportRect.bottom;
+      if (!gapTop && !gapBottom) return;
+      const target = virtualWindowForVisible();
+      if (target.start === virtualList.start && target.end === virtualList.end) return;
+      buildMessageWindow(target.start, target.end);
+    }
+  }
+
+  /** 滚动到窗口边缘时搬一次窗口，位置按视口顶部那条消息对齐。 */
+  function ensureVirtualWindow() {
+    if (!virtualList.active || state.renderingMessages) return;
+    if (!state.messages.length) return;
+    // 用户正在拖动/选字：这时候换节点会把选区弄丢，等交互结束再说。
+    if (interactingWithMessages) return;
+    const viewport = elements.messageViewport;
+    const nodes = renderedMessageNodes();
+    if (!nodes.length) return;
+    const viewportRect = viewport.getBoundingClientRect();
+    const firstTop = nodes[0].getBoundingClientRect().top - viewportRect.top;
+    const lastBottom = nodes[nodes.length - 1].getBoundingClientRect().bottom - viewportRect.top;
+    const margin = 240;
+    const needAbove = virtualList.start > 0 && firstTop > margin;
+    const needBelow = virtualList.end < state.messages.length && lastBottom < viewport.clientHeight - margin;
+    if (needAbove || needBelow) {
+      const target = virtualWindowForVisible();
+      const anchor = captureScrollAnchor();
+      if (target.start !== virtualList.start || target.end !== virtualList.end) {
+        buildMessageWindow(target.start, target.end);
+        restoreScrollAnchor(anchor);
+      }
+    }
+    ensureWindowCoversViewport();
+    updateScrollToBottom();
+  }
+
+  /** 追加/删除之后让窗口保持合法（越界就夹回来）。 */
+  function clampVirtualWindow() {
+    if (!virtualList.active) return;
+    const count = state.messages.length;
+    if (!count) { buildMessageWindow(0, 0); return; }
+    const start = Math.min(virtualList.start, count - 1);
+    const end = Math.max(start, Math.min(virtualList.end, count));
+    if (start !== virtualList.start || end !== virtualList.end) {
+      const anchor = captureScrollAnchor();
+      buildMessageWindow(start, end);
+      restoreScrollAnchor(anchor);
+    } else {
+      syncVirtualSpacers();
+    }
+  }
+
   function renderMessages(mode = 'keep', options = {}) {
     if (!options.force && (selectingMessageText || interactingWithMessages || hasMessageSelection())) {
       deferMessageRender(mode);
@@ -1201,22 +1525,50 @@
     const previousHeight = viewport.scrollHeight;
     const shouldFollow = mode === 'bottom' || state.autoFollow;
     state.renderingMessages = true;
-    // 消息列表整段重建。只在「结构真的变了」时走这条路（切换对话、追加消息、
-    // 补载更早的消息）；流式输出期间每 70ms 那一次改走 patchMessage，
-    // 原因见那里的注释。先记录用户手动展开/收起的 <details> 状态，
-    // 重建后再恢复，否则点击展开会立刻被下一次渲染收起。
-    const detailOverrides = captureDetailOverrides();
-    elements.messageList.replaceChildren(); elements.emptyState.hidden = state.messages.length > 0;
+    const conversationId = state.conversation?.id || '';
+    if (conversationId !== virtualList.conversationId) resetVirtualList(conversationId);
+    // 消息不多时整段渲染：窗口化只在「真的能省下几十 MB」的规模上才有意义。
+    virtualList.active = state.messages.length > VIRTUAL_LIST_THRESHOLD;
+    // 锚点必须在动 `loadOlderButton` **之前**取：隐藏它会让整个列表上移约 47px，
+    // 取晚了就等于把这个位移当成用户的滚动，补载历史时画面会往上跳一截。
+    const anchor = virtualList.active ? captureScrollAnchor() : null;
+    elements.emptyState.hidden = state.messages.length > 0;
     elements.loadOlderButton.hidden = !state.hasMore || !state.messages.length;
-    for (const message of state.messages) {
-      const article = renderMessage(message);
-      rememberRender(article, message);
-      elements.messageList.append(article);
+    // 先记录用户手动展开/收起的 <details> 状态，重建后再恢复，否则点击展开会被下一次渲染收起。
+    captureDetailOverrides();
+    if (!virtualList.active) {
+      elements.messageList.replaceChildren();
+      for (const message of state.messages) {
+        const article = renderMessage(message);
+        article.dataset.messageIndex = String(state.messages.indexOf(message));
+        rememberRender(article, message);
+        elements.messageList.append(article);
+      }
+      restoreDetailOverrides();
+    } else {
+      if (shouldFollow) {
+        const window = virtualWindowAtBottom();
+        buildMessageWindow(window.start, window.end);
+      } else if (mode === 'prepend' && anchor) {
+        // 补载更早的消息：状态已经在前面加过一批，按原来那条消息的 id 重新定位。
+        const index = state.messages.findIndex((message) => message.id === anchor.id);
+        const window = index >= 0 ? virtualWindowAround(index) : virtualWindowForVisible();
+        buildMessageWindow(window.start, window.end);
+        restoreScrollAnchor(anchor);
+      } else if (anchor) {
+        const index = state.messages.findIndex((message) => message.id === anchor.id);
+        const window = index >= 0 ? virtualWindowAround(index) : virtualWindowForVisible();
+        buildMessageWindow(window.start, window.end);
+        restoreScrollAnchor(anchor);
+      } else {
+        const window = virtualWindowForVisible();
+        buildMessageWindow(window.start, window.end);
+      }
     }
-    restoreDetailOverrides(detailOverrides);
     renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
     requestAnimationFrame(() => {
       if (shouldFollow) viewport.scrollTop = viewport.scrollHeight;
+      else if (virtualList.active) { /* 窗口化路径已在重建时按锚点对齐，这里不再动 scrollTop */ }
       else if (mode === 'prepend') viewport.scrollTop = previousTop + Math.max(0, viewport.scrollHeight - previousHeight);
       else viewport.scrollTop = previousTop;
       state.renderingMessages = false;
@@ -1232,8 +1584,36 @@
    * 节点。真实反馈：「用户发送消息到对话框显示消息有 2-3 秒延迟」。这条路径上的
    * 每一毫秒都在用户眼前，所以追加必须走增量。
    */
-  function appendMessageToList(message) {
+  function appendMessageToList(message, index = state.messages.length - 1) {
+    if (virtualList.active) {
+      // 窗口化时，追加的消息只有在窗口尾部才需要立刻建节点；否则它还在视口外，
+      // 光更新占位块高度就够了（用户滚到那里时会按需重建）。
+      const atWindowEnd = index === virtualList.end;
+      if (!atWindowEnd) {
+        if (state.autoFollow) {
+          const window = virtualWindowAtBottom();
+          buildMessageWindow(window.start, window.end);
+        } else {
+          syncVirtualSpacers();
+        }
+        syncRenderedSignature();
+        return null;
+      }
+      const article = renderMessage(message);
+      article.dataset.messageIndex = String(index);
+      rememberRender(article, message);
+      const bottomSpacer = elements.messageList.querySelector('[data-spacer="bottom"]');
+      if (bottomSpacer) bottomSpacer.before(article);
+      else elements.messageList.append(article);
+      virtualList.end = index + 1;
+      measureVirtualHeights();
+      elements.emptyState.hidden = state.messages.length > 0;
+      elements.loadOlderButton.hidden = !state.hasMore || !state.messages.length;
+      syncRenderedSignature();
+      return article;
+    }
     const article = renderMessage(message);
+    article.dataset.messageIndex = String(index);
     rememberRender(article, message);
     elements.messageList.append(article);
     elements.emptyState.hidden = state.messages.length > 0;
@@ -1301,9 +1681,17 @@
     const gone = new Set(optimisticMessages.map((message) => message.id));
     optimisticMessages = [];
     state.messages = state.messages.filter((message) => !gone.has(message.id));
-    // 用 `data-message-id` 定位：`hwchatRender` 里没有 id 字段。
-    for (const article of [...elements.messageList.children]) {
-      if (gone.has(article.dataset.messageId)) article.remove();
+    if (virtualList.active) {
+      // 下标整体前移了，窗口里的 data-message-index 也跟着失效：重建一次窗口最省心。
+      const anchor = captureScrollAnchor();
+      const window = state.autoFollow ? virtualWindowAtBottom() : virtualWindowForVisible();
+      buildMessageWindow(window.start, window.end);
+      restoreScrollAnchor(anchor);
+    } else {
+      // 用 `data-message-id` 定位：`hwchatRender` 里没有 id 字段。
+      for (const article of [...elements.messageList.children]) {
+        if (gone.has(article.dataset.messageId)) article.remove();
+      }
     }
     elements.emptyState.hidden = state.messages.length > 0;
     syncRenderedSignature();
@@ -1489,9 +1877,18 @@
   function patchMessage(messageId) {
     const index = state.messages.findIndex((item) => item.id === messageId);
     if (index < 0) return false;
-    const current = elements.messageList.children[index];
-    // 顺序对不上时不能按索引换：会换错那一条。宁可整段重建一次。
-    if (!current || current.dataset.messageId !== messageId) return false;
+    // 窗口化时，这条消息可能根本不在 DOM 里（用户在别处看历史）。
+    // 那就只更新签名：等它滚进窗口时会按 state 重新渲染，不需要为看不见的内容做任何事。
+    // 但如果这个下标正落在窗口范围内却找不到节点，说明 DOM 与 state 真的对不上，退回整段重建。
+    const current = findMessageNode(messageId);
+    if (!current) {
+      const outsideWindow = virtualList.active && (index < virtualList.start || index >= virtualList.end);
+      if (outsideWindow) {
+        renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
+        return true;
+      }
+      return false;
+    }
     // 快路径：只动还在增长的那一段，已输出的块一个节点都不重建。
     if (patchGrowingSegment(current)) {
       renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
@@ -1580,6 +1977,9 @@
     if (!interactingWithMessages && !selectingMessageText) return;
     interactingWithMessages = false;
     selectingMessageText = false;
+    // 交互期间宁可不动 DOM（换窗口会把选区/拖拽弄丢），所以补一次窗口检查：
+    // 用户在按住鼠标的时候把列表滚走了，松手这一刻要把缺的那段补上。
+    ensureVirtualWindow();
     if (options && options.afterClick) {
       setTimeout(flushDeferredMessageRender, 0);
       return;
@@ -1601,20 +2001,20 @@
    * 只比对真正要重建的那部分，别的消息的 <details> 根本没被碰过。
    */
   function captureDetailOverrides(root = elements.messageList) {
-    const overrides = new Map();
+    // 写进跨窗口保留的 store：消息滚出窗口后状态还在，滚回来照样是展开的。
     for (const details of root.querySelectorAll('details[data-detail-key]')) {
       const messageId = details.closest('[data-message-id]')?.dataset.messageId;
       const key = details.dataset.detailKey;
       if (!messageId || !key) continue;
-      if (details.open !== (details.dataset.defaultOpen === '1')) {
-        overrides.set(`${messageId}::${key}`, details.open);
-      }
+      const lookup = `${messageId}::${key}`;
+      if (details.open !== (details.dataset.defaultOpen === '1')) detailOverrideStore.set(lookup, details.open);
+      else detailOverrideStore.delete(lookup);
     }
-    return overrides;
+    return detailOverrideStore;
   }
 
   /** 重建后恢复用户的展开/收起状态，保证“点开展开、再点收起”。 */
-  function restoreDetailOverrides(overrides, root = elements.messageList) {
+  function restoreDetailOverrides(overrides = detailOverrideStore, root = elements.messageList) {
     if (!overrides.size) return;
     for (const details of root.querySelectorAll('details[data-detail-key]')) {
       const messageId = details.closest('[data-message-id]')?.dataset.messageId;
@@ -4065,7 +4465,15 @@
   // 可选链：万一 webview 仍加载旧 HTML（结构里没有这个按钮），这里不会中断后续初始化。
   elements.scrollToBottomButton?.addEventListener('click', () => {
     state.autoFollow = true;
-    elements.messageViewport.scrollTo({ top: elements.messageViewport.scrollHeight, behavior: 'smooth' });
+    if (virtualList.active) {
+      // 窗口化列表不能靠平滑滚动：动画每帧都在重算 scrollHeight（未渲染的那一侧还在量高度），
+      // 目标值在动画开始时就过期了，实测点了反而停在中途。直接把窗口搬到末尾再贴底。
+      const window = virtualWindowAtBottom();
+      buildMessageWindow(window.start, window.end);
+      elements.messageViewport.scrollTop = elements.messageViewport.scrollHeight;
+    } else {
+      elements.messageViewport.scrollTo({ top: elements.messageViewport.scrollHeight, behavior: 'smooth' });
+    }
     updateScrollToBottom();
   });
   window.addEventListener('resize', updateScrollToBottom);
@@ -4078,6 +4486,8 @@
     scrollFramePending = true;
     requestAnimationFrame(() => {
       scrollFramePending = false;
+      // 先把视口附近的窗口补齐（会让 scrollHeight 变准），再判断「是不是贴着底部」。
+      ensureVirtualWindow();
       if (!state.renderingMessages) state.autoFollow = isNearBottom();
       updateScrollToBottom();
     });
@@ -4448,8 +4858,8 @@
         state.messages.push(message.userMessage, message.assistant); state.pendingAttachments = []; state.autoFollow = true;
         setStreaming(true, message.conversationId);
         // 增量追加而不是整屏重建：200 条消息整屏要 129ms，而这里只是多两个节点。
-        appendMessageToList(message.userMessage);
-        appendMessageToList(message.assistant);
+        appendMessageToList(message.userMessage, state.messages.length - 2);
+        appendMessageToList(message.assistant, state.messages.length - 1);
         followBottom();
         renderAttachments(); renderHistory(); break;
       }

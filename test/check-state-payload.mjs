@@ -112,6 +112,10 @@ if (!playwrightRoot || !chromium) {
         modelOptionsByProfile: {}, quickLaunchInstalled: true, fileRoots: {},
       };
       const countNodes = () => document.querySelectorAll('#messageList .message').length;
+      // 窗口化之后「DOM 里有几条」不再等于「状态里有几条」：能证明列表没丢的
+      // 是「最后一条渲染出来的消息是谁」。这里全程按 id 断言。
+      const tailId = () => [...document.querySelectorAll('#messageList .message')].pop()?.dataset.messageId ?? '';
+      const tailText = () => [...document.querySelectorAll('#messageList .message .message-content')].pop()?.textContent ?? '';
 
       // 1) 首次推送：带消息
       window.postMessage({ type: 'state', state: { ...base, messages, hasMore: true } }, '*');
@@ -120,6 +124,7 @@ if (!playwrightRoot || !chromium) {
         await new Promise((resolve) => requestAnimationFrame(resolve));
       }
       const afterFull = countNodes();
+      const fullTail = tailId();
 
       // 2) 只改设置：messages 为空 + messagesUnchanged
       const startedSkip = performance.now();
@@ -129,11 +134,14 @@ if (!playwrightRoot || !chromium) {
       }, '*');
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const afterSkip = countNodes();
+      const skipTail = tailId();
       const skipMs = performance.now() - startedSkip;
 
       // 3) 再来一次（模拟连点置顶/归档）
       window.postMessage({ type: 'state', state: { ...base, messages: [], messagesUnchanged: true, hasMore: true } }, '*');
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      const repeatTail = tailId();
 
       // 4) 真的变了：必须重新渲染出新消息
       const next = [...messages, {
@@ -145,21 +153,25 @@ if (!playwrightRoot || !chromium) {
       return {
         afterFull,
         afterSkip,
-        afterRepeat: document.querySelectorAll('#messageList .message').length - 1,
+        afterRepeat: countNodes() - 1,
         afterRealChange: countNodes(),
-        lastText: [...document.querySelectorAll('#messageList .message .message-content')].pop()?.textContent ?? '',
+        lastText: tailText(),
+        fullTail,
+        skipTail,
+        repeatTail,
+        changeTail: tailId(),
         skipMs,
       };
     }, N);
 
-    check('首次全量推送后列表完整',
-      outcome.afterFull === N, `渲染 ${outcome.afterFull}/${N} 条`);
+    check('首次全量推送后渲染到最新一条',
+      outcome.afterFull > 0 && outcome.fullTail === `m${N - 1}`, `渲染 ${outcome.afterFull} 条，末条 ${outcome.fullTail || '无'}`);
     check('messagesUnchanged 时列表**不被清空**',
-      outcome.afterSkip === N, `推送后仍有 ${outcome.afterSkip} 条（清空即回归）`);
+      outcome.afterSkip > 0 && outcome.skipTail === `m${N - 1}`, `推送后仍有 ${outcome.afterSkip} 条，末条 ${outcome.skipTail || '无'}（清空即回归）`);
     check('连续多次 messagesUnchanged 也不会丢内容',
-      outcome.afterRepeat === N, `连续两次后仍有 ${outcome.afterRepeat} 条`);
+      outcome.afterRepeat > 0 && outcome.repeatTail === `m${N - 1}`, `连续两次后仍有 ${outcome.afterRepeat} 条，末条 ${outcome.repeatTail || '无'}`);
     check('内容真的变了仍能推送并渲染',
-      outcome.afterRealChange === N + 1 && outcome.lastText.includes('新来的一条'),
+      outcome.changeTail === 'm-new' && outcome.lastText.includes('新来的一条'),
       `${outcome.afterRealChange} 条，末条「${outcome.lastText.slice(0, 12)}」`);
     // 省下的是**传输与解析**（实测 5.39 MB / 约 27ms 主线程），不是把状态处理变成 0：
     // 这里只守住「不会因为省略了消息反而变慢」，避免有人给这条路径加同步重活。
