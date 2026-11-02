@@ -1031,3 +1031,38 @@ test('cleanup does not hold the write queue for the whole scan', async () => {
     assert.ok(messages.some((message) => message.content === '清理期间发的消息'), '清理期间发的消息必须落盘');
   });
 });
+
+test('getMessage：按 id 取单条消息，未知 id 返回 undefined', async () => {
+  await withStorage(async (storage) => {
+    /*
+     * 用途：附件正文被内存索引淘汰后，面板要能顺着指针回存档取回图片。
+     * 这条路径以前不存在，于是「点历史图片的『添加到输入框』」会静默失败。
+     */
+    const conversation = await storage.createConversation('附件恢复');
+    const message = await storage.appendMessage(conversation.id, {
+      role: 'user',
+      content: '带图片的消息',
+      status: 'complete',
+      attachments: [{ label: 'shot.png', kind: 'image', dataBase64: 'AAAA', id: 'att-1' }],
+    });
+    const found = await storage.getMessage(conversation.id, message.id);
+    assert.equal(found?.id, message.id);
+    assert.equal(found?.attachments?.[0]?.dataBase64, 'AAAA', '正文必须原样读回');
+    assert.equal(await storage.getMessage(conversation.id, 'no-such-message'), undefined);
+    assert.equal(await storage.getMessage('no-such-conversation', message.id), undefined);
+  });
+});
+
+test('getMessage：把存档里认不出来的执行状态丢掉（与其它读取路径一致）', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('执行状态');
+    const message = await storage.appendMessage(conversation.id, { role: 'user', content: 'x', status: 'complete' });
+    // 手改存档，写入一个不存在的状态值。
+    const path = join(root, 'conversations', conversation.id, 'messages', `${message.id}.json`);
+    const stored = JSON.parse(await readFile(path, 'utf8'));
+    stored.executionStatus = 'weird-status';
+    await writeFile(path, JSON.stringify(stored), 'utf8');
+    const found = await storage.getMessage(conversation.id, message.id);
+    assert.equal(found?.executionStatus, undefined, '认不出来的值必须被丢掉，不能流到界面');
+  });
+});

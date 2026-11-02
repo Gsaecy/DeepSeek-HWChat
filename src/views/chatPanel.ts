@@ -320,10 +320,15 @@ type IncomingMessage =
 /**
  * 附件索引保有的字符上限（约等于 base64 长度）。
  *
- * 48 M 字符大约对应 3 张 6 MB 截图，够覆盖「刚粘贴、正在确认」和「刚翻到的历史」
- * 这两种真实用法，又不会让面板常驻一份完整图片历史。
+ * 从 48 M 降到 16 M：这份索引是**常驻内存**的，48 M 字符在 V8 里就是几十 MB 的
+ * 常驻字符串；而降下来之所以安全，是因为 `resolveAttachment()` 现在能在未命中时
+ * 顺着指针回存档重新读（见那里的注释）—— 索引从「唯一来源」变成了「纯缓存」。
+ * 16 M 字符仍能覆盖「刚粘贴几张截图、正在确认」这种最热的用法。
  */
-const ATTACHMENT_INDEX_CHAR_LIMIT = 48 * 1024 * 1024;
+const ATTACHMENT_INDEX_CHAR_LIMIT = 16 * 1024 * 1024;
+
+/** 附件「指针表」的条数上限（只存位置，不存正文，每条几十字节）。 */
+const ATTACHMENT_LOCATION_LIMIT = 5000;
 
 /**
  * 「没找到这个文件」这个结论的有效期。
@@ -441,6 +446,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 被逐出的附件再点击会提示不可用，而不是让面板慢慢变卡。
    */
   private readonly attachmentIndex = new Map<string, MessageContext>();
+
+  /**
+   * 附件 id → 它在存档里的位置（对话 + 消息 + 是 context 还是第几个附件）。
+   *
+   * 只存指针、不存正文，所以每个附件约几十字节；它**不参与字符预算淘汰**
+   * （`attachmentIndex` 会按 48M 字符腾地方，指针表不会）——
+   * 这样即使图片正文被挤出去了，也能顺着指针回存档里重新读出来。
+   */
+  private readonly attachmentLocations = new Map<string, { conversationId: string; messageId: string; kind: 'context' | 'attachment'; index: number }>();
   private attachmentIndexChars = 0;
   private attachmentSequence = 0;
 
@@ -733,10 +747,35 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 成「只复制文字」—— 把十几 MB 的字符串塞进一次 postMessage 会让面板卡顿几秒，
    * 不值得。
    */
+  /**
+   * 解析一个附件 id 的完整内容：先查内存索引，未命中就顺着指针回存档读。
+   *
+   * 现场：附件正文只存在一份按字符预算（48M 字符）淘汰的内存索引里。一旦被挤出去，
+   * 旧实现直接失败 —— 用户点历史图片的「添加到输入框 / 复制图片」**静默没反应**，
+   * 而且新开的窗口索引是空的，非得先把那条消息重新渲染一遍才登记得回来。
+   * 现在两条路径（取数据、加进输入框）都走这里，读到之后顺手放回索引。
+   */
+  private async resolveAttachment(id: string | undefined): Promise<MessageContext | undefined> {
+    if (!id) return undefined;
+    const cached = this.attachmentIndex.get(id);
+    if (cached) return cached;
+    const location = this.attachmentLocations.get(id);
+    if (!location) return undefined;
+    const stored = await this.storage.getMessage(location.conversationId, location.messageId).catch(() => undefined);
+    const restored = location.kind === 'context'
+      ? stored?.context
+      : stored?.attachments?.[location.index];
+    if (!restored) return undefined;
+    restored.id = id;
+    this.rememberAttachment(id, restored);
+    this.log(`[attachment] 索引未命中，已从存档恢复 ${id}（${location.conversationId}）`);
+    return restored;
+  }
+
   private async provideAttachmentData(message: { requestId: string; id?: string }): Promise<void> {
-    const known = message.id ? this.attachmentIndex.get(message.id) : undefined;
+    const known = await this.resolveAttachment(message.id);
     const base64 = known?.dataBase64;
-    if (!base64) {
+    if (!known || !base64) {
       await this.post({ type: 'attachmentData', requestId: message.requestId, ok: false });
       return;
     }
@@ -755,7 +794,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
   private async attachMessageAttachment(message: { id?: string; path?: string }): Promise<void> {
     const id = message.id?.trim();
-    const known = id ? this.attachmentIndex.get(id) : undefined;
+    // 索引被淘汰时同样要从存档恢复，否则「添加到输入框」会静默失败。
+    const known = await this.resolveAttachment(id);
     const settings = await this.attachmentSettings();
     const maxTotalBytes = Math.min(12 * 1024 * 1024, Math.max(2 * 1024 * 1024, settings.maxReadBytes * 16));
     const pendingBytes = this.pendingAttachments.reduce((total, item) => total + (item.bytes ?? 0), 0);
@@ -2114,7 +2154,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       messages: messagesUnchanged ? [] : webviewMessages,
       messagesUnchanged,
       hasMore: page.hasMore,
-      conversations,
+      conversations: this.historyList(conversations),
       settings: {
         apiProfiles: settings.apiProfiles,
         activeApiProfileId: activeProfile.id,
@@ -2128,7 +2168,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       apiKeyConfigured,
       pendingAttachments: this.pendingAttachmentsForWebview(),
       modelOptionsByProfile,
-      archivedConversations,
+      archivedConversations: this.historyList(archivedConversations),
       skills: this.skills.list(),
       selectedSkillIds: effectiveSkillIds,
       quickLaunchInstalled: this.quickLaunchInstalled(),
@@ -3552,29 +3592,63 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 后台线程跑完时用它代替 `sendState()`：后者会重建当前对话的消息列表并把滚动位置拉回底部，
    * 用户正在读另一条对话时会被打断。
    */
+  /**
+   * 历史列表用的精简摘要。
+   *
+   * 实测：5 条对话的列表 JSON 是 174.8 KB，其中 **167.7 KB（96%）是 `todoArchives`** ——
+   * 而侧边栏只显示标题/预览/时间，归档胶囊读的是状态里的**顶层** `todoArchives`
+   * （见 `media/chat.js` 的 `state.todoArchives`）。也就是说列表里那份是纯死重，
+   * 而且随对话数线性增长（100 条对话就是 3 MB 以上的无效载荷）。
+   */
+  private historySummary(summary: ConversationSummary): Omit<ConversationSummary, 'todoArchives'> {
+    const { todoArchives: _archives, ...rest } = summary;
+    return rest;
+  }
+
+  private historyList(list: ConversationSummary[]): Array<Omit<ConversationSummary, 'todoArchives'>> {
+    return list.map((item) => this.historySummary(item));
+  }
+
   private async postHistorySnapshot(): Promise<void> {
     const all = await this.storage.listConversations({ includeArchived: true });
     await this.post({
       type: 'history',
-      conversations: all.filter((item) => !item.archived),
-      archivedConversations: all.filter((item) => item.archived),
+      conversations: this.historyList(all.filter((item) => !item.archived)),
+      archivedConversations: this.historyList(all.filter((item) => item.archived)),
       runningConversationIds: [...this.runs.keys()],
     });
   }
 
-  private forWebview(message: ChatMessage): ChatMessage {
+  private forWebview(message: ChatMessage, conversationId = this.activeConversationId): ChatMessage {
     return {
       ...message,
-      context: message.context ? this.attachmentForWebview(message.context) : undefined,
-      attachments: message.attachments?.map((attachment) => this.attachmentForWebview(attachment)),
+      context: message.context
+        ? this.attachmentForWebview(message.context, message.id, conversationId, 'context', 0)
+        : undefined,
+      attachments: message.attachments?.map((attachment, index) =>
+        this.attachmentForWebview(attachment, message.id, conversationId, 'attachment', index)),
     };
   }
 
-  private attachmentForWebview(context: MessageContext): MessageContext {
+  private attachmentForWebview(
+    context: MessageContext,
+    messageId?: string,
+    conversationId?: string,
+    kind: 'context' | 'attachment' = 'context',
+    index = 0,
+  ): MessageContext {
     // 同一个附件每次重绘都走这里，所以 id 必须写回源对象：否则每渲染一次就
     // 在索引里新增一条，旧条目永远不会被命中，等于把历史图片全留在内存里。
     context.id ??= `att-${++this.attachmentSequence}`;
     this.rememberAttachment(context.id, context);
+    if (messageId && conversationId) {
+      this.attachmentLocations.set(context.id, { conversationId, messageId, kind, index });
+      // 指针表本身也要有个上限：正常用量远低于它，超过说明有人在刷历史。
+      if (this.attachmentLocations.size > ATTACHMENT_LOCATION_LIMIT) {
+        const oldest = this.attachmentLocations.keys().next();
+        if (!oldest.done) this.attachmentLocations.delete(oldest.value);
+      }
+    }
     return {
       id: context.id,
       label: context.label,

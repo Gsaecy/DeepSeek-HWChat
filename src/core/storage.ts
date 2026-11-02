@@ -489,6 +489,22 @@ export class ConversationStorage {
     return messages;
   }
 
+  /**
+   * 按 id 取一条消息（给「附件按需恢复」用）。
+   *
+   * 为什么需要它：附件正文只存在面板的内存索引里，索引按字符预算淘汰；
+   * 淘汰之后旧实现直接回 `ok: false` —— 用户点历史图片的「添加到输入框 / 复制图片」
+   * 就静默失败，而且没有任何恢复办法。有了这个方法，索引命中不了就回存档里读。
+   */
+  async getMessage(conversationId: string, messageId: string): Promise<ChatMessage | undefined> {
+    await this.initialize();
+    if (!this.findSummary(conversationId)) return undefined;
+    const message = await this.readMessage(conversationId, messageId);
+    if (!message) return undefined;
+    message.executionStatus = normalizeExecutionStatus(message.executionStatus);
+    return { ...message };
+  }
+
   async searchConversationMessages(conversationId: string, query = '', limit = 12): Promise<ConversationHistoryHit[]> {
     await this.initialize();
     this.requireSummary(conversationId);

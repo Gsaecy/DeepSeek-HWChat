@@ -45,6 +45,34 @@ check('签名函数是独立纯模块（可单测）',
   SIGNATURE.includes('export function messagesSignatureKey('),
   '签名逻辑要能被单测覆盖');
 
+/* ── 列表载荷：todoArchives 是纯死重（占 96%）─────────────────────────── */
+check('宿主侧：历史列表去掉 todoArchives',
+  /historySummary\(summary: ConversationSummary\): Omit<ConversationSummary, 'todoArchives'>/.test(PANEL)
+  && /const \{ todoArchives: _archives, \.\.\.rest \} = summary;/.test(PANEL),
+  '实测 5 条对话的列表 JSON 174.8 KB，其中 167.7 KB 是 todoArchives，而侧边栏并不用它');
+check('宿主侧：state 的两个列表都走精简',
+  /conversations: this\.historyList\(conversations\)/.test(PANEL)
+  && /archivedConversations: this\.historyList\(archivedConversations\)/.test(PANEL)
+  && /conversations: this\.historyList\(all\.filter/.test(PANEL),
+  'runSendState 与 postHistorySnapshot 都必须用精简摘要，漏一处就白改');
+
+/* ── 附件：索引被淘汰后必须能从存档恢复 ─────────────────────────────────── */
+check('附件：统一的解析入口（索引 → 指针 → 存档）',
+  /private async resolveAttachment\(id: string \| undefined\): Promise<MessageContext \| undefined>/.test(PANEL),
+  '两条路径（取数据、加进输入框）都要走同一条恢复逻辑');
+check('附件：取数据路径用恢复后的结果',
+  /const known = await this\.resolveAttachment\(message\.id\);/.test(PANEL),
+  'provideAttachmentData 不许只查内存索引');
+check('附件：加进输入框路径也用恢复结果',
+  /const known = await this\.resolveAttachment\(id\);/.test(PANEL),
+  'attachMessageAttachment 不许只查内存索引');
+check('附件：不参与淘汰的指针表存在且有上限',
+  /private readonly attachmentLocations = new Map/.test(PANEL) && /ATTACHMENT_LOCATION_LIMIT/.test(PANEL),
+  '指针表只存位置，必须能在正文被淘汰后仍然可用');
+check('附件：正文索引上限已收紧到 16M 字符',
+  /ATTACHMENT_INDEX_CHAR_LIMIT = 16 \* 1024 \* 1024/.test(PANEL),
+  '48M 字符常驻内存太大；恢复路径已就位，收紧才安全');
+
 /* ── 真实浏览器行为 ─────────────────────────────────────────────────────── */
 if (!playwrightRoot || !chromium) {
   console.log(`SKIP 真实浏览器部分：${playwrightRoot ? '找不到 chromium' : '找不到 playwright'}（静态检查已完成）`);
