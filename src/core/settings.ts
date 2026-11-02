@@ -60,6 +60,7 @@ export function readSettings(): ChatSettings {
     maxMessagesInContext: Math.max(0, configuration.get<number>('maxMessagesInContext', 20)),
     requestHeaders: activeProfile.requestHeaders,
     requestTimeoutSeconds: clamp(configuration.get<number>('requestTimeoutSeconds', 120), 10, 900),
+    proxy: String(configuration.get<string>('proxy', '') ?? '').trim(),
     defaultMode: resolveConversationMode(configuration.get<unknown>('defaultMode'), 'agent'),
     agentMaxSteps: DEFAULT_AGENT_MAX_STEPS,
     reasoningEffort: DEFAULT_REASONING_EFFORT,
@@ -93,6 +94,7 @@ export async function updateSettings(values: Partial<ChatSettings>): Promise<voi
     ['maxMessagesInContext', values.maxMessagesInContext],
     ['requestHeaders', values.requestHeaders],
     ['requestTimeoutSeconds', values.requestTimeoutSeconds],
+    ['proxy', values.proxy],
     ['defaultMode', values.defaultMode],
     // 权限预设 / 最大步数 / 思考深度**不写配置**：它们属于对话，随对话存档。
     // 旧实现写全局设置，于是「在 A 对话放宽权限」会连带影响所有新对话。

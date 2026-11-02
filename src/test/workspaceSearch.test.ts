@@ -69,7 +69,7 @@ function settings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     internetReference: false,
     temperature: 0, maxTokens: 0, systemPrompt: '', sendOnEnter: true, historyRetentionDays: 30,
     taskCacheRetentionHours: 24, cacheBudgetMB: 100, cleanupIntervalMinutes: 10, maxMessagesInContext: 20,
-    requestHeaders: {}, requestTimeoutSeconds: 30, defaultMode: 'agent', agentMaxSteps: 24,
+    requestHeaders: {}, requestTimeoutSeconds: 30, proxy: '', defaultMode: 'agent', agentMaxSteps: 24,
     reasoningEffort: 'default', permissionPreset: 'review', fileReadPolicy: 'allow',
     fileWritePolicy: 'allow', commandPolicy: 'allow', dangerousCommandPolicy: 'ask',
     sensitiveFilePolicy: 'deny', maxReadBytes: 512_000, maxToolOutputBytes: 200_000,

@@ -324,6 +324,17 @@ export interface ChatSettings {
   maxMessagesInContext: number;
   requestHeaders: Record<string, string>;
   requestTimeoutSeconds: number;
+  /**
+   * 出网代理（`http://host:port`，留空 = 直连）。
+   *
+   * 必须由用户显式填写：Node 的 `fetch` 不会使用 `HTTPS_PROXY` 环境变量，VS Code 的
+   * `http.proxy` 也不覆盖扩展 —— 所以「系统代理开着、扩展却 fetch failed」是真实
+   * 存在的一类故障。真的填了，请求会走 CONNECT 隧道（见 providers/proxyFetch.ts）。
+   *
+   * 不做自动探测：环境里残留一个指向已关闭端口的代理变量，自动启用会直接把原本
+   * 可用（直连）的请求弄坏。
+   */
+  proxy: string;
   defaultMode: ConversationMode;
   agentMaxSteps: number;
   reasoningEffort: ReasoningEffort;

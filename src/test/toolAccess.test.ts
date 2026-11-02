@@ -48,7 +48,7 @@ before(async () => {
     cleanupIntervalMinutes: 10,
     maxMessagesInContext: 20,
     requestHeaders: {},
-    requestTimeoutSeconds: 30,
+    requestTimeoutSeconds: 30, proxy: '',
     defaultMode: 'agent',
     agentMaxSteps: 0,
     reasoningEffort: 'default',

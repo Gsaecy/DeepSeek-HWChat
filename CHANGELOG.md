@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.3
+
+- **`fetch failed` 不再是一句没法诊断的话：真实原因 + 自动重试 + 分段诊断 + 真正的代理通道**（用户原话：「hwchat对话弹出：请求失败：无法连接到接口：fetch failed」）。
+  - **实测取证**（不是在猜）：
+    | 场景 | Node 22 抛出的真实形状 | 旧表现 |
+    | --- | --- | --- |
+    | DNS 失败 | `TypeError('fetch failed')` → `cause.code = 'ENOTFOUND'` | 「fetch failed」 |
+    | 端口拒绝 | `TypeError('fetch failed')` → `cause.code = 'ECONNREFUSED'` | 「fetch failed」 |
+    | 连接超时 | `DOMException{ name: 'TimeoutError', code: 23 }`，**没有 cause** | 「fetch failed」 |
+    | 证书被代理替换 | `cause.code = 'SELF_SIGNED_CERT_IN_CHAIN'` 等 | 「fetch failed」 |
+    外层错误只说明「fetch 挂了」，真正原因全在 `cause` 里 —— 而这台机器上 `api.deepseek.com` 直连是通的（DNS 38ms / TCP 21ms / TLS 109ms / HTTP 401），说明失败是间歇性的，**必须靠日志与诊断定位，不能靠猜**。
+  - **错误可读化**（`src/providers/netDiagnostics.ts`）：沿 `cause` 链（含 undici 的 `AggregateError.errors`）找到最内层错误，归类成 dns / connect / tls / http 四个阶段，配错误码 + 一句能照着做的建议。代理环境变量存在时额外点明「扩展的请求不会自动走它」。
+  - **有限重试**：只重试「`fetch` 自己抛出」的情况 —— 那意味着连响应头都没拿到，请求不可能已被服务端处理并计费。默认 3 次（400ms / 1200ms 退避），模型列表是幂等 GET 给 4 次。**超时与取消不重试**：`AbortSignal.timeout` 抛的是 `TimeoutError`，按未知错误重试会把一次 120 秒的等待变成 6 分钟（这条是实测发现的坑，已加测试锁住）。
+  - **`[net]` 日志**：每次重试与最终失败都写进输出面板（主机 + 阶段 + 错误码 + 等待时长），不含请求正文与凭据。以前面板里只有权限预设和清理记录，故障发生时什么都没留下。
+  - **新命令 `HWChat: 测试网络连接`**：分四段测量并报出耗时 —— DNS 解析（列出**全部**解析到的地址）→ TCP 连接（含本机出口端口）→ TLS 握手（协议版本 + 证书 CN + 有效期）→ HTTP 请求（不带 Key 请求 `/models`，401 也算通）。配了代理时会额外验一遍隧道。
+  - **`hwchat.proxy`：真正的代理通道**。依据：Node 的 `fetch`（undici）**忽略** `HTTPS_PROXY`（把代理指向死端口，fetch 仍能直连成功 —— 实测），VS Code 的 `http.proxy` 也不覆盖扩展（官方文档明写）。现在填了它会走真正的 `CONNECT` 隧道（`net` → `CONNECT` → `tls` → `https.request`），支持带账号密码的代理，`socks://` 明确报错不假装支持。**默认关闭、不做环境变量自动探测**：这台机器上就残留着指向 `127.0.0.1:7897` 的代理变量，自动启用会直接把原本可用的直连弄坏。
+  - **实测验证（用你机器上真实运行的代理 127.0.0.1:7897）**：经隧道 `GET https://api.deepseek.com/models` → **HTTP 401「Authentication Fails (governor)」268ms**，说明隧道、TLS、HTTP 三层全通；直连诊断同样四段全绿。
+  - **踩坑记录（都写进了代码注释）**：① `createConnection` 写在 request options 上**不生效**，请求会绕过隧道直连 —— 用一个「只说 200、不转发」的黑洞代理测出来的，现在改用 `Agent` 子类覆写；② `CONNECT` 请求头多一个 `\r\n` 会让多出的字节混进 TLS ClientHello，握手直接 `ECONNRESET`；③ `text()` 同步拼接已收到的 chunk 会拿到空串，必须等流结束。
+  - 新增 `src/test/netDiagnostics.test.ts` **19 条**（含真实 CONNECT 代理服务器与「请求确实经过隧道」的刚性证明）、`test/check-network-diagnostics.mjs` **6 组守护**。
+
 ## 0.3.2
 
 - **启动不再等全工作区扫描：面板从「一分钟」到「立刻」**（用户原话：「hwchat0.3.1 版本安装后一直在启动中，过了一分钟才加载好，怎么让它加载快点，流畅点」）。

@@ -10,6 +10,9 @@ import { describePermissionScope, formatPermissionScope, profileFor, readSetting
 import { ConversationStorage } from './core/storage';
 import { revertApprovalBridge, showApprovalBridge } from './core/vscodeApprovals';
 import { DeepSeekClient } from './providers/deepseekClient';
+import { formatProbeReport, probeEndpoint } from './providers/netProbe';
+import { fetchViaProxy } from './providers/proxyFetch';
+import { proxyEnv } from './providers/netDiagnostics';
 import { ChatPanel } from './views/chatPanel';
 import { SettingsPanel } from './views/settingsPanel';
 import { tt } from './core/i18n';
@@ -82,7 +85,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   logPermissionScope();
 
-  const client = new DeepSeekClient((profileId) => getApiKey(context.secrets, profileId, profileId === 'default'));
+  const client = new DeepSeekClient(
+    (profileId) => getApiKey(context.secrets, profileId, profileId === 'default'),
+    // 网络事件的唯一落点：重试、最终失败都记在这里，排查「fetch failed」时先看它。
+    (line) => output.warn(line),
+  );
   let settingsPanel!: SettingsPanel;
   const chat = new ChatPanel(
     context.extensionUri,
@@ -218,6 +225,52 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // 桥接工具（run_in_terminal 等）的审批由 VS Code 决定，只能改它自己的设置。
     ['hwchat.syncVsCodeApprovals', () => showApprovalBridge(context)],
     ['hwchat.revertVsCodeApprovals', () => revertApprovalBridge(context)],
+    /**
+     * 分段诊断接口连通性（DNS → TCP → TLS → HTTP）。
+     *
+     * 为什么要有这个命令：用户报「无法连接到接口：fetch failed」时，错误本身不带
+     * 任何可操作信息，而现场（网络/代理）往往在提问的那一刻已经恢复。一条命令就能
+     * 把「哪一环、什么码、多少毫秒」写进输出面板，下次复现时不用再靠猜。
+     */
+    ['hwchat.diagnoseNetwork', async () => {
+      const settings = readSettings();
+      const profile = profileFor(settings, undefined);
+      output.show(true);
+      output.info(`[net] 开始诊断接口：${profile.baseUrl}`);
+      const report = await probeEndpoint(profile.baseUrl, { timeoutMs: 10000 });
+      for (const line of formatProbeReport(report)) output.info(line);
+      // 配了代理就再验一遍代理这条路：直连通不代表隧道通（反之亦然）。
+      const configured = settings.proxy?.trim();
+      let proxyFailure = '';
+      if (configured) {
+        const startedAt = performance.now();
+        try {
+          const response = await fetchViaProxy(`${profile.baseUrl.replace(/\/+$/, '')}/models`, {}, configured, 15000);
+          output.info(`[net] ✓ 经配置的代理 ${configured} → HTTP ${response.status}（${Math.round(performance.now() - startedAt)}ms）`);
+        } catch (error) {
+          proxyFailure = error instanceof Error ? error.message : String(error);
+          output.warn(`[net] ✗ 经配置的代理 ${configured} 失败：${proxyFailure}`);
+        }
+      }
+      const envProxy = proxyEnv();
+      if (envProxy && !configured) {
+        output.warn(
+          `[net] 检测到代理环境变量 ${envProxy}，但 HWChat 没有配置代理：Node 的 fetch 不会自动使用它`
+          + '（VS Code 的 http.proxy 也不覆盖扩展）。若直连不通，请在设置里填「接口代理」。',
+        );
+      }
+      if (proxyFailure) {
+        await vscode.window.showWarningMessage(tt('ext.netDiagnoseProxyFail', { proxy: configured ?? '', detail: proxyFailure }));
+        return;
+      }
+      if (report.ok) {
+        await vscode.window.showInformationMessage(tt('ext.netDiagnoseOk', { summary: report.summary.split('\n')[0] ?? '' }));
+      } else {
+        await vscode.window.showWarningMessage(
+          tt('ext.netDiagnoseFail', { stage: report.failing?.label ?? '?', detail: report.summary.split('\n')[0] ?? '' }),
+        );
+      }
+    }],
     ['hwchat.showResourceStats', async () => {
       const stats = toolExecutor.resourceStats();
       const lines = [

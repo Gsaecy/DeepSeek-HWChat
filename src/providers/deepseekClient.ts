@@ -8,6 +8,8 @@ import {
   UsageInfo,
 } from '../core/types';
 import { tt } from '../core/i18n';
+import { fetchWithNetworkRetry, type RetryEvent } from './netDiagnostics';
+import { fetchViaProxy, type ResponseLike } from './proxyFetch';
 
 export interface StreamChatOptions {
   signal?: AbortSignal;
@@ -70,7 +72,54 @@ interface OpenAIErrorResponse {
 }
 
 export class DeepSeekClient {
-  constructor(private readonly getApiKey: (profileId: string) => Thenable<string | undefined> | Promise<string | undefined>) {}
+  constructor(
+    private readonly getApiKey: (profileId: string) => Thenable<string | undefined> | Promise<string | undefined>,
+    /**
+     * 网络事件日志口（写 HWChat 输出面板）。
+     *
+     * 以前连接失败在日志里没有留下任何痕迹 —— 用户报「fetch failed」时，面板里只有
+     * 权限预设与清理记录，完全看不出是 DNS、代理还是证书。现在每次重试与最终失败
+     * 都会记一行（只有主机名与错误码，不含请求正文与凭据）。
+     */
+    private readonly logNetwork: (line: string) => void = () => undefined,
+  ) {}
+
+  /**
+   * 按设置挑选传输方式：配了代理就走 CONNECT 隧道，否则直连。
+   *
+   * 为什么必须自己实现代理：Node 的 `fetch` 读不到 `HTTPS_PROXY`，VS Code 的
+   * `http.proxy` 也不覆盖扩展（官方文档明确写了 extensions 暂时不享受代理支持）。
+   * 详见 providers/proxyFetch.ts 顶部。
+   */
+  private transport(settings: ChatSettings): (input: string, init: RequestInit) => Promise<ResponseLike> {
+    const proxy = settings.proxy?.trim();
+    if (!proxy) {
+      return ((input: string, init: RequestInit) => fetch(input, init)) as (input: string, init: RequestInit) => Promise<ResponseLike>;
+    }
+    return (input: string, init: RequestInit) => fetchViaProxy(input, {
+      method: init.method,
+      headers: init.headers instanceof Headers ? init.headers : undefined,
+      body: typeof init.body === 'string' ? init.body : undefined,
+      signal: init.signal ?? undefined,
+    }, proxy, settings.requestTimeoutSeconds * 1000);
+  }
+
+  /** 把一次重试写进输出面板（主机名 + 错误码 + 等待时长，不含正文与凭据）。 */
+  private reportRetry(endpoint: string, event: RetryEvent): void {
+    const host = (() => {
+      try { return new URL(endpoint).hostname; } catch { return endpoint; }
+    })();
+    this.logNetwork(
+      `[net] ${host} 第 ${event.attempt}/${event.maxAttempts} 次失败（${event.stage}/${event.code}），`
+      + `${event.waitMs}ms 后重试：${event.detail.replace(/\n/g, ' / ')}`,
+    );
+  }
+
+  /** 最终失败也记一行，方便事后对时间线。 */
+  private logFailure(endpoint: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.logNetwork(`[net] 请求失败 ${endpoint.split('?')[0]}｜${message.replace(/\n/g, ' / ')}`);
+  }
 
   async streamChat(
     settings: ChatSettings,
@@ -127,15 +176,18 @@ export class DeepSeekClient {
     const timer = setTimeout(() => timeout.abort(), settings.requestTimeoutSeconds * 1000);
     const signal = mergeAbortSignals(options.signal, timeout.signal);
 
-    let response: Response;
+    let response: ResponseLike;
     while (true) {
       try {
-        response = await fetch(endpoint, {
+        response = await fetchWithNetworkRetry(endpoint, {
           method: 'POST',
           headers,
           body: JSON.stringify(body),
           signal,
-        });
+        }, {
+          signal,
+          onRetry: (event) => this.reportRetry(endpoint, event),
+        }, this.transport(settings));
       } catch (error) {
         clearTimeout(timer);
         if (isAbortError(error) && options.signal?.aborted) {
@@ -144,6 +196,7 @@ export class DeepSeekClient {
         if (isAbortError(error)) {
           throw new Error(tt('api.timeout', { seconds: settings.requestTimeoutSeconds }));
         }
+        this.logFailure(endpoint, error);
         throw new Error(tt('api.connectFailed', { error: error instanceof Error ? error.message : String(error) }));
       }
       if (response.ok) break;
@@ -181,9 +234,9 @@ export class DeepSeekClient {
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(), settings.requestTimeoutSeconds * 1000);
     const signal = mergeAbortSignals(options.signal, timeout.signal);
-    let response: Response;
+    let response: ResponseLike;
     try {
-      response = await fetch(endpoint, {
+      response = await fetchWithNetworkRetry(endpoint, {
         method: 'GET',
         headers: new Headers({
           Accept: 'application/json',
@@ -191,11 +244,17 @@ export class DeepSeekClient {
           ...sanitizeHeaders(settings.requestHeaders),
         }),
         signal,
-      });
+      }, {
+        signal,
+        // 模型列表是幂等 GET，重试更安全，所以多给一次机会。
+        attempts: 4,
+        onRetry: (event) => this.reportRetry(endpoint, event),
+      }, this.transport(settings));
     } catch (error) {
       clearTimeout(timer);
       if (isAbortError(error) && options.signal?.aborted) throw new RequestCancelledError();
       if (isAbortError(error)) throw new Error(tt('api.modelListTimeout', { seconds: settings.requestTimeoutSeconds }));
+      this.logFailure(endpoint, error);
       throw new Error(tt('api.modelListFailed', { error: error instanceof Error ? error.message : String(error) }));
     }
     try {
@@ -420,7 +479,7 @@ function sanitizeHeaders(headers: Record<string, string>): Record<string, string
   return result;
 }
 
-async function readError(response: Response, apiKey: string): Promise<string> {
+async function readError(response: ResponseLike, apiKey: string): Promise<string> {
   const text = await response.text().catch(() => '');
   if (!text) {
     return response.statusText || tt('api.unknownError');

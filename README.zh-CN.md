@@ -323,6 +323,8 @@ npm run package
 - `hwchat.fileReadPolicy` / `hwchat.fileWritePolicy` / `hwchat.commandPolicy` / `hwchat.dangerousCommandPolicy` / `hwchat.sensitiveFilePolicy`：这五项策略完全由预设推导，只用于设置页展示，手动写入不生效（在 VS Code 设置里已标记为弃用）。
 - 权限类配置是 `resource` 作用域，可以写在某个根目录的 `.vscode/settings.json` 里。生效顺序为「最具体优先」：工作区文件夹 → `.code-workspace` → 用户设置；多个文件夹写了不同值时取最严格的一个（预设严格度 `每次询问` > `风险操作询问` > `Autopilot` > `完全访问`）。
 - `hwchat.allowSensitiveFiles` / `hwchat.allowDangerousCommands`：已废弃的旧布尔开关，仅在未设置上面两项新配置时用作迁移回退。
+- `hwchat.proxy`：接口请求走的 HTTP 代理（如 `http://127.0.0.1:7897`），**留空表示直连**。必须手动填，原因有两条实测依据：Node 的 `fetch`（undici）**不读** `HTTPS_PROXY` 环境变量（把代理指向死端口，fetch 依然直连成功），VS Code 的 `http.proxy` 也不覆盖扩展（官方文档：*Extensions don't benefit yet from the same proxy support that VS Code supports*）。填了之后请求会走真正的 CONNECT 隧道（支持带账号密码的代理；不支持 `socks://`，请填代理软件提供的 HTTP 端口）。不会自动探测环境变量：残留一个指向已关闭端口的代理变量时，自动启用会把原本可用的直连弄坏。
+- 连接失败时不再只有一句 `fetch failed`：错误会带上**真实原因与建议**（DNS 解析失败 / 端口拒绝 / 连接超时 / 证书被代理中间人替换），并且只在「连响应头都还没拿到」时自动重试 2 次（400ms、1200ms），拿到响应之后的失败一律不重试，避免重复计费。所有网络事件（重试、最终失败）都写进 HWChat 输出面板的 `[net]` 行。命令 `HWChat: 测试网络连接` 会分四段诊断并报出耗时：DNS 解析 → TCP 连接 → TLS 握手（协议版本与证书有效期）→ HTTP 请求；配了代理时会额外验证代理隧道。
 - `hwchat.taskCacheRetentionHours` / `hwchat.cacheBudgetMB`：任务缓存瘦身与**磁盘占用提示**。**HWChat 不会自己让任何一条对话消失**：自动清理只按 `taskCacheRetentionHours` 瘦身缓存、整理「一条消息都没有」的空对话；`historyRetentionDays` 与 `cacheBudgetMB` 不再触发任何删除，预算超了只弹提示并给「打开设置」按钮。删除对话 = 移入 `history-v1/trash/`（可用命令 `HWChat: 恢复已删除的对话` 或设置里的按钮恢复）；**只有你能销毁内容** —— 设置 → 存储 →「清空回收站（永久）」或「清除本地数据」。回收站没有按时间/条数的自动清理。
 
 对话数据位于 VS Code 的全局存储目录，不会写入项目目录。归档会在对话目录里写一份 `.archived` 标记，所以 `manifest.json` 损坏或过期（包括回退读取的 `manifest.json.bak`——那是**上一次**写盘的内容）都不会把归档对话变回可删除的普通历史。

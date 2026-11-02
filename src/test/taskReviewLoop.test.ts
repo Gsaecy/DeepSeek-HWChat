@@ -26,7 +26,7 @@ const settings: ChatSettings = {
   baseUrl: 'https://example.invalid', model: 'deepseek-chat', temperature: 0, maxTokens: 0,
   systemPrompt: '', sendOnEnter: true, historyRetentionDays: 30, taskCacheRetentionHours: 24,
   cacheBudgetMB: 100, cleanupIntervalMinutes: 10, maxMessagesInContext: 20, requestHeaders: {},
-  requestTimeoutSeconds: 30, defaultMode: 'agent', agentMaxSteps: 12, reasoningEffort: 'default', permissionPreset: 'review',
+  requestTimeoutSeconds: 30, proxy: '', defaultMode: 'agent', agentMaxSteps: 12, reasoningEffort: 'default', permissionPreset: 'review',
   fileReadPolicy: 'allow', fileWritePolicy: 'ask', commandPolicy: 'ask', dangerousCommandPolicy: 'ask',
   sensitiveFilePolicy: 'deny', maxReadBytes: 512_000, maxToolOutputBytes: 200_000,
   maxCommandSeconds: 120, auditRetentionDays: 30, language: 'auto',
