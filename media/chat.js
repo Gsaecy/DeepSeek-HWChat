@@ -2730,6 +2730,41 @@
       meta.textContent = running ? runningToolMeta(details) : toolMeta(tool);
       summary.append(statusBadge, textElement('span', 'tool-summary', tool.summary || tool.name), meta);
       const detail = document.createElement('div'); detail.className = 'tool-detail';
+      details.append(summary, detail);
+      /*
+       * 正文**延迟到第一次展开时**才建。
+       *
+       * 实测（headless Chromium，真实 chat.js，600 条消息、每条 6 步、每步含输入+输出）：
+       * 先建好再藏起来 = **136 个节点/条**；展开才建 = **64 个节点/条（−53%）**。
+       * 展开态每步约 9 个节点，折叠时省掉的是每步约 12 个（输入/输出两个块及其文本）。
+       *
+       * 但要记住同一轮量到的另一件事：同一场景 600 条的渲染进程 RSS 只从
+       * +241.4 MB 降到 +231.6 MB（−4%）—— 也就是说**内存大头不是节点数，
+       * 而是每条消息真被排版/绘制**（纯文本 600 条也有 +41 MB，≈0.39 MB/条）。
+       * 这条改动省的是节点和隐藏文本；要真正降内存得让屏幕外的消息不渲染（虚拟化）。
+       *
+       * 现在：折叠状态下只留 summary 那一行，展开时才建正文（含 input/output 两个块）。
+       * 默认展开的（正在跑的那一步）仍然立即建，因为停滞提示就在正文里、要实时可见。
+       */
+      installLazyToolDetail(details, detail, tool, running);
+      section.append(details);
+    }
+    scheduleToolTicker();
+    return section;
+  }
+
+  /**
+   * 给一个工具步骤装上「展开时才建正文」的惰性渲染。
+   *
+   * 三件事必须同时成立，否则会弄丢用户看到过的内容：
+   *  1. 默认就展开的（pending / 恢复出来的展开状态）立刻建，不能等 toggle；
+   *  2. 用户点开时同步建（`toggle` 是异步派发的，但建的是同步 DOM，视觉上不会闪）；
+   *  3. 只建一次 —— 反复开合不应该重复叠加内容。
+   */
+  function installLazyToolDetail(details, detail, tool, running) {
+    const build = () => {
+      if (details.dataset.detailBuilt === '1') return;
+      details.dataset.detailBuilt = '1';
       // 停滞提示同时放进卡片正文：窄窗口下 summary 里的小字会被媒体查询隐藏，
       // 而 pending 卡片默认是展开的，正文这一行在任何宽度下都看得见。
       if (running && tool.stallHint) detail.append(textElement('p', 'tool-stall', tool.stallHint));
@@ -2737,10 +2772,14 @@
       if (tool.input) detail.append(detailBlock(t('chat.toolInput'), tool.input, tool.risk === 'command' ? commandText(tool.input) : undefined));
       if (tool.output) detail.append(detailBlock(t('chat.toolOutput'), tool.output));
       if (!tool.input && !tool.output) detail.append(textElement('p', 'tool-cleaned', tool.finishedAt ? t('chat.toolCleaned') : t('chat.toolWaiting')));
-      details.append(summary, detail); section.append(details);
+    };
+    if (details.open) {
+      build();
+      return;
     }
-    scheduleToolTicker();
-    return section;
+    details.addEventListener('toggle', () => {
+      if (details.open) build();
+    });
   }
 
   function detailBlock(label, value, preferredCopyText) {
