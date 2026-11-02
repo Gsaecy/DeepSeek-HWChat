@@ -497,7 +497,15 @@ export interface ProjectBadgeView {
 
 export interface WebviewConversationState {
   conversation: ConversationSummary | null;
+  /**
+   * 首页消息。
+   *
+   * `messagesUnchanged` 为 true 时这里是**空数组**，webview 必须保留自己已有的列表 ——
+   * 一条 1513 条消息的对话，光首页 80 条就是 5.39 MB，而绝大多数状态推送只改了设置
+   * 或清单，消息一条没变。实测每次推送约 27ms 主线程开销，省掉它才谈得上「流畅」。
+   */
   messages: ChatMessage[];
+  messagesUnchanged?: boolean;
   hasMore: boolean;
   conversations: ConversationSummary[];
   settings: Pick<ChatSettings, 'apiProfiles' | 'activeApiProfileId' | 'model' | 'sendOnEnter' | 'permissionPreset' | 'agentMaxSteps' | 'reasoningEffort' | 'internetReference'>;

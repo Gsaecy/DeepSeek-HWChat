@@ -4309,7 +4309,14 @@
           editingBubbleMessageId = null; editingBubbleTaskId = null; editingBubbleDraft = '';
         }
         const incoming = message.state; state.conversations = incoming.conversations || []; state.archivedConversations = incoming.archivedConversations || [];
-        state.conversation = incoming.conversation; state.messages = incoming.messages || []; state.hasMore = Boolean(incoming.hasMore);
+        state.conversation = incoming.conversation;
+        /*
+         * `messagesUnchanged: true` 表示宿主**没有发消息列表**（签名没变，省下 5 MB 传输）。
+         * 这时必须保留当前列表，绝不能当成「消息被清空」—— 否则每点一次置顶/归档，
+         * 对话就会闪一下变成空白再重画。
+         */
+        if (incoming.messagesUnchanged !== true) state.messages = incoming.messages || [];
+        state.hasMore = Boolean(incoming.hasMore);
         /*
          * 全量状态到达时，乐观气泡怎么处理？
          *

@@ -34,6 +34,14 @@ export class CleanupScheduler implements vscode.Disposable {
      * （下一次心跳会补上）。
      */
     private readonly isBusy: () => boolean = () => false,
+    /**
+     * 顺带回收附件缓存。
+     *
+     * 「点开一张历史图片 → 在 globalStorage 落一份副本」这件事只增不减；
+     * 审计时那台机器上已经 19.64 MB（缓存可安全删除，删了下次点开会重新生成）。
+     * 挂在清理心跳上最省事，也不额外增加任何定时器。
+     */
+    private readonly pruneAttachments: () => Promise<{ removed: number; freedBytes: number; keptBytes: number }> = async () => ({ removed: 0, freedBytes: 0, keptBytes: 0 }),
   ) {}
 
   start(): void {
@@ -84,7 +92,15 @@ export class CleanupScheduler implements vscode.Disposable {
     });
     try {
       const result = await this.running;
-      const changed = result.compactedMessages > 0 || result.deletedConversations > 0;
+      // 附件缓存回收：与消息清理同一次心跳，失败不影响主流程。
+      const pruned = await this.pruneAttachments().catch(() => undefined);
+      if (pruned && pruned.removed > 0) {
+        this.output.appendLine(
+          `[cleanup] attachment-cache: 回收 ${pruned.removed} 个文件，`
+          + `释放 ${(pruned.freedBytes / 1024 / 1024).toFixed(1)} MB，剩余 ${(pruned.keptBytes / 1024 / 1024).toFixed(1)} MB`,
+        );
+      }
+      const changed = result.compactedMessages > 0 || result.deletedConversations > 0 || (pruned?.removed ?? 0) > 0;
       const firstScan = !this.reportedFirstScan;
       this.reportedFirstScan = true;
       if (changed || verbose || firstScan) {

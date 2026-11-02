@@ -3,6 +3,7 @@ import { basename, isAbsolute, resolve } from 'node:path';
 import * as vscode from 'vscode';
 import { AgentRunner } from '../agent/agentRunner';
 import { attachmentCacheName, planAttachmentOpen } from '../agent/attachmentOpen';
+import { messagesSignatureKey } from './messageSignature';
 import { isInsideWorkspace, normalizeFileReference, revealTargetFor } from '../agent/fileReveal';
 import { chooseReferenceMatch } from '../agent/fileReferenceResolve';
 import { resolveFileReferences, type ReferenceQuery } from '../agent/fileReferenceBatch';
@@ -500,6 +501,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
+    /*
+     * webview 是新的（首次打开，或被切到后台再回来时内容被销毁重建）：
+     * 它内存里什么都没有，必须让下一次 `sendState()` 推**全量**消息。
+     * 递增代次 → 签名必然变化 → 不会走 `messagesUnchanged` 的省略路径。
+     */
+    this.webviewGeneration += 1;
+    this.pushedMessagesKey = '';
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [
@@ -942,6 +950,22 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 就凭空消失了。所以这些 id 必须排除在清除之外。
    */
   private readonly startingConversationIds = new Set<string>();
+
+  /**
+   * 上一次推给 webview 的那份消息列表的「画面签名」。
+   *
+   * 为什么需要它：实测一条 1513 条消息的对话，`sendState()` 里仅首页 80 条消息就
+   * **5.39 MB**，一次推送在主线程上约 27ms（扩展侧 stringify + 结构化克隆 + webview
+   * 端 parse），而 `sendState()` 有 22 处调用点（切对话、置顶、归档、运行结束…）。
+   * 绝大多数调用只改了「设置/列表/清单」，消息一条都没变 —— 却每次都在搬 5 MB。
+   *
+   * 现在：签名没变就不发 `messages`，只发一个 `messagesUnchanged: true`，
+   * webview 保留自己已有的列表（它本来就按同一套签名决定要不要重绘）。
+   */
+  private pushedMessagesKey = '';
+
+  /** webview 每次重建（首次解析、被切到后台再回来）都 +1，用来强制下一次推全量。 */
+  private webviewGeneration = 0;
 
   /** `sendState()` 的单飞合并器：并发请求只跑一份，跑完再补一次（见 `core/singleFlight`）。 */
   private readonly statePush = new SingleFlight(() => this.runSendState());
@@ -2076,9 +2100,19 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     });
     // 清单同样要「读的时候补齐结算」：关窗口/崩溃留下的 in_progress 在这里降级成待办。
     const todoView = await this.viewTodos(conversation);
+    /*
+     * 消息列表的签名：只取「会让画面不同」的字段，不序列化正文（与 webview 侧
+     * `messageListSignature` 同源思路）。签名不变就不发这 5 MB。
+     */
+    const webviewMessages = page.messages.map((message) => this.forWebview(message));
+    const messagesKey = messagesSignatureKey(this.webviewGeneration, conversation?.id ?? '', webviewMessages);
+    const messagesUnchanged = messagesKey === this.pushedMessagesKey;
+    // 先记下：即使下面 post 失败，下一次也会重发全量（失败时把它清空）。
+    this.pushedMessagesKey = messagesKey;
     const state: WebviewConversationState = {
       conversation,
-      messages: page.messages.map((message) => this.forWebview(message)),
+      messages: messagesUnchanged ? [] : webviewMessages,
+      messagesUnchanged,
       hasMore: page.hasMore,
       conversations,
       settings: {

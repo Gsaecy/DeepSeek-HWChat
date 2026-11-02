@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { AuditLog } from './agent/auditLog';
+import { pruneAttachmentCache } from './agent/attachmentCache';
 import { SkillRegistry } from './agent/skillRegistry';
 import { ToolExecutor } from './agent/toolExecutor';
 import { CleanupScheduler } from './core/cleanupScheduler';
@@ -129,6 +130,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
     // 有对话在跑就让路：自动心跳跳过这一轮（下一次心跳补上）；用户手动「立即清理」照跑。
     () => chat.hasActiveRuns(),
+    // 附件缓存按「30 天 / 200 MB」回收（1 小时内的文件不动，可能是刚点开的那张）。
+    () => pruneAttachmentCache(join(context.globalStorageUri.fsPath, 'attachment-cache')),
   );
   settingsPanel = new SettingsPanel(
     context.extensionUri,
