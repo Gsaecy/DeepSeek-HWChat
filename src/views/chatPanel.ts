@@ -655,6 +655,30 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     await this.sendState();
   }
 
+  /**
+   * 内存侧缓存的实时占用（给「显示资源统计」用）。
+   *
+   * 用户反馈「hwchat 占用高内存」时，此前没有任何办法看到占用在哪 —— 现在这项会
+   * 和搜索/命令计数一起打进输出面板。
+   */
+  memoryStats(): {
+    attachmentEntries: number;
+    attachmentChars: number;
+    attachmentCharLimit: number;
+    attachmentLocations: number;
+    runs: number;
+    fileReferenceEntries: number;
+  } {
+    return {
+      attachmentEntries: this.attachmentIndex.size,
+      attachmentChars: this.attachmentIndexChars,
+      attachmentCharLimit: ATTACHMENT_INDEX_CHAR_LIMIT,
+      attachmentLocations: this.attachmentLocations.size,
+      runs: this.runs.size,
+      fileReferenceEntries: this.fileReferenceCache.size,
+    };
+  }
+
   /** 是否有对话正在跑（清理调度器据此让路，避免和流式写入抢磁盘）。 */
   hasActiveRuns(): boolean {
     return this.runs.size > 0;

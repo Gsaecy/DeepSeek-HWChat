@@ -122,6 +122,18 @@ export interface TrashEntry {
 const MAX_UI_MESSAGES = 200;
 /** 首屏消息页缓存最多保留几条对话的首页（够覆盖「切回上一条对话」这个高频动作）。 */
 const MESSAGE_PAGE_CACHE_LIMIT = 8;
+/**
+ * 页缓存的**总字节预算**。
+ *
+ * 现场（用户反馈「hwchat 占用高内存」）：只按「最多 8 页」限流是不够的 ——
+ * 每页最多 6 MB，8 页就是 **48 MB**；本机 5 个对话的首页实测就占 **17.7 MB**。
+ * 而这份缓存只是为了少读几次盘（命中时 0ms、未命中 44ms），拿几十 MB 常驻内存
+ * 换这点时间不划算。
+ *
+ * 24 MB 大约能覆盖「当前对话 + 刚切走的一两个」这种真实用法；
+ * 超出就按 LRU 淘汰，宁可多读一次盘，也不把内存顶上去。
+ */
+const MESSAGE_PAGE_CACHE_BYTE_BUDGET = 24 * 1024 * 1024;
 
 export class ConversationStorage {
   private readonly manifestPath: string;
@@ -147,7 +159,13 @@ export class ConversationStorage {
    * 让代数 +1，于是缓存只会在**内容真的没变**时命中——不存在「文件改了还返回旧消息」。
    * 只保留最近几页（`MESSAGE_PAGE_CACHE_LIMIT`），不会把整份历史留在内存里。
    */
-  private readonly messagePageCache = new Map<string, { generation: number; page: { messages: ChatMessage[]; hasMore: boolean } }>();
+  private readonly messagePageCache = new Map<string, {
+    generation: number;
+    bytes: number;
+    page: { messages: ChatMessage[]; hasMore: boolean };
+  }>();
+  /** 页缓存当前占用的估算字节（按消息 JSON 长度累计）。 */
+  private messagePageCacheBytes = 0;
   /** 消息内容代数：任何写/删/清理都会 +1，用于让上面那份页缓存失效。 */
   private messageGeneration = 0;
   /**
@@ -411,7 +429,8 @@ export class ConversationStorage {
       }
     }
     const page = { messages, hasMore: index >= 0 };
-    if (cacheKey) this.rememberPage(cacheKey, page);
+    // `bytes` 是上面循环里已经算过的 JSON 长度，直接复用，不再重复序列化一遍。
+    if (cacheKey) this.rememberPage(cacheKey, page, bytes);
     return { messages: page.messages.map((message) => ({ ...message })), hasMore: page.hasMore };
   }
 
@@ -426,12 +445,30 @@ export class ConversationStorage {
     return `${conversationId}\u0000${limit}`;
   }
 
-  private rememberPage(key: string, page: { messages: ChatMessage[]; hasMore: boolean }): void {
+  private rememberPage(key: string, page: { messages: ChatMessage[]; hasMore: boolean }, bytes: number): void {
+    // 单页就超预算：干脆不缓存，省得它把别的页全挤掉。
+    if (bytes > MESSAGE_PAGE_CACHE_BYTE_BUDGET) {
+      const existing = this.messagePageCache.get(key);
+      if (existing) {
+        this.messagePageCacheBytes -= existing.bytes;
+        this.messagePageCache.delete(key);
+      }
+      return;
+    }
+    const previous = this.messagePageCache.get(key);
+    if (previous) this.messagePageCacheBytes -= previous.bytes;
     this.messagePageCache.delete(key);
-    this.messagePageCache.set(key, { generation: this.messageGeneration, page });
-    while (this.messagePageCache.size > MESSAGE_PAGE_CACHE_LIMIT) {
+    this.messagePageCache.set(key, { generation: this.messageGeneration, bytes, page });
+    this.messagePageCacheBytes += bytes;
+    // 两条上限同时生效：条数（避免碎页太多）与字节（真正的内存闸门）。
+    while (
+      this.messagePageCache.size > MESSAGE_PAGE_CACHE_LIMIT
+      || this.messagePageCacheBytes > MESSAGE_PAGE_CACHE_BYTE_BUDGET
+    ) {
       const oldest = this.messagePageCache.keys().next();
       if (oldest.done) break;
+      const evicted = this.messagePageCache.get(oldest.value);
+      this.messagePageCacheBytes -= evicted?.bytes ?? 0;
       this.messagePageCache.delete(oldest.value);
     }
   }
@@ -445,6 +482,7 @@ export class ConversationStorage {
   private invalidateMessagePages(): void {
     this.messageGeneration += 1;
     this.messagePageCache.clear();
+    this.messagePageCacheBytes = 0;
   }
 
   async getAllMessages(conversationId: string): Promise<ChatMessage[]> {
@@ -496,6 +534,28 @@ export class ConversationStorage {
    * 淘汰之后旧实现直接回 `ok: false` —— 用户点历史图片的「添加到输入框 / 复制图片」
    * 就静默失败，而且没有任何恢复办法。有了这个方法，索引命中不了就回存档里读。
    */
+  /**
+   * 内存缓存的实时占用（给「显示资源统计」与测试用）。
+   *
+   * 用户反馈过「hwchat 占用高内存」，但此前**没有任何办法看到内存花在哪** ——
+   * 只能靠读代码猜。把这几项暴露出来，下次再有问题一条命令就能定位。
+   */
+  cacheStats(): {
+    pageEntries: number;
+    pageBytes: number;
+    pageByteBudget: number;
+    pageEntryLimit: number;
+    scannedConversations: number;
+  } {
+    return {
+      pageEntries: this.messagePageCache.size,
+      pageBytes: this.messagePageCacheBytes,
+      pageByteBudget: MESSAGE_PAGE_CACHE_BYTE_BUDGET,
+      pageEntryLimit: MESSAGE_PAGE_CACHE_LIMIT,
+      scannedConversations: this.cleanupScanCache.size,
+    };
+  }
+
   async getMessage(conversationId: string, messageId: string): Promise<ChatMessage | undefined> {
     await this.initialize();
     if (!this.findSummary(conversationId)) return undefined;

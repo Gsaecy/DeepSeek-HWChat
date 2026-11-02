@@ -176,8 +176,16 @@ const SEARCH_MATCH_LIMIT = 120;
  * 任何写入/保存/删除都会让代数 +1，旧条目立刻不可达。
  */
 const SEARCH_RESULT_TTL_MS = 2_000;
-/** 结果缓存条目上限，防止一次性长任务把它撑大。 */
+/**
+ * 结果缓存的两条上限：条数 + **总字节**。
+ *
+ * 现场（用户反馈「hwchat 占用高内存」）：只限 32 条是不够的 —— 每条 `result.content`
+ * 允许到 `maxToolOutputBytes`（默认 200 KB），32 条就是 **6.4 MB** 常驻，
+ * 而这份缓存的 TTL 只有 2 秒，换来的只是「同一轮里不要重复扫同一份代码」。
+ * 现在再加一条 8 MB 的字节闸门：长输出条目进来时先把老的挤出去。
+ */
 const SEARCH_RESULT_CACHE_LIMIT = 32;
+const SEARCH_RESULT_CACHE_BYTE_BUDGET = 8 * 1024 * 1024;
 const SENSITIVE_NAMES = /(^|\/)(\.env(?:\..*)?|\.npmrc|\.pypirc|\.netrc|credentials?(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|service[-_]?account(?:\.[^/]*)?|id_(?:rsa|dsa|ecdsa|ed25519)|.*\.(?:pem|key|p12|pfx|jks|keystore))$/i;
 const SENSITIVE_PARTS = /(^|\/)(\.git|\.ssh|\.aws|\.kube)(\/|$)/i;
 
@@ -193,7 +201,9 @@ export class ToolExecutor implements vscode.Disposable {
   /** 子进程 → 它属于哪一次运行（按 AbortSignal 归组，取消时能精确杀光）。 */
   private readonly children = new Map<ChildProcess, AbortSignal | undefined>();
   /** 相同查询的结果缓存；key 里带文件变化代数，写文件后自动失效。 */
-  private readonly searchResults = new Map<string, { at: number; result: ToolExecutionResult; matches: number; truncated: boolean }>();
+  private readonly searchResults = new Map<string, { at: number; result: ToolExecutionResult; matches: number; truncated: boolean; bytes: number }>();
+  /** 结果缓存当前占用的估算字节。 */
+  private searchResultBytes = 0;
   private searchScans = 0;
   private searchCacheHits = 0;
 
@@ -865,11 +875,24 @@ export class ToolExecutor implements vscode.Disposable {
   }
 
   private rememberSearch(key: string, result: ToolExecutionResult, matches: number, truncated: boolean): void {
-    if (this.searchResults.size >= SEARCH_RESULT_CACHE_LIMIT) {
+    // 按输出正文长度估算（`content` 是唯一的大字段）。
+    const bytes = result.content.length + result.summary.length;
+    if (bytes > SEARCH_RESULT_CACHE_BYTE_BUDGET) return; // 单条就超预算：不缓存，省得把别的全挤掉
+    const previous = this.searchResults.get(key);
+    if (previous) this.searchResultBytes -= previous.bytes;
+    this.searchResults.delete(key);
+    this.searchResults.set(key, { at: Date.now(), result, matches, truncated, bytes });
+    this.searchResultBytes += bytes;
+    while (
+      this.searchResults.size > SEARCH_RESULT_CACHE_LIMIT
+      || this.searchResultBytes > SEARCH_RESULT_CACHE_BYTE_BUDGET
+    ) {
       const oldest = this.searchResults.keys().next();
-      if (!oldest.done) this.searchResults.delete(oldest.value);
+      if (oldest.done) break;
+      const evicted = this.searchResults.get(oldest.value);
+      this.searchResultBytes -= evicted?.bytes ?? 0;
+      this.searchResults.delete(oldest.value);
     }
-    this.searchResults.set(key, { at: Date.now(), result, matches, truncated });
   }
 
   private async readFile(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {

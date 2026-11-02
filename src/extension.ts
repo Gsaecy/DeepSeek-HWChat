@@ -283,6 +283,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         `searches total: completed=${stats.search?.completed ?? 0} failed=${stats.search?.failed ?? 0} cancelled=${stats.search?.cancelled ?? 0} deduped=${stats.search?.deduped ?? 0} retries=${stats.search?.retries ?? 0} rejected=${stats.search?.rejected ?? 0}`,
         `content searches: total=${stats.contentSearches} cacheHits=${stats.contentSearchCacheHits}`,
         `commands: active=${stats.commands.active} queued=${stats.commands.queued} children=${stats.children}`,
+        /*
+         * 内存侧的缓存占用。
+         *
+         * 用户反馈过「hwchat 占用高内存」，而在此之前**面板里看不到任何内存数字**，
+         * 只能靠读代码猜。这几行把每一处常驻缓存的「当前量 / 上限」都摊开：
+         * 页缓存（唯一的 MB 级常驻）、附件正文索引、附件指针表、文件引用缓存。
+         */
+        ...(() => {
+          const page = storage.cacheStats();
+          const memory = chat.memoryStats();
+          const mb = (bytes: number): string => `${(bytes / 1048576).toFixed(2)}MB`;
+          return [
+            `memory · page cache: entries=${page.pageEntries}/${page.pageEntryLimit} `
+            + `bytes=${mb(page.pageBytes)} budget=${mb(page.pageByteBudget)}`,
+            `memory · attachments: entries=${memory.attachmentEntries} `
+            + `chars=${(memory.attachmentChars / 1024 / 1024).toFixed(2)}M/${(memory.attachmentCharLimit / 1024 / 1024).toFixed(0)}M `
+            + `locations=${memory.attachmentLocations}`,
+            `memory · misc: runs=${memory.runs} fileRefs=${memory.fileReferenceEntries}/${500} scannedConversations=${page.scannedConversations}`,
+            `memory · heap: used=${mb(process.memoryUsage().heapUsed)} rss=${mb(process.memoryUsage().rss)}`,
+          ];
+        })(),
       ];
       for (const line of lines) output.info(line);
       output.show(true);

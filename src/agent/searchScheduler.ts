@@ -127,6 +127,17 @@ interface SearchTask<TParams, TFile> {
   settled: boolean;
 }
 
+/**
+ * 搜索缓存最多保留多少条。
+ *
+ * 现场（用户反馈「hwchat 占用高内存」）：这份缓存原来**只有 TTL、没有条数上限**，
+ * 而且过期清理只发生在「用同一个 key 再查一次」的时候 —— 也就是「查过一次、
+ * 以后不再查同一个 key」的条目会**永久留在 Map 里**。一次长会话里 agent 会发起
+ * 几十上百种不同参数的搜索，每条都存着一份文件路径列表，于是越积越多。
+ * 现在：写入时顺手清掉过期项，并给一个硬上限。
+ */
+const SEARCH_CACHE_MAX_ENTRIES = 48;
+
 export class SearchScheduler<TParams, TFile> {
   private readonly runner: SearchRunner<TParams, TFile>;
   private readonly maxConcurrent: number;
@@ -235,6 +246,26 @@ export class SearchScheduler<TParams, TFile> {
     for (const task of [...this.inFlight.values()]) this.cancelTask(task);
   }
 
+  /**
+   * 清掉过期条目并强制条数上限。
+   *
+   * 只在**写入前**跑一次，代价是 O(缓存条数)（最多几十条），可以忽略；
+   * 换来的是「不用的 key 不会永久占着内存」。
+   */
+  private pruneCache(): void {
+    if (this.cacheTtlMs > 0) {
+      const now = this.now();
+      for (const [key, entry] of this.cache) {
+        if (now - entry.at > this.cacheTtlMs) this.cache.delete(key);
+      }
+    }
+    while (this.cache.size >= SEARCH_CACHE_MAX_ENTRIES) {
+      const oldest = this.cache.keys().next();
+      if (oldest.done) break;
+      this.cache.delete(oldest.value);
+    }
+  }
+
   private readCache(key: string): SearchCallResult<TFile> | undefined {
     if (this.cacheTtlMs <= 0) return undefined;
     const entry = this.cache.get(key);
@@ -320,6 +351,7 @@ export class SearchScheduler<TParams, TFile> {
           const outcome = await this.runner(task.params, { signal: task.controller.signal, attempt: attempts });
           if (task.controller.signal.aborted) throw new OperationCancelledError();
           if (!task.settled) {
+            this.pruneCache();
             this.cache.set(task.key, { outcome, at: this.now() });
             this.settle(task, {
               outcome,

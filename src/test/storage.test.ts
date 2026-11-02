@@ -1066,3 +1066,66 @@ test('getMessage：把存档里认不出来的执行状态丢掉（与其它读�
     assert.equal(found?.executionStatus, undefined, '认不出来的值必须被丢掉，不能流到界面');
   });
 });
+
+test('页缓存受总字节预算约束：多份大页不会同时常驻', async () => {
+  await withStorage(async (storage) => {
+    /*
+     * 现场：用户反馈「hwchat 占用高内存」。这份缓存原来只限「最多 8 页」，
+     * 每页最多 6 MB → 上限 48 MB；本机 5 个对话的首页实测就占 17.7 MB。
+     * 现在多了 24 MB 的总字节闸门，并且通过 `cacheStats()` 可以**直接观测**。
+     */
+    const budget = storage.cacheStats().pageByteBudget;
+    assert.ok(budget > 0 && budget <= 24 * 1024 * 1024, `字节预算必须是有限的（实际 ${budget}）`);
+
+    const ids: string[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      const conversation = await storage.createConversation(`大对话 ${index}`);
+      await storage.appendMessage(conversation.id, {
+        role: 'assistant',
+        content: 'x'.repeat(5 * 1024 * 1024),
+        status: 'complete',
+      });
+      ids.push(conversation.id);
+    }
+    // 6 × 5 MB = 30 MB > 24 MB 预算 → 必然发生淘汰。
+    for (const id of ids) {
+      const page = await storage.getMessages(id, { limit: 80 });
+      assert.equal(page.messages.length, 1, '内容必须完整读出（淘汰只影响缓存，不影响正确性）');
+      assert.equal(page.messages[0]?.content.length, 5 * 1024 * 1024);
+      const stats = storage.cacheStats();
+      assert.ok(
+        stats.pageBytes <= budget,
+        `页缓存占用 ${(stats.pageBytes / 1048576).toFixed(1)}MB 超过了预算 ${(budget / 1048576).toFixed(0)}MB`,
+      );
+    }
+    const after = storage.cacheStats();
+    assert.ok(after.pageEntries <= after.pageEntryLimit, '条数上限也要守住');
+    // 淘汰之后重读，内容必须一模一样（缓存只是缓存）。
+    for (const id of ids) {
+      const page = await storage.getMessages(id, { limit: 80 });
+      assert.equal(page.messages[0]?.content.length, 5 * 1024 * 1024, '淘汰后重读的内容必须一致');
+    }
+  });
+});
+
+test('页缓存：单页就超预算时不缓存它，避免挤掉别的页', async () => {
+  await withStorage(async (storage) => {
+    const budget = storage.cacheStats().pageByteBudget;
+    const small = await storage.createConversation('小对话');
+    await storage.appendMessage(small.id, { role: 'user', content: '小'.repeat(1000), status: 'complete' });
+    await storage.getMessages(small.id, { limit: 80 });
+    const keptBytes = storage.cacheStats().pageBytes;
+    assert.ok(keptBytes > 0, '小页应该被缓存');
+
+    // 造一个比预算还大的单页：它进来时不许把已有小页挤掉（自己直接不缓存）。
+    const huge = await storage.createConversation('超大对话');
+    await storage.appendMessage(huge.id, {
+      role: 'assistant',
+      content: 'y'.repeat(budget + 1024 * 1024),
+      status: 'complete',
+    });
+    await storage.getMessages(huge.id, { limit: 80 });
+    const after = storage.cacheStats();
+    assert.ok(after.pageBytes <= budget, '总占用仍要在预算内');
+  });
+});
