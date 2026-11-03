@@ -16,7 +16,7 @@ import {
   ToolExecutionResult,
 } from '../core/types';
 import { AuditLog, redact } from './auditLog';
-import { commandPathViolation } from './commandPaths';
+import { commandPathViolation, maskPatternFlagArguments } from './commandPaths';
 import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './workspacePaths';
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
 import { gitWriteOperation, GIT_VERBS_WITHOUT_INTENT } from './conversationScope';
@@ -1305,7 +1305,10 @@ export class ToolExecutor implements vscode.Disposable {
 
     const targets: string[] = [];
     if (name === 'run_command') {
-      if (SENSITIVE_COMMAND.test(String(args.command ?? ''))) {
+      // 先遮掉 `--exclude '.env'`、`-name '.env'` 这类「匹配模式」参数：它们不是文件访问，
+      // 挡住它们只会让 `tar --exclude '.env'` 这种再正常不过的命令永远过不去
+      // （2026-11-03 实测：模型换路径重试三次全被拒，最后触发「连续 3 轮失败」停机）。
+      if (SENSITIVE_COMMAND.test(maskPatternFlagArguments(String(args.command ?? '')))) {
         targets.push(tt('tool.sensitiveCommandArg'));
       }
     } else if (PATH_TOOLS.includes(name)) {

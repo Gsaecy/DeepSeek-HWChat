@@ -11,6 +11,15 @@
 export const COMMAND_BLOCK_PROMPT = [
   // 必须是一个真正的围栏块，而不是正文里的反引号。
   'When the user must run a terminal command themselves, always put it in a fenced shell block on its own lines, and annotate where it runs and with which tool: ```bash loc=local tool=bash, ```powershell loc=local tool=powershell, ```sh loc=server tool=bash.',
+  /*
+   * `loc=` 是硬要求，不是建议。
+   *
+   * 真实反馈（用户原话）：「需要我执行的命令，代码块要区分是服务器上执行还是本地终端执行，
+   * 为什么现在不区分本地还是服务器了」。检查发现规则一直在，但模型经常只写 `tool=`、
+   * 漏掉 `loc=`，于是面板上只剩「工具：bash」。所以这里把它写成 MUST，并说明代价：
+   * 贴错终端会改错机器，这是这类操作最常见、也最贵的失败。
+   */
+  'Every shell block MUST carry `loc=`: a block with `tool=` but no `loc=` is incomplete, because the user cannot tell whether to paste it into their local terminal or an SSH session on a server, and pasting into the wrong one modifies the wrong machine. If you do not know where it runs, ask before writing the block.',
   // 位置的三种取值。
   'Use loc=local for a terminal on the machine running VS Code, loc=server for a remote, SSH or production host, and loc="<short label>" for anything else such as a container, CI runner or another machine.',
   // 工具必须写明，不能靠猜操作系统。

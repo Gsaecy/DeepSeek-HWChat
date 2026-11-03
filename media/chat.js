@@ -3551,10 +3551,23 @@
     const codeNode = document.createElement('code'); codeNode.textContent = text; pre.append(codeNode);
     const meta = document.createElement('span'); meta.className = 'code-meta';
     if (shellLanguage) {
+      /*
+       * 位置永远显示出来 —— 标注缺失时也显示「位置：未标注」。
+       *
+       * 真实反馈（用户原话）：「需要我执行的命令，代码块要区分是服务器上执行还是本地终端执行，
+       * 为什么现在不区分本地还是服务器了」。规则一直在提示词里（COMMAND_BLOCK_PROMPT 要求
+       * `loc=local` / `loc=server`），但模型偶尔只写 `tool=` 不写 `loc=`；渲染层以前在这种情况下
+       * **什么都不显示**，用户看不到任何位置信息，比标注错误还糟。现在至少明确告诉用户
+       * 「这条没标注，粘贴前确认一下」，而不是静默省略。
+       */
       if (location) {
         const label = locationLabelOf(location);
         const chip = textElement('span', `code-chip code-chip-location${location === 'server' ? ' is-remote' : ''}`, t('chat.runLocationTag', { location: label }));
         chip.title = t('chat.runLocationTitle', { location: label });
+        meta.append(chip);
+      } else {
+        const chip = textElement('span', 'code-chip code-chip-location is-unknown', t('chat.runLocationUnknown'));
+        chip.title = t('chat.runLocationUnknownTitle');
         meta.append(chip);
       }
       const toolChip = textElement('span', 'code-chip code-chip-tool', t('chat.runToolTag', { tool }));

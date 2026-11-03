@@ -74,7 +74,7 @@ export function commandPathViolation(
   // `/"name"/,/displayName/p` 会被 BARE_ABSOLUTE_PATH 当成绝对路径拒绝，而它根本
   // 不是文件访问。旧实现只能给出“请改写成 -e”的提示，让调用方替工具背锅。
   // 遮掉的是模式位置上的参数，真正的文件参数仍在后面照常校验。
-  const command = maskPatternArguments(rawCommand);
+  const command = maskPatternFlagArguments(maskPatternArguments(rawCommand));
   if (ESCAPING_PATH.test(command)) {
     return tt('path.blockedGeneric');
   }
@@ -201,6 +201,62 @@ function maskSegment(segment: string): string {
 
   if (!masked.length) return segment;
   let result = segment;
+  for (const range of masked.sort((left, right) => right.start - left.start)) {
+    result = `${result.slice(0, range.start)}pattern${result.slice(range.end)}`;
+  }
+  return result;
+}
+
+/**
+ * 值本身是「匹配模式」而不是「文件路径」的选项。
+ *
+ * 真实故障（2026-11-03，用户原话：「命令被路径隔离策略拦截」/「已阻止访问敏感文件」）：
+ * 模型执行
+ *
+ *     tar czf <工作区内>/tmp/x.tgz --exclude 'node_modules' --exclude '.env' server
+ *
+ * `--exclude` 后面的是**排除模式**，`'.env'` 根本不是要读的文件；但敏感文件守卫在整条
+ * 命令里 grep 到了 `.env`，于是判定「命令参数引用了敏感文件名」直接拒绝。模型换路径
+ * 重试三次全被拒，最后触发「连续 3 轮失败」停机 —— 用户为此专门反馈「为什么要停」。
+ *
+ * 这些选项的值一律不算文件访问：
+ *   --exclude / --exclude-dir / --include / --include-dir
+ *   --ignore / --ignore-pattern / --ignore-dir / --glob / --filter
+ *   find 的 -name / -iname / -path / -ipath / -regex / -iregex
+ *
+ * 刻意**不**包含读文件的选项：`--exclude-from`、`-f`、`--file`、`-X` 指向的是真实文件，
+ * 继续按路径校验，不能借掩码绕过去。
+ */
+const PATTERN_VALUE_FLAGS = new Set([
+  '--exclude', '--exclude-dir', '--include', '--include-dir',
+  '--ignore', '--ignore-pattern', '--ignore-dir', '--glob', '--filter',
+  '-name', '-iname', '-path', '-ipath', '-regex', '-iregex',
+]);
+
+/**
+ * 把「模式选项的值」替换成占位词，使它们不再被当成文件路径或敏感文件名。
+ *
+ * 支持三种写法：`--exclude .env`、`--exclude=.env`、`-name '.env'`。
+ * 只改选项自己的值，命令其它部分原样保留。
+ */
+export function maskPatternFlagArguments(command: string): string {
+  const tokens = tokenizeSegment(command);
+  const masked: Array<{ start: number; end: number }> = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const equals = token.text.indexOf('=');
+    if (equals > 0 && PATTERN_VALUE_FLAGS.has(token.text.slice(0, equals))) {
+      masked.push({ start: token.start, end: token.end });
+      continue;
+    }
+    if (!PATTERN_VALUE_FLAGS.has(token.text)) continue;
+    const value = tokens[index + 1];
+    if (!value) continue;
+    masked.push({ start: value.start, end: value.end });
+    index += 1;
+  }
+  if (!masked.length) return command;
+  let result = command;
   for (const range of masked.sort((left, right) => right.start - left.start)) {
     result = `${result.slice(0, range.start)}pattern${result.slice(range.end)}`;
   }

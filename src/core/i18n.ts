@@ -432,6 +432,8 @@ const DICTIONARY: Record<string, Entry> = {
   'chat.runLocationTitle': { zh: '这条命令要在这里运行：{location}', en: 'This command runs in: {location}' },
   'chat.runLocationLocal': { zh: '本地终端', en: 'Local terminal' },
   'chat.runLocationServer': { zh: '服务器终端', en: 'Server terminal' },
+  'chat.runLocationUnknown': { zh: '位置：未标注', en: 'Location: not specified' },
+  'chat.runLocationUnknownTitle': { zh: '这条命令没有标注在哪运行。请确认是本地终端还是服务器终端再粘贴，贴错地方会执行失败或改错机器。', en: 'This command does not say where it runs. Check whether it belongs in your local terminal or a server terminal before pasting: the wrong one fails or changes the wrong machine.' },
   'chat.runToolTag': { zh: '工具：{tool}', en: 'Tool: {tool}' },
   'chat.runToolTitle': { zh: '运行工具：{tool}', en: 'Run tool: {tool}' },
   'chat.codeSelection': { zh: '代码选区', en: 'Code selection' },
@@ -1060,10 +1062,10 @@ const DICTIONARY: Record<string, Entry> = {
   'agent.detailsTruncated': { zh: '{result}\n… [本地详情已截断]', en: '{result}\n… [local details truncated]' },
 
   // 路径隔离
-  'path.blockedGeneric': { zh: '命令被路径隔离策略拦截：不能引用工作区外路径、HOME 或上级目录。', en: 'Blocked by path isolation: commands cannot reference paths outside the workspace, HOME, or parent directories.' },
-  'path.blockedResolved': { zh: '命令被路径隔离策略拦截：路径 {token} 解析后不在当前工作区内。', en: 'Blocked by path isolation: {token} resolves outside the current workspace.' },
+  'path.blockedGeneric': { zh: '命令被路径隔离策略拦截：不能引用工作区外路径、HOME 或上级目录。**换路径，不要重试同一写法**：把文件放到工作区内（例如 <工作区根>/tmp/），或改用读写文件的工具。', en: 'Blocked by path isolation: commands cannot reference paths outside the workspace, HOME, or parent directories. **Change the path instead of retrying the same one**: keep the file inside the workspace (for example <workspace root>/tmp/) or use the file tools instead.' },
+  'path.blockedResolved': { zh: '命令被路径隔离策略拦截：路径 {token} 解析后不在当前工作区内。**换路径，不要重试同一写法**：把文件放到工作区内（例如 <工作区根>/tmp/），或改用读写文件的工具。', en: 'Blocked by path isolation: {token} resolves outside the current workspace. **Change the path instead of retrying the same one**: keep the file inside the workspace (for example <workspace root>/tmp/) or use the file tools instead.' },
   'path.blockedSedHint': { zh: '命令被路径隔离策略拦截：路径 {path} 不在当前工作区内。它看起来是 sed/grep 的正则地址而不是文件路径——请改写为不使用斜杠包裹的形式（例如 grep -e "模式" 或 sed -n -e "命令"）。', en: 'Blocked by path isolation: {path} is outside the current workspace. It looks like a sed/grep regex address rather than a file path; rewrite it without slash-delimited addresses (for example grep -e "pattern" or sed -n -e "command").' },
-  'path.blockedSimple': { zh: '命令被路径隔离策略拦截：路径 {path} 不在当前工作区内。', en: 'Blocked by path isolation: {path} is outside the current workspace.' },
+  'path.blockedSimple': { zh: '命令被路径隔离策略拦截：路径 {path} 不在当前工作区内。**换路径，不要重试同一写法**：把文件放到工作区内（例如 <工作区根>/tmp/），或改用读写文件的工具。', en: 'Blocked by path isolation: {path} is outside the current workspace. **Change the path instead of retrying the same one**: keep the file inside the workspace (for example <workspace root>/tmp/) or use the file tools instead.' },
   'path.noWorkspace': { zh: '当前没有打开的工作区。', en: 'No workspace is currently open.' },
   'path.ambiguous': { zh: '路径「{value}」在多个工作区根目录中同时存在（{roots}），无法判断目标。请在路径前加上根目录名，例如「{example}」。', en: 'The path "{value}" exists in several workspace roots ({roots}), so the target is ambiguous. Prefix it with a root name, for example "{example}".' },
   'path.outsideWorkspace': { zh: '路径必须位于当前 VS Code 工作区内。', en: 'The path must be inside the current VS Code workspace.' },

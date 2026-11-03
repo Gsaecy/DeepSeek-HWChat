@@ -772,6 +772,8 @@ body.editor-open .message-viewport { overflow: hidden; }
 .code-chip { padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; font-size: 9.5px; line-height: 1.45; }
 .code-chip-location { color: var(--success); border-color: color-mix(in srgb, var(--success) 42%, var(--border)); background: color-mix(in srgb, var(--success) 10%, transparent); }
 .code-chip-location.is-remote { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 46%, var(--border)); background: color-mix(in srgb, var(--warning) 13%, transparent); }
+/* 没标注位置：用中性虚线态，看起来不像「已知是本地」也不像「已知是服务器」。 */
+.code-chip-location.is-unknown { color: var(--muted); border-color: var(--border); border-style: dashed; background: transparent; }
 .code-chip-tool { color: var(--muted); }
 /* 正文里的文件引用：像一枚可点的小标签，而不是一段死代码。
    悬停有轻微上浮 + 阴影 + 描边转亮，指示「这里是可操作的」；
