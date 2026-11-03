@@ -4217,6 +4217,18 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     // 正文里文件引用的识别与解析。同样必须在 chat.js 之前加载：
     // chat.js 渲染行内文本时要读 HWChatFileRef，读不到就退回「路径原样显示」。
     const fileRefScript = mediaUri(webview, this.extensionUri, 'file-reference.js');
+    /*
+     * 流式渲染的两个纯函数模块：`inline-append.js`（这一帧能否按纯文本追加）与
+     * `stream-repair.js`（把没写完的 `**粗体`、`` `代码 ``、`[文字](htt` 先补全再渲染）。
+     *
+     * 真实缺陷（2026-11-03 盘点时发现）：这两个文件写了、也单测了、也写进了 README 和
+     * CHANGELOG，但**从来没被注入到面板 HTML** —— 只有浏览器守护用的 preview 页加载了它们。
+     * 于是线上 chat.js 里 `globalThis.HWChatInlineAppend` / `HWChatStreamRepair` 一直是
+     * undefined：纯文本快路径永远不生效，半截 markdown 也不会被补全。功能静默退化，
+     * 而测试全绿（守护跑的是 preview 页）。现在补上，并由 check-webview-scripts.mjs 盯住。
+     */
+    const inlineAppendScript = mediaUri(webview, this.extensionUri, 'inline-append.js');
+    const streamRepairScript = mediaUri(webview, this.extensionUri, 'stream-repair.js');
 
     const logo = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'logo.png'));
     return `<!doctype html>
@@ -4405,6 +4417,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   <script nonce="${scriptNonce}" src="${toastTimingScript}"></script>
   <script nonce="${scriptNonce}" src="${followUpFormatScript}"></script>
   <script nonce="${scriptNonce}" src="${fileRefScript}"></script>
+  <script nonce="${scriptNonce}" src="${inlineAppendScript}"></script>
+  <script nonce="${scriptNonce}" src="${streamRepairScript}"></script>
   <script nonce="${scriptNonce}" src="${script}"></script>
 </body>
 </html>`;
