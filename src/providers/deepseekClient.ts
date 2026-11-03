@@ -115,6 +115,17 @@ export class DeepSeekClient {
     );
   }
 
+  /** 服务端过载导致的重试也写一行，和网络错误的重试分开标注。 */
+  private reportStatusRetry(endpoint: string, status: number, attempt: number, waitMs: number, detail: string): void {
+    const host = (() => {
+      try { return new URL(endpoint).hostname; } catch { return endpoint; }
+    })();
+    this.logNetwork(
+      `[net] ${host} 第 ${attempt}/${TRANSIENT_STATUS_ATTEMPTS - 1} 次重试（http/${status}），`
+      + `${waitMs}ms 后再发：${detail.replace(/\n/g, ' / ').slice(0, 160)}`,
+    );
+  }
+
   /** 最终失败也记一行，方便事后对时间线。 */
   private logFailure(endpoint: string, error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
@@ -172,29 +183,44 @@ export class DeepSeekClient {
       Authorization: `Bearer ${apiKey}`,
       ...sanitizeHeaders(settings.requestHeaders),
     });
-    const timeout = new AbortController();
-    const timer = setTimeout(() => timeout.abort(), settings.requestTimeoutSeconds * 1000);
-    const signal = mergeAbortSignals(options.signal, timeout.signal);
+    const idleMs = Math.max(1, settings.requestTimeoutSeconds) * 1000;
+    const timeoutMessage = tt('api.timeout', { seconds: settings.requestTimeoutSeconds });
+
+    /*
+     * 每次尝试都用**新的** AbortController：一旦某次超时把它 abort 了，这条控制器
+     * 的 signal 就永久是 aborted，重试会立刻又抛一次超时。用户取消的那一路始终合并进来。
+     */
+    const newAttempt = (): { signal: AbortSignal; abort: () => void } => {
+      const controller = new AbortController();
+      return { signal: mergeAbortSignals(options.signal, controller.signal), abort: () => controller.abort() };
+    };
 
     let response: ResponseLike;
+    let statusAttempt = 0;
+    const transport = this.transport(settings);
     while (true) {
+      const current = newAttempt();
       try {
-        response = await fetchWithNetworkRetry(endpoint, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(body),
-          signal,
-        }, {
-          signal,
-          onRetry: (event) => this.reportRetry(endpoint, event),
-        }, this.transport(settings));
+        response = await withDeadline(
+          fetchWithNetworkRetry(endpoint, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal: current.signal,
+          }, {
+            signal: current.signal,
+            onRetry: (event) => this.reportRetry(endpoint, event),
+          }, transport),
+          idleMs,
+          timeoutMessage,
+          current.abort,
+        );
       } catch (error) {
-        clearTimeout(timer);
         if (isAbortError(error) && options.signal?.aborted) {
           throw new RequestCancelledError();
         }
-        if (isAbortError(error)) {
-          throw new Error(tt('api.timeout', { seconds: settings.requestTimeoutSeconds }));
+        if (isAbortError(error) || (error instanceof Error && error.message === timeoutMessage)) {
+          throw new Error(timeoutMessage);
         }
         this.logFailure(endpoint, error);
         throw new Error(tt('api.connectFailed', { error: error instanceof Error ? error.message : String(error) }));
@@ -202,26 +228,35 @@ export class DeepSeekClient {
       if (response.ok) break;
       const detail = await readError(response, apiKey);
       if (response.status === 400 && removeRejectedReasoningControl(body, detail)) continue;
-      clearTimeout(timer);
-      throw new Error(tt('api.requestFailed', { status: response.status, detail }));
+      statusAttempt += 1;
+      // 服务端过载（503 / 429 / 5xx）：请求没被处理，等一下重发既安全也必要。
+      if (shouldRetryStatus(response.status) && statusAttempt < TRANSIENT_STATUS_ATTEMPTS && !options.signal?.aborted) {
+        const waitMs = transientRetryDelayMs(statusAttempt, response.headers?.get('retry-after'));
+        this.reportStatusRetry(endpoint, response.status, statusAttempt, waitMs, detail);
+        await sleepMs(waitMs, options.signal).catch(() => { throw new RequestCancelledError(); });
+        continue;
+      }
+      throw new Error(tt('api.requestFailed', {
+        status: response.status,
+        // 重试用尽仍然过载：告诉用户这是**临时**状态，别以为是自己配置或代码坏了。
+        detail: shouldRetryStatus(response.status) ? `${detail}${tt('api.transientHint')}` : detail,
+      }));
     }
     if (!response.body) {
-      clearTimeout(timer);
       throw new Error(tt('api.noStream'));
     }
 
+    /*
+     * 流式阶段没有总时长上限：每收到一段数据重新计时（见 `withDeadline` 的说明）。
+     * 于是「模型慢慢写」不会失败，「连接真的死了」仍然在 N 秒后被判超时。
+     */
     try {
-      return await parseSse(response.body, options.onDelta, signal);
+      return await parseSse(response.body, options.onDelta, options.signal, idleMs, timeoutMessage);
     } catch (error) {
       if (options.signal?.aborted) {
         throw new RequestCancelledError();
       }
-      if (timeout.signal.aborted || isAbortError(error)) {
-        throw new Error(tt('api.timeout', { seconds: settings.requestTimeoutSeconds }));
-      }
       throw error;
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -479,6 +514,88 @@ function sanitizeHeaders(headers: Record<string, string>): Record<string, string
   return result;
 }
 
+/**
+ * 给一个 promise 加截止时间；超时就调用 `onTimeout`（用于真正中止底层请求）并 reject。
+ *
+ * 为什么需要它：`requestTimeoutSeconds` 以前是**整条请求**的总时长上限 —— 定时器
+ * 只设一次，一到点就 abort。流式回复的总时长与「网络有没有卡住」无关，长回答 +
+ * 工具循环本来就可能超过两分钟，于是哪怕每个 token 都在到达，第 120 秒照样被掐断，
+ * 用户看到的是「请求超时（120 秒）」，而执行过程里 8 个步骤其实都跑完了
+ * （2026-11-03 实测复现：1 秒超时 + 每 200ms 一帧的流，第 1.006 秒就抛超时）。
+ *
+ * 现在它只用来表达「多久没动静」，每一段数据都会重新计时。
+ */
+function withDeadline<T>(work: Promise<T>, ms: number, message: string, onTimeout?: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      // 先 reject 再中止底层请求：`reader.cancel()` 会让挂起的 read() 立刻以
+      // `{done:true}` 兑现（实测），如果先 cancel，race 会先看到「流正常结束」，
+      // 超时被吞掉、调用方以为成功。
+      reject(new Error(message));
+      onTimeout?.();
+    }, ms);
+  });
+  // `race` 会给两边都挂上处理函数，所以被放弃的那个 promise 之后 reject 不会变成
+  // unhandled rejection。
+  return Promise.race([work, deadline]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/**
+ * 服务端「现在很忙」的状态码。
+ *
+ * 真实故障（同一份用户报告的第二条）：`503 Service is too busy ... (request_id: …)`。
+ * 这类响应意味着请求**没有被处理**，重试既安全又必要；而旧实现只在 `fetch` 自己抛错时
+ * 重试（那时候连响应头都没拿到），拿到 503 就直接把整轮判失败。
+ */
+const TRANSIENT_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529]);
+/** 状态码重试的总尝试次数（含第一次）。400 → 1200 → 3600，最多多等 5.2 秒。 */
+export const TRANSIENT_STATUS_ATTEMPTS = 4;
+
+export function shouldRetryStatus(status: number): boolean {
+  return TRANSIENT_STATUS.has(status);
+}
+
+/**
+ * 第 `attempt` 次重试前等多久。
+ *
+ * 指数退避 400 / 1200 / 3600 ms；服务端给了 `Retry-After`（秒数或 HTTP 日期）就听它的，
+ * 但上限 10 秒 —— 否则一个「Retry-After: 3600」会把界面冻住一小时。
+ * 不加随机抖动：这几档在毫秒级，抖动对单客户端没有收益，却会让重试时序不可复现。
+ */
+export function transientRetryDelayMs(attempt: number, retryAfterHeader?: string | null): number {
+  const retryAfter = parseRetryAfter(retryAfterHeader);
+  if (retryAfter !== undefined) return Math.min(10_000, retryAfter);
+  return Math.min(8_000, 400 * (3 ** Math.max(0, attempt - 1)));
+}
+
+function parseRetryAfter(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;
+  const date = Date.parse(trimmed);
+  if (Number.isNaN(date)) return undefined;
+  return Math.max(0, date - Date.now());
+}
+
+const sleepMs = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+  if (signal?.aborted) {
+    reject(new Error('aborted'));
+    return;
+  }
+  const timer = setTimeout(() => {
+    signal?.removeEventListener('abort', onAbort);
+    resolve();
+  }, ms);
+  const onAbort = (): void => {
+    clearTimeout(timer);
+    reject(new Error('aborted'));
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+});
+
 async function readError(response: ResponseLike, apiKey: string): Promise<string> {
   const text = await response.text().catch(() => '');
   if (!text) {
@@ -518,6 +635,9 @@ async function parseSse(
   body: ReadableStream<Uint8Array>,
   onDelta: (delta: StreamDelta) => void | Promise<void>,
   signal?: AbortSignal,
+  /** 「多久没收到数据就判超时」；0 表示不限制。见 `withDeadline`。 */
+  idleMs = 0,
+  timeoutMessage = '',
 ): Promise<StreamChatResult> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -528,7 +648,18 @@ async function parseSse(
       if (signal?.aborted) {
         throw new RequestCancelledError();
       }
-      const { done, value } = await reader.read();
+      /*
+       * 每一段数据都给一个新的截止时间 —— 这就是「空闲超时」。
+       *
+       * 不能只依赖 AbortController：真实 fetch 的响应流确实会因 abort 让 read() 抛错，
+       * 但测试桩、以及某些代理实现里流的取消并不会传下来，于是「卡住」会变成永久挂起
+       * （实测：一条不再产出数据又不关流的响应，旧实现等到测试进程结束都没返回）。
+       * 这里直接给 read() 设上限，超时同时取消 reader，连接不会留在那里。
+       */
+      const chunk = idleMs > 0
+        ? await withDeadline(reader.read(), idleMs, timeoutMessage, () => { void reader.cancel().catch(() => undefined); })
+        : await reader.read();
+      const { done, value } = chunk;
       buffer += decoder.decode(value, { stream: !done });
       const frames = buffer.split(/\r?\n\r?\n/);
       buffer = frames.pop() ?? '';
@@ -545,7 +676,13 @@ async function parseSse(
       }
     }
   } finally {
-    reader.releaseLock();
+    // 超时那一刻我们取消了 reader：此时可能还有挂起的 read，`releaseLock()` 会抛
+    // TypeError 并把真正的超时错误盖掉，所以吞掉它 —— 锁随流一起释放，没有泄漏。
+    try {
+      reader.releaseLock();
+    } catch {
+      // ignore
+    }
   }
 }
 

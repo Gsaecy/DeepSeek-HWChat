@@ -30,6 +30,8 @@ export type ResponseLike = {
   ok: boolean;
   status: number;
   statusText: string;
+  /** 只需要 `get`：目前用于读 `Retry-After`（503 过载时决定等多久再重试）。 */
+  headers?: { get(name: string): string | null };
   body: ReadableStream<Uint8Array> | null;
   text(): Promise<string>;
   json(): Promise<unknown>;
@@ -280,6 +282,13 @@ export async function fetchViaProxy(
     ok: status >= 200 && status < 300,
     status,
     statusText: response.statusMessage ?? '',
+    headers: {
+      get(name: string) {
+        const value = response.headers[name.toLocaleLowerCase()];
+        if (value === undefined) return null;
+        return Array.isArray(value) ? value.join(', ') : value;
+      },
+    },
     body: stream,
     async text() {
       // 上层要么读流（SSE），要么调 text()（错误体），两条路互斥；这里等读完再返回。

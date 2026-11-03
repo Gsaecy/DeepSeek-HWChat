@@ -248,6 +248,9 @@ async function freshConversationPage() {
 const midFlightPage = await freshConversationPage();
 const midFlightF = await midFlightPage.evaluate(async () => {
   const ids = () => [...document.querySelectorAll('#messageList .message')].map((node) => node.dataset.messageId);
+  // 夹具页面自己就预置了示例消息（preview-chat.html 里那条「本轮调用 N 个 Skill」）。
+  // 断言必须相对这份基线，写死条数会随夹具变化而误报（0.3.6 改夹具后就是这么变红的）。
+  const baseline = ids().length;
   const input = document.getElementById('promptInput');
   input.value = '途中来状态';
   document.getElementById('composer').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
@@ -256,15 +259,17 @@ const midFlightF = await midFlightPage.evaluate(async () => {
   // 宿主还没把这条消息落盘，却推了一次全量状态（例如历史列表刷新）
   window.__pushState(window.__base);
   await new Promise((resolve) => setTimeout(resolve, 250));
-  return { afterSubmit, afterState: ids() };
+  return { baseline, afterSubmit, afterState: ids() };
 });
 check('发送途中来了全量状态：气泡不闪掉（宿主还没收录时挂回列表）',
-  midFlightF.afterState.length === 2 && midFlightF.afterState[1].startsWith('optimistic-'),
-  `afterSubmit=${JSON.stringify(midFlightF.afterSubmit)} afterState=${JSON.stringify(midFlightF.afterState)}`);
+  midFlightF.afterState.length === midFlightF.baseline + 1
+  && midFlightF.afterState[midFlightF.afterState.length - 1].startsWith('optimistic-'),
+  `baseline=${midFlightF.baseline} afterSubmit=${JSON.stringify(midFlightF.afterSubmit)} afterState=${JSON.stringify(midFlightF.afterState)}`);
 
 const storedPage = await freshConversationPage();
 const storedF = await storedPage.evaluate(async () => {
   const ids = () => [...document.querySelectorAll('#messageList .message')].map((node) => node.dataset.messageId);
+  const baseline = ids().length;
   const input = document.getElementById('promptInput');
   input.value = '已收录';
   document.getElementById('composer').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
@@ -277,14 +282,18 @@ const storedF = await storedPage.evaluate(async () => {
   await new Promise((resolve) => setTimeout(resolve, 250));
   const nodes = [...document.querySelectorAll('#messageList .message')];
   return {
+    baseline,
     afterSubmit,
     afterState: ids(),
     duplicated: nodes.filter((node) => (node.textContent || '').includes('已收录')).length,
   };
 });
 check('宿主已收录后：乐观气泡作废，不会出现两条相同消息',
-  storedF.afterState.length === 2 && storedF.afterState[1] === 'u1' && storedF.duplicated === 1,
-  `afterSubmit=${JSON.stringify(storedF.afterSubmit)} afterState=${JSON.stringify(storedF.afterState)} duplicated=${storedF.duplicated}`);
+  storedF.afterState.length === storedF.baseline + 1
+  && storedF.afterState.includes('u1')
+  && !storedF.afterState.some((id) => id.startsWith('optimistic-'))
+  && storedF.duplicated === 1,
+  `baseline=${storedF.baseline} afterSubmit=${JSON.stringify(storedF.afterSubmit)} afterState=${JSON.stringify(storedF.afterState)} duplicated=${storedF.duplicated}`);
 
 await midFlightPage.close();
 await storedPage.close();

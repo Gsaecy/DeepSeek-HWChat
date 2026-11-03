@@ -1012,9 +1012,13 @@ const DICTIONARY: Record<string, Entry> = {
 
   // API 客户端错误
   'api.noKey': { zh: '尚未配置 API Key。请打开设置完成配置。', en: 'No API key configured. Open settings to finish setup.' },
-  'api.timeout': { zh: '请求超时（{seconds} 秒）。', en: 'Request timed out ({seconds}s).' },
+  'api.timeout': { zh: '请求超时：连续 {seconds} 秒没有收到任何数据。服务端可能只是还没开始输出，重试通常就能继续。', en: 'Request timed out: no data received for {seconds} seconds. The service may simply not have started replying yet; retrying usually continues.' },
   'api.connectFailed': { zh: '无法连接到接口：{error}', en: 'Could not reach the endpoint: {error}' },
   'api.requestFailed': { zh: '接口请求失败（{status}）：{detail}', en: 'Endpoint request failed ({status}): {detail}' },
+  'api.transientHint': {
+    zh: '（这是服务端临时过载，HWChat 已自动重试仍不成功；稍后再发一次通常就能过，也可以在设置里换一个模型或接口。）',
+    en: ' (Temporary server overload — HWChat retried automatically and still failed. Sending again usually works; you can also switch model or endpoint in settings.)',
+  },
   'api.noStream': { zh: '接口没有返回可读取的数据流。', en: 'The endpoint returned no readable stream.' },
   'api.noKeyForModels': { zh: '尚未配置 API Key，无法获取模型列表。', en: 'No API key configured, so the model list cannot be fetched.' },
   'api.modelListTimeout': { zh: '获取模型列表超时（{seconds} 秒）。', en: 'Timed out fetching the model list ({seconds}s).' },

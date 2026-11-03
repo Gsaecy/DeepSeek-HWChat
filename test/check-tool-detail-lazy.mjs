@@ -173,8 +173,11 @@ if (!playwrightRoot || !chromium) {
     check('折叠状态下工具正文完全不在 DOM 里',
       out.collapsed.blocks === 0,
       `600 个工具步骤，实测 ${out.collapsed.blocks} 个正文块（>0 说明又回到「先建后藏」）`);
-    check('每条消息的节点数降到 70 以下',
-      out.collapsed.perMessage < 70,
+    // 0.3.6 把整轮工具步骤收进一个 details.execution-fold 外壳，每条消息因此多出
+    // 几个节点（64 → 70.3）。这里守的是「折叠的正文没有建出来」，不是某个精确数字：
+    // 先建后藏的写法是 136，任何接近它的值都说明惰性渲染失效了。
+    check('每条消息的节点数远低于「先建后藏」（<76）',
+      out.collapsed.perMessage < 76,
       `实测 ${out.collapsed.perMessage} 节点/条（惰性渲染前是 136）`);
     check('展开后正文正确出现',
       out.expanded.blocks === 2 && out.expanded.hasOutput,

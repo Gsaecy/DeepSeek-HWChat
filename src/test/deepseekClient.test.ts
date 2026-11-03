@@ -288,3 +288,113 @@ test('parseModels：capabilities 里的 reasoning_efforts 也能读到', () => {
   assert.equal(models[0]?.reasoningSupport, 'configurable');
   assert.deepEqual(models[0]?.reasoningEfforts, ['low', 'high'], 'minimal 应落到 low');
 });
+
+/**
+ * 超时的语义：`requestTimeoutSeconds` 必须是「多久没收到数据」，不是「整条流最多活多久」。
+ *
+ * 真实故障（用户 2026-11-03 报告）：一步 8 个工具的 agent 回合跑完，最后一条回复是
+ * 「请求失败：请求超时（120 秒）」；紧接着再发「继续」又收到 503。前者不是网络断，
+ * 是这条流**总时长**超过 120 秒就被 abort —— 长回答 + 工具循环本来就要更久，
+ * 而数据一直在流。
+ */
+test('流式回复只要还有数据就继续，不会因为总时长超过 N 秒被掐断', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream({
+      async start(controller) {
+        // 每 200ms 一帧、共 6 帧：单帧间隔远小于 1 秒的超时，总时长 1.2 秒超过它。
+        for (let index = 0; index < 6; index += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          controller.enqueue(encoder.encode(`data: {"choices":[{"delta":{"content":"x${index}"},"finish_reason":null}]}\n\n`));
+        }
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }) as typeof fetch;
+
+  try {
+    const client = new DeepSeekClient(async () => 'test-key');
+    const result = await client.streamChat({ ...settings, requestTimeoutSeconds: 1 }, [{ role: 'user', content: 'hi' }], { onDelta: () => undefined });
+    assert.equal(result.content, 'x0x1x2x3x4x5');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('真的卡住（连续 N 秒一个字节都没有）仍然超时', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"开头"}}]}\n\n'));
+        // 之后再不给任何数据，也不关流。
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }) as typeof fetch;
+
+  try {
+    const client = new DeepSeekClient(async () => 'test-key');
+    await assert.rejects(
+      client.streamChat({ ...settings, requestTimeoutSeconds: 1 }, [{ role: 'user', content: 'hi' }], { onDelta: () => undefined }),
+      /超时/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('503 这类服务端过载会自动重试，而不是把整轮直接判失败', async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = (async () => {
+    attempts += 1;
+    if (attempts <= 2) {
+      // DeepSeek 真实返回形状：503 + request_id；带 Retry-After 时不浪费等待时间。
+      return new Response(JSON.stringify({
+        error: { message: 'Service is too busy. We advise users to temporarily switch to alternative LLM API service providers.', type: 'service_unavailable' },
+      }), { status: 503, headers: { 'content-type': 'application/json', 'retry-after': '0' } });
+    }
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }) as typeof fetch;
+
+  try {
+    const client = new DeepSeekClient(async () => 'test-key');
+    const result = await client.streamChat(settings, [{ role: 'user', content: 'hi' }], { onDelta: () => undefined });
+    assert.equal(result.content, 'ok');
+    assert.equal(attempts, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('401 / 400 这类请求本身有问题的不重试（重试只会白花钱）', async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = (async () => {
+    attempts += 1;
+    return new Response(JSON.stringify({ error: { message: 'Authentication Fails' } }), {
+      status: 401, headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    const client = new DeepSeekClient(async () => 'test-key');
+    await assert.rejects(
+      client.streamChat(settings, [{ role: 'user', content: 'hi' }], { onDelta: () => undefined }),
+      /401/,
+    );
+    assert.equal(attempts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
