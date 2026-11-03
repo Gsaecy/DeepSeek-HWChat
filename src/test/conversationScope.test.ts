@@ -106,6 +106,43 @@ test('intent: unrelated requests do not grant permission', () => {
   assert.equal(hasGitWriteIntent(''), false);
 });
 
+/*
+ * 真实缺陷（2026-11-03，用户问「检查一下 git 的推送、拉取规则有没有阻塞」时实测）：
+ * `gitWriteOperation()` 把 pull / fetch / clone 也算写操作，而授权判定只认「提交 / 推送」，
+ * 于是「拉取一下最新代码」被判未授权，`git pull` 在授权闸就被拒——连 Autopilot 都跑不动，
+ * 与「拉取类不拦」的约定相反。
+ */
+test('intent: 拉取 / 同步 / 合并类请求同样算用户明确要求', () => {
+  for (const text of [
+    '拉取一下最新代码',
+    '把这个仓库更新到最新',
+    'git pull 一下',
+    '同步一下远端',
+    'fetch 一下 origin',
+    '把 main 合并进来',
+    'pull the latest',
+  ]) {
+    assert.ok(hasGitWriteIntent(text), `${text} 应被识别为要求 git 写操作`);
+  }
+});
+
+test('intent: 否定式的拉取请求不授予权限', () => {
+  for (const text of ['不要拉取', '先别 pull', '无需同步远端', 'do not pull']) {
+    assert.equal(hasGitWriteIntent(text), false, `${text} 不应授予 git 写权限`);
+  }
+});
+
+test('intent: 「合并」要有分支上下文才算，含糊的合并段落不算', () => {
+  assert.equal(hasGitWriteIntent('把这两个 JSON 配置合并一下'), false);
+  assert.equal(hasGitWriteIntent('合并这两个文件'), false);
+});
+
+test('intent: 只带「拦」字的提问也不授予写权限', () => {
+  // 旧写法只匹配「拦截」，于是这句话被当成授权，凭一句提问就放开了 commit / push。
+  assert.equal(hasGitWriteIntent('为什么要拦我的 git push？'), false);
+  assert.equal(hasGitWriteIntent('怎么老是被拦，git commit 干嘛不行'), false);
+});
+
 // ── 技能规则等同于用户要求 ────────────────────────────────────────────────
 
 test('skill: a commit rule in the skill text grants permission', () => {

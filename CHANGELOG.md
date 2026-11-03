@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.6
+
+本轮全部来自真实使用反馈，缺陷与数值都是实测出来的，不是推测。
+
+- **回答改成「我的理解 → 结果 → 需要你做的」，执行过程收进整轮一个折叠**（用户原话：「HWChat 现在对话显示不方便用户理解……执行过程只显示任务清单对应的折叠就行，折叠只显示执行了多少命令，修改了多少文件……需要执行的描述下面显示具体的路径、代码块等，而不是让用户去上面翻历史记录」）。
+  - **提示词**（新增 `src/agent/replyShapePrompt.ts`，接在系统提示词最前面）：每轮必须以 `### 我的理解` 开头，用一到三句复述用户要什么；随后直接给「结果」；**禁止**再写工具流水账或「处理过程 共 N 步」（界面自己折叠）；关键路径/命令必须落在结果或对应的待办条目里，不许写「见上文」。
+  - **收尾清单**（`followUpPrompt.ts`）：每条下面必须缩进两格给出 `- **位置**：<绝对路径>`、需要执行的命令（缩进围栏，带 `loc=` / `tool=`），以及 `- **预期**：…`，让用户不必往上翻历史。
+  - **渲染**（`media/chat.js`）：正文不再逐组插工具卡片 —— 整轮全部工具步骤收进末尾**一个** `details.execution-fold`，summary 只显示 `执行过程 · N 条命令 · M 个文件`（没有命令/文件时退化成「N 个步骤」）；展开后仍是原来的逐步卡片（正文仍延迟到展开才建）。旧消息重新渲染同样生效，不依赖存盘字段。
+  - **样式**：`### 我的理解` 带左侧强调色细线的小标题样式（`.is-understanding`），与「结果」区分开；折叠箭头展开时旋转 90°。
+  - 新增 `test/check-reply-shape.mjs` **15 项**（8 项源码契约 + 7 项真浏览器行为：整轮只有一个折叠、summary 的命令数与文件数、步骤收在折叠内、「我的理解」在第一块且带样式、无工具不出现折叠、历史重新渲染形状不变、无页面异常）。截图实测：`u1 → a1` 两条消息里，理解块、结果、带路径与命令块的待办、末尾 `执行过程 · 2 条命令 · 1 个文件` 全部按预期呈现。
+- **agent 输出时往上翻历史：消息闪动、画面「退回一点」、翻不动**（用户原话：「HWChat 对话框，在 agent 正在输出的时候，对话框里的对话消息会闪动、往上翻页也会闪动退回一点，没法一直往上翻对话历史记录」）。实测（headless Chrome + 真实 `media/chat.js`，120 条消息、每帧上滚 10px、同时每帧一个 delta）修复前 **1.5 秒内整窗 `replaceChildren` 54 次**、锚点消息单帧多出 **13px** 位移；修复后整窗重建 **1–2 次**、多出位移 **0px**。三个原因：
+  - `ensureWindowCoversViewport()` 的空洞判定写成「第一条的底部在视口上方」，而上下 overscan 一存在它就**永远为真**，于是每次滚动都判定「有空洞」并整窗重建。改成真正的「整窗都跑到视口外」：`lastRect.bottom < viewportRect.top` 或 `firstRect.top > viewportRect.bottom`。
+  - 顶部占位块高度随行高测量变化时没有补偿 `scrollTop`，视口内容整体位移（`overflow-anchor: none` 下必须手工补）。现在 `syncVirtualSpacers()` 按高度差补回滚动位置。
+  - `measureVirtualHeights()` 每次重建都把估算值向「当前窗口均值」折中一次，窗口里消息类型配比一变估算值就漂、所有未测量行高度跟着抖。现在只有样本差 25% 以上才重估（`ESTIMATE_REBASE_RATIO`）。
+  - 新增 `test/check-stream-scroll.mjs` **14 项**（4 项源码契约 + 10 项真浏览器行为：整窗重建次数、单帧位移、scrollTop 反向跳、滚动期间不留空白、跳跃滚动覆盖、贴底跟随、正文不被抹回）。
+- **宿主推旧的全量状态会把正在输出的正文删掉一截**：`state` 消息里的正文取自存档，落盘相对增量流有延迟，整份替换回去等于把已显示的字删掉再涨回来（实测正文 90 → 65 字符）。新增 `mergeIncomingMessages()`：流式中的消息以本地增量流为准，宿主那份更长时才采用；宿主还没收录、本地已在流式输出的那条继续留在末尾。
+- **git 拉取类命令被「写操作必须用户明确要求」的闸门挡住**（用户问「检查一下 git 的推送、拉取规则有没有阻塞」时实测）：`gitWriteOperation()` 把 `pull` / `fetch` / `clone` 也算写操作，而 `hasGitWriteIntent()` 只认「提交 / 推送」，于是「拉取一下最新代码」「把仓库更新到最新」「git pull 一下」「同步一下远端」全部判定未授权，`run_command` 在授权闸就被拒（「本次对话中用户没有要求提交或推送」）——连 Autopilot / 完全访问都跑不动，与「拉取类不拦」的既有约定相反。现在这些说法都算明确要求（`git pull` / `git fetch` / `git clone` 仍按 `standard` 分级：`每次询问` 逐次确认，其余三档自动执行；`push` 仍是 `severe`）。含糊的「合并」要求同时出现分支/仓库上下文，避免「合并两个 JSON 配置」被当成 git 授权。
+- **「为什么要拦我的 git push？」被当成授权**：提问守卫只匹配「拦截」两个字，单独一个「拦」漏判，于是用户把报错贴回来**提问**时反而放开了全部 git 写权限。守卫改为匹配 `拦|阻止|拒绝|挡|封`。
+
+- **`for /R` 被路径隔离当成越界路径**（原文：`命令被路径隔离策略拦截：路径 /R 不在当前工作区内`）。Windows 上 `/R` 是命令行开关，`resolve('/R')` 却会落到当前盘符根（`D:\R`），于是整条命令被拒；模型换几种写法重试仍被拒，连续 3 轮后触发「无进展」停机。
+  - 修法：`commandPathViolation` 新增 `platform` 参数（默认 `process.platform`）。只有在 Windows 上、且 token 命中显式开关名单（`/R`、`/S`、`/F`、`/IM:…`、`/R:3` 等）时才跳过路径校验；`/etc`、`/tmp`、`/opt` 不在名单里，照旧按越界路径拦截，名单不是「`/` 开头一律放行」。
+- **`replace_in_file` 在换行不一致时匹配不到，逼出了「整文件重写」这条危险退路**。两层原因，第二层是这次才查清的：
+  - LF 的 `oldText` 对 CRLF 文件必然 0 命中；
+  - 更关键的是**同一个文件里同时有 CRLF 与 LF**（上一轮把新插入的块写成 LF，实测 370 行 CRLF + 8 行 LF，即 `WallpaperListPages.cs` 的 8 行 LF）。那轮 `oldText` 共 8 行、前 2 行 LF、后 6 行 CRLF：精确匹配 0 次，「按文件主换行重写 oldText」也是 0 次。
+  - 修法：新增 `planReplacement()`。先精确匹配（逐字节保留），不中再**在归一化换行后的文本上定位、再映射回原文区间**，只替换该区间，其余字节（含原有混合换行）一律不动；`newText` 采用命中区间的换行风格，写回不再新增混合换行。`replaceAll`、唯一性规则、体积上限都没放宽，真正不存在的 `oldText` 仍然报错且不改文件。
+- **模型把这份文件交给 `powershell + GetEncoding(936)` 重写，UTF-8 中文被写坏 33 处**（会话记录里的原命令：`$enc=[System.Text.Encoding]::GetEncoding(936); $lines=[System.IO.File]::ReadAllLines($p,$enc); ... [System.IO.File]::WriteAllLines($p,$new,$enc)`）。这是上一轮 4 次 `replace_in_file` 失败后的「绕路」，代价是 GBK 往返丢掉不可映射字符，整份 14 KB 文件需要再写脚本修复。系统提示词新增一条硬规则：改文件只走 `write_file` / `replace_in_file`，不得用 `Set-Content`、`Out-File`、`Tee-Object`、重定向或任何编码往返重写工作区文件。
+- **`run_command` 的工具描述没写 shell**：Windows 上执行器走 `spawn(command, { shell: true })`（cmd.exe），描述里却没有任何说明，模型于是写出 `… 2>&1 | Select-Object -Last 40`，0.1 秒返回 255，浪费一轮。描述现在带上真实 shell（Windows 为 `cmd.exe`，其它平台为 `/bin/sh`），并点明 cmd.exe 不认识 `Select-Object` 一类 PowerShell 命令。
+
+新增用例 15 条，全部通过：`src/test/commandPaths.test.ts` 3 条（开关放行 / 名单不是一刀切 / 只在 Windows 生效）；`src/test/toolExecutor.test.ts` 6 条（CRLF 文件用 LF 的 `oldText`、LF 文件用 CRLF 的 `oldText` 且写回保持文件原换行；**混合 CRLF+LF 文件跨混合区命中且其它行逐字节不变**；`replaceAll` 跨混合换行替换全部命中；真正缺失的 `oldText` 仍报错且不改文件；描述里写明实际 shell）；`src/test/conversationScope.test.ts` 5 条（拉取类授权 / 否定式拉取 / 含糊合并 / 只带「拦」字的提问）。新增两个浏览器级守门脚本：`test/check-stream-scroll.mjs` **14/14**、`test/check-reply-shape.mjs` **15/15**。
+
+全量：**897** 条单测、**867** 通过、28 条失败——这 28 条在本机 Windows 上全是 POSIX 环境假设（`cat` / `chmod` / `/Users/...` 路径 / 进程组），与干净 HEAD 的基线同一集合（基线 884 条、854 通过、同一批 28 条）。39 个 `check-*.mjs`：36 通过，3 个失败与基线完全相同（本机 CRLF 检出导致的正则不匹配，非功能缺陷）。
+
 ## 0.3.5
 
 - **推送的拦截补了一个漏判，「危险命令」的文案也不再自相矛盾**（起源是用户问「hwchat 现在的策略会拦住 git pull push 这些拉取和推送命令吗？」——为了回答这个问题，我把真实分级函数跑了一遍，顺手量出了这两处）。

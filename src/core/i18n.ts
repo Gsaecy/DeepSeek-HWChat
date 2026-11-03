@@ -398,6 +398,17 @@ const DICTIONARY: Record<string, Entry> = {
   'chat.secretKind.phoneNumber': { zh: '手机号', en: 'phone number' },
   'chat.toolStack': { zh: '处理过程 · 共 {count} 步', en: 'Process · {count} steps' },
   'chat.toolStackWithFiles': { zh: '处理过程 · 共 {count} 步，改动 {files} 个文件', en: 'Process · {count} steps, {files} files changed' },
+  /*
+   * 整轮执行过程只有一个折叠就够读（用户原话：「执行过程只显示任务清单对应的折叠就行，
+   * 折叠只显示执行了多少命令，修改了多少文件」）。三种组合分别给文案，
+   * 避免出现「执行过程 · 0 条命令 · 0 个文件」这种等于没说的一行。
+   */
+  'chat.executionFold': { zh: '执行过程 · {commands} 条命令 · {files} 个文件', en: 'Process · {commands} commands · {files} files' },
+  'chat.executionFoldCommandsOnly': { zh: '执行过程 · {commands} 条命令', en: 'Process · {commands} commands' },
+  'chat.executionFoldFilesOnly': { zh: '执行过程 · {files} 个文件', en: 'Process · {files} files' },
+  'chat.executionFoldSteps': { zh: '执行过程 · {count} 个步骤', en: 'Process · {count} steps' },
+  /** 「我的理解」小标题：模型每轮回答的第一块，渲染时单独加样式。 */
+  'chat.understanding': { zh: '我的理解', en: 'What I understood' },
   'chat.toolFiles': { zh: '文件：{files}', en: 'Files: {files}' },
   'chat.toolInput': { zh: '提交内容', en: 'Input' },
   'chat.toolOutput': { zh: '返回结果', en: 'Result' },
@@ -786,7 +797,7 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.replaceInFile.description': { zh: '在一个工作区文本文件中进行精确文本替换，适合小范围修改。', en: 'Perform an exact text replacement in a workspace file; suited to small edits.' },
   'tool.renameFile.description': { zh: '重命名或移动工作区内的单个文件。', en: 'Rename or move a single file inside the workspace.' },
   'tool.deleteFile.description': { zh: '将工作区内的单个文件移到系统废纸篓。不能删除目录。', en: 'Move a single workspace file to the system trash. Directories cannot be deleted.' },
-  'tool.runCommand.description': { zh: '在本次对话所属项目里运行命令（cwd 缺省为该项目的根目录），返回截断后的输出。不得借此访问工作区外路径。git 写操作（add/commit/push 等）只有在用户明确要求或已启用技能规则要求时才允许。', en: 'Run a command inside this conversation\'s project (cwd defaults to that project root) and return truncated output. It must not be used to reach paths outside the workspace. git writes (add/commit/push, …) are allowed only when the user explicitly asked or an enabled skill rule requires it.' },
+  'tool.runCommand.description': { zh: '在本次对话所属项目里运行命令（cwd 缺省为该项目的根目录），返回截断后的输出。命令由 {shell} 执行，请使用该 shell 的语法：Windows 的 cmd.exe 不认识 Select-Object 这类 PowerShell 命令，需要时请写成 powershell -NoProfile -Command "…"。不得借此访问工作区外路径。git 写操作（add/commit/push 等）只有在用户明确要求或已启用技能规则要求时才允许。', en: 'Run a command inside this conversation\'s project (cwd defaults to that project root) and return truncated output. Commands run through {shell}; use that shell\'s syntax — cmd.exe on Windows does not understand PowerShell cmdlets such as Select-Object, so wrap those in powershell -Command "…". It must not be used to reach paths outside the workspace. git writes (add/commit/push, …) are allowed only when the user explicitly asked or an enabled skill rule requires it.' },
   // 「互联网参考」的三个联网工具（只在开关打开时下发）
   'tool.searchGithubRepos.description': { zh: '在 GitHub 上搜索与本任务相关的成熟开源项目（按星数排序），用于「先看别人怎么做」再动手。返回仓库名、地址、星数、语言、许可证与简介；简介只是线索，结论要读原文。', en: 'Search GitHub for mature open-source projects related to this task (sorted by stars) so you can see how others solved it before writing code. Returns repo name, URL, stars, language, license and description; the description is only a lead — read the source before concluding.' },
   'tool.searchGithubRepos.queryParam': { zh: '搜索关键词，建议用英文技术词；可用多个限定词', en: 'Search keywords; English technical terms work best, and you may combine several qualifiers' },

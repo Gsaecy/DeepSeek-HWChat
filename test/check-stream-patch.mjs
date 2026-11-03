@@ -376,7 +376,9 @@ const deltaCases = (CHAT_JS.match(/case 'streamDelta'[\s\S]*?break; \}/g) || [])
   + (CHAT_JS.match(/case 'skillUsage'[\s\S]*?break; \}/g) || []).join('\n');
 check('接线：三种流式消息都走 scheduleMessagePatch', (deltaCases.match(/scheduleMessagePatch\(message\.messageId\)/g) || []).length === 3, '有的分支还在走整段重建');
 check('接线：整段重建的调度函数已彻底移除', !/scheduleMessageRender/.test(CHAT_JS), '还留着旧的 scheduleMessageRender');
-check('接线：整段重建会清掉待办的局部更新', /pendingPatchId = null;\n\s+const viewport = elements\.messageViewport;/.test(CHAT_JS), 'renderMessages 没有清 pendingPatchId');
+// `\r?\n`：仓库在 Windows 上按 core.autocrlf 检出为 CRLF，只写 `\n` 会让这条断言在所有
+// Windows 机器上假失败（源码本来是对的）。
+check('接线：整段重建会清掉待办的局部更新', /pendingPatchId = null;\r?\n\s+const viewport = elements\.messageViewport;/.test(CHAT_JS), 'renderMessages 没有清 pendingPatchId');
 check('接线：messageComplete 先清待办再整段重建', /pendingPatchId = null; const index = state\.messages\.findIndex/.test(CHAT_JS), 'messageComplete 没清待办');
 check('接线：局部替换用 replaceWith，不是 replaceChildren', /current\.replaceWith\(next\)/.test(patchSource), '没找到就地替换');
 check('接线：局部替换不做整段清空', !/replaceChildren\(\)/.test(patchSource), 'patchMessage 里出现了 replaceChildren');

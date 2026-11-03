@@ -288,7 +288,7 @@ export class ToolExecutor implements vscode.Disposable {
       this.definition('delete_file', tt('tool.deleteFile.description'), {
         type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false,
       }),
-      this.definition('run_command', tt('tool.runCommand.description'), {
+      this.definition('run_command', tt('tool.runCommand.description', { shell: commandShellLabel() }), {
         type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeoutSeconds: { type: 'number' } }, required: ['command'], additionalProperties: false,
       }),
     ];
@@ -983,18 +983,17 @@ export class ToolExecutor implements vscode.Disposable {
       throw new Error(tt('tool.replaceTooLarge', { size: formatBytes(stat.size), max: formatBytes(settings.maxReadBytes) }));
     }
     const current = decodeText(await vscode.workspace.fs.readFile(resolved.uri));
-    const occurrences = current.split(oldText).length - 1;
+    const plan = planReplacement(current, oldText, newText);
+    const occurrences = plan.occurrences;
     if (occurrences < 1) throw new Error(tt('tool.oldTextMissing'));
     if (occurrences > 1 && !Boolean(args.replaceAll)) {
       throw new Error(tt('tool.oldTextMultiple', { count: occurrences }));
     }
-    const replacements = Boolean(args.replaceAll) ? occurrences : 1;
-    const estimatedBytes = Buffer.byteLength(current)
-      + replacements * (Buffer.byteLength(newText) - Buffer.byteLength(oldText));
+    const estimatedBytes = Buffer.byteLength(current) + plan.newBytes - plan.oldBytes;
     if (estimatedBytes > settings.maxReadBytes * 4) {
       throw new Error(tt('tool.replaceTooLargeAfter'));
     }
-    const next = Boolean(args.replaceAll) ? current.split(oldText).join(newText) : current.replace(oldText, newText);
+    const next = plan.apply(Boolean(args.replaceAll));
     const bump = versionBumpBlockReason(resolved, current, next, scope);
     if (bump) return bump;
     await vscode.workspace.fs.writeFile(resolved.uri, new TextEncoder().encode(next));
@@ -1611,6 +1610,142 @@ async function gitRepositoryRoot(cwd: string): Promise<string | undefined> {
   });
 }
 
+/**
+ * 文件里占多数的换行符。
+ *
+ * 真实缺陷（2026-11-03 实测）：Windows 上 CRLF 的 .cs 文件，模型按习惯传 LF 的
+ * `oldText`，`current.split(oldText)` 命中 0 次，`replace_in_file` 只能报「oldText
+ * 在文件中不存在」；换几段文本重试仍然 0 次，连续 3 轮后触发「无进展」停机。
+ * 同一次会话还把 LF 写进了 CRLF 文件（实测留下 8 行 LF），所以写入侧也要对齐。
+ */
+function dominantLineEnding(text: string): string {
+  let crlf = 0;
+  let lf = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.charCodeAt(index) !== 10) continue;
+    if (index > 0 && text.charCodeAt(index - 1) === 13) crlf += 1;
+    else lf += 1;
+  }
+  return crlf > lf ? '\r\n' : '\n';
+}
+
+/** 把任意换行写法（CRLF / CR / LF）统一成 `eol`。 */
+function withLineEnding(text: string, eol: string): string {
+  return text.replace(/\r\n?/g, '\n').replace(/\n/g, eol);
+}
+
+/** 某段文本里实际使用的换行符，没有换行时回落到文件主换行符。 */
+function lineEndingOf(region: string, fallback: string): string {
+  if (region.includes('\r\n')) return '\r\n';
+  if (region.includes('\n')) return '\n';
+  return fallback;
+}
+
+function findAll(haystack: string, needle: string): number[] {
+  const indexes: number[] = [];
+  if (!needle) return indexes;
+  for (let from = 0; ;) {
+    const at = haystack.indexOf(needle, from);
+    if (at < 0) return indexes;
+    indexes.push(at);
+    from = at + needle.length;
+  }
+}
+
+/**
+ * 归一化换行并记下每个归一化字符来自原文的哪个下标。
+ *
+ * `CRLF` 与孤立 `CR` 都归一成单个 `\n`，`normalized[i]` 对应 `original[map[i]]`。
+ */
+function normalizeLineEndings(text: string): { text: string; map: number[] } {
+  const chars: string[] = [];
+  const map: number[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (char === '\r') {
+      chars.push('\n');
+      map.push(index);
+      if (text[index + 1] === '\n') index += 1;
+      continue;
+    }
+    chars.push(char);
+    map.push(index);
+  }
+  return { text: chars.join(''), map };
+}
+
+export interface ReplacementPlan {
+  readonly occurrences: number;
+  /** 被替换文本（原始字节）的总字节数，用于写入后的体积上限判断。 */
+  readonly oldBytes: number;
+  readonly newBytes: number;
+  readonly apply: (replaceAll: boolean) => string;
+}
+
+/**
+ * 计算一次 `replace_in_file`。
+ *
+ * 1. 先精确匹配：命中就逐字节保留文件内容，只替换命中区间。
+ * 2. 不中再按「换行不敏感」匹配。真实缺陷（2026-11-03 实测）：同一个文件里同时存在
+ *    CRLF 与 LF（上一轮把新插入的块写成 LF，实测 370 行 CRLF + 8 行 LF），模型给的
+ *    `oldText` 只用一种换行，跨过混合区就永远匹配不到——那轮 `oldText` 共 8 行，
+ *    前 2 行 LF、后 6 行 CRLF，精确匹配 0 次、按文件主换行重写后仍是 0 次，
+ *    模型于是改用 `powershell + GetEncoding(936)` 重写整个文件，把 UTF-8 中文写坏。
+ *    这里在归一化文本上定位，再映射回原文区间，只替换该区间，其余字节（含原有
+ *    混合换行）一律不动。
+ * 3. `newText` 统一采用命中区间的换行风格，写回不会新增混合换行。
+ */
+export function planReplacement(current: string, oldText: string, newText: string): ReplacementPlan {
+  const fallbackEol = dominantLineEnding(current);
+  const exact = findAll(current, oldText);
+  if (exact.length > 0) {
+    const first = exact[0]!;
+    const eol = lineEndingOf(current.slice(first, first + oldText.length), fallbackEol);
+    const replacement = withLineEnding(newText, eol);
+    return {
+      occurrences: exact.length,
+      oldBytes: Buffer.byteLength(oldText) * exact.length,
+      newBytes: Buffer.byteLength(replacement) * exact.length,
+      apply: (replaceAll) => (replaceAll
+        ? current.split(oldText).join(replacement)
+        : spliceAt(current, [[first, first + oldText.length]], replacement)),
+    };
+  }
+
+  const haystack = normalizeLineEndings(current);
+  const needle = oldText.replace(/\r\n?/g, '\n');
+  const hits = findAll(haystack.text, needle);
+  if (hits.length === 0) {
+    return { occurrences: 0, oldBytes: 0, newBytes: 0, apply: () => current };
+  }
+  const ranges = hits.map((at): [number, number] => {
+    const start = haystack.map[at]!;
+    const last = haystack.map[at + needle.length - 1]!;
+    const width = current[last] === '\r' && current[last + 1] === '\n' ? 2 : 1;
+    return [start, last + width];
+  });
+  const first = ranges[0]!;
+  const eol = lineEndingOf(current.slice(first[0], first[1]), fallbackEol);
+  const replacement = withLineEnding(newText, eol);
+  const replacedBytes = ranges.reduce((sum, [start, end]) => sum + Buffer.byteLength(current.slice(start, end)), 0);
+  return {
+    occurrences: ranges.length,
+    oldBytes: replacedBytes,
+    newBytes: Buffer.byteLength(replacement) * ranges.length,
+    apply: (replaceAll) => spliceAt(current, replaceAll ? ranges : [first], replacement),
+  };
+}
+
+/** 按区间替换文本；从后往前拼，避免前面的替换影响后面的下标。 */
+function spliceAt(text: string, ranges: ReadonlyArray<readonly [number, number]>, replacement: string): string {
+  const ordered = [...ranges].sort((left, right) => right[0] - left[0]);
+  let result = text;
+  for (const [start, end] of ordered) {
+    result = `${result.slice(0, start)}${replacement}${result.slice(end)}`;
+  }
+  return result;
+}
+
 function decodeText(bytes: Uint8Array): string {
   if (bytes.includes(0)) throw new Error(tt('tool.binaryFile'));
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
@@ -1820,6 +1955,19 @@ export interface SpawnOptions {
   onSpawn?: (child: ChildProcess) => void;
   /** 无输出多少秒后开始提示「可能卡住」。默认 30 秒；测试里调小即可毫秒级验证。 */
   stallSeconds?: number;
+}
+
+/**
+ * `run_command` 实际经过的 shell。
+ *
+ * 真实缺陷（2026-11-03 实测）：工具描述里原来完全没写 shell，模型在 Windows 上按
+ * 习惯写 `dotnet build … 2>&1 | Select-Object -Last 40`，而执行器走的是
+ * `spawn(command, { shell: true })`，也就是 cmd.exe —— `Select-Object` 不是命令，
+ * 0.1 秒就返回 255。把真实 shell 写进描述，模型才有依据选语法。
+ */
+export function commandShellLabel(platform: string = process.platform, comSpec = process.env.ComSpec): string {
+  if (platform !== 'win32') return '/bin/sh';
+  return basename(comSpec || 'cmd.exe');
 }
 
 export function spawnCommand(

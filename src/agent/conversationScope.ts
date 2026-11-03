@@ -128,23 +128,43 @@ export function mentionsGitWrite(text: string): boolean {
  *
  * 只作为「允许」的判据之一，不作为禁止的判据：即使这里判 false，模型仍可能
  * 自己想提交，那正是要拦的情况。否定写法（不要提交 / don't commit）优先。
+ *
+ * 真实缺陷（2026-11-03 用户问「检查一下 git 的推送、拉取规则有没有阻塞」，实测出来的）：
+ *  `gitWriteOperation()` 把 pull / fetch / clone 也算写操作，而这里只认「提交 / 推送」，
+ *  于是「拉取一下最新代码」「把仓库更新到最新」「git pull 一下」全都判定未授权，
+ *  `run_command` 在授权闸就被拒（提示「本次对话中用户没有要求提交或推送」），
+ *  连 Autopilot / 完全访问都跑不动 —— 与「拉取类不拦」的既有约定相反。
+ *  同时 "为什么要拦我的 git push？" 这种提问因为只匹配「拦截」不匹配单独的「拦」，
+ *  被误判成授权。
  */
+const GIT_WRITE_REQUEST = /(?:提交|推送|打\s*tag|打标签|拉取|拉一下|拉下|同步(?:一下)?(?:远端|仓库)|更新(?:到|至)最新|变基|git\s+(?:add|commit|push|pull|fetch|clone|merge|rebase|stash)|\b(?:commit|push|pull|fetch|clone|merge|rebase|stash)\b)/i;
+/**
+ * 「合并」单独出现太含糊（合并两个配置文件也会这么说），所以要求同时出现分支/仓库类上下文。
+ * 例：「把 main 合并进来」算，「合并这两个 JSON 配置」不算。
+ */
+const GIT_MERGE_REQUEST = /合并/;
+const GIT_CONTEXT = /(?:分支|主线|主干|远端|仓库|origin|main|master|develop|release|代码)/i;
+const GIT_WRITE_REFUSAL = /(?:不要|不用|无需|别|禁止|不得|先不|暂不)\s*(?:提交|推送|拉取|拉一下|同步|合并|变基|commit|push|pull|fetch|clone|merge|rebase|stash)/i;
+
 export function hasGitWriteIntent(text: string): boolean {
   const value = text.trim().toLocaleLowerCase();
   if (!value) return false;
-  if (/(?:不要|不用|无需|别|禁止|不得|先不|暂不)\s*(?:提交|推送|commit|push)/i.test(value)) return false;
-  if (/(?:don'?t|do not|never|no need to|without)\s+(?:git\s+)?(?:commit|push|add|tag)/i.test(value)) return false;
+  if (GIT_WRITE_REFUSAL.test(value)) return false;
+  if (/(?:don'?t|do not|never|no need to|without)\s+(?:git\s+)?(?:commit|push|add|tag|pull|fetch|merge|rebase|stash)/i.test(value)) return false;
   /*
    * 「为什么会被拦住」这类**提问**不是授权请求。
    * 用户经常把守卫的报错原样贴回来问（报错里就带着 `git commit`），
    * 只看关键词就会把「解释一下为什么被拦」当成「帮我提交」，等于凭一句话放开写权限。
-   * 只认明确提到「被拦截 / 被阻止 / 被拒绝 / 被拦下」的句子，不碰「提交」本身。
+   * 只认明确提到「被拦截 / 被阻止 / 被拒绝 / 被拦下 / 被拦」的句子，不碰「提交」本身。
+   * `拦` 必须单独列出来：实测 "为什么要拦我的 git push？" 只带一个「拦」字，
+   * 旧写法要求「拦截」两个字，于是被当成授权。
    */
-  if (/(?:拦截|阻止|拒绝|拦下|拦掉|挡住)/.test(value)
+  if (/(?:拦|阻止|拒绝|挡|封)/.test(value)
     && /(?:为什么|为何|怎么|如何|是不是|是否|能否|什么原因|啥原因)/.test(value)) {
     return false;
   }
-  return /(?:提交|推送|打\s*tag|打标签|git\s+add|git\s+commit|git\s+push|\bcommit\b|\bpush\b)/i.test(value);
+  if (GIT_WRITE_REQUEST.test(value)) return true;
+  return GIT_MERGE_REQUEST.test(value) && GIT_CONTEXT.test(value);
 }
 
 /**

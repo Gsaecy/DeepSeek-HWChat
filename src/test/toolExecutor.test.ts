@@ -3,7 +3,7 @@ import { after, before, test } from 'node:test';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ToolExecutor, type ToolApprovalRequest } from '../agent/toolExecutor';
+import { ToolExecutor, commandShellLabel, type ToolApprovalRequest } from '../agent/toolExecutor';
 import { AuditLog } from '../agent/auditLog';
 import { ChatSettings, PermissionPreset, ToolCall, ToolExecutionResult } from '../core/types';
 import { PERMISSION_PRESET_PROFILES } from '../core/permissions';
@@ -495,4 +495,128 @@ test('桥接工具：工作区内的路径照常放行', async () => {
 
   assert.equal(outcome?.result.status, 'success', `实际：${outcome?.result.status} / ${outcome?.result.summary}`);
   assert.equal(getInvokeToolCalls().length, 1, '工作区内路径应正常调用一次');
+});
+
+
+// ── 4. CRLF 文件：oldText 用 LF 也必须命中（真实会话连续失败 3 轮）──────────
+// 2026-11-03 实测：Windows 上 CRLF 的 .cs 文件，模型按习惯传 LF 的 oldText，
+// replace_in_file 每次都报「oldText 在文件中不存在」，重试 3 轮后停机；同一轮
+// 还把 LF 写进了 CRLF 文件，留下 8 行混合换行。
+
+test('replace_in_file：CRLF 文件用 LF 的 oldText 也能命中，写回仍是 CRLF', async () => {
+  const file = join(rootB, 'crlf.cs');
+  await writeFile(file, 'line one\r\nline two\r\nline three\r\n', 'utf8');
+
+  const { result } = await run('replace_in_file', {
+    path: 'DeepSeek-HWChat/crlf.cs',
+    oldText: 'line one\nline two',
+    newText: 'line one\nline TWO',
+  }, { preset: 'autopilot' });
+
+  assert.equal(result.status, 'success', `实际：${result.status} / ${result.summary}`);
+  const text = await readFile(file, 'utf8');
+  assert.equal(text, 'line one\r\nline TWO\r\nline three\r\n');
+  assert.equal((text.match(/(?<!\r)\n/g) ?? []).length, 0, '不应把 LF 混进 CRLF 文件');
+});
+
+test('replace_in_file：LF 文件用 CRLF 的 oldText 也能命中，写回仍是 LF', async () => {
+  const file = join(rootB, 'lf.ts');
+  await writeFile(file, 'const a = 1;\nconst b = 2;\n', 'utf8');
+
+  const { result } = await run('replace_in_file', {
+    path: 'DeepSeek-HWChat/lf.ts',
+    oldText: 'const a = 1;\r\nconst b = 2;',
+    newText: 'const a = 1;\r\nconst b = 3;',
+  }, { preset: 'autopilot' });
+
+  assert.equal(result.status, 'success', `实际：${result.status} / ${result.summary}`);
+  const text = await readFile(file, 'utf8');
+  assert.equal(text, 'const a = 1;\nconst b = 3;\n');
+  assert.equal(text.includes('\r'), false, '不应把 CRLF 混进 LF 文件');
+});
+
+test('replace_in_file：真正不存在的 oldText 仍然报错，换行归一化不会误命中', async () => {
+  const file = join(rootB, 'missing.cs');
+  await writeFile(file, 'alpha\r\nbeta\r\n', 'utf8');
+
+  const { result } = await run('replace_in_file', {
+    path: 'DeepSeek-HWChat/missing.cs',
+    oldText: 'alpha\nnot-there',
+    newText: 'x',
+  }, { preset: 'autopilot' });
+
+  assert.equal(result.status, 'error', `实际：${result.status} / ${result.summary}`);
+  assert.equal(await readFile(file, 'utf8'), 'alpha\r\nbeta\r\n', '匹配失败不能改文件');
+});
+
+test('run_command 的工具描述写明真实 shell', () => {
+  const runCommand = executor
+    .definitions('agent', { internetReference: false })
+    .find((tool) => tool.function.name === 'run_command');
+  assert.ok(runCommand, '应下发 run_command');
+  assert.ok(
+    runCommand.function.description.includes(commandShellLabel()),
+    `描述里应写明实际 shell：${runCommand.function.description}`,
+  );
+});
+
+
+// ── 5. 混合换行文件：跨混合区也必须命中（真实会话在此处改用 PowerShell 写坏了文件）──
+// 2026-11-03 实测：WallpaperListPages.cs 里同时有 370 行 CRLF 与 8 行 LF（上一轮把
+// 新插入的块写成了 LF）。模型的 oldText 共 8 行，前 2 行 LF、后 6 行 CRLF，精确匹配
+// 0 次、按文件主换行重写后仍然 0 次，于是它改用 `powershell + GetEncoding(936)`
+// 重写整个文件，把 UTF-8 中文写坏了 33 处。这条用例钉住「跨混合区必须命中，且其余
+// 行一个字节都不动」。
+
+test('replace_in_file：文件同时含 CRLF 与 LF 时，跨混合区的 oldText 也能命中', async () => {
+  const file = join(rootB, 'mixed.cs');
+  // 前两块是 LF（上一轮插入的新代码），后面是 CRLF（文件原有内容）。
+  const original = 'block one\nblock two\n'
+    + 'keep A\r\n'
+    + '          Focusable = false,\r\n'
+    + '        };\n'
+    + '        ScrollViewer.SetCanContentScroll(this, false);\r\n'
+    + '        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;\r\n'
+    + '        Padding = new Thickness(0, 0, 16, 0);\r\n'
+    + '\r\n'
+    + '        _panel = new StackPanel\r\n'
+    + 'keep B\r\n';
+  await writeFile(file, original, 'utf8');
+
+  const { result } = await run('replace_in_file', {
+    path: 'DeepSeek-HWChat/mixed.cs',
+    // 模型给的是纯 LF 的 oldText，且跨越 LF 行与 CRLF 行。
+    oldText: '          Focusable = false,\n        };\n        ScrollViewer.SetCanContentScroll(this, false);\n        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;\n        Padding = new Thickness(0, 0, 16, 0);\n\n        _panel = new StackPanel',
+    newText: '          Focusable = false,\n        };\n        ScrollViewer.SetCanContentScroll(scroller, false);\n\n        _panel = new StackPanel',
+  }, { preset: 'autopilot' });
+
+  assert.equal(result.status, 'success', `实际：${result.status} / ${result.summary}`);
+  const text = await readFile(file, 'utf8');
+  assert.equal(
+    text,
+    'block one\nblock two\n'
+      + 'keep A\r\n'
+      + '          Focusable = false,\r\n'
+      + '        };\r\n'
+      + '        ScrollViewer.SetCanContentScroll(scroller, false);\r\n'
+      + '\r\n'
+      + '        _panel = new StackPanel\r\n'
+      + 'keep B\r\n',
+    '只应替换命中区间，其它行（含原有 LF 行）必须原样保留',
+  );
+});
+
+test('replace_in_file：replaceAll 跨混合换行时替换全部命中', async () => {
+  const file = join(rootB, 'mixed-all.cs');
+  await writeFile(file, 'x = 1;\r\ny = 2;\nx = 1;\nz = 3;\r\n', 'utf8');
+
+  const { result } = await run('replace_in_file', {
+    path: 'DeepSeek-HWChat/mixed-all.cs',
+    oldText: 'x = 1;',
+    newText: 'x = 9;',
+    replaceAll: true,
+  }, { preset: 'autopilot' });
+
+  assert.equal(result.status, 'success', `实际：${result.status} / ${result.summary}`);
+  assert.equal(await readFile(file, 'utf8'), 'x = 9;\r\ny = 2;\nx = 9;\nz = 3;\r\n');
 });

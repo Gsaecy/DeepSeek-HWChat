@@ -179,3 +179,39 @@ test('still accepts redirects and devices that are not the bare root', () => {
   assert.equal(commandPathViolation('ls "/Users/test/AI projects/DeepSeek-HWChat/src"', roots), undefined);
   assert.equal(commandPathViolation('date +%Y/%m/%d', roots), undefined);
 });
+
+// ── Windows 命令行开关不是路径（真实缺陷：for /R 被当成工作区外路径）─────────
+// 2026-11-03 实测：`for /R %f in (*.cs) do @echo %f` 被判成「路径 /R 不在当前
+// 工作区内」，模型换写法重试仍被拒，连续 3 轮后触发「无进展」停机。
+const winRoots = ['D:\\AI projects\\MaiKer-windows'];
+const winCwd = winRoots[0]!;
+
+test('accepts Windows command switches instead of treating /R as an outside path', () => {
+  for (const command of [
+    'for /R %f in (*.cs) do @echo %f',
+    'findstr /S /R /C:"HorizontalScrollBarVisibility" Views\\*.cs',
+    'taskkill /F /IM dotnet.exe',
+    'xcopy /E /I src dst',
+    'where /R . dotnet',
+    'dir /B *.cs',
+  ]) {
+    assert.equal(commandPathViolation(command, winRoots, winCwd, 'win32'), undefined, command);
+  }
+});
+
+test('a Windows switch list is not a blanket exemption for real root paths', () => {
+  for (const command of ['type /etc/passwd', 'cat /opt/secrets.txt', 'dir /tmp']) {
+    assert.match(
+      String(commandPathViolation(command, winRoots, winCwd, 'win32')),
+      /不在当前工作区内/,
+      command,
+    );
+  }
+});
+
+test('the switch exemption only applies on Windows', () => {
+  assert.match(
+    String(commandPathViolation('ls /R', roots, undefined, 'darwin')),
+    /不在当前工作区内/,
+  );
+});

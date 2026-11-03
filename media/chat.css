@@ -579,6 +579,18 @@ body.editor-open .message-viewport { overflow: hidden; }
 .message-content h3 { font-size: 14.5px; }
 .message-content h4 { font-size: 13.5px; }
 .message-content h5, .message-content h6 { font-size: 13px; color: var(--muted); }
+/*
+ * 「我的理解」：每轮回答的第一块（提示词里写死的形状）。
+ * 用户先要确认「它懂没懂我说的话」，所以给它一个和正文标题不同的样子：
+ * 左侧一条强调色细线 + 略小的字号，扫一眼就能和「结果」区分开。
+ */
+.message-content h1.is-understanding,
+.message-content h2.is-understanding,
+.message-content h3.is-understanding,
+.message-content h4.is-understanding {
+  margin: 0 0 8px; padding: 2px 0 2px 10px; border-left: 3px solid var(--accent, #4d9fec);
+  font-size: 13px; font-weight: 700; letter-spacing: .02em; color: var(--muted);
+}
 .message-content ul, .message-content ol { margin: 0 0 12px; padding-left: 22px; }
 .message-content ul { list-style: disc; }
 .message-content ul ul { list-style: circle; }
@@ -684,6 +696,21 @@ body.editor-open .message-viewport { overflow: hidden; }
 .message-skills-list small { font-size: 8px; }
 
 .tool-stack { margin: 0 0 16px; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; background: var(--vscode-textCodeBlock-background, var(--surface)); }
+/*
+ * 整轮执行过程的那一个折叠（`执行过程 · N 条命令 · M 个文件`）。
+ * 它包住整个 `.tool-stack`，所以自己只负责外框与那一行 summary，
+ * 里面每一步仍然是原来的 `.tool-execution` 卡片（展开后才建正文）。
+ */
+.execution-fold { margin: 12px 0 16px; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; background: var(--vscode-textCodeBlock-background, var(--surface)); }
+.execution-fold > summary { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 6px 10px; cursor: pointer; list-style: none; color: var(--muted); font-size: 11px; font-weight: 600; }
+.execution-fold > summary::-webkit-details-marker { display: none; }
+.execution-fold > summary:hover { background: var(--surface); }
+/* 展开时把箭头转下来，和原生 details 的观感一致 */
+.execution-fold > summary .ui-icon { transition: transform .12s ease; }
+.execution-fold[open] > summary .ui-icon { transform: rotate(90deg); }
+/* 展开后里面的 tool-stack 已经有自己的边框，去掉一圈重复的描边 */
+.execution-fold[open] > summary { border-bottom: 1px solid var(--border); }
+.execution-fold > .tool-stack { margin: 0; border: 0; border-radius: 0; }
 .tool-stack-heading { min-height: 30px; padding: 7px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; font-weight: 600; }
 .tool-execution { border-bottom: 1px solid var(--border); }
 .tool-execution:last-child { border-bottom: 0; }

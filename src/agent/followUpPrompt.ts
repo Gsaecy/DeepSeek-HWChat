@@ -17,6 +17,14 @@ export const FOLLOW_UP_PROMPT = [
   'Write every item as a plain ordered list entry: `1. **动作**`. Never prefix an item with a checkbox marker such as `[ ]` or `[x]` — the panel renders those brackets literally, and the user has explicitly asked to stop seeing them.',
   // 每条的写法：做什么、在哪做、预期结果。
   'Each item must say what to do, where to do it, and what result to expect, so the user never has to ask "where" or "which one".',
+  /*
+   * 真正要用户动手的那一步，细节必须**挂在这一条下面**（用户原话：「需要每条需要执行的
+   * 描述下面显示具体的路径、代码块等，而不是让用户去上面翻历史记录」）。
+   * 缩进两格的子项在面板里会排在这条下面，命令行用缩进的围栏块，复制按钮照常出现。
+   */
+  'Under each item, indent two spaces and put the concrete details there instead of in the prose above: `  - **位置**：<exact absolute path, window, or URL>` and, when the user must run something, an indented fenced command block (```bash / ```powershell with `loc=` and `tool=`), then `  - **预期**：<what they should see when it worked>`.',
+  // 一处一处写清楚，不要用「见上文」「同上」把用户推回去翻。
+  'Never write "see above", "as shown earlier", or "the file mentioned before" — repeat the exact path or command inside the item that needs it.',
   // 没有待办就不要硬写一节，避免空壳清单。
   'Skip the section entirely when there is nothing for the user to do.',
 ].join(' ');

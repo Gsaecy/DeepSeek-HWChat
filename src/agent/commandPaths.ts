@@ -37,11 +37,38 @@ const HARMLESS_DEVICE_PATH = /^\/(?:dev\/(?:null|stdout|stderr|tty|fd\/\d+)|proc
  * 这类直接指向根的写法会漏检——根目录永远不可能落在工作区根之内，必须单独拦截。
  */
 const BARE_ROOT_PATH = /(^|[\s'"=(,;:])\/(?=$|[\s'"`;&|<>(){}])/;
+/**
+ * Windows 命令行开关（`for /R`、`findstr /S`、`taskkill /F /IM`、`xcopy /E`…）。
+ *
+ * 真实缺陷（2026-11-03 实测）：Windows 上执行 `for /R %f in (*.cs) do @echo %f` 时，
+ * `/R` 被 BARE_ABSOLUTE_PATH 当成绝对路径，`resolve('/R')` 落到当前盘符根（`D:\R`），
+ * 整条命令被判成「访问工作区外路径」直接拒绝；模型换写法重试仍被拒，连续 3 轮后
+ * 触发「无进展」停机，原话是 `命令被路径隔离策略拦截：路径 /R 不在当前工作区内`。
+ *
+ * 只放行这份显式名单，而不是把 `/` 开头一律放行：`/etc`、`/tmp`、`/opt` 这些真实
+ * 根目录名不在名单里，仍然照常按越界路径拦截。
+ */
+const WINDOWS_COMMAND_SWITCHES = new Set([
+  '/?', '/help', '/wait', '/nobreak',
+  '/a', '/b', '/c', '/d', '/e', '/f', '/g', '/h', '/i', '/j', '/k', '/l', '/m',
+  '/n', '/o', '/p', '/q', '/r', '/s', '/t', '/u', '/v', '/w', '/x', '/y', '/z',
+  '/im', '/pid', '/fi', '/fo', '/nh', '/njh', '/njs', '/nc', '/ns', '/np',
+  '/nfl', '/ndl', '/log', '/tee', '/xo', '/xc', '/xn', '/xd', '/xf', '/xl',
+]);
+
+/** 命令开关形如 `/R`、`/R:3`、`/IM:notepad.exe`：取冒号前那段比对名单。 */
+function isWindowsCommandSwitch(token: string, platform: string): boolean {
+  if (platform !== 'win32') return false;
+  const colon = token.indexOf(':');
+  const head = (colon >= 0 ? token.slice(0, colon) : token).toLowerCase();
+  return WINDOWS_COMMAND_SWITCHES.has(head);
+}
 
 export function commandPathViolation(
   rawCommand: string,
   roots: readonly string[],
   cwd?: string,
+  platform: string = process.platform,
 ): string | undefined {
   // 先把 sed / grep 的“模式/脚本”参数遮掉：`sed -n '/a/,/^b/p' file.txt` 里的
   // `/"name"/,/displayName/p` 会被 BARE_ABSOLUTE_PATH 当成绝对路径拒绝，而它根本
@@ -86,6 +113,7 @@ export function commandPathViolation(
   for (const raw of candidates) {
     const candidate = raw.replace(/[.,;:)\]]+$/, '');
     if (!candidate) continue;
+    if (isWindowsCommandSwitch(candidate, platform)) continue;
     if (HARMLESS_DEVICE_PATH.test(candidate.replaceAll('\\', '/'))) continue;
     const resolved = resolve(candidate);
     if (!roots.some((root) => isPathWithin(root, resolved))) {

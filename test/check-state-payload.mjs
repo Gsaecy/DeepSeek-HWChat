@@ -39,7 +39,9 @@ check('宿主侧：webview 重建后代次 +1 且清空签名（强制全量）'
   /this\.webviewGeneration \+= 1;[\s\S]{0,120}this\.pushedMessagesKey = '';/.test(PANEL),
   'resolveWebviewView 里必须重置，否则新建的 webview 会收到「不变」而空着');
 check('前端侧：messagesUnchanged 时保留已有列表',
-  /if \(incoming\.messagesUnchanged !== true\) state\.messages = incoming\.messages \|\| \[\];/.test(CHAT_JS),
+  // 允许实现把消息列表交给合并函数（保住本地正在流式的正文），但「messagesUnchanged 时不动列表」
+  // 这个前提必须还在：直接赋值 `incoming.messages` 会把列表当成清空。
+  /if \(incoming\.messagesUnchanged !== true\) state\.messages = (incoming\.messages \|\| \[\]|mergeIncomingMessages\([^;]*\));/.test(CHAT_JS),
   'chat.js 不许把 messagesUnchanged 当成「清空」');
 check('签名函数是独立纯模块（可单测）',
   SIGNATURE.includes('export function messagesSignatureKey('),

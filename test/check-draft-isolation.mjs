@@ -41,6 +41,9 @@ const submitSource = extractBlock(CHAT_JS, '\n  function submit(');
 // `case 'state'` 里会调用步数归一函数（0 不再表示「不限制」），必须一起抽出来，
 // 否则这段真代码在桩环境里会以 ReferenceError 直接崩掉。
 const normalizeStepValueSource = extractBlock(CHAT_JS, '\n  function normalizeStepValue(');
+// 全量状态并入消息列表时要保住本地正在流式的正文（宿主存档可能更旧），
+// 这个辅助函数同样要抽出来，桩环境才知道它是什么。
+const mergeIncomingMessagesSource = extractBlock(CHAT_JS, '\n  function mergeIncomingMessages(');
 
 // `case 'state': { ... }` 去掉前缀 `case 'state': ` 就是一段合法块语句；
 // 收尾的 `break;` 在函数体里非法，必须去掉（已核对：块内只有这一处 break）。
@@ -95,7 +98,7 @@ function receiveState(state, message) {
     // 这段是真代码，用到哪些模块级函数/变量就得在这里补上，否则桩环境直接 ReferenceError。
     // `messageListSignature` 只用来判断「要不要重画」，桩里给个常量即可；
     // `fileRootsSignature` / `fileReferenceResolution` 是文件引用核实缓存（根变即作废）。
-    `${draftKeySource}\n${saveDraftSource}\n${restoreDraftSource}\n${normalizeStepValueSource}\n`
+    `${draftKeySource}\n${saveDraftSource}\n${restoreDraftSource}\n${normalizeStepValueSource}\n${mergeIncomingMessagesSource}\n`
     + `const autoResize = () => {};\n`
     + `const messageListSignature = () => 'sig';\n`
     + `let renderedMessageSignature = '';\n`

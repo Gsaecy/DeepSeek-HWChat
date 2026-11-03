@@ -22,6 +22,7 @@ import { droppedCompletedTodos, hasTodoReplanIntent, splitTodoScope } from '../a
 import { COMMAND_BLOCK_PROMPT } from '../agent/commandPrompt';
 import { NOTICE_PROMPT } from '../agent/noticePrompt';
 import { FOLLOW_UP_PROMPT } from '../agent/followUpPrompt';
+import { REPLY_SHAPE_PROMPT } from '../agent/replyShapePrompt';
 import { userTextOfTaskRequest } from '../agent/taskQueue';
 import { grantFromFollowUp } from '../agent/conversationScope';
 import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChangedFiles } from '../agent/workspacePaths';
@@ -3973,10 +3974,17 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       'You are HWChat, a precise coding agent running inside VS Code.',
       // 模式说明由 core/modes 统一生成：名字与界面下拉一致，并声明以本轮为准。
       modePromptInstruction(mode),
+      // 回答的形状（我的理解 → 结果 → 需要你做的）必须排在很前面：它决定用户
+      // 第一眼看到什么，排在后面的长段规则容易被模型当成可选项。
+      REPLY_SHAPE_PROMPT,
       'Use tools for claims about the current workspace. Inspect relevant files before proposing or applying edits.',
       'Messages labeled as task-tree updates are authoritative runtime guidance. Related updates modify the current branch; queued branch messages begin only after the prior branch completes. Preserve completed work that remains valid and do not execute skipped stale steps.',
       'For workspace navigation, prefer the native list_workspace_roots, list_directory, list_files, read_file, open_file, and get_diagnostics tools. When the user asks to open a workspace file, call open_file directly. Do not use a terminal, code CLI, external Copilot file tools, or third-party preview tools when a native HWChat tool can perform the action.',
       'Use VS Code preview and extension tools only for capabilities not already covered by native HWChat tools, such as a webpage preview or a temporary diff.',
+      // 真实事故（2026-11-03）：replace_in_file 未命中后，模型改用
+      // `powershell -Command "$enc=GetEncoding(936); ... WriteAllLines(...,$enc)"`
+      // 重写整个文件，把 UTF-8 中文写坏 33 处。这条规则要求改文件只走原生工具。
+      'Never rewrite or re-encode workspace files through a shell command (Set-Content, Out-File, Tee-Object, redirection, or an encoding round-trip). Those silently change encoding and line endings; use write_file or replace_in_file, which keep UTF-8 and the file\'s existing line endings.',
       // 任务清单：多步任务必须先列清单再动手，面板才会跟着走。
       TODO_LIST_PROMPT,
       'Never claim a file changed or a command passed unless the corresponding tool returned success.',

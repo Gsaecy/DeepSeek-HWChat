@@ -689,6 +689,33 @@
     if (ok) setTimeout(() => { if (button.isConnected) button.textContent = idleLabel; }, 1_200);
   }
 
+  /**
+   * 把宿主推来的消息列表并入本地正在流式输出的那一条。
+   *
+   * 真实缺陷（2026-11-03 用户报「agent 输出时对话框里的消息会闪动」）：宿主推全量状态时，
+   * 最后一条的正文取自存档，而落盘相对增量流有延迟。整份替换回去就等于把已经显示出来的
+   * 字**删掉一截再涨回来**（实测正文 90 → 65 字符，画面上就是气泡里的字往回缩一下）。
+   *
+   * 规则：流式中的消息以本地增量流为准，除非宿主给的那份更长（流修复 / 补发时宿主才是对的）；
+   * 宿主还没收录、本地已经在流式输出的那条继续留在末尾，免得它消失一帧再被下一份状态带回来。
+   */
+  function mergeIncomingMessages(incoming, local) {
+    const localById = new Map((local || []).map((item) => [item.id, item]));
+    const merged = (incoming || []).map((message) => {
+      const current = localById.get(message.id);
+      if (!current || current.status !== 'streaming') return message;
+      const content = (current.content || '').length > (message.content || '').length ? current.content : message.content;
+      const reasoning = (current.reasoning || '').length > (message.reasoning || '').length ? current.reasoning : message.reasoning;
+      const toolExecutions = (current.toolExecutions?.length || 0) > (message.toolExecutions?.length || 0)
+        ? current.toolExecutions
+        : message.toolExecutions;
+      return { ...message, content, reasoning, toolExecutions, status: 'streaming' };
+    });
+    const incomingIds = new Set((incoming || []).map((item) => item.id));
+    const trailing = (local || []).filter((item) => !incomingIds.has(item.id) && item.status === 'streaming' && !item.optimistic);
+    return trailing.length ? [...merged, ...trailing] : merged;
+  }
+
   function renderAll(options) {
     const skipMessages = Boolean(options && options.skipMessages);
     renderHistory(); renderHeader(); renderSkills();
@@ -1218,6 +1245,14 @@
   const VIRTUAL_LIST_OVERSCAN = 8;
   /** 没量过的消息先按这个高度占位，量到真实高度后立刻改用它。 */
   const VIRTUAL_ROW_ESTIMATE = 240;
+  /**
+   * 样本均值与当前估算值相差多少比例时才重估。
+   *
+   * 每次重建都取平均会把「这一窗的消息类型配比」当成整体规律，估算值随之抖动，
+   * 所有未测量行的高度跟着变（顶部占位块一变，视口内容就位移）。实测 1.5 秒内
+   * 因此重建整窗 54 次，用户看到的就是翻页时闪动、还退回一点。
+   */
+  const ESTIMATE_REBASE_RATIO = 0.25;
 
   const virtualList = {
     active: false,
@@ -1325,7 +1360,19 @@
     viewport.scrollTop += (rect.top - viewportRect.top) - anchor.top;
   }
 
-  /** 量一次窗口内每条消息的真实高度，并据此修正估算值和上下占位块。 */
+  /**
+   * 量一次窗口内每条消息的真实高度，并据此修正估算值和上下占位块。
+   *
+   * 估算值只在「第一次量到」和「样本与估算差得足够远」时才更新。
+   *
+   * 真实缺陷（2026-11-03 用户报「agent 输出时往上翻页会闪动、还退回一点，翻不动历史」）：
+   * 旧实现对每一次重建都做 `estimate = (estimate + average) / 2`。窗口位置一换，
+   * 窗口里消息的类型配比就变（用户消息、助手消息、带工具块的），`average` 随之变，
+   * 于是估算值每一帧都在漂。估算值一变，`virtualOffsets()` 全表跟着变 —— 顶部占位块
+   * 高度变 = 视口里的内容整体位移，这正是「退回一点」；同时 `virtualWindowForVisible()`
+   * 算出新的窗口区间，`ensureWindowCoversViewport()` 又重建一次，形成「滚动 → 重建 →
+   * 估算漂移 → 再重建」的环（实测 1.5 秒内重建整窗 54 次）。
+   */
   function measureVirtualHeights() {
     const nodes = renderedMessageNodes();
     if (!nodes.length) return;
@@ -1343,22 +1390,43 @@
     if (average > 0) {
       // 第一次量到的高度就是最好的起点：以前拿 240px 去折中，估算值要好几轮才收敛，
       // 而每一轮收敛都会让滚动条位置和「跳转后的落点」偏一截（实测空出 6,000px 的白）。
-      if (!virtualList.sampled) virtualList.estimate = Math.round(average);
-      else virtualList.estimate = Math.round((virtualList.estimate + average) / 2);
-      virtualList.sampled = true;
+      if (!virtualList.sampled) {
+        virtualList.estimate = Math.round(average);
+        virtualList.sampled = true;
+      } else if (Math.abs(average - virtualList.estimate) > virtualList.estimate * ESTIMATE_REBASE_RATIO) {
+        // 只有样本真的换了一批内容（差 25% 以上）才重估；否则一律不动，
+        // 免得每次滚动都让所有未测量行的高度跟着抖。
+        virtualList.estimate = Math.round(average);
+      }
     }
     syncVirtualSpacers();
   }
 
-  /** 按最新高度重算上下占位块（追加、测量之后都要调）。 */
-  function syncVirtualSpacers() {
+  /**
+   * 按最新高度重算上下占位块（追加、测量之后都要调）。
+   *
+   * 顶部占位块高度一变，视口里正在看的内容就整体上下移动同样的距离。这里把这段
+   * 位移补回 `scrollTop`，用户的阅读位置才不会「退回一点」。这就是 `overflow-anchor: none`
+   * 下必须手工做的等价物（样式里为了换窗口时可控已关掉浏览器自带的锚定）。
+   *
+   * `compensate: false` 用于「本来就要贴底 / 本来就要跳到某处」的调用点：
+   * 那时位置由调用方决定，不需要保留旧位置。
+   */
+  function syncVirtualSpacers(options = {}) {
     if (!virtualList.active) return;
     const offsets = virtualOffsets();
     const total = offsets[offsets.length - 1];
     const top = elements.messageList.querySelector('[data-spacer="top"]');
     const bottom = elements.messageList.querySelector('[data-spacer="bottom"]');
-    if (top) top.style.height = `${Math.max(0, Math.round(offsets[virtualList.start] || 0))}px`;
+    const previousTopHeight = top ? parseFloat(top.style.height) || 0 : 0;
+    const nextTopHeight = Math.max(0, Math.round(offsets[virtualList.start] || 0));
+    if (top) top.style.height = `${nextTopHeight}px`;
     if (bottom) bottom.style.height = `${Math.max(0, Math.round(total - (offsets[virtualList.end] || 0)))}px`;
+    if (options.compensate !== false && nextTopHeight !== previousTopHeight) {
+      const viewport = elements.messageViewport;
+      const limit = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      viewport.scrollTop = Math.min(limit, Math.max(0, viewport.scrollTop + (nextTopHeight - previousTopHeight)));
+    }
   }
 
   /**
@@ -1446,6 +1514,10 @@
    * 跳跃式滚动（拖滚动条、PageUp、Ctrl+End）之后，窗口可能整段落在视口之外，
    * 这时窗口边缘会出现一块空白。用「当前 scrollTop 对应的内容坐标」重新开窗，
    * 直到视口被盖住（估算值收敛后通常一次就够）。
+   *
+   * 这里换窗**不动用户看到的内容**：换完先按换窗前的锚点对回去。旧实现没有这一步，
+   * 而占位块高度会随行高测量一起变，于是每换一次窗画面就挪一下 —— 用户在上面翻历史、
+   * agent 在下面流式输出时，这个位移叠加成连续的抖动。
    */
   function ensureWindowCoversViewport() {
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -1455,12 +1527,24 @@
       const viewportRect = viewport.getBoundingClientRect();
       const firstRect = nodes[0].getBoundingClientRect();
       const lastRect = nodes[nodes.length - 1].getBoundingClientRect();
-      const gapTop = firstRect.bottom < viewportRect.top;
-      const gapBottom = lastRect.top > viewportRect.bottom;
+      /*
+       * 「视口里没有内容」的判定只能是**整窗都跑到视口外面**：
+       *   · 最后一条的底部还在视口上方 → 渲染的全在上面（视口下方是空白）
+       *   · 第一条的顶部已经在视口下方 → 渲染的全在下面（视口上方是空白）
+       *
+       * 旧实现写的是 `firstRect.bottom < viewportRect.top` 与
+       * `lastRect.top > viewportRect.bottom` —— 那问的是「第一条的底部是否在视口上方」，
+       * 也就是**上下 overscan 存在时永远为真**。于是每次滚动都判定「有空洞」→
+       * 整窗重建（实测 1.5 秒 54 次，用户看到 agent 输出时翻历史一直闪）。
+       */
+      const gapTop = lastRect.bottom < viewportRect.top;
+      const gapBottom = firstRect.top > viewportRect.bottom;
       if (!gapTop && !gapBottom) return;
       const target = virtualWindowForVisible();
       if (target.start === virtualList.start && target.end === virtualList.end) return;
+      const anchor = captureScrollAnchor();
       buildMessageWindow(target.start, target.end);
+      restoreScrollAnchor(anchor);
     }
   }
 
@@ -2882,11 +2966,26 @@
     const text = message.content || '';
     const idleStatusText = message.status === 'queued' ? t('chat.queuedWaiting') : message.status === 'streaming' ? t('chat.continuing') : '';
     const groups = groupToolsByOffset(tools, text.length);
+    /*
+     * 执行过程不再插在正文中间：模型说的「我的理解 / 结果」连在一起读，
+     * 整轮的工具步骤收进**末尾一个**折叠（`执行过程 · N 条命令 · M 个文件`）。
+     *
+     * 以前每个分组一段 `tool-stack`，20 步任务就会在正文里插七八个折叠块，
+     * 用户读结果时得在这些块之间来回跳 —— 这正是「对话显示不方便用户理解」的来源。
+     * 顺序仍然是「正文在前、执行过程在后」，模型讲的话不会被工具卡片打断。
+     */
+    const collected = [];
+    const flushTools = () => {
+      if (!collected.length) return;
+      body.append(renderExecutionFold(collected.slice()));
+      collected.length = 0;
+    };
     if (!groups) {
-      if (tools.length) body.append(renderToolExecutions(tools));
       const content = document.createElement('div'); content.className = 'message-content';
       const blocks = appendRichText(content, text || idleStatusText, Boolean(text) && message.status === 'streaming');
+      markUnderstandingBlock(blocks);
       body.append(content);
+      if (tools.length) body.append(renderExecutionFold(tools));
       // 画的是占位文案（还没有正文）时记一笔：这一块不能走「原地追加」，
       // 否则第一句真正的话会被接在「正在继续处理…」后面。
       return { tailStart: 0, placeholder: !text, tail: { node: content, blocks } };
@@ -2899,7 +2998,7 @@
       const boundary = Math.max(cursor, Math.min(group.offset, text.length));
       const narration = appendNarration(body, text.slice(cursor, boundary));
       if (narration) { rendered = true; tailStart = cursor; tail = narration; }
-      body.append(renderToolExecutions(group.tools));
+      collected.push(...group.tools);
       cursor = boundary;
     }
     // 只有**最后**一段才可能是「还在写」的那一段，也只有它允许补全；
@@ -2909,8 +3008,10 @@
     if (!rendered) {
       const content = document.createElement('div'); content.className = 'message-content';
       const blocks = appendRichText(content, idleStatusText); body.append(content);
+      flushTools();
       return { tailStart: 0, placeholder: true, tail: { node: content, blocks } };
     }
+    flushTools();
     return { tailStart, tail };
   }
 
@@ -2928,7 +3029,25 @@
     if (!text) return null;
     const content = document.createElement('div'); content.className = 'message-content message-narration';
     const blocks = appendRichText(content, text, streaming);
+    markUnderstandingBlock(blocks);
     return { node: content, blocks, text };
+  }
+
+  /**
+   * 模型每轮回答的第一块是「我的理解」（提示词里写死的形状，见 src/agent/replyShapePrompt.ts）。
+   * 这里给它一个独立样式：用户先看到「它懂没懂我说的话」，再往下才是结果。
+   *
+   * 判定放在渲染层而不是让模型写特殊标记：模型只要照常写 `### 我的理解`，
+   * **历史消息**重新渲染时也会自动带上这个样式（用户明确要求历史消息也按新样式显示）。
+   */
+  const UNDERSTANDING_TITLE = /^(?:我的理解|我理解|理解需求|需求理解|what i understood|understanding|my understanding)$/i;
+
+  function markUnderstandingBlock(blocks) {
+    const first = blocks && blocks[0] && blocks[0].node;
+    if (!first || !/^H[1-6]$/.test(first.tagName)) return;
+    // 标题前可能带 emoji（🧭、✅…）：去掉开头的非字母字符再比对。
+    const text = (first.textContent || '').trim().replace(/^[^\p{L}]+/u, '').trim();
+    if (UNDERSTANDING_TITLE.test(text)) first.classList.add('is-understanding');
   }
 
   /**
@@ -3101,12 +3220,46 @@
     return Boolean(draggingAttachment);
   }
 
-  function renderToolExecutions(tools) {
+  /**
+   * 整轮执行过程只给**一个**折叠（用户原话：「执行过程只显示任务清单对应的折叠就行，
+   * 折叠只显示执行了多少命令，修改了多少文件，用户想看具体可以点击折叠展开」）。
+   *
+   * 为什么统计放在 summary 里：折叠状态下这是唯一一行字，必须让用户不用展开就知道
+   * 这一轮到底动了多少东西；具体每一步仍然在展开后的原有卡片里。
+   */
+  function executionStats(tools) {
+    const commands = tools.filter((tool) => tool.name === 'run_command').length;
+    const files = new Set(tools.flatMap((tool) => tool.changedFiles || [])).size;
+    return { commands, files };
+  }
+
+  function executionFoldSummaryText(tools) {
+    const { commands, files } = executionStats(tools);
+    if (commands && files) return t('chat.executionFold', { commands, files });
+    if (commands) return t('chat.executionFoldCommandsOnly', { commands });
+    if (files) return t('chat.executionFoldFilesOnly', { files });
+    return t('chat.executionFoldSteps', { count: tools.length });
+  }
+
+  function renderExecutionFold(tools) {
+    const details = document.createElement('details');
+    details.className = 'execution-fold';
+    // 与工具步骤同一套开合记忆：滚出窗口再滚回来、重发状态之后仍然是用户上次的样子。
+    details.dataset.detailKey = 'execution';
+    details.dataset.defaultOpen = '0';
+    const summary = document.createElement('summary');
+    summary.append(iconNode('chevronRight'), textElement('span', 'execution-fold-title', executionFoldSummaryText(tools)));
+    details.append(summary, renderToolExecutions(tools, { heading: false }));
+    return details;
+  }
+
+  function renderToolExecutions(tools, options = {}) {
     const section = document.createElement('section'); section.className = 'tool-stack';
     const changed = new Set(tools.flatMap((tool) => tool.changedFiles || []));
     // 一步就够读清楚时不再加标题：分段渲染后每组通常只有一两步，
     // 反复出现「处理过程 · 共 1 步」只会把版面撑长。
-    if (tools.length > 1) {
+    // 放进整轮折叠后，标题改由折叠的 summary 承担，这里不再重复一遍。
+    if (options.heading !== false && tools.length > 1) {
       section.append(textElement('div', 'tool-stack-heading', changed.size ? t('chat.toolStackWithFiles', { count: tools.length, files: changed.size }) : t('chat.toolStack', { count: tools.length })));
     }
     for (const [index, tool] of tools.entries()) {
@@ -4764,7 +4917,7 @@
          * 这时必须保留当前列表，绝不能当成「消息被清空」—— 否则每点一次置顶/归档，
          * 对话就会闪一下变成空白再重画。
          */
-        if (incoming.messagesUnchanged !== true) state.messages = incoming.messages || [];
+        if (incoming.messagesUnchanged !== true) state.messages = mergeIncomingMessages(incoming.messages || [], state.messages);
         state.hasMore = Boolean(incoming.hasMore);
         /*
          * 全量状态到达时，乐观气泡怎么处理？
