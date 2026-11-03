@@ -61,7 +61,7 @@ function describeCode(code: string, host: string): { stage: NetworkStage; hint: 
     return {
       stage: 'connect',
       // 本机端口被拒绝几乎只有一个原因：那个代理/服务没在跑。
-      hint: '目标端口拒绝连接。如果配置里填的是本机代理端口（如 127.0.0.1:7897），说明代理没有运行 —— 先启动代理，或把它关掉改走直连。',
+      hint: '目标端口拒绝连接。如果配置里填的是本机代理端口（如 127.0.0.1:8080），说明代理没有运行 —— 先启动代理，或把它关掉改走直连。',
       retryable: true,
     };
   }
@@ -103,7 +103,7 @@ function describeCode(code: string, host: string): { stage: NetworkStage; hint: 
   }
   if (['ERR_INVALID_PROXY', 'ERR_SOCKS_UNSUPPORTED', 'ERR_PROXY_CONNECT'].includes(key)) {
     // 代理地址写错、不支持 socks、代理拒绝建隧道：改配置才能解决，重试毫无意义。
-    return { stage: 'connect', hint: '代理配置有问题：检查 HWChat 设置里的「接口代理」（形如 http://127.0.0.1:7897，不支持 socks://）。', retryable: false };
+    return { stage: 'connect', hint: '代理配置有问题：检查 HWChat 设置里的「接口代理」（形如 http://127.0.0.1:8080，不支持 socks://）。', retryable: false };
   }
   if (['ERR_INVALID_URL', 'ERR_INVALID_PROTOCOL'].includes(key)) {
     return { stage: 'unknown', hint: '接口地址不合法：检查设置里的接口地址（需要以 http:// 或 https:// 开头）。', retryable: false };

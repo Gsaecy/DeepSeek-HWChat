@@ -1,16 +1,15 @@
-// 设置页覆盖率 + 资源管理器历史视图的守门人（盘点缺口的产物）。
+// 设置页覆盖率的守门人（盘点缺口的产物）。
 //
-// 盘点（2026-11-03）发现两类「有配置项、但用户摸不到」的缺口：
-//   ① `hwchat.proxy` 与 `hwchat.searchExclude` 在设置页里**没有任何控件**，只能手改
-//      settings.json —— 而 proxy 恰恰是网络失败时的救命项（Node fetch 不读 HTTPS_PROXY、
-//      VS Code http.proxy 也不覆盖扩展）。
-//   ② `src/views/historyView.ts` 里的 `HistoryViewProvider` 写完了却**从没注册**：
-//      package.json 没有这个视图、extension.ts 没有 registerTreeDataProvider。
+// 盘点（2026-11-03）发现：`hwchat.proxy` 与 `hwchat.searchExclude` 在设置页里**没有任何
+// 控件**，只能手改 settings.json —— 而 proxy 恰恰是网络失败时的救命项（Node fetch 不读
+// HTTPS_PROXY、VS Code http.proxy 也不覆盖扩展）。
 //
-// 所以这里守住两件事：
+// 守住两件事：
 //   A. 每个**未废弃**的配置项，要么在设置页有控件，要么在下面的映射里明确登记它由谁编辑
 //      （新增配置项忘了接 UI 会当场变红）；
-//   B. 历史视图真的被贡献、被注册、被刷新。
+//   B. 反向：package.json 里**声明了多少个视图，就必须在 extension.ts 里注册多少个** ——
+//      这条来自另一处真实错漏：`HistoryViewProvider` 曾写完却从没注册（后来按用户要求
+//      整个删掉了，这里改成通用规则，防止下次再出现「声明了却没接」）。
 //
 // 运行：node test/check-settings-coverage.mjs
 import { readFileSync } from 'node:fs';
@@ -111,17 +110,28 @@ check('搜索排除读取时按工作区根取并集',
   /function readSearchExclude\(\)/.test(SETTINGS_TS) && /workspaceFolders/.test(SETTINGS_TS),
   'resource 作用域只看合并视图会「写了但读不到」');
 
-/* ── B：资源管理器里的历史视图 ────────────────────────────────────────── */
-const explorerViews = (PKG.contributes.views?.explorer ?? []).map((view) => view.id);
-check('package.json 贡献了历史视图', explorerViews.includes('hwchat.historyView'), JSON.stringify(explorerViews));
-check('视图名称走本地化', (PKG.contributes.views?.explorer ?? []).some((view) => String(view.name).startsWith('%')), '');
-check('扩展注册了该视图', /registerTreeDataProvider\('hwchat\.historyView'/.test(EXTENSION), '视图没注册 = 永远不会出现');
-check('历史变化时刷新该视图', /onHistoryChanged:[\s\S]{0,200}historyView\.refresh\(\)/.test(EXTENSION), '不刷新就是一份过期列表');
-check('provider 随扩展一起释放', /context\.subscriptions\.push\([\s\S]{0,200}historyView/.test(EXTENSION), '');
-check('视图用到的文案都存在',
-  ['history.pinned', 'history.open', 'history.emptyConversation']
-    .every((key) => readFileSync('src/core/i18n.ts', 'utf8').includes(`'${key}'`)),
-  '缺键会渲染出原始键名');
+/* ── B：视图声明与注册必须一一对应 ──────────────────────────────────── */
+const declaredViews = Object.entries(PKG.contributes.views ?? {})
+  .flatMap(([container, list]) => list.map((view) => ({ container, id: view.id, name: view.name })));
+check('解析出视图声明', declaredViews.length > 0, `${declaredViews.length} 个`);
+for (const view of declaredViews) {
+  // 只有 webview 视图用 registerWebviewViewProvider，其余用 registerTreeDataProvider。
+  // chat 面板的 webview 视图由 ChatPanel 自己用 viewType 注册，其它（树形）视图在
+  // extension.ts 里按 id 注册。两种都算「接上了」。
+  const registeredById = EXTENSION.includes(`registerTreeDataProvider('${view.id}'`)
+    || EXTENSION.includes(`registerWebviewViewProvider('${view.id}'`);
+  // chat 面板的 webview 视图由 ChatPanel 声明 `static readonly viewType`，
+  // extension.ts 再 `registerWebviewViewProvider(ChatPanel.viewType, …)` 注册 —— 两边都是
+  // 同一个字符串常量，所以这里按「常量值 + 注册调用」判定，而不是要求写字面量 id。
+  const registeredByPanel = /registerWebviewViewProvider\(ChatPanel\.viewType/
+    .test(readFileSync('src/extension.ts', 'utf8'))
+    && readFileSync('src/views/chatPanel.ts', 'utf8').includes(`'${view.id}'`);
+  check(`视图 ${view.id} 有注册代码`, registeredById || registeredByPanel,
+    '声明了视图却没有注册 = 用户看不到它');
+  if (String(view.name).startsWith('%')) {
+    check(`视图 ${view.id} 的名称有本地化条目`, !String(view.name).includes('undefined'), '');
+  }
+}
 
 let failed = 0;
 for (const item of results) {

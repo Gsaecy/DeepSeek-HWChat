@@ -25,7 +25,7 @@ import { fetchViaProxy, parseProxyUrl } from '../providers/proxyFetch';
 /** 造一个与实测形状一致的 undici 外层错误。 */
 function undiciError(code: string): Error {
   const outer = new TypeError('fetch failed');
-  (outer as { cause?: unknown }).cause = Object.assign(new Error(`connect ${code} 127.0.0.1:7897`), { code });
+  (outer as { cause?: unknown }).cause = Object.assign(new Error(`connect ${code} 127.0.0.1:8080`), { code });
   return outer;
 }
 
@@ -73,10 +73,10 @@ test('网络错误：代理配置写错不该重试', () => {
 
 test('网络错误：提示里带上环境变量代理（因为 fetch 不认它）', () => {
   const previous = process.env.HTTPS_PROXY;
-  process.env.HTTPS_PROXY = 'http://127.0.0.1:7897';
+  process.env.HTTPS_PROXY = 'http://127.0.0.1:8080';
   try {
     const cause = classifyNetworkError(undiciError('ECONNREFUSED'), 'https://api.deepseek.com');
-    assert.match(cause.hint, /127\.0\.0\.1:7897/, '必须告诉用户「配了代理但扩展不会用它」');
+    assert.match(cause.hint, /127\.0\.0\.1:8080/, '必须告诉用户「配了代理但扩展不会用它」');
   } finally {
     if (previous === undefined) delete process.env.HTTPS_PROXY;
     else process.env.HTTPS_PROXY = previous;
@@ -165,12 +165,12 @@ test('isRetryableNetworkError 与 classify 结论一致', () => {
 /* ── 代理 ─────────────────────────────────────────────────────── */
 
 test('代理：解析 http 代理（含凭据）与拒绝 socks / 非法地址', () => {
-  assert.deepEqual(parseProxyUrl('http://127.0.0.1:7897'), { host: '127.0.0.1', port: 7897, authorization: undefined });
+  assert.deepEqual(parseProxyUrl('http://127.0.0.1:8080'), { host: '127.0.0.1', port: 8080, authorization: undefined });
   const withAuth = parseProxyUrl('http://user:p%40ss@proxy.local:8080');
   assert.equal(withAuth.host, 'proxy.local');
   assert.equal(withAuth.port, 8080);
   assert.equal(withAuth.authorization, `Basic ${Buffer.from('user:p@ss').toString('base64')}`);
-  assert.throws(() => parseProxyUrl('socks5://127.0.0.1:7897'), /暂不支持 socks/);
+  assert.throws(() => parseProxyUrl('socks5://127.0.0.1:8080'), /暂不支持 socks/);
   assert.throws(() => parseProxyUrl('not-a-url'), /不合法/);
 });
 

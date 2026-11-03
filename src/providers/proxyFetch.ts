@@ -6,7 +6,7 @@
  *     把代理指向一个没人监听的端口，fetch 依然直连成功，说明它根本没读这些变量；
  *   · VS Code 的 `http.proxy` 也不覆盖扩展的 `fetch`（官方文档：*Extensions don't
  *     benefit yet from the same proxy support that VS Code supports*）；
- *   · 而用户的机器上确实跑着一个 HTTP 代理（`curl -x http://127.0.0.1:7897` 正常），
+ *   · 而用户的机器上确实跑着一个 HTTP 代理（`curl -x http://127.0.0.1:8080` 正常），
  *     直连在别的时刻又不稳定 —— 这就是「有时候 fetch failed，重试又好了」的典型现场。
  *
  * 所以给 `hwchat.proxy` 一条真正的通路：自己开 TCP → 发 `CONNECT` → 在该 socket 上
@@ -59,7 +59,7 @@ export function parseProxyUrl(value: string): ParsedProxy {
   try {
     url = new URL(value);
   } catch {
-    throw new ProxyError(`代理地址不合法：${value}（应形如 http://127.0.0.1:7897）`, 'ERR_INVALID_PROXY');
+    throw new ProxyError(`代理地址不合法：${value}（应形如 http://127.0.0.1:8080）`, 'ERR_INVALID_PROXY');
   }
   if (url.protocol === 'socks5:' || url.protocol === 'socks5h:' || url.protocol === 'socks:') {
     throw new ProxyError(

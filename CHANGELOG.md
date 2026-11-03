@@ -1,10 +1,21 @@
 # Changelog
 
+## 0.3.9
+
+- **按你的要求撤掉资源管理器里的历史列表；顺手把示例里用的本机代理端口换成中性占位**。
+  - **① 资源管理器里的「HWChat 对话」列表已整个移除**（0.3.8 才加上的）。历史只在侧栏面板里看：`package.json` 的 `views.explorer` 声明、`registerTreeDataProvider` 注册、`src/views/historyView.ts`、只为它存在的三条文案（`history.pinned` / `history.open` / `history.emptyConversation`）全部删掉，README 里那一节「出厂的两个入口」也撤了 —— 不留半截功能。
+    - `test/check-settings-coverage.mjs` 的视图段改成**通用反向规则**：`package.json` 声明了几个视图，`extension.ts` / `ChatPanel` 就必须注册几个。这条规则的由来是另一处真实错漏 —— `HistoryViewProvider` 曾写完却从没注册；现在无论是「声明了没接」还是「接了个没声明的」都不会再悄悄发生。
+  - **② 示例里的本机代理端口换掉了（你问的「会不会泄漏我的代理网址」）**。原来设置页占位、README、`package.json` 配置说明、错误提示里都写着 `http://127.0.0.1:7897` —— 那是你本机代理软件的实际端口。
+    - **先把事实说清楚**：`127.0.0.1` 是回环地址，只在本机有意义，别人既解析不到也连不上；`7897` 又是 Clash 系代理软件的默认端口，不是凭据。所以它**不构成安全泄漏**。
+    - **但你的顾虑成立，已经全改**：它确实暴露了「项目作者本机在用什么代理、用什么端口」这类个人配置痕迹，而且用户照抄一个自己机器上不存在的端口只会得到 `ECONNREFUSED`。现在所有示例 / 占位 / 提示 / 测试夹具统一改成中性的 `http://127.0.0.1:8080`；CHANGELOG 里那句「用你机器上真实运行的代理 <具体端口>」也泛化成「用本机真实运行的 HTTP 代理」。
+    - 全仓复检：`7897` 出现次数 **0**（含测试、nls、i18n、README、CHANGELOG）。
+  - 全量：**918** 条单测、**46** 个 `check-*.mjs` 全绿。
+
 ## 0.3.8
 
 - **补上盘点出的三个缺口：代理与搜索排除现在有设置界面、资源管理器多了「HWChat 对话」列表、README 架构表重写**（用户原话：「缺口要做，版本号0.3.8」）。
   - **① `hwchat.proxy` 与 `hwchat.searchExclude` 原来没有任何界面**，只能在 `settings.json` 里手写 —— 而代理恰恰是网络故障时的救命项（Node 的 `fetch` 不读 `HTTPS_PROXY`，VS Code 的 `http.proxy` 也不覆盖扩展）。
-    - 连接区新增「接口代理」输入框（占位 `http://127.0.0.1:7897`），保存前校验：`socks://` 明确报错并提示填代理软件给出的 HTTP 端口、非法 URL 拒绝、留空表示直连。
+    - 连接区新增「接口代理」输入框（占位 `http://127.0.0.1:8080`），保存前校验：`socks://` 明确报错并提示填代理软件给出的 HTTP 端口、非法 URL 拒绝、留空表示直连。
     - Agent 区新增「搜索排除目录」，逗号 / 顿号 / 换行分隔都能识别，保存时归一成去重数组；读取侧按**每个工作区根**取并集（`hwchat.searchExclude` 是 resource 作用域，只看合并视图会「写了但读不到」）。
     - 新增 `test/check-settings-coverage.mjs` **89 项守护**：每个**未废弃**的配置项必须登记编辑方式（input / profile / internal），登记为 input 的必须同时具备「设置页控件 + webview 字段清单 + `updateSettings` 写回」三段，新增配置项忘了接 UI 会当场变红。
   - **② `src/views/historyView.ts` 是死代码**：`HistoryViewProvider` 写完了却从没注册（package.json 没这个视图、`extension.ts` 没 `registerTreeDataProvider`）。
@@ -287,8 +298,8 @@
   - **有限重试**：只重试「`fetch` 自己抛出」的情况 —— 那意味着连响应头都没拿到，请求不可能已被服务端处理并计费。默认 3 次（400ms / 1200ms 退避），模型列表是幂等 GET 给 4 次。**超时与取消不重试**：`AbortSignal.timeout` 抛的是 `TimeoutError`，按未知错误重试会把一次 120 秒的等待变成 6 分钟（这条是实测发现的坑，已加测试锁住）。
   - **`[net]` 日志**：每次重试与最终失败都写进输出面板（主机 + 阶段 + 错误码 + 等待时长），不含请求正文与凭据。以前面板里只有权限预设和清理记录，故障发生时什么都没留下。
   - **新命令 `HWChat: 测试网络连接`**：分四段测量并报出耗时 —— DNS 解析（列出**全部**解析到的地址）→ TCP 连接（含本机出口端口）→ TLS 握手（协议版本 + 证书 CN + 有效期）→ HTTP 请求（不带 Key 请求 `/models`，401 也算通）。配了代理时会额外验一遍隧道。
-  - **`hwchat.proxy`：真正的代理通道**。依据：Node 的 `fetch`（undici）**忽略** `HTTPS_PROXY`（把代理指向死端口，fetch 仍能直连成功 —— 实测），VS Code 的 `http.proxy` 也不覆盖扩展（官方文档明写）。现在填了它会走真正的 `CONNECT` 隧道（`net` → `CONNECT` → `tls` → `https.request`），支持带账号密码的代理，`socks://` 明确报错不假装支持。**默认关闭、不做环境变量自动探测**：这台机器上就残留着指向 `127.0.0.1:7897` 的代理变量，自动启用会直接把原本可用的直连弄坏。
-  - **实测验证（用你机器上真实运行的代理 127.0.0.1:7897）**：经隧道 `GET https://api.deepseek.com/models` → **HTTP 401「Authentication Fails (governor)」268ms**，说明隧道、TLS、HTTP 三层全通；直连诊断同样四段全绿。
+  - **`hwchat.proxy`：真正的代理通道**。依据：Node 的 `fetch`（undici）**忽略** `HTTPS_PROXY`（把代理指向死端口，fetch 仍能直连成功 —— 实测），VS Code 的 `http.proxy` 也不覆盖扩展（官方文档明写）。现在填了它会走真正的 `CONNECT` 隧道（`net` → `CONNECT` → `tls` → `https.request`），支持带账号密码的代理，`socks://` 明确报错不假装支持。**默认关闭、不做环境变量自动探测**：这台机器上就残留着指向 `127.0.0.1:8080` 的代理变量，自动启用会直接把原本可用的直连弄坏。
+  - **实测验证（用本机真实运行的 HTTP 代理；地址不写具体端口，避免把个人配置当示例）**：经隧道 `GET https://api.deepseek.com/models` → **HTTP 401「Authentication Fails (governor)」268ms**，说明隧道、TLS、HTTP 三层全通；直连诊断同样四段全绿。
   - **踩坑记录（都写进了代码注释）**：① `createConnection` 写在 request options 上**不生效**，请求会绕过隧道直连 —— 用一个「只说 200、不转发」的黑洞代理测出来的，现在改用 `Agent` 子类覆写；② `CONNECT` 请求头多一个 `\r\n` 会让多出的字节混进 TLS ClientHello，握手直接 `ECONNRESET`；③ `text()` 同步拼接已收到的 chunk 会拿到空串，必须等流结束。
   - 新增 `src/test/netDiagnostics.test.ts` **19 条**（含真实 CONNECT 代理服务器与「请求确实经过隧道」的刚性证明）、`test/check-network-diagnostics.mjs` **6 组守护**。
 

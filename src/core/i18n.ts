@@ -600,7 +600,7 @@ const DICTIONARY: Record<string, Entry> = {
   'settings.headers.label': { zh: '额外请求头', en: 'Extra request headers' },
   'settings.headers.hint': { zh: 'JSON 对象，不包含 Authorization', en: 'JSON object, without Authorization' },
   'settings.proxy.label': { zh: '接口代理', en: 'API proxy' },
-  'settings.proxy.hint': { zh: '留空表示直连。填 HTTP 代理，例如 http://127.0.0.1:7897（不支持 socks://，请填代理软件给出的 HTTP 端口）。扩展不会自动读取 HTTPS_PROXY 环境变量，也不会继承 VS Code 的 http.proxy。', en: 'Empty means direct. Use an HTTP proxy such as http://127.0.0.1:7897 (socks:// is not supported - use the HTTP port your proxy app exposes). The extension does not read HTTPS_PROXY or inherit VS Code http.proxy.' },
+  'settings.proxy.hint': { zh: '留空表示直连。填 HTTP 代理，例如 http://127.0.0.1:8080（不支持 socks://，请填代理软件给出的 HTTP 端口）。扩展不会自动读取 HTTPS_PROXY 环境变量，也不会继承 VS Code 的 http.proxy。', en: 'Empty means direct. Use an HTTP proxy such as http://127.0.0.1:8080 (socks:// is not supported - use the HTTP port your proxy app exposes). The extension does not read HTTPS_PROXY or inherit VS Code http.proxy.' },
   'settings.timeout.label': { zh: '请求超时', en: 'Request timeout' },
   'settings.timeout.hint': { zh: '10–900 秒', en: '10–900 seconds' },
 
@@ -709,7 +709,7 @@ const DICTIONARY: Record<string, Entry> = {
 
   // 校验错误
   'error.headersInvalidJson': { zh: '额外请求头不是有效的 JSON。', en: 'Extra request headers are not valid JSON.' },
-  'error.proxySocks': { zh: '不支持 socks:// 代理，请填代理软件给出的 HTTP 端口（例如 http://127.0.0.1:7897）。', en: 'socks:// proxies are not supported. Use the HTTP port your proxy app exposes (for example http://127.0.0.1:7897).' },
+  'error.proxySocks': { zh: '不支持 socks:// 代理，请填代理软件给出的 HTTP 端口（例如 http://127.0.0.1:8080）。', en: 'socks:// proxies are not supported. Use the HTTP port your proxy app exposes (for example http://127.0.0.1:8080).' },
   'error.proxyInvalid': { zh: '代理地址无效，需要写成 http://主机:端口 的形式，留空表示直连。', en: 'Invalid proxy address. Use http://host:port, or leave it empty for a direct connection.' },
   'error.searchExcludeInvalid': { zh: '搜索排除项必须是目录名列表。', en: 'Search exclusions must be a list of directory names.' },
   'error.headersNotObject': { zh: '额外请求头必须是 JSON 对象。', en: 'Extra request headers must be a JSON object.' },
@@ -742,8 +742,6 @@ const DICTIONARY: Record<string, Entry> = {
   'error.attachmentOpenFailed': { zh: '无法打开附件：{error}', en: 'Could not open the attachment: {error}' },
 
   // 历史视图
-  'history.pinned': { zh: '固定 · ', en: 'Pinned · ' },
-  'history.open': { zh: '打开对话', en: 'Open conversation' },
 
   // 扩展命令与通知
   'storage.trashFailed': {
@@ -1012,7 +1010,6 @@ const DICTIONARY: Record<string, Entry> = {
   'ext.exportLabel': { zh: '导出全部对话', en: 'Export all conversations' },
 
   // 历史视图与存储
-  'history.emptyConversation': { zh: '空对话', en: 'Empty conversation' },
   'storage.defaultTitle': { zh: '新对话', en: 'New chat' },
   'storage.messageMissing': { zh: '找不到要更新的消息。', en: 'Could not find the message to update.' },
   'storage.conversationMissing': { zh: '对话不存在，可能已被清理。', en: 'The conversation no longer exists; it may have been cleaned up.' },
