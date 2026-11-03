@@ -84,5 +84,6 @@
   "command.restoreDeletedConversations": "Restore deleted conversations (recycle bin)",
   "command.emptyTrash": "Empty the recycle bin (permanent)",
   "command.diagnoseNetwork": "Test endpoint connectivity (DNS / TCP / TLS / HTTP)",
-  "config.proxy": "HTTP proxy for API requests, e.g. http://127.0.0.1:7897. Leave empty for a direct connection. Node's fetch ignores HTTPS_PROXY and VS Code's http.proxy does not cover extensions, so this is the only way to route HWChat through a proxy. socks:// is not supported — use the proxy's HTTP port."
+  "config.proxy": "HTTP proxy for API requests, e.g. http://127.0.0.1:7897. Leave empty for a direct connection. Node's fetch ignores HTTPS_PROXY and VS Code's http.proxy does not cover extensions, so this is the only way to route HWChat through a proxy. socks:// is not supported — use the proxy's HTTP port.",
+  "view.history": "HWChat conversations"
 }

@@ -1,13 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.3.8
+
+- **补上盘点出的三个缺口：代理与搜索排除现在有设置界面、资源管理器多了「HWChat 对话」列表、README 架构表重写**（用户原话：「缺口要做，版本号0.3.8」）。
+  - **① `hwchat.proxy` 与 `hwchat.searchExclude` 原来没有任何界面**，只能在 `settings.json` 里手写 —— 而代理恰恰是网络故障时的救命项（Node 的 `fetch` 不读 `HTTPS_PROXY`，VS Code 的 `http.proxy` 也不覆盖扩展）。
+    - 连接区新增「接口代理」输入框（占位 `http://127.0.0.1:7897`），保存前校验：`socks://` 明确报错并提示填代理软件给出的 HTTP 端口、非法 URL 拒绝、留空表示直连。
+    - Agent 区新增「搜索排除目录」，逗号 / 顿号 / 换行分隔都能识别，保存时归一成去重数组；读取侧按**每个工作区根**取并集（`hwchat.searchExclude` 是 resource 作用域，只看合并视图会「写了但读不到」）。
+    - 新增 `test/check-settings-coverage.mjs` **89 项守护**：每个**未废弃**的配置项必须登记编辑方式（input / profile / internal），登记为 input 的必须同时具备「设置页控件 + webview 字段清单 + `updateSettings` 写回」三段，新增配置项忘了接 UI 会当场变红。
+  - **② `src/views/historyView.ts` 是死代码**：`HistoryViewProvider` 写完了却从没注册（package.json 没这个视图、`extension.ts` 没 `registerTreeDataProvider`）。
+    - 选择**接上**而不是删掉：资源管理器新增「HWChat 对话 / HWChat conversations」分组（`when: workspaceFolderCount > 0`），不打开聊天面板也能点开一条历史对话；`onHistoryChanged` 里同步刷新，provider 随扩展一起 dispose。
+  - **③ README 的架构表过时**：`src/providers/` 只写「DeepSeek client」（实际还有 `netDiagnostics` / `netProbe` / `proxyFetch`），`src/core` / `src/agent` / `media` 漏了十来个文件，`test/` 说 44 个却只列了约 22 个、读起来像穷举。
+    - 重写为如实的分组描述 + 明确「`test/` 只列代表用例，全部用 `ls test/check-*.mjs` 查」；`media/` 补上 `code-block-meta` / `follow-up-format` / `secret-scan` / `todo-panel-state` / `callout-meta` / `file-reference` / `toast-timing` / `inline-append` / `stream-repair`。
+    - 新增「命令与视图」一行，说明除了 webview 面板还有资源管理器里的历史列表。
+  - **④ 顺手修掉 README/商店宣传图里的一个错字**：截图构建脚本引用了 `english['chat.unlimited']`，而词表里的键叫 `chat.stepsUnlimited`，于是 `undefined` 被插进 HTML、被 CSS 省略号截成 **「Max steps: undefi…」**，那张图正是 README 与商店页用的。现在键值修正，并把截图里的运行时下拉从预览页的演示值（Autopilot / 无限制）改写成**产品规则里的新对话默认值**（每次询问 / 24 步 / 默认思考深度）—— 否则等于用官方图宣传一个更宽松的默认。
+    - 新增 `test/check-screenshot-dict.mjs` **6 项守护**：引用的 158 个词表键必须全部存在、示例状态必须改写成默认值、生成的页面里不许出现 `undefined`。
 
 - **盘点功能清单时发现两个「文档说有、测试全绿、线上没接」的错漏，都已修**。
   - **① `inline-append.js` 与 `stream-repair.js` 从来没被注入面板 HTML（真 bug，影响线上）**。两个模块写了、单测了、README 与 CHANGELOG 都写着「纯文本直接追加」「半截 markdown 先补全再渲染」，但 `src/views/chatPanel.ts` 的脚本清单里根本没有它们 —— 只有 `test/preview-chat.html` 加载了。于是线上 `globalThis.HWChatInlineAppend` / `HWChatStreamRepair` 恒为 `undefined`：**快路径永不生效、补全永不生效**，而所有浏览器守护跑的都是 preview 页，所以一直全绿。
     - 修法：把两个模块补进面板的 `mediaUri` + `<script>`；新增 `test/check-webview-scripts.mjs` **34 项守护** —— preview 加载的每个辅助脚本面板必须也加载、面板加载的预览页也必须加载、`chat.js` 必须最后加载，并且 `chat.js` 读的每个 `globalThis.HWChatXxx` 都必须有对应脚本注入（新加模块漏接会当场变红）。
   - **② 设置页把「对话保留」写成了会过期**。0.3.6 起的规则是「HWChat 不会自己让任何一条对话消失」，该设置现在只决定**多老的对话会在清理时被瘦身缓存**（工具输出 / 推理），对话本身永不删除。但界面文案仍是「对话保留 / 固定的对话不会过期」，读起来像「到期会删」。
     - 修法：改为「缓存瘦身起点」，说明写清「对话本身永远不会被删除」。
-  - 全量：**918** 条单测、**44** 个 `check-*.mjs` 全绿。
 
 - **命令块必须标清「在哪台机器上跑」；守卫拦截后要换策略，不要换拼法硬撞**（用户原话：「需要我执行的命令，代码块要区分是服务器上执行还是本地终端执行，为什么现在不区分本地还是服务器了」，以及「三次失败就停止了任务，为什么不直接更改执行策略使用工作区内的文件夹」）。
   - **① 位置标注不再可能「静默缺失」**。规则其实一直在（`src/agent/commandPrompt.ts` 要求 `loc=local` / `loc=server`），渲染层也支持，但模型经常只写 `tool=bash` 漏掉 `loc=`，而渲染层在这种情况下**什么都不显示** —— 标题栏只剩「工具：bash」，用户完全看不出该贴本地还是服务器。
@@ -29,7 +41,8 @@
   - 后端链路：提示词要求多步任务先写清单 → `update_todos` 下发给模型 → `updateTodos()` 落库并推 `todos` → **全部完成时当场归档**（`planCompletedList`，不等这轮结束）→ 推 `todoArchives` → 一轮结束还有 `planTodoSettlement` 兜底。
   - 前端渲染（真实浏览器）：3 项清单（完成/进行中/待办三种状态）正确渲染；2 份归档变成 2 颗胶囊、颜色不同、带「N/N 完成」的无障碍名称；点胶囊展开那份清单并显示「已归档 · 时间 · N/N 完成」；同一时刻只有一颗是选中态；再点收起；归档清空后整条栏隐藏。
 
-- **全量验证**：**918** 条单测、**43** 个 `check-*.mjs` 全绿。
+
+- **全量验证**：**918** 条单测、**46** 个 `check-*.mjs` 全绿。
 
 ## 0.3.7
 

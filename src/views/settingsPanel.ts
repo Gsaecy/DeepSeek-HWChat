@@ -337,6 +337,7 @@ export class SettingsPanel implements vscode.Disposable {
             <label class="setting-row setting-row-stack"><span><strong>${t(lang, 'settings.models.label')}</strong><small>${t(lang, 'settings.models.hint')}</small></span><textarea id="profileModels" class="control mono" rows="4" spellcheck="false"></textarea></label>
             <label class="setting-row setting-row-stack"><span><strong>${t(lang, 'settings.headers.label')}</strong><small>${t(lang, 'settings.headers.hint')}</small></span><textarea id="requestHeaders" class="control mono" rows="4" spellcheck="false"></textarea></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.timeout.label')}</strong><small>${t(lang, 'settings.timeout.hint')}</small></span><span class="stepper"><input id="requestTimeoutSeconds" type="number" min="10" max="900"><span>${t(lang, 'common.seconds')}</span></span></label>
+            <label class="setting-row"><span><strong>${t(lang, 'settings.proxy.label')}</strong><small>${t(lang, 'settings.proxy.hint')}</small></span><input id="proxy" class="control mono" type="text" spellcheck="false" placeholder="http://127.0.0.1:7897"></label>
           </div>
         </section>
         <section id="generation" class="settings-section">
@@ -353,6 +354,7 @@ export class SettingsPanel implements vscode.Disposable {
           <div class="section-heading"><h2>${t(lang, 'settings.agent.title')}</h2><span id="trustState" class="status-pill">${t(lang, 'settings.trustStatePlaceholder')}</span></div>
           <div class="settings-group">
             <label class="setting-row"><span><strong>${t(lang, 'settings.defaultMode.label')}</strong><small>${t(lang, 'settings.defaultMode.hint')}</small></span><select id="defaultMode" class="control"><option value="agent">Agent</option><option value="plan">Plan</option><option value="chat">Chat</option></select></label>
+            <label class="setting-row"><span><strong>${t(lang, 'settings.searchExclude.label')}</strong><small>${t(lang, 'settings.searchExclude.hint')}</small></span><input id="searchExclude" class="control mono" type="text" spellcheck="false" placeholder="dist, .next, vendor"></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.commandTimeout.label')}</strong></span><span class="stepper"><input id="maxCommandSeconds" type="number" min="5" max="900"><span>${t(lang, 'common.seconds')}</span></span></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.readLimit.label')}</strong></span><span class="stepper"><input id="maxReadBytes" type="number" min="16384" max="5242880"><span>bytes</span></span></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.toolOutputLimit.label')}</strong></span><span class="stepper"><input id="maxToolOutputBytes" type="number" min="16384" max="2097152"><span>bytes</span></span></label>
@@ -449,6 +451,32 @@ function validateSettings(values: Partial<ChatSettings>): Partial<ChatSettings> 
   }
   if (values.permissionPreset !== undefined && !['askAll', 'review', 'autopilot', 'full'].includes(values.permissionPreset)) {
     throw new Error(tt('error.presetInvalid'));
+  }
+  /*
+   * 代理写错会让**所有**请求都失败，所以在保存时就拦下来，并明确说清不支持 socks://。
+   * 空字符串是合法的（= 直连），不要当成错误。
+   */
+  if (values.proxy !== undefined) {
+    const raw = String(values.proxy ?? '').trim();
+    if (raw) {
+      if (/^socks/i.test(raw)) throw new Error(tt('error.proxySocks'));
+      let parsed: URL;
+      try {
+        parsed = new URL(raw);
+      } catch {
+        throw new Error(tt('error.proxyInvalid'));
+      }
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error(tt('error.proxyInvalid'));
+      result.proxy = raw;
+    } else {
+      result.proxy = '';
+    }
+  }
+  if (values.searchExclude !== undefined) {
+    if (!Array.isArray(values.searchExclude) || values.searchExclude.some((item) => typeof item !== 'string')) {
+      throw new Error(tt('error.searchExcludeInvalid'));
+    }
+    result.searchExclude = [...new Set(values.searchExclude.map((item) => item.trim()).filter(Boolean))].slice(0, 100);
   }
   for (const key of ['fileReadPolicy', 'fileWritePolicy', 'commandPolicy', 'dangerousCommandPolicy', 'sensitiveFilePolicy'] as const) {
     const value = values[key];

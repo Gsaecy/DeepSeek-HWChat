@@ -322,6 +322,14 @@ export interface ChatSettings {
   cacheBudgetMB: number;
   cleanupIntervalMinutes: number;
   maxMessagesInContext: number;
+  /**
+   * 追加的搜索排除目录名（`hwchat.searchExclude`）。
+   *
+   * 声明为可选：这是 resource 作用域的配置（多根工作区里用户可能只写在某个根的
+   * `.vscode/settings.json` 里），读取侧由 `workspaceSearch` 逐根取并集；设置页只
+   * 负责把它呈现成一个逗号分隔的输入框并写回。可选能让既有测试夹具不必逐个补字段。
+   */
+  searchExclude?: string[];
   requestHeaders: Record<string, string>;
   requestTimeoutSeconds: number;
   /**

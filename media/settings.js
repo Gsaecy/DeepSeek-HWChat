@@ -20,12 +20,12 @@
   }
 
   const fieldIds = [
-    'apiKey', 'profileName', 'profileModels', 'baseUrl', 'model', 'requestHeaders', 'requestTimeoutSeconds',
+    'apiKey', 'profileName', 'profileModels', 'baseUrl', 'model', 'requestHeaders', 'requestTimeoutSeconds', 'proxy',
     'temperature', 'maxTokens', 'maxMessagesInContext', 'sendOnEnter',
     'systemPrompt', 'historyRetentionDays', 'taskCacheRetentionHours',
     'cacheBudgetMB', 'cleanupIntervalMinutes', 'defaultMode',
     'maxReadBytes', 'maxToolOutputBytes',
-    'maxCommandSeconds', 'auditRetentionDays', 'language',
+    'maxCommandSeconds', 'auditRetentionDays', 'language', 'searchExclude',
   ];
   const fields = Object.fromEntries(fieldIds.map((id) => [id, document.getElementById(id)]));
   const elements = {
@@ -104,6 +104,7 @@
       model: selectedModel,
       requestHeaders,
       requestTimeoutSeconds: numberValue(fields.requestTimeoutSeconds, 120),
+      proxy: fields.proxy.value.trim(),
       temperature: numberValue(fields.temperature, 1),
       maxTokens: numberValue(fields.maxTokens, 0),
       maxMessagesInContext: numberValue(fields.maxMessagesInContext, 20),
@@ -118,6 +119,12 @@
       maxToolOutputBytes: numberValue(fields.maxToolOutputBytes, 200000),
       maxCommandSeconds: numberValue(fields.maxCommandSeconds, 120),
       auditRetentionDays: numberValue(fields.auditRetentionDays, 30),
+      // 用户在输入框里可能用逗号、顿号或换行分隔；统一拆成数组并去重去空。
+      searchExclude: fields.searchExclude.value
+        .split(/[,，\n]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .filter((item, index, list) => list.indexOf(item) === index),
     };
   }
 
@@ -198,6 +205,8 @@
     fields.apiKey.value = '';
     fields.apiKey.placeholder = apiKeyConfigured ? t('settings.apiKey.savedPlaceholder') : 'sk-…';
     fields.requestTimeoutSeconds.value = settings.requestTimeoutSeconds;
+    fields.proxy.value = settings.proxy || '';
+    fields.searchExclude.value = Array.isArray(settings.searchExclude) ? settings.searchExclude.join(', ') : '';
     fields.temperature.value = settings.temperature;
     fields.maxTokens.value = settings.maxTokens;
     fields.maxMessagesInContext.value = settings.maxMessagesInContext;

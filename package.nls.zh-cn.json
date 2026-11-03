@@ -84,5 +84,6 @@
   "command.restoreDeletedConversations": "恢复已删除的对话（回收站）",
   "command.emptyTrash": "清空回收站（永久删除）",
   "command.diagnoseNetwork": "测试网络连接（DNS / TCP / TLS / HTTP 分段诊断）",
-  "config.proxy": "接口请求使用的 HTTP 代理，例如 http://127.0.0.1:7897；留空表示直连。Node 的 fetch 不会使用 HTTPS_PROXY 环境变量，VS Code 的 http.proxy 也不覆盖扩展，所以这是让 HWChat 走代理的唯一方式。不支持 socks://，请填代理软件提供的 HTTP 端口。"
+  "config.proxy": "接口请求使用的 HTTP 代理，例如 http://127.0.0.1:7897；留空表示直连。Node 的 fetch 不会使用 HTTPS_PROXY 环境变量，VS Code 的 http.proxy 也不覆盖扩展，所以这是让 HWChat 走代理的唯一方式。不支持 socks://，请填代理软件提供的 HTTP 端口。",
+  "view.history": "HWChat 对话"
 }

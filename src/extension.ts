@@ -15,6 +15,7 @@ import { formatProbeReport, probeEndpoint } from './providers/netProbe';
 import { fetchViaProxy } from './providers/proxyFetch';
 import { proxyEnv } from './providers/netDiagnostics';
 import { ChatPanel } from './views/chatPanel';
+import { HistoryViewProvider } from './views/historyView';
 import { SettingsPanel } from './views/settingsPanel';
 import { tt } from './core/i18n';
 
@@ -92,6 +93,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     (line) => output.warn(line),
   );
   let settingsPanel!: SettingsPanel;
+  /*
+   * 资源管理器里的「HWChat 对话」列表。
+   *
+   * 这个 provider 之前写了却从没注册过（盘点时发现的死代码）。接上的好处：不打开聊天
+   * 面板也能点开一条历史对话，而且面板关闭时历史依然可见。它只读 `listConversations`，
+   * 与面板侧栏是同一份数据，任何一侧改动都会通过 `onHistoryChanged` 触发刷新。
+   */
+  const historyView = new HistoryViewProvider(storage);
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('hwchat.historyView', historyView),
+    historyView,
+  );
   const chat = new ChatPanel(
     context.extensionUri,
     context.globalStorageUri,
@@ -102,6 +115,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     toolExecutor,
     {
       onHistoryChanged: () => {
+        // 两份列表读的是同一份存储：改名、置顶、归档、删除、运行状态都会走到这里。
+        historyView.refresh();
         void settingsPanel?.refresh();
       },
       openSettings: () => void settingsPanel.open(),

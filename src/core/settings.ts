@@ -19,6 +19,34 @@ const SECTION = 'hwchat';
  */
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'default';
 
+/**
+ * 读出追加的搜索排除目录（全局 + 每个工作区根，取并集）。
+ *
+ * 与 `workspaceSearch.readConfiguredExcludes` 同一套语义：这是 resource 作用域的配置，
+ * 只看无 resource 的合并视图会在多根工作区里「写了但读不到」。设置页需要把用户写过的
+ * 全部条目原样显示出来，所以这里也按根逐个读再合并。
+ */
+function readSearchExclude(): string[] {
+  const collected = new Set<string>();
+  const add = (value: unknown): void => {
+    if (!Array.isArray(value)) return;
+    for (const item of value) {
+      if (typeof item !== 'string') continue;
+      const cleaned = item.trim();
+      if (cleaned) collected.add(cleaned);
+    }
+  };
+  try {
+    add(vscode.workspace.getConfiguration('hwchat').get<unknown>('searchExclude', []));
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      add(vscode.workspace.getConfiguration('hwchat', folder.uri).get<unknown>('searchExclude', []));
+    }
+  } catch {
+    return [...collected];
+  }
+  return [...collected];
+}
+
 export function readSettings(): ChatSettings {
   const configuration = vscode.workspace.getConfiguration(SECTION);
   const legacyBaseUrl = configuration.get<string>('baseUrl', 'https://api.deepseek.com');
@@ -61,6 +89,7 @@ export function readSettings(): ChatSettings {
     requestHeaders: activeProfile.requestHeaders,
     requestTimeoutSeconds: clamp(configuration.get<number>('requestTimeoutSeconds', 120), 10, 900),
     proxy: String(configuration.get<string>('proxy', '') ?? '').trim(),
+    searchExclude: readSearchExclude(),
     defaultMode: resolveConversationMode(configuration.get<unknown>('defaultMode'), 'agent'),
     agentMaxSteps: DEFAULT_AGENT_MAX_STEPS,
     reasoningEffort: DEFAULT_REASONING_EFFORT,
@@ -107,6 +136,7 @@ export async function updateSettings(values: Partial<ChatSettings>): Promise<voi
     ['maxReadBytes', values.maxReadBytes],
     ['maxToolOutputBytes', values.maxToolOutputBytes],
     ['maxCommandSeconds', values.maxCommandSeconds],
+    ['searchExclude', values.searchExclude],
     ['auditRetentionDays', values.auditRetentionDays],
     ['language', values.language === undefined ? undefined : normalizeLanguageSetting(values.language)],
   ];

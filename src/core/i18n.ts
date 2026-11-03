@@ -599,6 +599,8 @@ const DICTIONARY: Record<string, Entry> = {
   'settings.models.hint': { zh: '每行一个模型名，对话面板会显示为下拉列表', en: 'One model per line; the chat panel shows them as a dropdown' },
   'settings.headers.label': { zh: '额外请求头', en: 'Extra request headers' },
   'settings.headers.hint': { zh: 'JSON 对象，不包含 Authorization', en: 'JSON object, without Authorization' },
+  'settings.proxy.label': { zh: '接口代理', en: 'API proxy' },
+  'settings.proxy.hint': { zh: '留空表示直连。填 HTTP 代理，例如 http://127.0.0.1:7897（不支持 socks://，请填代理软件给出的 HTTP 端口）。扩展不会自动读取 HTTPS_PROXY 环境变量，也不会继承 VS Code 的 http.proxy。', en: 'Empty means direct. Use an HTTP proxy such as http://127.0.0.1:7897 (socks:// is not supported - use the HTTP port your proxy app exposes). The extension does not read HTTPS_PROXY or inherit VS Code http.proxy.' },
   'settings.timeout.label': { zh: '请求超时', en: 'Request timeout' },
   'settings.timeout.hint': { zh: '10–900 秒', en: '10–900 seconds' },
 
@@ -629,6 +631,8 @@ const DICTIONARY: Record<string, Entry> = {
   'settings.maxSteps.label': { zh: '新对话的最大执行步骤', en: 'Max agent steps for new chats' },
   'settings.maxSteps.hint': { zh: '默认 {default} 步，四档可选（含「无限制」）；也可在对话输入框下方即时调整，只影响当前对话', en: 'Defaults to {default} steps; four presets including Unlimited. Also adjustable under the composer, per conversation' },
   'settings.stepsUnit': { zh: '步', en: 'steps' },
+  'settings.searchExclude.label': { zh: '搜索排除目录', en: 'Search exclusions' },
+  'settings.searchExclude.hint': { zh: '逗号分隔，在内置排除（.git、node_modules、dist…）之外追加', en: 'Comma separated, added on top of the built-in list (.git, node_modules, dist…)' },
   'settings.commandTimeout.label': { zh: '命令超时', en: 'Command timeout' },
   'settings.readLimit.label': { zh: '单文件读取上限', en: 'Per-file read limit' },
   'settings.toolOutputLimit.label': { zh: '工具输出上限', en: 'Tool output limit' },
@@ -705,6 +709,9 @@ const DICTIONARY: Record<string, Entry> = {
 
   // 校验错误
   'error.headersInvalidJson': { zh: '额外请求头不是有效的 JSON。', en: 'Extra request headers are not valid JSON.' },
+  'error.proxySocks': { zh: '不支持 socks:// 代理，请填代理软件给出的 HTTP 端口（例如 http://127.0.0.1:7897）。', en: 'socks:// proxies are not supported. Use the HTTP port your proxy app exposes (for example http://127.0.0.1:7897).' },
+  'error.proxyInvalid': { zh: '代理地址无效，需要写成 http://主机:端口 的形式，留空表示直连。', en: 'Invalid proxy address. Use http://host:port, or leave it empty for a direct connection.' },
+  'error.searchExcludeInvalid': { zh: '搜索排除项必须是目录名列表。', en: 'Search exclusions must be a list of directory names.' },
   'error.headersNotObject': { zh: '额外请求头必须是 JSON 对象。', en: 'Extra request headers must be a JSON object.' },
   'error.headerValueNotString': { zh: '请求头 {key} 的值必须是字符串。', en: 'The value of header {key} must be a string.' },
   'error.profileIncomplete': { zh: '请补全每个 API 配置档的名称和接口地址。', en: 'Fill in the name and endpoint for every API profile.' },

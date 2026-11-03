@@ -126,7 +126,7 @@ const chatReplacements = [
   ['重构登录逻辑并运行测试', 'Refactor login and run tests'],
   ['保留公共接口并补恢复测试', 'Keep the public interface, add recovery tests'],
   ['更新 README 使用说明', 'Update the README usage notes'],
-  ['<option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option>', [0, 12, 24, 40].map((steps) => `<option value="${steps}">${steps === 0 ? english['chat.unlimited'] : english['chat.stepsOption'].replace('{count}', String(steps))}</option>`).join('')],
+  ['<option value="0">无限制</option><option value="12">12 步</option><option value="24">24 步</option><option value="40">40 步</option>', [0, 12, 24, 40].map((steps) => `<option value="${steps}">${steps === 0 ? english['chat.stepsUnlimited'] : english['chat.stepsOption'].replace('{count}', String(steps))}</option>`).join('')],
   ['<option value="default">默认</option><option value="none">无</option><option value="low">低</option><option value="high">高</option><option value="max">最大值</option>', ['default', 'none', 'low', 'high', 'max'].map((effort) => `<option value="${effort}">${english['chat.reasoning.' + effort]}</option>`).join('')],
   ['failure-screenshot.png', 'failure-screenshot.png'],
   // 任务清单的示例数据
@@ -298,6 +298,12 @@ function toEmptyConversation(html) {
     [/      taskTree: \{ active: true[\s\S]*?\n    \};/, '      taskTree: { active: false, nodes: [] },\n    };'],
     // 空对话没有正在生成的回复。
     ["streamingConversationId: 'c1'", 'streamingConversationId: null'],
+    /*
+     * 输入框下方的三个运行时下拉必须是**新对话的默认值**：每次询问 / 24 步 / 默认思考深度。
+     * 预览页为了演示别的功能把它们设成 Autopilot / 无限制 / 高，直接截出去就等于在
+     * README 里宣传一个与产品规则相反（默认全自动放行）的初始状态。
+     */
+    [/permissionPreset: '[a-z]+', agentMaxSteps: \d+, reasoningEffort: '[a-z]+'/, "permissionPreset: 'askAll', agentMaxSteps: 24, reasoningEffort: 'default'"],
     // 预览页会模拟一次粘贴把示例文字写进输入框；清空，只留占位提示。
     // 按「模拟粘贴返回什么就清空什么」处理，不依赖样例文案的具体措辞：
     // 依赖中间产物（先译成英文再清空）时，样例一改名就会两步一起静默失效。
