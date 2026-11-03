@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { grantFromFollowUp,
+  GIT_VERBS_WITHOUT_INTENT,
   argumentsMentionGitWrite,
   gitOperationsIn,
   gitWriteAuthorization,
@@ -212,4 +213,39 @@ test('hasGitWriteIntent：正常要求提交照旧放行', () => {
   assert.equal(hasGitWriteIntent('提交一下'), true);
   assert.equal(hasGitWriteIntent('帮我 push 到远端'), true);
   assert.equal(hasGitWriteIntent('不要提交'), false);
+});
+
+/*
+ * 真实故障（2026-11-03，用户原话：「hwchat是不是会拦截拉去克隆仓库到本地，
+ * 现在即使弹窗点击确认了，还是运行拉取失败」，随后要求「请放开git权限，
+ * 不要影响git正常功能」）。
+ *
+ * 实测：`hasGitWriteIntent('克隆仓库到本地')` 返回 false —— 授权词表里只有英文
+ * `clone`，没有中文「克隆」。于是 `git clone` 在**用户点了确认之后**仍被
+ * 「本次对话中没有要求 git 写操作」拒绝。
+ */
+test('intent: 克隆 / 检出 / 初始化仓库同样算用户明确要求', () => {
+  for (const text of [
+    '克隆仓库到本地',
+    '帮我克隆一下这个仓库',
+    '把这个仓库克隆到本地',
+    '克隆 https://github.com/x/y.git 到当前目录',
+    '检出 main 分支',
+    '初始化一个 git 仓库',
+    'git clone https://github.com/x/y.git',
+    'clone this repo',
+  ]) {
+    assert.ok(hasGitWriteIntent(text), `${text} 应被识别为要求 git 写操作`);
+  }
+});
+
+test('clone / init / fetch / pull 不再需要关键词授权', () => {
+  // 判据是「会不会把别人的改动提交出去」：这四条都不会。
+  for (const verb of ['clone', 'init', 'fetch', 'pull']) {
+    assert.ok(GIT_VERBS_WITHOUT_INTENT.has(verb), `${verb} 不应要求「用户开口」`);
+  }
+  // 会改写历史或把内容送出去的仍然需要授权。
+  for (const verb of ['commit', 'push', 'reset', 'clean', 'merge', 'rebase', 'filter-branch']) {
+    assert.equal(GIT_VERBS_WITHOUT_INTENT.has(verb), false, `${verb} 必须仍然要求授权`);
+  }
 });

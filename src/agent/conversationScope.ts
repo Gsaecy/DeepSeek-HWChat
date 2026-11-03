@@ -46,6 +46,19 @@ const GIT_WRITE_VERBS = new Set([
   'repack', 'switch', 'update-ref', 'bisect', 'histogram', 'maintenance',
 ]);
 
+/**
+ * 不需要「用户本轮开口要求 git 写操作」就能执行的子命令。
+ *
+ * 判据是「会不会把别人的改动提交出去 / 会不会改写已经推出去的历史」：
+ * - `clone` / `init`：凭空造一个仓库，不碰任何既存项目；
+ * - `fetch` / `pull`：把远端拿下来，出错也能本地恢复。
+ *
+ * 这几条以前同样要求「用户明确要求 git 写操作」，于是「帮我克隆这个仓库」
+ * 被拦在门外 —— 用户的原话是「不要影响 git 正常功能」。
+ * 注意：它们仍然受权限预设与确认卡片约束，只是不再需要关键词授权。
+ */
+export const GIT_VERBS_WITHOUT_INTENT: ReadonlySet<string> = new Set(['clone', 'init', 'fetch', 'pull']);
+
 /** 既可读也可写的子命令：看参数决定。 */
 const GIT_MIXED_VERBS = new Set(['branch', 'remote', 'config', 'tag', 'stash', 'reflog', 'notes', 'worktree', 'submodule', 'bisect']);
 
@@ -137,7 +150,7 @@ export function mentionsGitWrite(text: string): boolean {
  *  同时 "为什么要拦我的 git push？" 这种提问因为只匹配「拦截」不匹配单独的「拦」，
  *  被误判成授权。
  */
-const GIT_WRITE_REQUEST = /(?:提交|推送|打\s*tag|打标签|拉取|拉一下|拉下|同步(?:一下)?(?:远端|仓库)|更新(?:到|至)最新|变基|git\s+(?:add|commit|push|pull|fetch|clone|merge|rebase|stash)|\b(?:commit|push|pull|fetch|clone|merge|rebase|stash)\b)/i;
+const GIT_WRITE_REQUEST = /(?:提交|推送|打\s*tag|打标签|拉取|拉一下|拉下|克隆|检出|切到|切换(?:到)?分支|初始化(?:一个)?\s*(?:git)?\s*仓库|同步(?:一下)?(?:远端|仓库)|更新(?:到|至)最新|变基|git\s+(?:add|commit|push|pull|fetch|clone|init|checkout|merge|rebase|stash)|\b(?:commit|push|pull|fetch|clone|init|checkout|merge|rebase|stash)\b)/i;
 /**
  * 「合并」单独出现太含糊（合并两个配置文件也会这么说），所以要求同时出现分支/仓库类上下文。
  * 例：「把 main 合并进来」算，「合并这两个 JSON 配置」不算。
