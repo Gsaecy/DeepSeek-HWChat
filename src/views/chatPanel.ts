@@ -4424,6 +4424,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       'Messages labeled as task-tree updates are authoritative runtime guidance. Related updates modify the current branch; queued branch messages begin only after the prior branch completes. Preserve completed work that remains valid and do not execute skipped stale steps.',
       'For workspace navigation, prefer the native list_workspace_roots, list_directory, list_files, read_file, open_file, and get_diagnostics tools. When the user asks to open a workspace file, call open_file directly. Do not use a terminal, code CLI, external Copilot file tools, or third-party preview tools when a native HWChat tool can perform the action.',
       'Use VS Code preview and extension tools only for capabilities not already covered by native HWChat tools, such as a webpage preview or a temporary diff.',
+      /*
+       * 「先给我预览一下效果」的正确做法，必须写清楚。
+       *
+       * 真实故障（2026-11-04）：模型用桥接工具 `run_in_terminal` 起静态服务器 ——
+       * 那个工具要求 chat 调用上下文，在 HWChat 里永远失败；随后三轮失败整轮停机。
+       * 现在原生 `run_command` 支持 `background: true`，这条路才真正走得通。
+       */
+      'To let the user see a local web page or a running dev server, use the native tools: `run_command` with `background: true` to start the server (it returns immediately with a pid), then `open_web_preview` with the http://127.0.0.1:<port>/ URL. Do not use a bridged VS Code terminal tool for this — those require chat invocation context and cannot be driven from here.',
       // 图片能力必须由宿主明说（有/没有两种说法）。
       // 真实事故（2026-11-04）：没配图片模型时模型不知道，自己去 npx 装 mermaid-cli，
       // 超时 2 分钟，最后手写 SVG 落盘 —— 用户界面上什么都没看到，以为功能坏了。

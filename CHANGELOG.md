@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **「经常调用 VS Code 工具失败」的根因：`run_in_terminal` 在 HWChat 里永远调不通；同时补上 `run_command` 的后台常驻能力**（用户原话：「经常调用vs code工具失败」，附执行记录：`Invocation context must be provided for this tool` → 两次写日志被路径隔离拦 → 连续 3 轮失败停机）。
+  - **根因（读 VS Code Workbench 打包产物确认，不是猜）**：`run_in_terminal` 的 `invoke` 是
+    ```js
+    async invoke(e, t, i, n) {
+      let r = e.toolSpecificData;
+      if (!r) throw new Error("toolSpecificData must be provided for this tool");
+      if (!e.context) throw new Error("Invocation context must be provided for this tool");
+      ... this._getSandboxPrecheckInputs(e.context.sessionResource, e.chatRequestId)
+    }
+    ```
+    而 `lm.invokeTool` 的公开参数只有 `{ input, toolInvocationToken, tokenizationOptions }` —— `toolSpecificData` 与 `context` **传不进去**，`toolInvocationToken` 也只能从 `ChatRequest` 拿（官方 `vscode.d.ts`：「The _only_ way to get a valid tool invocation token is using the provided `ChatRequest.toolInvocationToken`」）。HWChat 是独立面板，不是 chat participant，**没有 ChatRequest**。所以这个工具在 HWChat 里永远不可能成功 —— 继续摆给模型只会每次白烧一轮，还把它算进「连续失败」预算。
+  - **修法 ①：调不通的桥接工具不再下发**。新增 `src/agent/bridgedTools.ts`：已知名单（`run_in_terminal`）+ 运行期学习（撞过 `toolSpecificData` / `invocation context` 错误就记进会话级集合），`externalDefinitions()` 统一下发前过滤；真撞上时返回 `denied`（**不计入「连续失败」的 error**，因为重试一万次也一样），并给出一条把三件事说清楚的说明：**为什么不行**（不是权限/路径/参数问题）、**别再试**、**用什么代替**（`run_command` / `open_web_preview`）。
+  - **修法 ②：`run_command` 支持 `background: true`**。之前没有「常驻」概念，`python3 -m http.server` 只能跑满超时。现在起进程 → 收 1.5 秒输出 → 立刻返回，并给出后台 id；进程登记在册，可按 id 停掉，`dispose()` 与「停止」信号都会一起收尾（不留占端口的孤儿）。**1.5 秒这个等待是必要的**：端口被占用时服务器会立刻退出，不等就会谎报「已启动」，模型接着去预览一个空端口。
+  - **修法 ③：系统提示词教对这条路** —— 要给人看本地页面，就用 `run_command`（`background: true`）起服务 + `open_web_preview` 打开 `http://127.0.0.1:<port>/`，并明确「不要用桥接的终端工具，它需要 chat 调用上下文」。
+  - **实测（真实进程，不是 mock）**：
+    - 起 `python3 -m http.server 18792` → **1513 ms 返回**、拿到 `bg-1` / pid、`HTTP 200: true`、`listBackground()` 一条、`stopBackground()` 后端口**真的释放**（再连失败）；
+    - 端口已占用时 → `status: error` 且把 `Address already in use` 原样带回，登记表里不留僵尸；
+    - 停止按钮（AbortSignal）与 `dispose()` 都会收掉后台进程。
+  - 守护：新增 `src/test/backgroundCommand.test.ts` **5 条**（真实 http.server 起/停/端口释放、占用时带原因失败、上下文错误识别、下发过滤、说明三要素）+ `test/check-bridged-tools.mjs` **17 项**。
+  - 全量：**959** 条单测、**49** 个 `check-*.mjs` 全绿。
+
 - **对话框里的图片现在可以复制、另存、点开**（用户原话：「对话框显示的图片无法复制或者保存？」）。
   - **缺口**：附件形式的图一直有「添加到输入框 / 点击查看 / 拖回输入框」，但**正文里 `![]()` 渲染出来的 `<img>` 只有 src** —— 没有任何操作入口。上一版把图片显示修好之后，这个缺口才第一次被用户摸到。
   - **新增三个动作**（悬停或键盘聚焦时浮现，平时淡出，不在每张图上压一条工具条）：

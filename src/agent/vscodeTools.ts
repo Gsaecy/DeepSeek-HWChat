@@ -8,6 +8,7 @@ import {
   ToolExecutionResult,
 } from '../core/types';
 import { redact } from './auditLog';
+import { isMissingChatContextError, missingChatContextNotice, needsChatContext } from './bridgedTools';
 import type { RequestApproval, ToolExecutor } from './toolExecutor';
 import { externalToolPathViolation, resolveWorkspacePath } from './workspacePaths';
 import { classifyVscodeToolRisk } from '../core/permissions';
@@ -37,6 +38,15 @@ export class VscodeToolBridge {
    * 所有人都等同一批激活结束，且只激活一次。
    */
   private warming: Promise<void> | undefined;
+
+  /**
+   * 本次会话里**确认调不通**的桥接工具（撞过「缺少 chat 调用上下文」）。
+   *
+   * 学到之后就不再下发：这类工具在 HWChat 里永远不可能成功（见 `bridgedTools.ts`
+   * 里对方实现的引用），继续摆给模型只会每次白烧一轮，还会被算进「连续失败」预算
+   * —— 用户看到的正是「经常调用 vs code 工具失败」然后整轮停机。
+   */
+  private readonly unusableExternalTools = new Set<string>();
 
   constructor(private readonly tools: ToolExecutor) {}
 
@@ -152,6 +162,15 @@ export class VscodeToolBridge {
       return success(`调用 VS Code 工具：${tool.name}`, toolResultText(response) || '工具已完成，但没有返回文本结果。');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      /*
+       * 「缺少 chat 调用上下文」是**确定性**失败：这个工具在 HWChat 里永远调不通。
+       * 记进不可用集合（之后不再下发），并返回说明 + 替代方案 —— 否则模型会以为是
+       * 参数问题，换个写法再撞一次，凑满三轮就整轮停机。
+       */
+      if (isMissingChatContextError(message)) {
+        this.unusableExternalTools.add(tool.name);
+        return denied(missingChatContextNotice(tool.name));
+      }
       if (/(cancel|denied|reject|not confirmed|confirmation|abort)/i.test(message)) {
         return denied(`VS Code 工具 ${tool.name} 需要用户确认，本次调用已取消或拒绝。`);
       }
@@ -213,7 +232,10 @@ export class VscodeToolBridge {
   }
 
   private externalDefinitions(): ToolDefinition[] {
-    return this.externalTools().map((tool) => definition(
+    return this.externalTools()
+      // 已知调不通的（需要 chat 调用上下文的）不下发 —— 见 unusableExternalTools 的说明。
+      .filter((tool) => !needsChatContext(tool.name, this.unusableExternalTools))
+      .map((tool) => definition(
       externalToolId(tool.name),
       `VS Code 扩展工具 ${tool.name}：${tool.description}${absolutePathHint(tool.inputSchema)}`,
       tool.inputSchema as Record<string, unknown>,

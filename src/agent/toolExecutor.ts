@@ -200,6 +200,19 @@ export class ToolExecutor implements vscode.Disposable {
   /** 正在运行的子进程：扩展停用 / 面板释放时要整组杀掉，不留孤儿进程。 */
   /** 子进程 → 它属于哪一次运行（按 AbortSignal 归组，取消时能精确杀光）。 */
   private readonly children = new Map<ChildProcess, AbortSignal | undefined>();
+
+  /**
+   * 后台常驻进程（`run_command` 的 `background: true`）。
+   *
+   * 为什么需要这个模式：用户要「先给我预览一下效果」，正确做法是起一个静态服务器
+   * 并**立刻返回**。旧实现只能等命令结束，于是 `python3 -m http.server` 跑满 120 秒
+   * 超时；模型只好去试 `run_in_terminal`（那个在 HWChat 里永远调不通），三轮失败后
+   * 整轮停机（用户 2026-11-04 的原话：「经常调用 vs code 工具失败」）。
+   *
+   * 这些进程必须能被**明确杀掉**：会话结束/用户点停止时按 id 收尾，不留孤儿端口。
+   */
+  private readonly backgroundChildren = new Map<string, { child: ChildProcess; command: string; startedAt: number }>();
+  private backgroundSequence = 0;
   /** 相同查询的结果缓存；key 里带文件变化代数，写文件后自动失效。 */
   private readonly searchResults = new Map<string, { at: number; result: ToolExecutionResult; matches: number; truncated: boolean; bytes: number }>();
   /** 结果缓存当前占用的估算字节。 */
@@ -289,7 +302,18 @@ export class ToolExecutor implements vscode.Disposable {
         type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false,
       }),
       this.definition('run_command', tt('tool.runCommand.description', { shell: commandShellLabel() }), {
-        type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeoutSeconds: { type: 'number' } }, required: ['command'], additionalProperties: false,
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+          cwd: { type: 'string' },
+          timeoutSeconds: { type: 'number' },
+          background: {
+            type: 'boolean',
+            description: tt('tool.runCommand.backgroundParam'),
+          },
+        },
+        required: ['command'],
+        additionalProperties: false,
       }),
     ];
   }
@@ -606,6 +630,8 @@ export class ToolExecutor implements vscode.Disposable {
    * 搜索调度器与它的缓存一起释放。
    */
   dispose(): void {
+    // 后台进程必须一起收掉：它们占着端口，进程退出前不清理就是孤儿服务。
+    for (const id of [...this.backgroundChildren.keys()]) this.stopBackground(id);
     this.commands.dispose();
     // 停用扩展 / 关工作区时同样不留活口：SIGKILL，不再等 1 秒。
     for (const child of this.children.keys()) {
@@ -1068,6 +1094,37 @@ export class ToolExecutor implements vscode.Disposable {
     const timeout = Math.min(settings.maxCommandSeconds, Math.max(5, numberArg(args, 'timeoutSeconds', settings.maxCommandSeconds)));
     const commandStartedAt = Date.now();
 
+    /*
+     * 后台模式：起进程 → 短暂收一段输出 → 立刻返回。
+     *
+     * 适用「服务器 / 监听 / watch」这类**本来就不会退出**的命令。判断权交给模型
+     * （`background: true`），因为「这条命令会不会自己结束」只有它清楚；宿主这边
+     * 只保证：① 不阻塞；② 进程可被明确杀掉；③ 早期崩溃能把错误带回来。
+     */
+    if (args.background === true) {
+      const started = await this.startBackground(command, resolvedCwd.fsPath, scope, metrics);
+      if (started.exited) {
+        // 1500ms 内就退出了：多半是端口占用 / 命令不存在，直接把输出交给模型。
+        return {
+          status: started.code === 0 ? 'success' : 'error',
+          summary: started.code === 0
+            ? tt('tool.runCommand.backgroundFinished')
+            : tt('tool.runCommand.backgroundFailed', { code: started.code ?? -1 }),
+          content: truncate(redact([started.stdout, started.stderr].filter(Boolean).join('\n')), settings.maxToolOutputBytes),
+          approval: 'not-required',
+        };
+      }
+      return {
+        status: 'success',
+        summary: tt('tool.runCommand.backgroundStarted', { pid: started.pid ?? -1, seconds: Math.round((Date.now() - commandStartedAt) / 100) / 10 }),
+        content: [
+          tt('tool.runCommand.backgroundNotice', { id: started.id, pid: started.pid ?? -1 }),
+          started.stdout || started.stderr ? `\n${truncate(redact([started.stdout, started.stderr].filter(Boolean).join('\n')), Math.min(4_000, settings.maxToolOutputBytes))}` : '',
+        ].join(''),
+        approval: 'not-required',
+      };
+    }
+
     let result: SpawnResult;
     try {
       result = await this.commands.run(scope?.signal, async () => {
@@ -1135,6 +1192,78 @@ export class ToolExecutor implements vscode.Disposable {
       contentSearches: this.searchScans,
       contentSearchCacheHits: this.searchCacheHits,
     };
+  }
+
+  /**
+   * 起一个后台常驻进程，收一小段输出后返回。
+   *
+   * 为什么等 1.5 秒：`python3 -m http.server` 这类命令如果端口被占用，会**立刻**报错
+   * 退出。不等就返回「已启动」，模型会以为服务在跑，接着去预览一个空端口，
+   * 用户看到的就是「预览一片空白 + 不知道错在哪」。1.5 秒足够覆盖「起不来」的常见原因，
+   * 又不会让正常启动变慢。
+   */
+  private async startBackground(
+    command: string,
+    cwd: string,
+    scope: ToolExecutionScope | undefined,
+    metrics?: CallMetrics,
+  ): Promise<{ id: string; pid?: number; stdout: string; stderr: string; exited: boolean; code: number | null }> {
+    const id = `bg-${++this.backgroundSequence}`;
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      windowsHide: true,
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: sanitizedEnvironment(),
+    });
+    if (child.pid) this.backgroundChildren.set(id, { child, command, startedAt: Date.now() });
+    let outText: BoundedText = EMPTY_BOUNDED_TEXT;
+    let errText: BoundedText = EMPTY_BOUNDED_TEXT;
+    let exited = false;
+    let code: number | null = null;
+    const limit = 32_000;
+    child.stdout?.on('data', (chunk) => { outText = appendBoundedText(outText, String(chunk), limit); });
+    child.stderr?.on('data', (chunk) => { errText = appendBoundedText(errText, String(chunk), limit); });
+    const cleanup = (): void => {
+      this.backgroundChildren.delete(id);
+    };
+    child.once('close', (exitCode) => {
+      exited = true;
+      code = exitCode;
+      cleanup();
+    });
+    child.once('error', () => {
+      exited = true;
+      cleanup();
+    });
+    // 用户点停止 / 会话结束时不要留下孤儿端口。
+    scope?.signal?.addEventListener('abort', () => this.stopBackground(id), { once: true });
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    if (metrics && !exited) metrics.errorCode = undefined;
+    return { id, pid: child.pid, stdout: renderBoundedText(outText), stderr: renderBoundedText(errText), exited, code };
+  }
+
+  /**
+   * 停掉一个后台进程（按 id）。给 `run_command` 的 `stopBackground` 与取消路径共用。
+   *
+   * @returns 是否真的杀掉了一个进程
+   */
+  stopBackground(id: string): boolean {
+    const entry = this.backgroundChildren.get(id);
+    if (!entry) return false;
+    this.backgroundChildren.delete(id);
+    killProcessTree(entry.child, 'SIGTERM');
+    // 5 秒还不退就强制。定时器不 unref：宁可多活 5 秒，也不要留下占着端口的孤儿。
+    setTimeout(() => killProcessTree(entry.child, 'SIGKILL'), 5_000);
+    return true;
+  }
+
+  /** 当前仍在跑的后台进程（诊断与收尾用）。 */
+  listBackground(): Array<{ id: string; command: string; startedAt: number; pid?: number }> {
+    return [...this.backgroundChildren.entries()].map(([id, entry]) => ({
+      id, command: entry.command, startedAt: entry.startedAt, pid: entry.child.pid,
+    }));
   }
 
   private trackChild(child: ChildProcess, signal?: AbortSignal): void {

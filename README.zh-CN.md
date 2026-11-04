@@ -345,6 +345,7 @@ npm run package
 - `hwchat.apiProfiles` / `hwchat.activeApiProfileId`：OpenAI 兼容接口配置档和当前配置档。
 - `hwchat.baseUrl` / `hwchat.model`：兼容旧版配置，并保存当前默认接口和模型。
 - `hwchat.defaultMode` / `hwchat.agentMaxSteps`：默认模式和单轮工具循环预算。预算**默认 24 步、绝对上限 200 步**；`0`（旧的「不限制」）和非法值一律回落到默认值，所以历史会话里存着的旧值无法绕过上限。预算用尽时 Agent 会停止调用工具、保留全部已有结果，并提示回复「继续」接着执行。**这两项只作为新对话的初始值**，对话开始后以该对话自己的存档为准（工具条上的改动写回对话，不改全局）。
+- **要给人看本地页面 / 启动服务**：`run_command` 支持 `background: true`（起进程后立刻返回，给出后台 id；会话结束或点「停止」时一起收掉），再用 `open_web_preview` 打开 `http://127.0.0.1:<端口>/`。**不要用桥接的 VS Code 终端工具**（`run_in_terminal`）——它要求聊天请求的调用上下文，在 HWChat 这种独立面板里永远调不通，所以现在干脆不下发它。
 - `hwchat.searchExclude`：**设置页 → Agent → 「搜索排除目录」可直接编辑**（逗号 / 顿号 / 换行分隔都认）。在默认排除列表（`.git`、`node_modules`、`dist`、`build`、`out`、`coverage`、`.next`、`.turbo`、`.venv`、`venv`、`__pycache__`、`DerivedData`、`.cache`）之外，额外不参与工作区搜索的目录名。搜索同时只跑一个，相同参数的并发搜索会合并，结果缓存约 1.5 秒并在每次写入/保存/删除后立即失效；命令单独并发上限为 2，遇到 `EAGAIN` 一类资源错误后 5 秒内降为串行。技能清单不再跟着每次状态重发扫描（30 秒新鲜窗口 + 并发合并，文件变化由 watcher 强制刷新），命令输出按字节有界累积（截断后不再随输出增长重复编码），启动时历史读取也只做一遍。排查资源占用时可用命令 `HWChat: 显示资源统计` 查看实时的搜索与命令计数。
 - `hwchat.reasoningEffort`：默认、无、低、高、最大五档思考层级；不支持该参数的兼容接口会自动降级重试。同样只作为新对话的默认值。
 - `hwchat.permissionPreset` / `hwchat.agentMaxSteps` / `hwchat.reasoningEffort`：**已废弃，不再生效**。每一条新对话固定从「每次询问 / 24 步 / 默认（模型官方）」开始，这三项在输入框下方的工具条里按对话调整（24 / 68 / 120 / 不限制；默认 / 无 / 模型自己声明的档位；四档权限预设），选择随该对话存档。保留这三个配置键只为让旧的 `settings.json` 不报「未知配置项」。
