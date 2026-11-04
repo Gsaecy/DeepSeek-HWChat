@@ -18,6 +18,8 @@ import {
 import { AuditLog, redact } from './auditLog';
 import { commandPathViolation, maskPatternFlagArguments } from './commandPaths';
 import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './workspacePaths';
+import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
+import { shouldAutoBackground } from './serverCommands';
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
 import { gitWriteOperation, GIT_VERBS_WITHOUT_INTENT } from './conversationScope';
 import { detectVersionBump, versionBumpCommand } from './releasePolicy';
@@ -476,10 +478,21 @@ export class ToolExecutor implements vscode.Disposable {
     } catch (error) {
       metrics.errorCode = errorCodeFor(error);
       metrics.cancelled = error instanceof OperationCancelledError || Boolean(scope?.signal?.aborted);
+      const detail = error instanceof Error ? error.message : String(error);
+      /*
+       * 文件不存在时补一句「真实结构」。
+       *
+       * 只回 `ENOENT` 的话模型只能再猜一次路径；猜错就撞「连续 3 轮无进展」停机，
+       * 用户看到的是「工具老是失败」。真实案例：`web/i18n.js` 其实在 `web/assets/i18n.js`。
+       * 状态仍然是 `error`（读数确实失败了），只是把能用的下一步一起给出。
+       */
+      const hint = /ENOENT|ENOTDIR|no such file or directory/i.test(detail)
+        ? await this.missingPathHint(args, scope)
+        : undefined;
       result = {
         status: 'error',
         summary: metrics.cancelled ? tt('tool.cancelled') : tt('tool.executionFailed', { name }),
-        content: truncate(redact(error instanceof Error ? error.message : String(error)), settings.maxToolOutputBytes),
+        content: truncate(redact(hint ? `${detail}\n\n${hint}` : detail), settings.maxToolOutputBytes),
         approval: approvalRequired ? 'approved' : 'not-required',
       };
     } finally {
@@ -1100,9 +1113,17 @@ export class ToolExecutor implements vscode.Disposable {
      * 适用「服务器 / 监听 / watch」这类**本来就不会退出**的命令。判断权交给模型
      * （`background: true`），因为「这条命令会不会自己结束」只有它清楚；宿主这边
      * 只保证：① 不阻塞；② 进程可被明确杀掉；③ 早期崩溃能把错误带回来。
+     *
+     * 但模型经常忘了这个参数，直接前台跑 `python3 -m http.server` —— 那条命令会一直
+     * 跑到超时，然后**连同服务一起被整组杀掉**，于是「命令跑过了，端口上却什么都没有」。
+     * 所以服务类命令（`shouldAutoBackground`）由宿主补上后台，不再依赖模型记性。
      */
-    if (args.background === true) {
+    const autoBackground = args.background === true ? undefined : shouldAutoBackground(command);
+    if (args.background === true || autoBackground) {
       const started = await this.startBackground(command, resolvedCwd.fsPath, scope, metrics);
+      const autoNotice = autoBackground
+        ? `${tt('tool.runCommand.autoBackground', { category: autoBackground.category })}\n`
+        : '';
       if (started.exited) {
         // 1500ms 内就退出了：多半是端口占用 / 命令不存在，直接把输出交给模型。
         return {
@@ -1110,14 +1131,17 @@ export class ToolExecutor implements vscode.Disposable {
           summary: started.code === 0
             ? tt('tool.runCommand.backgroundFinished')
             : tt('tool.runCommand.backgroundFailed', { code: started.code ?? -1 }),
-          content: truncate(redact([started.stdout, started.stderr].filter(Boolean).join('\n')), settings.maxToolOutputBytes),
+          content: truncate(redact(`${autoNotice}${[started.stdout, started.stderr].filter(Boolean).join('\n')}`), settings.maxToolOutputBytes),
           approval: 'not-required',
         };
       }
       return {
         status: 'success',
-        summary: tt('tool.runCommand.backgroundStarted', { pid: started.pid ?? -1, seconds: Math.round((Date.now() - commandStartedAt) / 100) / 10 }),
+        summary: autoBackground
+          ? tt('tool.runCommand.autoBackgroundStarted', { pid: started.pid ?? -1 })
+          : tt('tool.runCommand.backgroundStarted', { pid: started.pid ?? -1, seconds: Math.round((Date.now() - commandStartedAt) / 100) / 10 }),
         content: [
+          autoNotice,
           tt('tool.runCommand.backgroundNotice', { id: started.id, pid: started.pid ?? -1 }),
           started.stdout || started.stderr ? `\n${truncate(redact([started.stdout, started.stderr].filter(Boolean).join('\n')), Math.min(4_000, settings.maxToolOutputBytes))}` : '',
         ].join(''),
@@ -1391,6 +1415,58 @@ export class ToolExecutor implements vscode.Disposable {
         cwd,
       );
       if (violation) return `${violation}${pathRewriteSuggestion(command, roots.map((root) => root.fsPath), preferredRoot?.fsPath ?? cwd)}`;
+    }
+    return undefined;
+  }
+
+  /**
+   * 路径不存在时给出「真实结构」：最近一层存在的目录 + 同名文件在哪。
+   *
+   * 只在失败路径上调用，代价是一次 `readDirectory` + 一次 `findFiles`（都限制在工作区根内）。
+   * 故意**不自动换成**找到的同名文件：读错文件比读不到更糟。
+   */
+  private async missingPathHint(args: Record<string, unknown>, scope?: ToolExecutionScope): Promise<string | undefined> {
+    for (const key of ['path', 'file', 'from', 'to']) {
+      const value = args[key];
+      if (typeof value !== 'string' || !value.trim()) continue;
+      const requested = value.trim();
+      try {
+        const resolved = await this.resolvePath(requested, scope);
+        if (existsSync(resolved.fsPath)) continue;
+        const nearest = nearestExistingDirectory(resolved.fsPath, resolved.folder.uri.fsPath, existsSync);
+        let entries: DirectoryEntryHint[] = [];
+        let hiddenCount = 0;
+        if (nearest) {
+          const listing = await Promise.resolve(
+            vscode.workspace.fs.readDirectory(vscode.Uri.file(nearest.directory)),
+          ).catch((): [string, vscode.FileType][] => []);
+          const sorted = sortDirectoryHints(
+            listing.map(([name, type]) => ({ name, directory: (type & vscode.FileType.Directory) !== 0 })),
+          );
+          entries = sorted.slice(0, 40);
+          hiddenCount = Math.max(0, sorted.length - entries.length);
+        }
+        const sameName = await vscode.workspace
+          .findFiles(
+            new vscode.RelativePattern(resolved.folder, `**/${basename(resolved.fsPath)}`),
+            '**/node_modules/**',
+            5,
+          )
+          .then((uris) => uris.map((uri) => workspaceRelativePath(uri)), () => []);
+        return renderMissingPathHint(
+          {
+            requestedPath: requested,
+            nearestDir: nearest ? workspaceRelativePath(vscode.Uri.file(nearest.directory)) : undefined,
+            nearestDepth: nearest?.depth,
+            entries,
+            hiddenCount,
+            sameName,
+          },
+          { t: tt },
+        );
+      } catch {
+        // 解析失败（越界 / 歧义）时静默跳过：原始错误信息比半截提示更准确。
+      }
     }
     return undefined;
   }

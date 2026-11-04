@@ -79,7 +79,7 @@ check(
 );
 check(
   '后台模式立刻返回，不等命令结束',
-  /if \(args\.background === true\) \{[\s\S]{0,400}startBackground\(/.test(EXECUTOR),
+  /if \(args\.background === true(?: \|\| autoBackground)?\) \{[\s\S]{0,500}startBackground\(/.test(EXECUTOR),
 );
 check(
   '后台进程登记在册，可被明确停掉',

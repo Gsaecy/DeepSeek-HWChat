@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **路径不存在时不再只回一行 `ENOENT`：把「真实结构」和同名文件还给模型**（用户两次贴回同一条失败：`read_file {"path":"…/web/i18n.js"}` → `Error: ENOENT … stat '…/web/i18n.js'`，而文件其实在 `…/web/assets/i18n.js`）。
+  - 只回错误时模型只能**再猜一次**路径，猜错就撞「连续 3 轮无进展」停机 —— 用户看到的是「工具老是失败」。现在 `read_file` / `open_file` / `write_file` / `replace_in_file` / `delete_file` / `rename_file` 这类带路径的工具失败时（只认 `ENOENT` / `ENOTDIR`），错误后面会补上：**最近一层真实存在的目录**（不越过工作区根）、它下面的条目（目录在前、最多 40 条、说明还有多少没列）、**同一工作区里的同名文件**（最多 5 处、排除 `node_modules`），以及一句「直接改用上面的真实路径重试；不确定就先 `list_directory`」。
+  - 刻意**不自动替换**成找到的同名文件：读错文件比读不到更糟。状态仍是 `error`（读数确实失败了），只是把能用的下一步一起给出。
+  - 守护：`pathHints.test.ts` **7 条**（真实临时目录上的退层与边界、目录排序、空提示返回 `undefined`）+ `check-path-hints.mjs` **16 项**（含拿用户那条真实路径跑一遍：`web/i18n.js → web`，渲染结果里出现 `web/assets/i18n.js`）。
+
+- **heredoc 正文不再被当成文件路径：`python3 - <<'PY'` 改 CSS 不会再被路径隔离拦下**（用户把失败原文贴回来两次：`命令被路径隔离策略拦截：路径 /* 移动菜单（2026-11-06）：≤720px 时导航里的文字链全部收进这块面板。`，还附了一句误导性的「它看起来是 sed/grep 的正则地址而不是文件路径」）。
+  - **根因**：隔离策略把整条命令当命令行参数扫描，而 `<<'PY' … PY` 里是 **CSS/Python 代码**。`BARE_ABSOLUTE_PATH` 把注释开头 `/*` 当成绝对路径，`resolve('/*…')` 落到文件系统根 → 判成越界。模型改写法重试仍会被拒，最后就是「连续 3 轮失败」停机。
+  - **修法**（`heredocRanges` + `maskRanges`）：先定位 heredoc 正文区间（支持 `<<EOF`、`<<'EOF'`、`<<-"EOF"` 制表符剥离、**一行多个 heredoc**、找不到结束标记时不遮），把正文换成等长空白再扫描；正文里只保留一种检查 —— **带引号的绝对路径**，所以 `open('/etc/passwd')` 照样被拦，而 `/* 注释 */`、`url(../img/x.png)`、正则字面量不再误伤。
+  - 顺手修掉一个同类误判：`css = """ … /* … */ … """` 这种跨行「字符串」会被 `isAbsolute` 判成路径（因为它以 `/` 开头），现在跨行字符串一律不算路径。
+  - **实测**：把用户贴回来的那条 5 409 字节命令原样喂给 `commandPathViolation()` —— 修复前返回拦截，修复后 `undefined`，heredoc 区间识别为 `17…5407`。
+  - 守护：`commandPaths.test.ts` 新增 **7 条**（CSS 注释、`url(../x)` 与 `~`、正文里的带引号绝对路径仍被拦、正文里的工作区路径放行、四种 heredoc 变体、命令行本身的路径仍校验、未闭合 heredoc 保守处理）。
+
+- **预览打不开 / 「说用 python3 启动但其实没启动」：打开前先探端口 + 服务命令自动转后台**（用户原话：「我发现 vs code 的对话框里，如果他生成命令说用 python3 启动，它不会真正的启动，会导致无法预览」）。
+  - **证据（审计日志 7 164 条工具记录）**：`open_web_preview` 曾在 **8765 / 8766 / 5180 / 8795 / 8790** 上被打开过，而那些端口**没有任何启动记录**——预览的其实是一个空端口；`run_command` 的前台路径到点 `SIGTERM`+`SIGKILL` **整个进程组**，前台跑的 `python3 -m http.server` 到超时后连服务一起消失，于是模型只好绕路写 `nohup … &` 再用 `pkill -f` 去停。
+  - **① `open_web_preview` 先探端口**（`src/agent/previewProbe.ts`）：本机/内网地址做一次 **TCP connect**（1.5 s 上限，不依赖静态服务器回什么状态码）。探不通就**不打开**，直接回 `端口上没有服务在监听（连接被拒绝）` + 可照做的下一步（端口、`background: true`、完整参数），并写明「把命令写进回复等于没启动」。公网地址不探测（那是网络问题，不是我们没起服务）。
+  - **② 服务命令由宿主自动转后台**（`src/agent/serverCommands.ts`）：`python3 -m http.server`、`http-server`、`serve`、`live-server`、`pnpm/npm/yarn dev|start|preview`、`vite`、`next/nuxt/astro dev`、`webpack serve`、`php -S`、`ruby -run -e httpd`、`hugo server`/`jekyll serve`/`mkdocs serve`、`uvicorn`/`gunicorn`/`flask run`/`manage.py runserver`/`rails server` 命中即转入宿主管理的后台（有 id、有 pid、可停），不再依赖模型记得那个参数；`nohup … &` / `setsid` / `disown` 这类自己后台化的命令不重复包一层（否则会误报「没能常驻」）。
+  - 实测（真实进程）：起一个 `python3 -m http.server` → 探针可达；`SIGKILL` 后 → `ECONNREFUSED`（`check-preview-guard.mjs` 里是真起真停，不是模拟）。
+  - 守护：`previewGuard.test.ts` **7 条** + `check-preview-guard.mjs` **22 项**（含静态检查「探针必须在 `simpleBrowser.show` 之前」）。
+
 - **模型不吃图时不再让整轮请求永久失败：自动降级 + 一次学会 + 明确告知**（用户原话：连发两次「继续优化网站，做好给我预览」都只回 `请求失败：接口请求失败（400）：messages.content.type 参数非法，取值范围 ['text']`，随后确认「我切换的智谱模型」「我切换回 DeepSeek 模型后，发消息又成功处理了」）。
   - **根因不是这条消息**：`requestMessageFromParts()` 只要 `attachments` 里有图片就发 `[{type:'text'},{type:'image_url'}]`；该模型只收 `text`。**关键在于对话历史里只要曾有一条带图的提问**，之后每条**纯文字**新消息都会重新拼出那个 `image_url` —— 于是这个对话永久发不出去，用户看到的是「服务挂了」，实际是「历史被一张旧图毒化」。这也解释了为什么换回 DeepSeek 立刻恢复。
   - **① 识别**（`src/providers/visionFallback.ts`，纯函数）：`isTextOnlyContentRejection(detail, hasImageParts)` —— 只在**这一轮确实带了图**、且错误文案命中「content.type / 参数非法 / 取值范围 / text」时才认。少一个条件都不降级，避免把真正的参数错误掩盖成「模型不吃图」。

@@ -215,3 +215,77 @@ test('the switch exemption only applies on Windows', () => {
     /不在当前工作区内/,
   );
 });
+
+// ── heredoc 正文：代码/样式数据不是命令行参数（2026-11-04 真实故障）──────────
+/*
+ * 现场（用户贴回的失败原文）：
+ *
+ *     命令被路径隔离策略拦截：路径 /* 移动菜单（2026-11-06）：≤720px 时导航里的文字链全部收进这块面板。
+ *
+ * 模型用 `python3 - <<'PY'` 改 site.css，正文里是 CSS 注释；隔离策略把注释开头当成
+ * 绝对路径，整条命令被拒绝，还建议「改成 grep -e」。那段文字一个文件都没碰。
+ */
+test('heredoc body with CSS comments is not a path', () => {
+  const command = [
+    "python3 - <<'PY'",
+    'from pathlib import Path',
+    'css = """',
+    '/*',
+    ' * 移动菜单（2026-11-06）：≤720px 时导航里的文字链全部收进这块面板。',
+    ' * 原来的做法是把链接 display:none——手机上「价格 / 常见问题」从顶栏消失。',
+    ' */',
+    '.menu-toggle { display: none; }',
+    '"""',
+    'PY',
+  ].join('\n');
+  assert.equal(commandPathViolation(command, roots), undefined);
+});
+
+test('heredoc body with relative url() and ~ is not an escape', () => {
+  const command = [
+    "cat <<'CSS' > assets/site.css",
+    '.hero { background: url(../img/hero.png); }',
+    '.x::after { content: "~/tmp"; }',
+    'CSS',
+  ].join('\n');
+  assert.equal(commandPathViolation(command, roots), undefined);
+});
+
+test('quoted absolute paths inside a heredoc are still checked', () => {
+  const command = [
+    "python3 - <<'PY'",
+    "open('/etc/passwd')",
+    'PY',
+  ].join('\n');
+  assert.match(String(commandPathViolation(command, roots)), /不在当前工作区内/);
+});
+
+test('a workspace quoted path inside a heredoc is allowed', () => {
+  const command = [
+    "python3 - <<'PY'",
+    "Path('/Users/test/AI projects/DeepSeek-HWChat/site.css').read_text()",
+    'PY',
+  ].join('\n');
+  assert.equal(commandPathViolation(command, roots), undefined);
+});
+
+test('heredoc variants: tab-stripping, unquoted and several bodies', () => {
+  const tabStripped = ["cat <<-EOF > out.txt", '\t/* 注释 */', '\tEOF'].join('\n');
+  assert.equal(commandPathViolation(tabStripped, roots), undefined);
+  const unquoted = ['cat <<EOF > x.txt', '/* 注释 */', 'EOF'].join('\n');
+  assert.equal(commandPathViolation(unquoted, roots), undefined);
+  const two = ['cat <<A > a.txt <<B', '/* 一 */', 'A', '/* 二 */', 'B'].join('\n');
+  assert.equal(commandPathViolation(two, roots), undefined);
+});
+
+test('paths on the heredoc command line itself are still validated', () => {
+  const command = ["cat <<'EOF' > /etc/motd", '/* 注释 */', 'EOF'].join('\n');
+  assert.match(String(commandPathViolation(command, roots)), /不在当前工作区内/);
+});
+
+test('an unterminated heredoc is checked conservatively (no terminator → no masking)', () => {
+  // 找不到结束标记时宁可按普通命令检查：遮错区间会把后面的真实命令当成正文吞掉。
+  const command = ["cat <<'EOF'", '/* 注释 */'].join('\n');
+  assert.match(String(commandPathViolation(command, roots)), /不在当前工作区内/);
+  assert.match(String(commandPathViolation(["cat > /etc/x <<'EOF'", 'body'].join('\n'), roots)), /不在当前工作区内/);
+});

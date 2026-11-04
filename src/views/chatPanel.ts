@@ -4547,6 +4547,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
        * 现在原生 `run_command` 支持 `background: true`，这条路才真正走得通。
        */
       'To let the user see a local web page or a running dev server, use the native tools: `run_command` with `background: true` to start the server (it returns immediately with a pid), then `open_web_preview` with the http://127.0.0.1:<port>/ URL. Do not use a bridged VS Code terminal tool for this — those require chat invocation context and cannot be driven from here.',
+      'Printing a start command in the reply is not starting anything: if the user has to paste it, the preview will not work. Start it with `run_command` first. `open_web_preview` probes the port and will tell you when nothing is listening — that means the server is not running yet, so start it instead of trying another port.',
       // 图片能力必须由宿主明说（有/没有两种说法）。
       // 真实事故（2026-11-04）：没配图片模型时模型不知道，自己去 npx 装 mermaid-cli，
       // 超时 2 分钟，最后手写 SVG 落盘 —— 用户界面上什么都没看到，以为功能坏了。

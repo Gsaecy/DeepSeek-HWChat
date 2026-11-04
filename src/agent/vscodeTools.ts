@@ -8,6 +8,8 @@ import {
   ToolExecutionResult,
 } from '../core/types';
 import { redact } from './auditLog';
+import { tt } from '../core/i18n';
+import { isLocalPreviewHost, previewEndpoint, previewUnreachableAdvice, probePreviewEndpoint } from './previewProbe';
 import { isMissingChatContextError, missingChatContextNotice, needsChatContext } from './bridgedTools';
 import type { RequestApproval, ToolExecutor } from './toolExecutor';
 import { externalToolPathViolation, resolveWorkspacePath } from './workspacePaths';
@@ -248,6 +250,20 @@ export class VscodeToolBridge {
         const value = stringArg(args, 'url');
         const url = new URL(value);
         if (!['http:', 'https:'].includes(url.protocol)) throw new Error('网页预览只允许 HTTP(S) 地址。');
+        /*
+         * 本机地址先探一次端口。
+         *
+         * 不探的后果就是现场那句「它会说用 python3 启动，但其实没启动，所以预览打不开」：
+         * 模型假设一个端口，`open_web_preview` 照样打开，Simple Browser 里只有一个报错页，
+         * 谁也不知道是服务没起来。现在把「没有服务」直接说清，并给出能照着做的启动参数。
+         */
+        const endpoint = previewEndpoint(url.toString());
+        if (endpoint && isLocalPreviewHost(endpoint.host)) {
+          const probe = await probePreviewEndpoint(url.toString());
+          if (!probe.reachable) {
+            return failed(tt('tool.preview.notOpened', { url: url.toString() }), previewUnreachableAdvice(probe, { t: tt, url: url.toString() }));
+          }
+        }
         await vscode.commands.executeCommand('simpleBrowser.show', url.toString());
         return success(`已打开网页预览：${url.toString()}`, '网页已在 VS Code 编辑区预览。');
       }
@@ -353,6 +369,11 @@ function success(summary: string, content: string): ToolExecutionResult {
 
 function denied(summary: string): ToolExecutionResult {
   return { status: 'denied', summary, content: summary, approval: 'denied' };
+}
+
+/** 工具真的尝试了但没成功（与「被拒绝」区分开：这里应该照着 content 里的下一步重试）。 */
+function failed(summary: string, content: string): ToolExecutionResult {
+  return { status: 'error', summary, content, approval: 'not-required' };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

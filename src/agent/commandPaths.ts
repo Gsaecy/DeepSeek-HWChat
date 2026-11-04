@@ -74,7 +74,13 @@ export function commandPathViolation(
   // `/"name"/,/displayName/p` 会被 BARE_ABSOLUTE_PATH 当成绝对路径拒绝，而它根本
   // 不是文件访问。旧实现只能给出“请改写成 -e”的提示，让调用方替工具背锅。
   // 遮掉的是模式位置上的参数，真正的文件参数仍在后面照常校验。
-  const command = maskPatternFlagArguments(maskPatternArguments(rawCommand));
+  //
+  // heredoc 正文（`python3 - <<'PY' … PY`）同理：那是代码/样式数据，里面的
+  // `/* 注释 *\/`、`url(../x)` 都不是命令行参数。正文里只保留一种检查：
+  // **带引号的绝对路径**（`open('/etc/passwd')` 这种真实访问照样拦住）。
+  const heredocs = heredocRanges(rawCommand);
+  const bodies = heredocs.map((range) => rawCommand.slice(range.start, range.end));
+  const command = maskPatternFlagArguments(maskPatternArguments(maskRanges(rawCommand, heredocs)));
   if (ESCAPING_PATH.test(command)) {
     return tt('path.blockedGeneric');
   }
@@ -100,6 +106,9 @@ export function commandPathViolation(
   // 带引号的路径可以含空格（例如 "…/AI projects/x"），要整体取出再判断。
   for (const match of withoutUrls.matchAll(QUOTED_STRING)) {
     const value = (match[1] ?? match[2] ?? '').trim();
+    // 跨行的「字符串」不是路径：`css = """ … /* … */ … """` 这种整段代码块
+    // 会被 isAbsolute 误判（因为正文里有以 `/` 开头的注释行）。
+    if (/[\r\n]/.test(value)) continue;
     if (isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)) candidates.push(value);
   }
   const unquoted = withoutUrls.replace(QUOTED_STRING, ' ');
@@ -109,6 +118,15 @@ export function commandPathViolation(
   // 裸根 `/`：上面的 BARE_ABSOLUTE_PATH 要求 `/` 后至少一个字符，会漏掉
   // `rm -rf /` 这类写法，这里补一条独立检出。
   if (BARE_ROOT_PATH.test(unquoted)) candidates.push('/');
+  // heredoc 正文只收紧到「带引号的绝对路径」：CSS 注释、`url(../x)`、正则字面量
+  // 都不再误伤，而脚本里真去 open('/etc/passwd') 仍然会被拦下。
+  for (const body of bodies) {
+    for (const match of body.matchAll(QUOTED_STRING)) {
+      const value = (match[1] ?? match[2] ?? '').trim();
+      if (/[\r\n]/.test(value)) continue;
+      if (isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)) candidates.push(value);
+    }
+  }
 
   for (const raw of candidates) {
     const candidate = raw.replace(/[.,;:)\]]+$/, '');
@@ -130,6 +148,73 @@ export function commandPathViolation(
 /** 判断一个“绝对路径”候选其实是不是正则表达式片段。 */
 function looksLikeRegex(candidate: string): boolean {
   return /[\^$]/.test(candidate) || /\/[^/]*,[^/]*\//.test(candidate);
+}
+
+/**
+ * heredoc 正文的区间（`python3 - <<'PY' … PY`）。
+ *
+ * 现场（2026-11-04，用户把失败原样贴回来两次）：
+ *
+ *     python3 - <<'PY'
+ *     ...
+ *     /* 移动菜单（2026-11-06）：≤720px 时导航里的文字链全部收进这块面板。 *\/
+ *     ...
+ *     PY
+ *
+ * 隔离策略把 `/* 移动菜单…` 当成绝对路径，整条命令被拒绝，还建议「改成 grep -e」——
+ * 可那段是 **CSS 注释**，并不是文件访问。heredoc 正文是代码/样式数据，不是命令行
+ * 参数，不能按命令行参数的方式扫描。
+ */
+export function heredocRanges(command: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  const lines: Array<{ start: number; end: number }> = [];
+  let offset = 0;
+  for (const line of command.split('\n')) {
+    lines.push({ start: offset, end: offset + line.length });
+    offset += line.length + 1;
+  }
+  const HEREDOC = /<<(?!<)(-?)\s*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z0-9_.:-]+))/g;
+  for (let index = 0; index < lines.length; index += 1) {
+    const text = command.slice(lines[index]!.start, lines[index]!.end);
+    // 一行里可能有多个 heredoc（`cat <<A > a.txt <<B`）：正文按顺序依次排在后面。
+    const pending: Array<{ delimiter: string; stripTabs: boolean }> = [];
+    for (const match of text.matchAll(HEREDOC)) {
+      const delimiter = match[2] ?? match[3] ?? match[4];
+      if (delimiter) pending.push({ delimiter, stripTabs: match[1] === '-' });
+    }
+    if (!pending.length) continue;
+    let bodyStart = lines[index]!.end + 1;
+    let lastTerminator = index;
+    for (const { delimiter, stripTabs } of pending) {
+      let terminator = -1;
+      for (let scan = lastTerminator + 1; scan < lines.length; scan += 1) {
+        const candidate = command.slice(lines[scan]!.start, lines[scan]!.end);
+        const compared = stripTabs ? candidate.replace(/^\t+/, '') : candidate;
+        if (compared === delimiter) {
+          terminator = scan;
+          break;
+        }
+      }
+      // 找不到结束标记就不遮：宁可多检查，也不能把后面的命令当成正文吞掉。
+      if (terminator < 0) break;
+      ranges.push({ start: bodyStart, end: lines[terminator]!.start });
+      bodyStart = lines[terminator]!.end + 1;
+      lastTerminator = terminator;
+    }
+    index = lastTerminator;
+  }
+  return ranges;
+}
+
+/** 把若干区间替换成等长空白（保留换行），使它们不参与后续扫描。 */
+function maskRanges(text: string, ranges: ReadonlyArray<{ start: number; end: number }>): string {
+  if (!ranges.length) return text;
+  let result = text;
+  for (const range of [...ranges].sort((left, right) => right.start - left.start)) {
+    const blank = result.slice(range.start, range.end).replace(/[^\n]/g, ' ');
+    result = `${result.slice(0, range.start)}${blank}${result.slice(range.end)}`;
+  }
+  return result;
 }
 
 /**
