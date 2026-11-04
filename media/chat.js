@@ -4165,8 +4165,19 @@
     const value = String(src || '').trim();
     if (!value) return false;
     if (/^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);base64,[a-z0-9+/=\s]+$/i.test(value)) return true;
-    // 桌面端是 `file+.vscode-resource.vscode-cdn.net`（那个 `+` 必须放行），网页版是 `<guid>.vscode-cdn.net`。
-    return /^https:\/\/[a-z0-9.+-]*vscode-cdn\.net\//i.test(value)
+    /*
+     * 桌面端资源地址有两种拼法，**都要放行**：
+     *   - `file+.vscode-resource.vscode-cdn.net`（文档与旧版本的样子）
+     *   - `file%2B.vscode-resource.vscode-cdn.net`（`asWebviewUri().toString()` 在当前
+     *     版本实际输出的样子 —— `+` 被百分号编码了）
+     *
+     * 真实事故（2026-11-04）：面板**自己生成**的地址就是 `%2B` 形式，而白名单只认 `+`，
+     * 于是「生成图片」永远是文字；`embedMentionedImages` 补出来的那张也一样被拒。
+     * 上一轮之所以以为修好了，是因为我只测了 `+` 形式。
+     *
+     * 网页版是 `<guid>.vscode-cdn.net`。三种都放行。
+     */
+    return /^https:\/\/(?:file(?:\+|%2b)\.vscode-resource\.|[a-z0-9-]+\.)?vscode-cdn\.net\//i.test(value)
       || /^vscode-(?:webview-)?resource:\/\//i.test(value);
   }
 

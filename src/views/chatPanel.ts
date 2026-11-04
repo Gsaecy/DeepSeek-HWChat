@@ -6,7 +6,7 @@ import { AgentRunner } from '../agent/agentRunner';
 import { attachmentCacheName, planAttachmentOpen } from '../agent/attachmentOpen';
 import { messagesSignatureKey } from './messageSignature';
 import { isInsideWorkspace, normalizeFileReference, revealTargetFor } from '../agent/fileReveal';
-import { embedMentionedImages, resolveLocalImage, rewriteMarkdownImagePaths } from '../agent/markdownImages';
+import { embedMentionedImages, rehostWebviewImageUrls, resolveLocalImage, rewriteMarkdownImagePaths } from '../agent/markdownImages';
 import { imageCapabilityPrompt, looksLikeImageRequest } from '../agent/imageRequest';
 import { chooseReferenceMatch } from '../agent/fileReferenceResolve';
 import { resolveFileReferences, type ReferenceQuery } from '../agent/fileReferenceBatch';
@@ -3766,11 +3766,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       return file ? view.webview.asWebviewUri(file).toString() : undefined;
     };
     /*
-     * 顺序：先把已有的 `![]()` 换成 webview 地址，再把「只在正文里提了一句路径」的
-     * 本地图片补成真正的图片。只补**工作区内真实存在**的文件，所以既能兜住
-     * 「生成了图但只发了路径」的情况，也不会凭空造出一张破图。
+     * 三步，顺序有讲究：
+     *  ① 已经是 webview 地址的，能反解回工作区文件的重新用 `asWebviewUri` 生成一遍 ——
+     *     模型抄地址时容易把 `+` 写成 `%2B`（或反过来），那份地址不一定能加载；
+     *  ② 相对路径 / 工作区内绝对路径换成 webview 地址；
+     *  ③ 只在正文里提了一句路径的本地图片补成真正的图片（兜住「生成了图但只发了路径」）。
+     * 三步都只认**工作区内真实存在**的文件，所以不会凭空造出一张破图。
      */
-    return embedMentionedImages(rewriteMarkdownImagePaths(content, toWebviewUri), toWebviewUri);
+    const rehosted = rehostWebviewImageUrls(content, toWebviewUri);
+    return embedMentionedImages(rewriteMarkdownImagePaths(rehosted, toWebviewUri), toWebviewUri);
   }
 
   /**

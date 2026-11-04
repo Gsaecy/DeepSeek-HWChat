@@ -126,7 +126,17 @@ check('data:image/svg+xml 不放行', api.imageSourceAllowed('data:image/svg+xml
 check('data:text/html 不放行', api.imageSourceAllowed('data:text/html;base64,PHNjcmlwdD4=') === false);
 check('远程 https 图片不放行（CSP 会拦成破图）', api.imageSourceAllowed('https://example.com/a.png') === false);
 check('javascript: 不放行', api.imageSourceAllowed('javascript:alert(1)') === false);
-check('webview 资源地址放行', api.imageSourceAllowed('https://file+.vscode-resource.vscode-cdn.net/a.png') === true);
+check('webview 资源地址放行（`+` 形式）', api.imageSourceAllowed('https://file+.vscode-resource.vscode-cdn.net/a.png') === true);
+// 真实事故 2026-11-04：`asWebviewUri().toString()` 实际输出的是 `%2B` 形式，
+// 而白名单只认 `+` —— 面板自己生成的地址被自己拒掉，图片永远只是文字。
+check('webview 资源地址放行（`%2B` 形式，asWebviewUri 的真实输出）',
+  api.imageSourceAllowed('https://file%2B.vscode-resource.vscode-cdn.net/a.png') === true);
+check('webview 资源地址放行（小写 `%2b`）',
+  api.imageSourceAllowed('https://file%2b.vscode-resource.vscode-cdn.net/a.png') === true);
+check('网页版 `<guid>.vscode-cdn.net` 放行',
+  api.imageSourceAllowed('https://abc123def.vscode-cdn.net/a.png') === true);
+check('随便一个 vscode-cdn.net 子域不放行（前缀必须是 file+/file%2B 或 guid 形式）',
+  api.imageSourceAllowed('https://evil.file%2B.vscode-cdn.net.attacker.com/a.png') === false);
 check('vscode-resource: 放行', api.imageSourceAllowed('vscode-resource://file/a.png') === true);
 check('空地址不放行', api.imageSourceAllowed('  ') === false);
 
@@ -211,7 +221,8 @@ check('出图端点 404 有专门解释（换配置档，而不是重试）',
   /api\.imageEndpointMissing/.test(CLIENT) && /response\.status === 404/.test(CLIENT),
   '「接口请求失败（404）」无法指导下一步');
 check('回复里只提到本地图片路径时，自动补成可见的图片',
-  /embedMentionedImages\(rewriteMarkdownImagePaths\(content, toWebviewUri\), toWebviewUri\)/.test(PANEL),
+  /return embedMentionedImages\(rewriteMarkdownImagePaths\(rehosted, toWebviewUri\), toWebviewUri\);/.test(PANEL)
+  && /rehostWebviewImageUrls\(content, toWebviewUri\)/.test(PANEL),
   '那次 agent 生成了 architecture.svg 并写进了正文，但只写成反引号路径，对话里什么都没显示');
 
 console.log(`\n${checks - failures}/${checks} 项通过`);

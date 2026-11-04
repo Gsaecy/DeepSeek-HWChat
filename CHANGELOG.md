@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **图片在对话框里始终不显示：面板自己生成的地址被自己的白名单拒掉了**（用户原话：「对话框还是没有发图片给我」→「copilot也能输出图片到对话框」）。
+  - **根因（一行就能说清）**：`asWebviewUri().toString()` 在当前 VS Code 里输出的是 **`https://file%2B.vscode-resource.vscode-cdn.net/…`** —— `+` 被百分号编码成 `%2B`。而渲染层的白名单写的是 `/^https:\/\/[a-z0-9.+-]*vscode-cdn\.net\//`，`%` 不在字符集里，于是**面板自己生成的地址被自己判成非法**，图片被当成纯文本原样显示。
+  - **为什么上一轮「以为修好了」**：我只测了 `+` 形式（文档里的写法），没测真实输出。这次先用你贴的那条真实链接做**单点验证**：4 种拼法里 `file%2B`、`file%2b` 两种被拒，`file+`、`<guid>.vscode-cdn.net` 放行 —— 而 `asWebviewUri` 输出的正是被拒的那两种。
+  - **修法两层**：
+    1. 白名单接受 `file+`、`file%2B`、`file%2b` 与 `<guid>.vscode-cdn.net` 三种真实拼法（用 `vscode-cdn.net.attacker.com` 这类构造验证过不会误放行）。
+    2. 新增 `rehostWebviewImageUrls()`：回复里**已经是 webview 地址**的图片，只要能反解回**工作区内真实文件**，就一律换成宿主自己用 `asWebviewUri` 生成的规范地址 —— 模型抄地址时把 `+` 写成 `%2B`（或反过来）也不会变成破图；反解不出来的（工作区外、编码对不上）原样保留。
+  - **端到端复验**（用你机器上真实的 `architecture-v2.png`，1960×1680，408 KB 级）：拿你贴的那条 `%2B` 链接喂进真实 `chat.js` + `chat.css`，无头 Chromium 里渲染出 `naturalWidth×Height = 1960×1680`、`srcHost` 已规范化成 `file+.vscode-resource.vscode-cdn.net`、正文里不再残留裸 markdown（`rawMarkdownLeftAsText: false`）、控制台零报错；截图可见左侧米色身份轨道、中间 7 层卡片、右侧依赖列与底部绿色治理带。
+  - 守护：`check-image-output.mjs` 扩到 **40 项**（新增 4 种地址拼法的放行/拒绝 + 补图接线校验）；`imageRequest.test.ts` 扩到 **11 条**（新增 `%2B`/`+` 规范化、工作区外不改编、Windows `/c:/` 反解）。
+  - 全量：**943** 条单测、**48** 个 `check-*.mjs` 全绿。
+
 - **图片输出：修掉「生成了但对话里看不到」，并让「没配图片模型」当场说清楚**（用户原话：「hwchat的图片输出功能没成功」→「他生成了，但是对话框里没有出现，只是放在文件夹里了」）。
   - **先分清两件事**：
     1. `generate_image` **一次都没被调用** —— 查你的 `settings.json`，两个配置档（DeepSeek / Minimax）都**没有 `imageModel`**，按设计这个工具根本不会下发给模型。

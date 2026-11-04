@@ -116,3 +116,34 @@ export function embedMentionedImages(
   if (!appended.length) return content;
   return `${content.replace(/\s+$/, '')}\n\n${appended.join('\n\n')}`;
 }
+
+/**
+ * 把回复里**已经是 webview 资源地址**的图片重新解析成「工作区文件 → 规范地址」。
+ *
+ * 为什么需要（真实事故 2026-11-04）：模型看到上一轮回复里的地址后，会照着抄一份
+ * `https://file%2B.vscode-resource.vscode-cdn.net/...`。这种地址带着宿主进程才知道的
+ * 授权口径，模型抄错一个字符（`%2B` / `+` / 少个前缀）就是一张破图，而且没法诊断。
+ *
+ * 所以凡是能反解回**工作区内真实文件**的，一律换成宿主自己用 `asWebviewUri` 生成的
+ * 规范地址 —— 那是唯一保证能加载的形式。反解不出来的（工作区外的文件、编码对不上）
+ * 原样保留，交给渲染层白名单判断。
+ */
+export function rehostWebviewImageUrls(
+  content: string | undefined,
+  map: (localPath: string) => string | undefined,
+): string | undefined {
+  if (!content || !content.includes('vscode-cdn.net')) return content;
+  const pattern = /!\[([^\]\n]*)\]\(\s*<?(https:\/\/(?:file(?:\+|%2B)\.vscode-resource\.|[a-z0-9-]+\.)?vscode-cdn\.net\/[^)\s>]+)>?\s*(?:"[^"]*")?\s*\)/gi;
+  return content.replace(pattern, (whole, alt: string, url: string) => {
+    let pathname: string;
+    try {
+      pathname = decodeURIComponent(new URL(url).pathname);
+    } catch {
+      return whole;
+    }
+    // Windows 的绝对路径在 URL 里长成 `/c:/Users/...`。
+    const localPath = /^\/[a-zA-Z]:\//.test(pathname) ? pathname.slice(1) : pathname;
+    const replacement = map(localPath);
+    return replacement ? `![${alt}](${replacement})` : whole;
+  });
+}
