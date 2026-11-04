@@ -91,6 +91,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // 网络事件的唯一落点：重试、最终失败都记在这里，排查「fetch failed」时先看它。
     (line) => output.warn(line),
   );
+  /*
+   * 模型不接受图片输入时，明确告诉用户一次。
+   *
+   * 真实故障（2026-11-04，智谱模型）：对话历史里有一条带图的提问，之后每一次请求
+   * 都会带上那个 `image_url`，于是一条纯文字的新消息也永远返回
+   * `messages.content.type 参数非法，取值范围 ['text']` —— 用户看到的就是"连发两次都失败"。
+   * 客户端已经会自动去掉图片重发；这里补一句说明，让用户知道为什么图没被看到。
+   */
+  const warnedTextOnlyModels = new Set<string>();
+  client.onVisionFallback = (event) => {
+    if (warnedTextOnlyModels.has(event.model)) return;
+    warnedTextOnlyModels.add(event.model);
+    void vscode.window.showWarningMessage(tt('notice.visionFallback', { model: event.model, count: event.dropped }));
+  };
   let settingsPanel!: SettingsPanel;
   const chat = new ChatPanel(
     context.extensionUri,

@@ -1613,6 +1613,20 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         }
         throw error;
       }
+      /*
+       * 已知这个模型不吃图片：**发送前**就告诉用户，别等它发出去再被降级。
+       * 图仍然会随消息存进历史（用户能点开看），只是这一轮不发给模型。
+       */
+      if (this.client.isTextOnlyModel(settings)) {
+        const images = this.pendingAttachments.filter((item) => item.kind === 'image');
+        if (images.length) {
+          await this.post({
+            type: 'toast',
+            tone: 'warning',
+            text: tt('notice.visionFallback', { model: settings.model, count: images.length }),
+          });
+        }
+      }
       const context = this.pendingContext;
       const attachments = this.pendingAttachments.map((item) => ({ ...item }));
       this.pendingContext = undefined;

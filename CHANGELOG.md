@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **模型不吃图时不再让整轮请求永久失败：自动降级 + 一次学会 + 明确告知**（用户原话：连发两次「继续优化网站，做好给我预览」都只回 `请求失败：接口请求失败（400）：messages.content.type 参数非法，取值范围 ['text']`，随后确认「我切换的智谱模型」「我切换回 DeepSeek 模型后，发消息又成功处理了」）。
+  - **根因不是这条消息**：`requestMessageFromParts()` 只要 `attachments` 里有图片就发 `[{type:'text'},{type:'image_url'}]`；该模型只收 `text`。**关键在于对话历史里只要曾有一条带图的提问**，之后每条**纯文字**新消息都会重新拼出那个 `image_url` —— 于是这个对话永久发不出去，用户看到的是「服务挂了」，实际是「历史被一张旧图毒化」。这也解释了为什么换回 DeepSeek 立刻恢复。
+  - **① 识别**（`src/providers/visionFallback.ts`，纯函数）：`isTextOnlyContentRejection(detail, hasImageParts)` —— 只在**这一轮确实带了图**、且错误文案命中「content.type / 参数非法 / 取值范围 / text」时才认。少一个条件都不降级，避免把真正的参数错误掩盖成「模型不吃图」。
+  - **② 降级重发**：`stripImageParts()` 去掉 `image_url` 段，并**把「图片已省略」写进正文** —— 不写这句，模型会照着上下文**编造**图片内容。只剩一段文本时降级成字符串（兼容连 `[{type:"text"}]` 都不收的接口）。降级请求不计入失败轮次。
+  - **③ 一次学会**：`textOnlyModels` 记住 `"${profileId}\u0000${model}"`，同一模型**下一次就直接不发图**（不再先撞一次 400 再重发）。键里带模型名，换到视觉模型（如 `glm-4.5v`）**立刻**恢复带图，不需要重启或清缓存。
+  - **④ 明确告知**：`onVisionFallback` 回调 → `extension.ts` 弹**一次性** warning；`chatPanel` 在**发送前**就对已知不吃图的模型提示「图片会被省略，换视觉模型可恢复」；`[vision]` 诊断日志留档，事后可复盘。
+  - 守护：`src/test/visionFallback.test.ts` **6 条**（含「历史带旧图 → 纯文字新消息也失败」的真实场景与「换视觉模型立刻恢复」）+ `check-vision-fallback.mjs` **12 项**。
+  - 全量：**985** 条单测、**51** 个 `check-*.mjs` 全绿。
+
 - **审计了「还有哪些工具调用会被拒」，把其中路径固定的三类也做成宿主指定首选工具**（用户原话：「只有我提到的任务才指定首选工具吗，你检查下，还有哪些工具调用会被拒，然后给我也做成指定首选工具这种模式」）。
   - **① 完整审计（15 处拒绝点）**：`toolAccessError`（工具名不存在 / 联网工具开关关着）、`policy=deny`、plan 模式写、未信任工作区、`commandPathViolation`（工作区外路径）、`sensitiveGuard`（敏感文件）、`gitWriteBlockReason`、`versionBumpBlockReason`、桥接工具缺 chat 上下文、桥接工具路径越界、playbook 硬拒、工具循环守卫（同一调用 3 次）、无进展停机（连续 3 轮）、用户拒绝、图片地址不在宿主表里。
   - **② 新增三类任务类型**（只收判据可靠的，**没有**做成万能分类器 —— 重构 / 排查这类路径不固定，硬套会误伤）：

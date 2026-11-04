@@ -8,8 +8,16 @@ import {
   UsageInfo,
 } from '../core/types';
 import { tt } from '../core/i18n';
+import { hasImageParts, isTextOnlyContentRejection, stripImageParts } from './visionFallback';
 import { fetchWithNetworkRetry, type RetryEvent } from './netDiagnostics';
 import { fetchViaProxy, type ResponseLike } from './proxyFetch';
+
+export interface VisionFallbackEvent {
+  model: string;
+  dropped: number;
+  /** `known` = 之前学过；`rejected` = 这次被服务端拒绝后学会的。 */
+  reason: 'known' | 'rejected';
+}
 
 export interface StreamChatOptions {
   signal?: AbortSignal;
@@ -89,6 +97,14 @@ interface OpenAIErrorResponse {
 }
 
 export class DeepSeekClient {
+  /**
+   * 图片被降级时的通知（界面上用它弹一条说明）。
+   *
+   * 用客户端级回调而不是每次请求都传：降级是**模型能力**层面的结论，
+   * 与具体哪一轮无关，而且它在重试路径里被触发 —— 那条路径拿不到单次 options。
+   */
+  onVisionFallback?: (event: VisionFallbackEvent) => void;
+
   constructor(
     private readonly getApiKey: (profileId: string) => Thenable<string | undefined> | Promise<string | undefined>,
     /**
@@ -149,6 +165,24 @@ export class DeepSeekClient {
     this.logNetwork(`[net] 请求失败 ${endpoint.split('?')[0]}｜${message.replace(/\n/g, ' / ')}`);
   }
 
+  /**
+   * 已知不支持图片输入的「配置档 + 模型」。
+   *
+   * 学到之后，后续请求**一开始**就不发图片部分 —— 否则用户每次带图提问都要
+   * 先吃一个 400、再靠重试兜回来，界面上看起来就是"老是失败"。
+   * 键包含模型名：换一个支持视觉的模型应当立刻恢复。
+   */
+  private readonly textOnlyModels = new Set<string>();
+
+  private textOnlyKey(settings: ChatSettings): string {
+    return `${settings.activeApiProfileId}\u0000${settings.model}`;
+  }
+
+  /** 这个「配置档 + 模型」是不是已知不吃图片（诊断与测试用）。 */
+  isTextOnlyModel(settings: ChatSettings): boolean {
+    return this.textOnlyModels.has(this.textOnlyKey(settings));
+  }
+
   async streamChat(
     settings: ChatSettings,
     messages: ChatRequestMessage[],
@@ -160,9 +194,27 @@ export class DeepSeekClient {
     }
 
     const endpoint = buildEndpoint(settings.baseUrl);
+    /*
+     * 已知这个模型不吃图片：**先**降级再发，不等服务端报错。
+     * 首次遇到时会在下面的 400 分支里学会并重试一次。
+     */
+    let outgoing = messages;
+    let droppedImages = 0;
+    if (this.textOnlyModels.has(this.textOnlyKey(settings))) {
+      const stripped = stripImageParts(messages, tt('api.visionUnsupportedNote'));
+      outgoing = stripped.messages;
+      droppedImages = stripped.dropped;
+      if (droppedImages) {
+        this.onVisionFallback?.({
+          model: settings.model,
+          dropped: droppedImages,
+          reason: 'known',
+        });
+      }
+    }
     const body: Record<string, unknown> = {
       model: settings.model,
-      messages,
+      messages: outgoing,
       temperature: settings.temperature,
       stream: true,
       stream_options: { include_usage: true },
@@ -245,6 +297,24 @@ export class DeepSeekClient {
       if (response.ok) break;
       const detail = await readError(response, apiKey);
       if (response.status === 400 && removeRejectedReasoningControl(body, detail)) continue;
+      /*
+       * 「content.type 只允许 text」：这次请求形状整个不被接受，改参数没用，重发也没用。
+       * 去掉图片部分再发一次 —— 与 `removeRejectedReasoningControl` 同一个思路：
+       * 把服务端的拒绝当成可以自我修正的信号，并把结论记下来供后续请求使用。
+       */
+      if (response.status === 400
+        && isTextOnlyContentRejection(detail, hasImageParts(outgoing as Array<{ content: unknown }>))) {
+        const stripped = stripImageParts(outgoing as Array<{ content: unknown }>, tt('api.visionUnsupportedNote'));
+        if (stripped.dropped > 0) {
+          this.textOnlyModels.add(this.textOnlyKey(settings));
+          body.messages = stripped.messages;
+          outgoing = stripped.messages as typeof outgoing;
+          droppedImages += stripped.dropped;
+          this.onVisionFallback?.({ model: settings.model, dropped: stripped.dropped, reason: 'rejected' });
+          this.logNetwork(`[vision] ${settings.model} 不接受图片输入，已去掉 ${stripped.dropped} 张图重发（之后不再附带）`);
+          continue;
+        }
+      }
       statusAttempt += 1;
       // 服务端过载（503 / 429 / 5xx）：请求没被处理，等一下重发既安全也必要。
       if (shouldRetryStatus(response.status) && statusAttempt < TRANSIENT_STATUS_ATTEMPTS && !options.signal?.aborted) {
