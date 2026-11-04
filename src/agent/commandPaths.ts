@@ -64,6 +64,74 @@ function isWindowsCommandSwitch(token: string, platform: string): boolean {
   return WINDOWS_COMMAND_SWITCHES.has(head);
 }
 
+/**
+ * 按段推导命令执行时的「当前目录」。
+ *
+ * 现场（用户 2026-11-04）：
+ *
+ *     cd "/Users/…/Personal Workstation OS/src-tauri" && du -sh target/x && mkdir -p ../tmp/cargo-check && …
+ *     → 命令被路径隔离策略拦截：路径 ../tmp/cargo-check 解析后不在当前工作区内
+ *
+ * 那条命令执行到 `mkdir` 时其实已经在 `src-tauri` 里，`../tmp` 就是工作区内的
+ * `Personal Workstation OS/tmp` —— 完全合法。旧实现只拿 `run_command` 的 `cwd`
+ * 参数（缺省＝项目根）去解析，没看命令自己先 `cd` 进了子目录，于是把合法路径判成越界。
+ *
+ * 规则（保守、只认能静态确定的形式）：
+ *  - 只在段首识别 `cd <路径>`（`cd` 之后到段尾只有这一个参数）；
+ *  - 相对路径按「这一段开始时的 cwd」解析，解析成功就更新后续段的 cwd；
+ *  - 不是单一路径参数（含 `$(…)`、`&&` 之类）一律不更新，保持旧行为。
+ */
+export function commandCwdTimeline(command: string, baseCwd: string): Array<{ text: string; cwd: string }> {
+  const parts = command.split(SEGMENT_SPLIT);
+  const timeline: Array<{ text: string; cwd: string }> = [];
+  let cwd = resolve(baseCwd);
+  for (let index = 0; index < parts.length; index += 2) {
+    const text = parts[index] ?? '';
+    timeline.push({ text, cwd });
+    const target = leadingCdTarget(text);
+    if (!target) continue;
+    // `$(…)` / 反引号 / 通配符：静态算不出目标，保持原 cwd。
+    if (/[$`*?]/.test(target)) continue;
+    cwd = resolve(cwd, target);
+  }
+  return timeline;
+}
+
+/** 段首是 `cd <单个路径参数>` 时返回那个参数，否则 `undefined`。 */
+function leadingCdTarget(segment: string): string | undefined {
+  const tokens = tokenizeSegment(segment);
+  const headIndex = tokens.findIndex((token) => !isAssignment(token.text) && !isGrouping(token.text));
+  if (headIndex < 0) return undefined;
+  const head = basename(tokens[headIndex]!.text).toLocaleLowerCase();
+  if (head !== 'cd' && head !== 'pushd') return undefined;
+  const rest = tokens.slice(headIndex + 1).filter((token) => token.text !== '');
+  if (rest.length !== 1) return undefined;
+  return rest[0]!.text;
+}
+
+/** `..` 引用按段解析：每段用它自己那一时刻的 cwd。 */
+function parentReferenceViolation(
+  command: string,
+  roots: readonly string[],
+  cwd: string | undefined,
+): string | undefined {
+  if (!ANY_PARENT_REFERENCE.test(command)) return undefined;
+  if (!cwd) {
+    // 不知道工作目录时无法静态判定 `..` 会解析到哪里，只能保守拒绝。
+    return tt('path.blockedGeneric');
+  }
+  for (const { text, cwd: segmentCwd } of commandCwdTimeline(command, cwd)) {
+    for (const match of text.matchAll(PARENT_REFERENCE)) {
+      const token = match[2]!.replace(/[.,;:)\]]+$/, '');
+      if (!token) continue;
+      if (!roots.some((root) => isPathWithin(root, resolve(segmentCwd, token)))) {
+        return tt('path.blockedResolved', { token });
+      }
+    }
+  }
+  return undefined;
+}
+
 export function commandPathViolation(
   rawCommand: string,
   roots: readonly string[],
@@ -84,20 +152,8 @@ export function commandPathViolation(
   if (ESCAPING_PATH.test(command)) {
     return tt('path.blockedGeneric');
   }
-  if (ANY_PARENT_REFERENCE.test(command)) {
-    // 不知道工作目录时无法静态判定 `..` 会解析到哪里，只能保守拒绝。
-    if (!cwd) {
-      return tt('path.blockedGeneric');
-    }
-    const base = resolve(cwd);
-    for (const match of command.matchAll(PARENT_REFERENCE)) {
-      const token = match[2]!.replace(/[.,;:)\]]+$/, '');
-      if (!token) continue;
-      if (!roots.some((root) => isPathWithin(root, resolve(base, token)))) {
-        return tt('path.blockedResolved', { token });
-      }
-    }
-  }
+  const parentViolation = parentReferenceViolation(command, roots, cwd);
+  if (parentViolation) return parentViolation;
   if (!roots.length) return undefined;
 
   // URL 里的 `//host/path` 不是文件路径，先剔除再扫描。

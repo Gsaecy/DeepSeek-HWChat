@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **命令窗口不再闪：展开的工具步骤在流式更新时「同步就位」，内部滚动位置也不跳**（用户原话：「agent 在输出的时候，展开具体命令，命令显示窗口会闪动」）。
+  - **两个独立成因**：① 整条消息重建后，`restoreDetailOverrides()` 才把用户展开的步骤设成 `open`，而正文是惰性建的 —— 给 `<details open>` 赋值的 `toggle` 事件是**异步**派发的，于是新节点先以「展开但空白」插入 DOM，下一帧内容才冒出来；② 命令参数/输出所在的 `pre` 是独立滚动容器，整条替换会把它重置到顶部，用户正读输出中段时每推一次工具状态就跳一下。
+  - **修法**：`installLazyToolDetail` 把 `build()` 挂到 `details.__buildDetail`；`restoreDetailOverrides()` 恢复 `open` 时**同步**调用它 —— 插入 DOM 时就已经是完整状态。新增 `captureInnerScroll` / `restoreInnerScroll`，按顺序记住并还原消息内所有 `pre` 的 `scrollTop/scrollLeft`（数量对不上就放弃，不张冠李戴）。
+  - 守护：`check-tool-block-flicker.mjs` **10 项**（真实 headless Chromium + 真实 `chat.js`：展开命令步骤 → 滚到输出中段 → 推一次 `toolExecutions` → 断言同一帧正文已在、滚动位置保留）。**反向验证过**：把 `chat.js` 换回修复前的版本，这项从 10/10 掉到 5/10。
+
+- **命令里先 `cd` 再写相对路径，不再被误判越界**（用户贴回的失败：`cd "…/Personal Workstation OS/src-tauri" && … mkdir -p ../tmp/cargo-check && …` → `路径 ../tmp/cargo-check 解析后不在当前工作区内`）。
+  - 那条命令执行到 `mkdir` 时已经在 `src-tauri` 里，`../tmp` 就是工作区内的 `Personal Workstation OS/tmp`，完全合法。旧实现只拿 `run_command` 的 `cwd` 参数（缺省＝项目根）解析，没看命令自己先 `cd` 进了子目录。
+  - **修法**（`commandCwdTimeline`）：按 `&&` / `||` / `;` / `|` / 换行分段，只认「段首 `cd <单个路径参数>`」这种能静态确定的形式，逐段推进 cwd，每个 `..` 用**它那一刻**的 cwd 解析。`cd "$(git rev-parse …)"`、`cd a b` 这类算不出的不推进（保持旧的保守行为）；`cd /etc && ls ..` 仍由绝对路径检查拦住。
+  - 守护：`commandPaths.test.ts` 新增 **6 条**（用户那条真实命令原样放行、cd 之后仍不能 `../../..` 逃出、cd 到工作区外仍被拦、多参数 cd 不推进、`$(…)` 不推进、连续 cd 链）。
+
+- **VS Code 桥接工具用「自然名字」调用也能通**（用户贴回的失败：`open_browser_page {"url":"http://127.0.0.1:5199/pet.html"}` → `工具 open_browser_page 未被允许。`）。
+  - 清单里下发的是 `hwchat_vscode_open_browser_page_<hash>`，而模型在历史里看到的是「调用 VS Code 工具：open_browser_page」，照着它调用就落到原生执行器，得到「未被允许」。名字对不上不该由用户承担。
+  - **修法**：`VscodeToolBridge` 在带前缀分支之前先按工具的**真实名字**找一次，找到就照常执行；`hwchat_*` 命名空间不参与裸名匹配（避免遮蔽本扩展自己的工具）。
+  - 守护：`vscodeBridgeNames.test.ts` **4 条**（裸名路由成功、带前缀 id 不受影响、不存在的裸名仍交下游拒绝、`hwchat_*` 不参与）。
+
 - **`run_command` 不再把 `timeoutSeconds: 900` 静默压成 120：超时时说清「被上限截断」并给出可执行的三条路**（用户贴回的失败：`{"command":"cd \"…/Personal Workstation OS\" && cargo check --manifest-path src-tauri/Cargo.toml 2>&1 | tail -40","timeoutSeconds":900}` → `超时（120 秒）` + `(无输出)`）。
   - **根因**：`Math.min(settings.maxCommandSeconds, requested)` 直接吞掉请求值，结果只说「超时（120 秒）」。用户看到的是「命令莫名其妙失败」，模型看到的是「没有输出」，双方都不知道**它其实还能跑 900 秒**——上限只在设置里。
   - **① 请求值与生效值分开算**（`src/agent/commandTimeout.ts`）：`effectiveTimeoutSeconds()` 返回 `{ requested, effective, clamped }`，不再静默截断用户设置（设置仍然是硬上限，只是不再隐瞒）。

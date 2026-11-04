@@ -289,3 +289,48 @@ test('an unterminated heredoc is checked conservatively (no terminator → no ma
   assert.match(String(commandPathViolation(command, roots)), /不在当前工作区内/);
   assert.match(String(commandPathViolation(["cat > /etc/x <<'EOF'", 'body'].join('\n'), roots)), /不在当前工作区内/);
 });
+
+// ── 命令里先 cd 再写相对路径：按 cd 之后的目录解析（2026-11-04 真实故障）──────
+/*
+ * 用户那条被拒的命令：
+ *
+ *     cd "/Users/…/Personal Workstation OS/src-tauri" && du -sh target/sherpa-onnx-prebuilt \
+ *       && mkdir -p ../tmp/cargo-check && cp -R target/sherpa-onnx-prebuilt ../tmp/cargo-check/
+ *
+ * 执行到 mkdir 时已经在 src-tauri 里，`../tmp` ＝ 工作区内的 `Personal Workstation OS/tmp`，
+ * 完全合法；旧实现只按 `run_command` 的 cwd（项目根）解析，把它判成越界。
+ */
+const osRoot = '/Users/test/AI projects/Personal Workstation OS';
+
+test('a leading cd changes how later ../ paths resolve', () => {
+  const command = `cd "${osRoot}/src-tauri" && du -sh target/sherpa-onnx-prebuilt && mkdir -p ../tmp/cargo-check && cp -R target/sherpa-onnx-prebuilt ../tmp/cargo-check/ && ls ../tmp/cargo-check/sherpa-onnx-prebuilt`;
+  assert.equal(commandPathViolation(command, [osRoot], osRoot), undefined);
+});
+
+test('a leading cd cannot be used to escape the workspace', () => {
+  const command = `cd "${osRoot}/src-tauri" && cat ../../../etc/passwd`;
+  assert.match(String(commandPathViolation(command, [osRoot], osRoot)), /不在当前工作区内/);
+});
+
+test('a leading cd to outside is still caught by the absolute-path check', () => {
+  const command = 'cd /etc && ls ..';
+  assert.match(String(commandPathViolation(command, [osRoot], osRoot)), /不在当前工作区内/);
+});
+
+test('cd with more than one argument is not treated as a plain path (base stays put)', () => {
+  const command = `cd "${osRoot}/src-tauri" && echo hi && cat ../tmp/x`;
+  assert.equal(commandPathViolation(command, [osRoot], osRoot), undefined, '单个路径参数的 cd 会移动基准');
+  // 多参数的 cd 算不出目标目录 → 不移动基准 → ../tmp 仍相对项目根，落在工作区外。
+  const ambiguous = 'cd src-tauri extra && cat ../tmp/x';
+  assert.match(String(commandPathViolation(ambiguous, [osRoot], osRoot)), /不在当前工作区内/);
+});
+
+test('cd with a command substitution does not move the base (cannot be resolved statically)', () => {
+  const command = 'cd "$(git rev-parse --show-toplevel)" && cat ../../outside/x';
+  assert.match(String(commandPathViolation(command, [osRoot], osRoot)), /不在当前工作区内/);
+});
+
+test('cd chain: each segment uses the cwd in effect at that point', () => {
+  const command = `cd "${osRoot}" && cd src-tauri && cat ../tmp/ok.txt`;
+  assert.equal(commandPathViolation(command, [osRoot], osRoot), undefined);
+});

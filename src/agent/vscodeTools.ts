@@ -98,6 +98,32 @@ export class VscodeToolBridge {
         );
         return { result };
     }
+    /*
+     * 裸名（`open_browser_page`）也要能调到。
+     *
+     * 真实故障（用户 2026-11-04）：模型在历史里看到「调用 VS Code 工具：open_browser_page」，
+     * 下一次就照着这个自然名字调用 —— 而清单里下发的是 `hwchat_vscode_open_browser_page_<hash>`，
+     * 于是落到原生执行器，得到一句「工具 open_browser_page 未被允许」。
+     * 名字对不上不是用户的错，这里按工具的**真实名字**再找一次，找到就照常执行。
+     */
+    const bareName = call.function.name.startsWith(PREFIX) ? '' : call.function.name;
+    if (bareName) {
+      const bare = this.findExternalToolByName(bareName);
+      if (bare) {
+        const result = await this.tools.executeExternal(
+          call,
+          mode,
+          settings,
+          classifyVscodeToolRisk(bare),
+          requestApproval,
+          `调用 VS Code 工具：${bare.name}`,
+          `${bare.description}\n\n参数：${redact(call.function.arguments).slice(0, 1_000)}`,
+          () => this.invokeExternal(bare, call.function.arguments),
+          { conversationId, delegateApproval: true },
+        );
+        return { result };
+      }
+    }
     if (call.function.name.startsWith(PREFIX)) {
       let external = this.findExternalTool(call.function.name);
       if (!external) {
@@ -186,6 +212,16 @@ export class VscodeToolBridge {
 
   private findExternalTool(id: string): ExternalTool | undefined {
     return this.externalTools().find((item) => externalToolId(item.name) === id);
+  }
+
+  /**
+   * 按工具的**真实名字**找（`open_browser_page` 而不是带前缀的 id）。
+   *
+   * 宿主内部的名字（`hwchat_*`）不许走这条通道：那属于本扩展自己的命名空间。
+   */
+  private findExternalToolByName(name: string): ExternalTool | undefined {
+    if (!name || name.startsWith(PREFIX) || name.startsWith('hwchat_')) return undefined;
+    return this.externalTools().find((item) => item.name === name);
   }
 
   /**

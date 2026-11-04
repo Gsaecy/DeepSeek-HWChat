@@ -69,6 +69,8 @@ class FakeNode {
     const walk = (node) => { for (const child of node.children) { found.push(child); walk(child); } };
     walk(this);
     if (selector === '.stream-cursor') return found.filter((node) => node.className === 'stream-cursor');
+    // 「命令窗口闪动」修复要在整条替换前后保留内部 pre 的滚动位置，这里补上 pre。
+    if (selector === 'pre') return found.filter((node) => node.tagName === 'PRE');
     if (selector === 'details[data-detail-key]') {
       return found.filter((node) => node.tagName === 'DETAILS' && node.dataset.detailKey);
     }
@@ -106,6 +108,11 @@ const scheduleSource = extractBlock(CHAT_JS, '\n  function scheduleMessagePatch(
 const runPendingSource = extractBlock(CHAT_JS, '\n  function runPendingMessageRender(').replace(/^\n/, '');
 const captureSource = extractBlock(CHAT_JS, '\n  function captureDetailOverrides(').replace(/^\n/, '');
 const restoreSource = extractBlock(CHAT_JS, '\n  function restoreDetailOverrides(').replace(/^\n/, '');
+// 整条替换时保留消息内部 pre 的滚动位置（2026-11-04 修「命令窗口闪动」引入）。
+const innerScrollSource = [
+  extractBlock(CHAT_JS, '\n  function captureInnerScroll('),
+  extractBlock(CHAT_JS, '\n  function restoreInnerScroll('),
+].map((block) => block.replace(/^\n/, '')).join('');
 
 /* ── 装配被测代码 ─────────────────────────────────────────────── */
 
@@ -188,6 +195,7 @@ const factory = new Function('ctx', 'FakeNode', `
   const findMessageNode = (messageId) => elements.messageList.children.find((node) => node.dataset.messageId === messageId) || null;
   ${captureSource}
   ${restoreSource}
+  ${innerScrollSource}
   ${signatureSource}
   ${growingSource}
   ${rememberSource}

@@ -2062,8 +2062,15 @@
     restoreDetailOverrides(detailOverrides, next);
     const viewport = elements.messageViewport;
     const previousTop = viewport.scrollTop;
+    /*
+     * 消息里的 `pre`（命令参数 / 输出）是独立滚动容器。
+     * 整条替换会把它们重置到顶部 —— 用户正看着输出中段时，agent 推一次工具状态
+     * 画面就「跳一下」，读起来就是闪动。这里按顺序记下再还回去。
+     */
+    const innerScrolls = captureInnerScroll(current);
     state.renderingMessages = true;
     current.replaceWith(next);
+    restoreInnerScroll(next, innerScrolls);
     rememberRender(next, state.messages[index]);
     renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
     requestAnimationFrame(() => {
@@ -2178,7 +2185,26 @@
       const key = details.dataset.detailKey;
       if (!messageId || !key) continue;
       const value = overrides.get(`${messageId}::${key}`);
-      if (value !== undefined) details.open = value;
+      if (value === undefined) continue;
+      details.open = value;
+      // 展开态必须**同步**把正文建出来，否则会先渲染成「展开但空白」再补内容（闪一下）。
+      if (value) details.__buildDetail?.();
+    }
+  }
+
+  /** 记下消息内部所有可滚动 `pre` 的位置（按出现顺序）。 */
+  function captureInnerScroll(root) {
+    return [...root.querySelectorAll('pre')].map((node) => [node.scrollTop, node.scrollLeft]);
+  }
+
+  /** 还原到重建后的新节点上；数量对不上就放弃（宁可不还原，也不张冠李戴）。 */
+  function restoreInnerScroll(root, saved) {
+    const nodes = [...root.querySelectorAll('pre')];
+    if (!saved.length || nodes.length !== saved.length) return;
+    for (const [index, node] of nodes.entries()) {
+      const [top, left] = saved[index];
+      if (top) node.scrollTop = top;
+      if (left) node.scrollLeft = left;
     }
   }
 
@@ -3402,6 +3428,16 @@
       if (tool.output) detail.append(detailBlock(t('chat.toolOutput'), tool.output));
       if (!tool.input && !tool.output) detail.append(textElement('p', 'tool-cleaned', tool.finishedAt ? t('chat.toolCleaned') : t('chat.toolWaiting')));
     };
+    /*
+     * 把 build 挂到节点上。
+     *
+     * 为什么需要：`restoreDetailOverrides()` 是在**整条消息重建之后**把用户展开的步骤
+     * 重新设成 open 的，而那一刻正文还没建。给 `<details open>` 赋值的 `toggle` 事件是
+     * **异步派发**的，于是新节点先以「展开但没有内容」的状态插进 DOM，下一帧内容才冒出来 ——
+     * 用户看到的就是「命令窗口闪一下」（真实反馈 2026-11-04）。
+     * 现在恢复 open 的同时同步建正文，插入 DOM 时就已经是完整状态。
+     */
+    details.__buildDetail = build;
     if (details.open) {
       build();
       return;
