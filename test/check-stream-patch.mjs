@@ -109,6 +109,12 @@ const runPendingSource = extractBlock(CHAT_JS, '\n  function runPendingMessageRe
 const captureSource = extractBlock(CHAT_JS, '\n  function captureDetailOverrides(').replace(/^\n/, '');
 const restoreSource = extractBlock(CHAT_JS, '\n  function restoreDetailOverrides(').replace(/^\n/, '');
 // 整条替换时保留消息内部 pre 的滚动位置（2026-11-04 修「命令窗口闪动」引入）。
+// 工具步骤的就地更新（2026-11-04 修「命令窗口闪动」引入）：patchMessage 会先试它。
+const toolStepsSource = [
+  extractBlock(CHAT_JS, '\n  function patchToolStepsOnly('),
+  extractBlock(CHAT_JS, '\n  function applyToolStepsInPlace('),
+  extractBlock(CHAT_JS, '\n  function applyToolStep('),
+].map((block) => block.replace(/^\n/, '')).join('');
 const innerScrollSource = [
   extractBlock(CHAT_JS, '\n  function captureInnerScroll('),
   extractBlock(CHAT_JS, '\n  function restoreInnerScroll('),
@@ -196,6 +202,16 @@ const factory = new Function('ctx', 'FakeNode', `
   ${captureSource}
   ${restoreSource}
   ${innerScrollSource}
+  ${toolStepsSource}
+  // 就地更新用到的依赖：本守护只验证「不该整条重建」，这些替身保持最小。
+  const executionFoldSummaryText = () => '';
+  const iconNode = () => new FakeNode('span');
+  const statusIconName = () => 'check';
+  const riskLabelOf = () => 'read';
+  const toolMeta = () => '';
+  const runningToolMeta = () => '';
+  const fillToolDetail = () => {};
+  const t = (key) => key;
   ${signatureSource}
   ${growingSource}
   ${rememberSource}

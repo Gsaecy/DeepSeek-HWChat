@@ -108,6 +108,8 @@ if (!playwrightRoot || !chromium) {
       };
 
       // agent 在这一步之后又推了一次工具状态（同一 callId、同一状态、只是时间变了）。
+      // 记下节点身份：就地更新必须**保留同一个 <details> 节点**，整条重建会换成新节点。
+      const identityBefore = details;
       const updated = { ...tools()[0], summary: '`cargo check …` → 超时（120 秒）· 30.0s' };
       window.postMessage({ type: 'toolExecutions', conversationId: 'c', messageId: 'm1', tools: [updated] }, '*');
 
@@ -128,12 +130,18 @@ if (!playwrightRoot || !chromium) {
         scrollTop: ([...(document.querySelector('#messageList details.tool-execution')?.querySelectorAll('.tool-detail pre') ?? [])]
           .find((node) => node.scrollHeight > node.clientHeight))?.scrollTop ?? -1,
       };
-      return { before, sameFrame, after };
+      const sameNode = document.querySelector('#messageList details.tool-execution') === identityBefore;
+      return { before, sameFrame, after, sameNode };
     });
 
     check('展开后正文确实建出来了', out.before.blocks >= 2, JSON.stringify(out.before));
     check('测试前置：确实滚动到了输出中段', out.before.scrollTop > 100, `scrollTop=${out.before.scrollTop}`);
     check('状态更新后这一步仍然展开', out.sameFrame.open === true, JSON.stringify(out.sameFrame));
+    check(
+      '就地更新：步骤节点本身被保留（整条重建会换掉它 → 动画/选区/滚动都会重来）',
+      out.sameNode === true,
+      '同一条消息只在工具步骤变化时不该整条替换',
+    );
     check(
       '同一帧内正文已经在（不再「展开但空白」）',
       out.sameFrame.blocks >= 2 && out.sameFrame.text === true,
@@ -144,6 +152,30 @@ if (!playwrightRoot || !chromium) {
       out.after.scrollTop > 100,
       `after=${out.after.scrollTop}（before=${out.before.scrollTop}）`,
     );
+    // ── 混合场景：正文在长 + 工具状态同帧变化 ───────────────────────────────
+    const mixed = await page.evaluate(async () => {
+      const nodeBefore = document.querySelector('#messageList details.tool-execution');
+      const textBefore = document.querySelector('#messageList .message-content')?.textContent || '';
+      // 真实面板就是这么发的：`content` 直接在顶层，不是嵌在 delta 里。
+      window.postMessage({ type: 'streamDelta', conversationId: 'c', messageId: 'm1', content: '追加一句。' }, '*');
+      window.postMessage({
+        type: 'toolExecutions', conversationId: 'c', messageId: 'm1',
+        tools: [{ callId: 'run-1', name: 'run_command', summary: '`cargo check …` → 退出码 0', status: 'success', risk: 'command', startedAt: Date.now() - 2000, finishedAt: Date.now(), input: '{"command":"x"}', output: 'line 0: done' }],
+      }, '*');
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const nodeAfter = document.querySelector('#messageList details.tool-execution');
+      const contentAfter = document.querySelector('#messageList .message-content')?.textContent || '';
+      return {
+        sameNode: nodeAfter === nodeBefore,
+        grew: contentAfter.length > textBefore.length,
+        summary: nodeAfter?.querySelector('.tool-summary')?.textContent || '',
+        output: nodeAfter?.querySelector('.tool-detail')?.textContent?.includes('done') === true,
+      };
+    });
+    check('混合场景：正文变长时步骤节点仍被保留（不整条重建）', mixed.sameNode === true, JSON.stringify(mixed));
+    check('混合场景：正文确实继续追加了', mixed.grew === true, JSON.stringify(mixed));
+    check('混合场景：步骤摘要与输出都跟上了', /退出码 0/.test(mixed.summary) && mixed.output === true, JSON.stringify(mixed));
+
     check('没有脚本错误', errors.length === 0, errors.join('; '));
 
     await browser.close();

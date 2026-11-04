@@ -21,6 +21,7 @@ import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './wo
 import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
 import { shouldAutoBackground } from './serverCommands';
 import { effectiveTimeoutSeconds, timeoutAdvice, timeoutClampNotice, timeoutClampSummary } from './commandTimeout';
+import { selfNestedCdHint } from './commandHints';
 import { diagnoseMissingOldText, findAlreadyApplied, renderMissingOldTextDiagnosis } from './replaceDiagnostics';
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
 import { gitWriteOperation, GIT_VERBS_WITHOUT_INTENT } from './conversationScope';
@@ -1226,6 +1227,15 @@ export class ToolExecutor implements vscode.Disposable {
      * 根本没动过的项目，比漏掉更误导。
      */
     if (gitWrite && result.code === 0) this.recordProjectRoot(scope, resolvedCwd);
+    /*
+     * `cd` 到自己所在目录：宿主直接说清「你已经在这里了」。
+     * 真实反馈（2026-11-04）：cwd 本来就是 Personal Workstation OS，
+     * 模型又写了 `cd "Personal Workstation OS"`，得到 /bin/sh 的 No such file or directory。
+     */
+    const nestedCd = selfNestedCdHint(command, resolvedCwd.fsPath, output);
+    const nestedCdHint = nestedCd
+      ? tt('tool.runCommand.alreadyThere', { dir: nestedCd, cwd: resolvedCwd.relativePath })
+      : undefined;
     const clampSummary = result.timedOut ? timeoutClampSummary(timeoutPlan, tt) : '';
     const clampNotice = result.timedOut
       ? timeoutClampNotice(timeoutPlan, { t: tt, settingKey: COMMAND_TIMEOUT_SETTING, maxSeconds: COMMAND_TIMEOUT_MAX })
@@ -1237,7 +1247,7 @@ export class ToolExecutor implements vscode.Disposable {
       status: result.code === 0 && !result.timedOut ? 'success' : 'error',
       summary: `${commandSummary(command, result, timeout, Date.now() - commandStartedAt)}${clampSummary}`,
       content: truncate(
-        redact([clampNotice, output || tt('tool.noOutput'), advice].filter(Boolean).join('\n\n')),
+        redact([clampNotice, output || tt('tool.noOutput'), nestedCdHint, advice].filter(Boolean).join('\n\n')),
         settings.maxToolOutputBytes,
       ),
       approval: 'approved',

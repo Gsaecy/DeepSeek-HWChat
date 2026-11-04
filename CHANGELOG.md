@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **展开的命令步骤在流式更新时不再闪（第二版：改成「就地更新」，不再整条重建）**（用户第二次反馈：「展开的这种命令块窗口，还是会闪动」）。
+  - **上一版只修了「展开态先空后满」和「`pre` 滚动重置」，漏掉了真正的元凶**：同一条消息里只要工具步骤变了，`patchMessage` 就走 `current.replaceWith(renderMessage(...))` —— **整条消息的节点全部重造**。于是 `<details>` 里 `animation: pulse` 的 pending 徽标从头播一遍、正在选中的命令文字丢失、悬停的「复制」按钮重建、滚动位置归零、长消息整体重排 —— 肉眼就是「一直在闪」。
+  - **修法**：新增 `patchToolStepsOnly` / `applyToolStepsInPlace` / `applyToolStep`，按 `callId` 对上现有的 `details[data-detail-key="tool:<callId>"]`，**就地**同步状态类名、摘要、`<small>` 元信息与正文字段；状态没变时连徽标都不重建（避免 pulse 重播）。
+    - 正文只在内容签名变化时才重建，且重建前后保留 `pre` 的滚动位置。
+    - **混合场景**（同一帧里正文在长、工具也在变）：先就地同步步骤、推进 tools 签名，再让正文走增量追加 —— 两边都不触发整条重建。
+    - 结构对不上（步骤数/顺序变了）返回 `false`，交给原来的整条替换兜底 —— 宁可重画，也不能画错。
+  - **实测**：`check-tool-block-flicker.mjs` 扩到 **14 项**，新增两条硬判别断言 —— 「步骤节点本身被保留」（`details` 引用不变）与「混合场景下节点仍被保留且正文继续增长」。把 `media/chat.js` 换回修复前版本，这两条立刻失败（12/14）。
+
+- **`cd` 到自己所在的目录时，宿主直接说清「你已经在这里了」**（用户贴回的失败：`cd "Personal Workstation OS" && grep -n … package.json` → `/bin/sh: line 0: cd: Personal Workstation OS: No such file or directory`）。
+  - 那条命令的 cwd 本来就是 `…/Personal Workstation OS`（本次对话的项目根），`cd` 于是去找它**下面**的同名子目录。宿主知道真实 cwd，不必让模型换写法再猜：`selfNestedCdHint()` 在失败输出确实是 `cd: <名字>: No such file or directory` 时追加一句「当前工作目录已经是 X，直接执行后面的命令即可，不需要再 cd」。
+  - 只认「`cd` 参数的最后一段 == cwd 的 basename」且「失败输出里真有这句 cd 报错」，避免把无关失败解释成路径问题。守护：`commandHints.test.ts` **6 条**。
+
+- **另一平台的绝对路径直接拒绝并说清，不再拼成怪路径**（用户贴回的失败：`list_directory {"path":"c:\\Users\\Administrator\\Desktop\\Personal Workstation OS"}` → `ENOENT … stat '/Users/…/Personal Workstation OS/c:\\Users\\Administrator\\Desktop\\Personal Workstation OS'`）。
+  - 根因：`isAbsolute('c:\…')` 在 POSIX 上返回 `false`，于是被当成**相对路径**拼到工作区根后面，得到一个永远不存在的怪路径。
+  - **修法**：`foreignPathStyle()` 在解析入口判定「这是 Windows 路径 / 这是 POSIX 路径」，直接抛出带本机工作区根的说明（`path.windowsPathOnThisPlatform` / `path.posixPathOnThisPlatform`），并建议改用相对路径。Windows 上反向识别 `/Users/…`、`/home/…`（它们会被解析成当前盘符根）。
+  - 守护：`workspacePaths.test.ts` 新增 **4 条**（Windows/UNC 在非 Windows、POSIX 在 Windows、拒绝时列出可用根、正常路径不受影响）+ `check-path-hints.mjs` 增 2 项。
+
 - **命令窗口不再闪：展开的工具步骤在流式更新时「同步就位」，内部滚动位置也不跳**（用户原话：「agent 在输出的时候，展开具体命令，命令显示窗口会闪动」）。
   - **两个独立成因**：① 整条消息重建后，`restoreDetailOverrides()` 才把用户展开的步骤设成 `open`，而正文是惰性建的 —— 给 `<details open>` 赋值的 `toggle` 事件是**异步**派发的，于是新节点先以「展开但空白」插入 DOM，下一帧内容才冒出来；② 命令参数/输出所在的 `pre` 是独立滚动容器，整条替换会把它重置到顶部，用户正读输出中段时每推一次工具状态就跳一下。
   - **修法**：`installLazyToolDetail` 把 `build()` 挂到 `details.__buildDetail`；`restoreDetailOverrides()` 恢复 `open` 时**同步**调用它 —— 插入 DOM 时就已经是完整状态。新增 `captureInnerScroll` / `restoreInnerScroll`，按顺序记住并还原消息内所有 `pre` 的 `scrollTop/scrollLeft`（数量对不上就放弃，不张冠李戴）。

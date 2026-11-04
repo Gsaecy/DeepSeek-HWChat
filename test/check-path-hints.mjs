@@ -121,6 +121,18 @@ check('渲染结果里有真实可用的路径 assets/i18n.js', Boolean(hint) &&
 
 rmSync('out/check/pathHints.cjs', { force: true });
 
+/* ── 4. 外平台绝对路径：直接说清，而不是拼成怪路径 ─────────────────── */
+const PATHS = read('src/agent/workspacePaths.ts');
+check(
+  '解析入口先判「这是另一个平台的路径」',
+  /const foreign = foreignPathStyle\(value/.test(PATHS),
+  '不判的话 Windows 路径在 macOS 上会被当成相对路径拼到工作区根后面',
+);
+check(
+  'Windows 路径 / POSIX 路径的提示文案中英都齐',
+  /'path\.windowsPathOnThisPlatform'/.test(I18N) && /'path\.posixPathOnThisPlatform'/.test(I18N),
+);
+
 console.log(`\n${checks - failures}/${checks} 项通过`);
 if (failures) {
   console.log('「路径不存在」这条路径还有缺口。');

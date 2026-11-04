@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chooseProjectRoot, externalToolPathViolation, involvedProjectRoots, normalizeWorkspaceGlob, PROJECT_BADGE_LIMIT, projectNameOf, resolveWorkspacePath, rootsFromChangedFiles } from '../agent/workspacePaths';
+import { chooseProjectRoot, externalToolPathViolation, foreignPathStyle, involvedProjectRoots, normalizeWorkspaceGlob, PROJECT_BADGE_LIMIT, projectNameOf, resolveWorkspacePath, rootsFromChangedFiles } from '../agent/workspacePaths';
 
 const roots = [
   { name: 'Safevault_android', fsPath: '/Users/test/AI projects/Safevault_android' },
@@ -349,4 +349,39 @@ test('involved projects: a file name equal to a project name is not a project', 
   assert.deepEqual(rootsFromChangedFiles({ roots: many, files: ['DeepSeek-HWChat-older/src/a.ts'] }), []);
   // 绝对路径不参与推断。
   assert.deepEqual(rootsFromChangedFiles({ roots: many, files: ['/Users/test/AI projects/MaiKer_Win/src/a.ts'] }), []);
+});
+
+
+// ── 另一个平台的绝对路径：直接说清，而不是拼成怪路径（2026-11-04 真实故障）──────
+/*
+ * 用户机器是 macOS，模型给了 `c:\Users\Administrator\Desktop\Personal Workstation OS`。
+ * `isAbsolute()` 在 POSIX 上对 Windows 路径返回 false → 被当成相对路径拼到工作区根后面：
+ *     …/Personal Workstation OS/c:\Users\Administrator\Desktop\Personal Workstation OS
+ * 然后 ENOENT。现在在解析入口就拒绝，并给出本机可用的工作区根。
+ */
+test('foreignPathStyle: 认出 Windows 路径（含 UNC）在非 Windows 上', () => {
+  assert.equal(foreignPathStyle('c:\\Users\\Administrator\\Desktop\\x', 'darwin'), 'windows');
+  assert.equal(foreignPathStyle('C:/Users/Administrator/x', 'linux'), 'windows');
+  assert.equal(foreignPathStyle('\\\\server\\share\\x', 'darwin'), 'windows');
+  assert.equal(foreignPathStyle('c:\\Users\\x', 'win32'), undefined, '在 Windows 上这是正常路径');
+  assert.equal(foreignPathStyle('/Users/me/x', 'darwin'), undefined, 'POSIX 上 POSIX 路径正常');
+});
+
+test('foreignPathStyle: Windows 上认出 POSIX 绝对路径', () => {
+  assert.equal(foreignPathStyle('/Users/me/x', 'win32'), 'posix');
+  assert.equal(foreignPathStyle('/home/me/x', 'win32'), 'posix');
+  assert.equal(foreignPathStyle('C:/Users/me/x', 'win32'), undefined);
+  assert.equal(foreignPathStyle('src/app.ts', 'win32'), undefined, '相对路径不受影响');
+});
+
+test('resolveWorkspacePath 拒绝外平台绝对路径，并列出本机可用的根', () => {
+  assert.throws(
+    () => resolveWorkspacePath('c:\\Users\\Administrator\\Desktop\\Personal Workstation OS', roots, { platform: 'darwin' }),
+    /Windows 路径[\s\S]*darwin[\s\S]*Safevault_android/,
+  );
+});
+
+test('平台检查不影响正常相对路径与工作区内绝对路径', () => {
+  assert.equal(resolveWorkspacePath('docs/TECHNICAL.md', roots, { platform: 'darwin' }).root.name, 'Safevault_android');
+  assert.equal(resolveWorkspacePath(roots[1]!.fsPath + '/README.md', roots, { platform: 'darwin' }).root.name, 'MaiKer_Win');
 });

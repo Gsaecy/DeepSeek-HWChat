@@ -31,6 +31,32 @@ export interface ResolveWorkspacePathOptions<T extends WorkspaceRootLike = Works
    * 3. 相对路径都不存在时，仍在项目根下创建，而不是落到第一个根。
    */
   preferredRoot?: T;
+  /** 仅测试用：覆盖 `process.platform`，以便在任意机器上验证跨平台路径判定。 */
+  platform?: string;
+}
+
+/**
+ * 路径属于「另一个平台的写法」。
+ *
+ * 现场（用户 2026-11-04）：
+ *
+ *     list_directory {"path":"c:\\Users\\Administrator\\Desktop\\Personal Workstation OS"}
+ *     → ENOENT … stat '/Users/…/Personal Workstation OS/c:\\Users\\Administrator\\Desktop\\Personal Workstation OS'
+ *
+ * 这台机器是 macOS，而 `isAbsolute('c:\\…')` 在 POSIX 上返回 false —— 于是它被当成相对路径
+ * 拼到工作区根后面，变成一个永远不存在的怪路径。把「平台不对」直接说出来，
+ * 比让模型看着一长串拼接结果猜原因有用得多。
+ */
+export type ForeignPathStyle = 'windows' | 'posix';
+
+export function foreignPathStyle(value: string, platform: string = process.platform): ForeignPathStyle | undefined {
+  const text = value.trim();
+  if (!text) return undefined;
+  const windowsAbsolute = /^[A-Za-z]:[\\/]/.test(text) || /^\\\\[^\\/]+[\\/]/.test(text);
+  if (platform !== 'win32') return windowsAbsolute ? 'windows' : undefined;
+  // Windows 上 POSIX 绝对路径（`/Users/…`、`/home/…`）会被解析成当前盘符根，同样不是用户想要的。
+  if (!windowsAbsolute && /^\/(?!\/)/.test(text)) return 'posix';
+  return undefined;
 }
 
 export function resolveWorkspacePath<T extends WorkspaceRootLike>(
@@ -40,6 +66,14 @@ export function resolveWorkspacePath<T extends WorkspaceRootLike>(
 ): ResolvedWorkspacePath<T> {
   if (!roots.length) throw new Error(tt('path.noWorkspace'));
   const value = input?.trim() || '.';
+  const foreign = foreignPathStyle(value, options.platform ?? process.platform);
+  if (foreign) {
+    throw new Error(tt(foreign === 'windows' ? 'path.windowsPathOnThisPlatform' : 'path.posixPathOnThisPlatform', {
+      path: value,
+      platform: options.platform ?? process.platform,
+      roots: roots.map((root) => root.fsPath).join(tt('common.listSeparator')),
+    }));
+  }
   const absoluteCandidate = isAbsolute(value) ? resolve(value) : undefined;
   const normalized = value.replaceAll('\\', '/').replace(/^\.\//, '');
   const preferred = preferredRootOf(roots, options.preferredRoot);

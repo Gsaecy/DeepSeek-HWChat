@@ -2052,6 +2052,33 @@
       keepViewportAfterPatch();
       return true;
     }
+    /*
+     * 第二条快路径：正文没变、只有工具步骤的状态/输出变了 → **就地更新那一步**。
+     *
+     * 真实反馈（2026-11-04）：「展开的这种命令块窗口，还是会闪动」。
+     * 旧做法是 `current.replaceWith(renderMessage(...))` —— 整条消息的节点全部重造：
+     *   · `<details>` 里如果有 `animation: pulse` 的 pending 徽标，动画会从头开始播；
+     *   · 用户正选中的命令文字、悬停的"复制"按钮、`pre` 的滚动位置都会丢；
+     *   · 整条重排一次，长消息上肉眼可见地抖一下。
+     * 工具步骤是**同一条消息里唯一在变的部分**，按 callId 对上就地改就够了。
+     */
+    if (patchToolStepsOnly(current, state.messages[index])) {
+      renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
+      keepViewportAfterPatch();
+      return true;
+    }
+    /*
+     * 混合场景：这一帧里**正文在长、工具状态也在变**。
+     * 两边各走各的增量：先把步骤就地同步并推进 tools 签名，再让正文走追加路径。
+     */
+    if (applyToolStepsInPlace(current, state.messages[index])) {
+      current.hwchatRender.tools = toolGroupSignature(state.messages[index]);
+      if (patchGrowingSegment(current)) {
+        renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
+        keepViewportAfterPatch();
+        return true;
+      }
+    }
     // 只抓这一条里的展开状态，别的消息根本没动。
     const detailOverrides = captureDetailOverrides(current);
     const liveCursor = current.querySelector('.stream-cursor');
@@ -2081,6 +2108,91 @@
       updateScrollToBottom();
     });
     return true;
+  }
+
+  /**
+   * 正文/状态都没变、只有工具步骤变了时，就地更新那几步。
+   *
+   * 返回 `true` 表示已经处理完（调用方不要再整条重建）；任何一处对不上就返回 `false`，
+   * 让原来的整条替换兜底 —— 宁可重画，也不能把内容画错。
+   */
+  function patchToolStepsOnly(node, message) {
+    const rendered = node.hwchatRender;
+    if (!rendered) return false;
+    if (rendered.content !== (message.content || '')) return false;
+    if (rendered.reasoning !== (message.reasoning || '')) return false;
+    if (rendered.status !== (message.status || '')) return false;
+    if (!applyToolStepsInPlace(node, message)) return false;
+    rememberRender(node, message);
+    return true;
+  }
+
+  /**
+   * 只把工具步骤就地同步（不动正文，也不写 `hwchatRender`）。
+   *
+   * 用于「正文在长 + 工具状态也在变」的同一帧：先就地改步骤，再让正文走增量追加，
+   * 两边都不需要整条重建。结构对不上（步骤数/顺序变了）就返回 `false`，交给整条替换。
+   */
+  function applyToolStepsInPlace(node, message) {
+    const tools = message.toolExecutions || [];
+    if (!tools.length) return false;
+    const steps = [...node.querySelectorAll('details[data-detail-key^="tool:"]')];
+    if (steps.length !== tools.length) return false;
+    for (const [index, tool] of tools.entries()) {
+      if (steps[index].dataset.detailKey !== `tool:${tool.callId || index}`) return false;
+    }
+    for (const [index, tool] of tools.entries()) applyToolStep(steps[index], tool);
+    // 「处理过程 · N 步 · M 个文件」的标题也可能变（步骤结束才拿到 changedFiles）。
+    const foldTitle = node.querySelector('.execution-fold-title');
+    if (foldTitle) foldTitle.textContent = executionFoldSummaryText(tools);
+    return true;
+  }
+
+  /** 把一条工具步骤的状态、摘要、正文同步到最新的 `tool`。 */
+  function applyToolStep(details, tool) {
+    const status = tool.status || 'pending';
+    const running = status === 'pending' && !tool.finishedAt;
+    for (const name of ['pending', 'success', 'error', 'denied']) {
+      details.classList.toggle(`status-${name}`, name === status);
+    }
+    details.classList.toggle('stalled', running && Boolean(tool.stallHint));
+    const badge = details.querySelector('.tool-status');
+    // 状态没变就不碰图标：pending 的徽标带 pulse 动画，重建一次动画就会从头播（看起来像闪）。
+    if (badge && badge.dataset.status !== status) {
+      badge.dataset.status = status;
+      badge.replaceChildren(iconNode(statusIconName(status)));
+    }
+    const summary = details.querySelector('.tool-summary');
+    if (summary) summary.textContent = tool.summary || tool.name;
+    const meta = details.querySelector('summary small');
+    if (meta) meta.textContent = running ? runningToolMeta(details) : toolMeta(tool);
+    if (running) {
+      details.dataset.running = '1';
+      details.dataset.startedAt = String(tool.startedAt || 0);
+      details.dataset.riskLabel = riskLabelOf(tool);
+      if (tool.stallHint) details.dataset.stallHint = tool.stallHint;
+    } else {
+      delete details.dataset.running;
+      delete details.dataset.stallHint;
+    }
+    const detail = details.querySelector('.tool-detail');
+    // 没展开过的步骤正文本来就是空的，等用户点开时再建（保持惰性，不因为一次更新全建出来）。
+    if (detail && details.dataset.detailBuilt === '1') {
+      /*
+       * 正文只在**内容真的变了**时重建。
+       *
+       * 每次工具状态推送都 `replaceChildren()` 会把 `pre` 的滚动位置、正在选中的文字
+       * 一起清掉 —— 用户读长命令输出时会觉得「一直在闪」。签名一致就一个节点都不动。
+       */
+      const signature = [running ? tool.stallHint || '' : '', tool.input || '', tool.output || '', (tool.changedFiles || []).join('\u0000')].join('\u0001');
+      if (detail.dataset.fillSignature !== signature) {
+        detail.dataset.fillSignature = signature;
+        const scrolls = captureInnerScroll(detail);
+        detail.replaceChildren();
+        fillToolDetail(detail, tool, running);
+        restoreInnerScroll(detail, scrolls);
+      }
+    }
   }
 
   /** 增量更新之后同样要跟住滚动，语义与整条替换那条路径保持一致。 */
@@ -3380,6 +3492,8 @@
       if (running && tool.stallHint) details.classList.add('stalled');
       const summary = document.createElement('summary');
       const statusBadge = textElement('span', 'tool-status', '');
+      // 记下已经画出的状态：就地更新时状态没变就不重建徽标（pulse 动画不会从头播）。
+      statusBadge.dataset.status = tool.status || 'pending';
       statusBadge.append(iconNode(statusIconName(tool.status)));
       const meta = textElement('small', '', '');
       meta.textContent = running ? runningToolMeta(details) : toolMeta(tool);
@@ -3420,13 +3534,7 @@
     const build = () => {
       if (details.dataset.detailBuilt === '1') return;
       details.dataset.detailBuilt = '1';
-      // 停滞提示同时放进卡片正文：窄窗口下 summary 里的小字会被媒体查询隐藏，
-      // 而 pending 卡片默认是展开的，正文这一行在任何宽度下都看得见。
-      if (running && tool.stallHint) detail.append(textElement('p', 'tool-stall', tool.stallHint));
-      if (tool.changedFiles?.length) detail.append(textElement('div', 'tool-files', t('chat.toolFiles', { files: tool.changedFiles.join(t('common.listSeparator')) })));
-      if (tool.input) detail.append(detailBlock(t('chat.toolInput'), tool.input, tool.risk === 'command' ? commandText(tool.input) : undefined));
-      if (tool.output) detail.append(detailBlock(t('chat.toolOutput'), tool.output));
-      if (!tool.input && !tool.output) detail.append(textElement('p', 'tool-cleaned', tool.finishedAt ? t('chat.toolCleaned') : t('chat.toolWaiting')));
+      fillToolDetail(detail, tool, running);
     };
     /*
      * 把 build 挂到节点上。
@@ -3445,6 +3553,17 @@
     details.addEventListener('toggle', () => {
       if (details.open) build();
     });
+  }
+
+  /** 把一个工具步骤的正文填进 `detail`（调用方负责「建一次」与清空）。 */
+  function fillToolDetail(detail, tool, running) {
+    // 停滞提示同时放进卡片正文：窄窗口下 summary 里的小字会被媒体查询隐藏，
+    // 而 pending 卡片默认是展开的，正文这一行在任何宽度下都看得见。
+    if (running && tool.stallHint) detail.append(textElement('p', 'tool-stall', tool.stallHint));
+    if (tool.changedFiles?.length) detail.append(textElement('div', 'tool-files', t('chat.toolFiles', { files: tool.changedFiles.join(t('common.listSeparator')) })));
+    if (tool.input) detail.append(detailBlock(t('chat.toolInput'), tool.input, tool.risk === 'command' ? commandText(tool.input) : undefined));
+    if (tool.output) detail.append(detailBlock(t('chat.toolOutput'), tool.output));
+    if (!tool.input && !tool.output) detail.append(textElement('p', 'tool-cleaned', tool.finishedAt ? t('chat.toolCleaned') : t('chat.toolWaiting')));
   }
 
   function detailBlock(label, value, preferredCopyText) {
