@@ -335,6 +335,7 @@ export class SettingsPanel implements vscode.Disposable {
             <label class="setting-row"><span><strong>${t(lang, 'settings.baseUrl.label')}</strong><small>${t(lang, 'settings.baseUrl.hint')}</small></span><input id="baseUrl" class="control" type="url" spellcheck="false"></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.model.label')}</strong><small>${t(lang, 'settings.model.hint')}</small></span><input id="model" class="control mono" list="settingsModelPresets" spellcheck="false"><datalist id="settingsModelPresets"><option value="deepseek-flash"></option><option value="deepseek-v4-pro"></option></datalist></label>
             <label class="setting-row setting-row-stack"><span><strong>${t(lang, 'settings.models.label')}</strong><small>${t(lang, 'settings.models.hint')}</small></span><textarea id="profileModels" class="control mono" rows="4" spellcheck="false"></textarea></label>
+            <label class="setting-row"><span><strong>${t(lang, 'settings.imageModel.label')}</strong><small>${t(lang, 'settings.imageModel.hint')}</small></span><input id="profileImageModel" class="control mono" type="text" spellcheck="false" maxlength="120" placeholder="gpt-image-1"></label>
             <label class="setting-row setting-row-stack"><span><strong>${t(lang, 'settings.headers.label')}</strong><small>${t(lang, 'settings.headers.hint')}</small></span><textarea id="requestHeaders" class="control mono" rows="4" spellcheck="false"></textarea></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.timeout.label')}</strong><small>${t(lang, 'settings.timeout.hint')}</small></span><span class="stepper"><input id="requestTimeoutSeconds" type="number" min="10" max="900"><span>${t(lang, 'common.seconds')}</span></span></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.proxy.label')}</strong><small>${t(lang, 'settings.proxy.hint')}</small></span><input id="proxy" class="control mono" type="text" spellcheck="false" placeholder="http://127.0.0.1:8080"></label>
@@ -426,6 +427,7 @@ function validateSettings(values: Partial<ChatSettings>): Partial<ChatSettings> 
         models: [...new Set((profile.models ?? []).map((model) => String(model).trim()).filter(Boolean))].slice(0, 500),
         excludedModels: [...new Set((profile.excludedModels ?? []).map((model) => String(model).trim()).filter(Boolean))].slice(0, 500),
         requestHeaders: Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+        imageModel: String(profile.imageModel ?? '').trim().slice(0, 120) || undefined,
       };
     });
     if (values.activeApiProfileId && !ids.has(values.activeApiProfileId)) throw new Error(tt('error.profileMissing'));

@@ -67,7 +67,7 @@ assert.match(PROXY, /dispose\(\)/, '响应结束要释放隧道 socket，否则�
 
 /* 5. 客户端接线 */
 assert.match(CLIENT, /fetchWithNetworkRetry\(endpoint/, '对话请求必须走带重试的入口');
-assert.equal((CLIENT.match(/fetchWithNetworkRetry\(endpoint/g) ?? []).length, 2, '对话与模型列表两条路径都要走重试');
+assert.equal((CLIENT.match(/fetchWithNetworkRetry\(endpoint/g) ?? []).length, 3, '对话、模型列表、出图三条路径都要走重试');
 assert.match(CLIENT, /this\.transport\(settings\)/, '必须按设置选择直连/代理传输');
 assert.match(CLIENT, /private logFailure/, '最终失败要写日志，否则事后无法复盘');
 assert.match(EXT, /\(line\) => output\.warn\(line\)/, '客户端必须把网络事件接到输出面板');
@@ -84,5 +84,5 @@ console.log('✓ fetch failed 会被翻译成 dns / connect / tls / http + 可�
 console.log('✓ TimeoutError 与 AbortError 不可重试（避免 120s × 3）');
 console.log('✓ 只在拿到响应之前重试；取消后立即停止');
 console.log('✓ 代理走 Agent 覆写的真隧道（不是写在 request options 上的假隧道）');
-console.log('✓ 客户端两条路径都带重试与日志，代理默认关闭（直连）');
+console.log('✓ 对话 / 模型列表 / 出图三条路径都带重试与日志，代理默认关闭（直连）');
 console.log('\n全部通过：网络故障不再是一句无法诊断的 fetch failed');

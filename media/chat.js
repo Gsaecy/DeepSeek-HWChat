@@ -3143,9 +3143,12 @@
   function renderMessageAttachments(attachments) {
     const row = document.createElement('div'); row.className = 'message-attachments';
     for (const attachment of attachments) {
-      if (attachment.kind === 'image' && attachment.thumbnailDataUrl) {
+      // `webviewSrc` 是落在会话目录里的图片文件（agent 生成的图）：扩展下发的
+      // `asWebviewUri`，不用把几 MB base64 常驻在前端。内存里的截图仍然只有缩略图。
+      const imageSrc = attachment.webviewSrc || attachment.thumbnailDataUrl;
+      if (attachment.kind === 'image' && imageSrc) {
         const figure = document.createElement('figure'); figure.className = 'message-image-attachment';
-        const image = document.createElement('img'); image.src = attachment.thumbnailDataUrl; image.alt = attachment.label;
+        const image = document.createElement('img'); image.src = imageSrc; image.alt = attachment.label;
         // 图片可以拖回输入框变成新附件：`img` 默认就是可拖的（浏览器会拖出图片本身），
         // 但那样松手只能落到「拖出 webview」，落不进输入框。关掉原生拖拽、改由 figure
         // 承担，才能走我们自己的 dragstart/drop 通道（见 makeAttachmentDraggable）。
@@ -3507,6 +3510,16 @@
         const node = document.createElement('blockquote');
         appendRichText(node, quoted.join('\n'));
         push(node, startLine);
+        continue;
+      }
+      // 独占一行的 markdown 图片：`![说明](地址)`。
+      // 地址不在白名单里就让它落到下面的正文流程，按纯文本原样显示 —— 破图比看不懂
+      // 的图片框更糟，而「原样显示」至少能让用户看见模型到底写了什么。
+      const standaloneImage = line.match(/^\s{0,3}!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?\s*(?:"[^"]*")?\s*\)\s*$/);
+      if (standaloneImage && imageSourceAllowed(standaloneImage[2])) {
+        flushParagraph();
+        push(inlineImageNode(standaloneImage[1], standaloneImage[2], false), index);
+        index += 1;
         continue;
       }
       // 列表：层级由 appendList 按缩进算，正文里不再叠加第二套缩进规则
@@ -4111,6 +4124,42 @@
   }
 
   /** 行内格式：`代码`、**加粗**、~~删除~~、[文字](链接)、裸链接。 */
+  /**
+   * markdown 图片的地址白名单。
+   *
+   * 只认两类：`data:image/` 的位图，与 webview 资源地址（面板把工作区/会话里的文件
+   * 转过一道之后下发，见 `chatPanel.localizeImageLinks`）。远程 http(s) 图片**不放行**：
+   * CSP 里 `img-src` 本来就只有 `${webview.cspSource} data:`，放过去只会得到一张破图，
+   * 还会顺手把「正在看这条对话」暴露给外部域名。
+   *
+   * SVG 刻意排除：它虽然是图片，但作为可执行文档的历史问题太多，而这个功能不需要它。
+   */
+  function imageSourceAllowed(src) {
+    const value = String(src || '').trim();
+    if (!value) return false;
+    if (/^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);base64,[a-z0-9+/=\s]+$/i.test(value)) return true;
+    // 桌面端是 `file+.vscode-resource.vscode-cdn.net`（那个 `+` 必须放行），网页版是 `<guid>.vscode-cdn.net`。
+    return /^https:\/\/[a-z0-9.+-]*vscode-cdn\.net\//i.test(value)
+      || /^vscode-(?:webview-)?resource:\/\//i.test(value);
+  }
+
+  function inlineImageNode(alt, src, inline) {
+    const image = document.createElement('img');
+    image.className = inline ? 'message-inline-image' : 'message-block-image';
+    image.src = src;
+    image.alt = alt || '';
+    image.loading = 'lazy';
+    image.decoding = 'async';
+    // 图片可以被拖回输入框（扩展按路径取回内容），与历史附件同一套通道。
+    image.draggable = false;
+    if (inline) return image;
+    const figure = document.createElement('figure');
+    figure.className = 'message-image-figure';
+    figure.append(image);
+    if (alt) figure.append(textElement('figcaption', '', alt));
+    return figure;
+  }
+
   function appendInline(parent, value) {
     // 只把「目标看起来像链接」的 [文字](目标) 当链接：目标必须以 http(s)://、mailto:、# 或 / 开头，
     // 这样 [文字](javascript:…) 之类的构造连匹配都不会匹配，不会出现半个链接加一个多余的右括号。
@@ -4119,7 +4168,7 @@
     // 旧的 `\*[^\s*][^*\n]*\*` 会把第二个 `*` 和结尾那个 `*` 配成斜体，于是可见文字从
     // `**重点*` 跳成 `*重点`——已经显示出来的星号少了一个，用户看到的就是「同一位置闪过
     // 不一样的文字」。加上边界后，半截的粗体一律按字面量显示，直到 `**` 真正闭合。
-    const pattern = /(`[^`]+`|\*\*[^*\n]+\*\*|(?<!\*)\*(?!\*)[^\s*][^*\n]*\*(?!\*)|~~[^~\n]+~~|\[[^\]\n]+\]\((?:https?:\/\/|mailto:|#|\/)[^)\s]*\)|https?:\/\/[^\s<]+)/g; let cursor = 0;
+    const pattern = /(`[^`]+`|\*\*[^*\n]+\*\*|(?<!\*)\*(?!\*)[^\s*][^*\n]*\*(?!\*)|~~[^~\n]+~~|!\[[^\]\n]*\]\([^)\s]+\)|\[[^\]\n]+\]\((?:https?:\/\/|mailto:|#|\/)[^)\s]*\)|https?:\/\/[^\s<]+)/g; let cursor = 0;
     for (const match of value.matchAll(pattern)) {
       const index = match.index || 0; if (index > cursor) appendPlainText(parent, value.slice(cursor, index)); const token = match[0];
       if (token.startsWith('`')) {
@@ -4127,6 +4176,11 @@
         // 否则维持原来的代码片段样式。allowSpaces 只在这里打开：反引号已经界定了边界。
         const codeText = token.slice(1, -1);
         parent.append(fileReferenceNode(codeText, { compact: true, allowSpaces: true }) || textElement('code', '', codeText));
+      }
+      else if (token.startsWith('![')) {
+        const image = token.match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/);
+        if (image && imageSourceAllowed(image[2])) parent.append(inlineImageNode(image[1], image[2], true));
+        else appendPlainText(parent, token);
       }
       else if (token.startsWith('**')) parent.append(textElement('strong', '', token.slice(2, -2)));
       else if (token.startsWith('*')) parent.append(textElement('em', '', token.slice(1, -1)));

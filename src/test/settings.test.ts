@@ -223,3 +223,23 @@ test('保存设置不再把废弃的单项策略写进用户配置', async () =>
   assert.equal(configuration.get('defaultMode'), 'plan');
   setConfiguration({});
 });
+
+test('图片模型跟着当前接口配置档走（空则视为不支持出图）', () => {
+  roots(ROOT_A);
+  setConfiguration({
+    'hwchat.apiProfiles': [
+      { id: 'chat', name: 'Chat only', baseUrl: 'https://example.invalid/v1', models: ['deepseek-chat'], requestHeaders: {} },
+      { id: 'media', name: 'With images', baseUrl: 'https://example.invalid/v1', models: ['deepseek-chat'], requestHeaders: {}, imageModel: ' gpt-image-1 ' },
+    ],
+    'hwchat.activeApiProfileId': 'media',
+  });
+  setFolderConfiguration(ROOT_A, {});
+
+  const withImages = readSettings();
+  assert.equal(withImages.imageModel, 'gpt-image-1', '镜像当前配置档的图片模型，并去掉首尾空白');
+
+  updateSettings({ activeApiProfileId: 'chat' });
+  const withoutImages = readSettings();
+  // readSettings 统一把「没有」归一成空串：一个值域只有「空 = 不支持出图」。
+  assert.equal(withoutImages.imageModel, '', '没有图片模型的配置档不该继承上一个档位的值');
+});

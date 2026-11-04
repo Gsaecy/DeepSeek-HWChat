@@ -76,6 +76,7 @@ export function readSettings(): ChatSettings {
     apiProfiles,
     activeApiProfileId: activeProfile.id,
     baseUrl: activeProfile.baseUrl,
+    imageModel: String(activeProfile.imageModel ?? '').trim(),
     model: legacyModel || activeProfile.models[0] || 'deepseek-flash',
     temperature: clamp(configuration.get<number>('temperature', 1), 0, 2),
     maxTokens: Math.max(0, configuration.get<number>('maxTokens', 0)),
@@ -276,6 +277,11 @@ function normalizeProfiles(value: unknown, fallback: ApiProfile): ApiProfile[] {
       baseUrl,
       models: uniqueStrings(Array.isArray(raw.models) ? raw.models : []).slice(0, 500),
       excludedModels: uniqueStrings(Array.isArray(raw.excludedModels) ? raw.excludedModels : []).slice(0, 500),
+      // 出图模型是可选能力：这里必须显式带过来，否则 `settings.json` 里写了也会被
+      // 逐字段重建时丢掉，界面上填好的值保存后读回来是空的。
+      ...(typeof raw.imageModel === 'string' && raw.imageModel.trim()
+        ? { imageModel: raw.imageModel.trim().slice(0, 120) }
+        : {}),
       requestHeaders: stringRecord(raw.requestHeaders),
     });
   }

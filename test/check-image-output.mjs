@@ -1,0 +1,196 @@
+/*
+ * 校验「输出图片」在**渲染层**真的能显示出来。
+ *
+ * 为什么不能只靠单测：单测覆盖的是 provider 的请求/解析与 storage 的落盘，而用户看到的
+ * 是 chat.js 造出来的 DOM。这里把 chat.js 里几个纯渲染函数原样切出来，配上最小 DOM
+ * 沙箱跑一遍，断言：
+ *   1. 地址白名单只放行 `data:image` 位图与 webview 资源（远程 http(s) 一律不放）；
+ *   2. 行内图片与独占一行的图片都能生成 `<img>`，被拒的地址退回**原样文字**而不是破图；
+ *   3. 落成文件的附件用 `webviewSrc` 当 `src`（缩略图只是退路）；
+ *   4. CSS 里这两类图片都有尺寸上限（1024px 的生成图不该把一问一答挤走）。
+ *
+ * 用法：node test/check-image-output.mjs
+ */
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+
+let checks = 0;
+let failures = 0;
+function check(label, condition) {
+  checks += 1;
+  if (condition) {
+    console.log(`✓ ${label}`);
+    return;
+  }
+  failures += 1;
+  console.log(`✗ ${label}`);
+}
+
+const source = readFileSync(new URL('../media/chat.js', import.meta.url), 'utf8');
+const css = readFileSync(new URL('../media/chat.css', import.meta.url), 'utf8');
+
+/** 按「起点标记 → 终点标记」切一段源码；切不到就让脚本失败，避免静默通过。 */
+function slice(startMarker, endMarker, label) {
+  const start = source.indexOf(startMarker);
+  const end = start < 0 ? -1 : source.indexOf(endMarker, start + startMarker.length);
+  if (start < 0 || end < 0) {
+    failures += 1;
+    console.log(`✗ 切不出 ${label} 的源码（chat.js 结构变了，脚本要跟着改）`);
+    return '';
+  }
+  return source.slice(start, end);
+}
+
+const imageFunctions = [
+  slice('  function imageSourceAllowed(src) {', '  function appendInline(parent, value) {', 'imageSourceAllowed / inlineImageNode'),
+  slice('  function appendInline(parent, value) {', '  function renderAttachments() {', 'appendInline'),
+  slice('  function appendPlainText(parent, text) {', '  /**\n   * markdown 图片的地址白名单', 'appendPlainText'),
+  slice('  function appendRichText(container, text, streaming = false) {', '\n  /**', 'appendRichText'),
+  slice('  function renderMessageAttachments(attachments) {', '  /**\n   * 让已经发出去的附件可以', 'renderMessageAttachments'),
+  'function textElement(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; node.textContent = text; return node; }',
+].join('\n');
+
+/** 最小 DOM：只需要 append / appendChild / classList / textContent 与若干个属性。 */
+function makeDocument() {
+  function node(tag) {
+    const classes = new Set();
+    return {
+      tagName: String(tag).toUpperCase(),
+      className: '',
+      textContent: '',
+      src: '',
+      alt: '',
+      title: '',
+      href: '',
+      type: '',
+      draggable: true,
+      children: [],
+      classList: {
+        add(...names) { for (const name of names) classes.add(name); },
+        contains(name) { return classes.has(name); },
+      },
+      append(...nodes) { this.children.push(...nodes); },
+      appendChild(child) { this.children.push(child); return child; },
+      addEventListener() {},
+      setAttribute(name, value) { this[name] = value; },
+    };
+  }
+  return {
+    createElement: (tag) => node(tag),
+    createTextNode: (text) => ({ textContent: String(text), children: [], tagName: '#text', append(...nodes) { this.children.push(...nodes); } }),
+  };
+}
+
+const context = vm.createContext({
+  document: makeDocument(),
+  t: (key) => key,
+  post: () => undefined,
+  fileRef: null,
+  fileReferenceNode: () => null,
+  codeMeta: { collectFenceBlock: () => null },
+  streamRepair: null,
+  calloutMeta: null,
+  isTableStart: () => false,
+  isListLine: () => false,
+  appendList: () => ({ nextIndex: 0, node: null }),
+  appendTable: () => ({ nextIndex: 0, node: null }),
+  makeAttachmentOpenable: () => undefined,
+  makeAttachmentDraggable: () => undefined,
+  attachmentOpenPayload: (attachment) => ({ id: attachment?.id, label: attachment?.label }),
+  console,
+});
+vm.runInContext(`${imageFunctions}\nglobalThis.__api = { imageSourceAllowed, inlineImageNode, appendInline, appendRichText, renderMessageAttachments };`, context);
+const api = context.__api;
+
+/** 深度收集节点树里所有指定 tagName 的节点。 */
+function collect(node, tag, out = []) {
+  if (!node || typeof node !== 'object') return out;
+  if (node.tagName === tag) out.push(node);
+  for (const child of node.children || []) collect(child, tag, out);
+  return out;
+}
+
+function textOf(node) {
+  if (!node || typeof node !== 'object') return '';
+  if (node.tagName === '#text') return node.textContent;
+  let value = node.textContent || '';
+  for (const child of node.children || []) value += textOf(child);
+  return value;
+}
+
+// ① 白名单
+check('data:image/png 放行', api.imageSourceAllowed('data:image/png;base64,iVBORw0KGgo=') === true);
+check('data:image/jpeg 放行', api.imageSourceAllowed('data:image/jpeg;base64,/9j/4AAQ') === true);
+check('data:image/webp 放行', api.imageSourceAllowed('data:image/webp;base64,UklGRg==') === true);
+check('data:image/svg+xml 不放行', api.imageSourceAllowed('data:image/svg+xml;base64,PHN2Zz4=') === false);
+check('data:text/html 不放行', api.imageSourceAllowed('data:text/html;base64,PHNjcmlwdD4=') === false);
+check('远程 https 图片不放行（CSP 会拦成破图）', api.imageSourceAllowed('https://example.com/a.png') === false);
+check('javascript: 不放行', api.imageSourceAllowed('javascript:alert(1)') === false);
+check('webview 资源地址放行', api.imageSourceAllowed('https://file+.vscode-resource.vscode-cdn.net/a.png') === true);
+check('vscode-resource: 放行', api.imageSourceAllowed('vscode-resource://file/a.png') === true);
+check('空地址不放行', api.imageSourceAllowed('  ') === false);
+
+// ② 行内图片
+{
+  const parent = { tagName: 'P', children: [], append(...nodes) { this.children.push(...nodes); } };
+  api.appendInline(parent, '看图 ![猫](data:image/png;base64,iVBORw0KGgo=) 结束');
+  const images = collect(parent, 'IMG');
+  check('行内 data 图片渲染成 img', images.length === 1);
+  check('行内图片用 message-inline-image 类', images[0]?.className === 'message-inline-image');
+  check('行内图片 src 指向同一份数据', images[0]?.src === 'data:image/png;base64,iVBORw0KGgo=');
+  check('行内图片保留 alt', images[0]?.alt === '猫');
+  check('周围文字没有丢', textOf(parent).includes('看图') && textOf(parent).includes('结束'));
+}
+{
+  const parent = { tagName: 'P', children: [], append(...nodes) { this.children.push(...nodes); } };
+  api.appendInline(parent, '![x](https://example.com/a.png)');
+  check('远程图片不生成 img', collect(parent, 'IMG').length === 0);
+  check('远程图片原样显示 markdown（不出现破图）', textOf(parent).includes('![x](https://example.com/a.png)'));
+}
+
+// ③ 独占一行的图片
+{
+  const container = { tagName: 'DIV', children: [], append(...nodes) { this.children.push(...nodes); } };
+  api.appendRichText(container, '# 标题\n\n![雨里的猫](data:image/png;base64,iVBORw0KGgo=)\n\n后面的话');
+  const images = collect(container, 'IMG');
+  check('独占一行的图片渲染成 img', images.length === 1);
+  check('块级图片用 message-block-image 类', images[0]?.className === 'message-block-image');
+  check('块级图片按 lazy 加载', images[0]?.loading === 'lazy');
+  check('alt 变成了图注', collect(container, 'FIGCAPTION').some((node) => textOf(node) === '雨里的猫'));
+  check('图片后面的段落照常渲染', collect(container, 'P').some((node) => textOf(node).includes('后面的话')));
+}
+{
+  const container = { tagName: 'DIV', children: [], append(...nodes) { this.children.push(...nodes); } };
+  api.appendRichText(container, '![x](../outside.png)');
+  check('非白名单地址不生成块级图片', collect(container, 'IMG').length === 0);
+}
+
+// ④ 落成文件的附件
+{
+  const row = api.renderMessageAttachments([{ kind: 'image', label: '生成的图片', path: '/tmp/a.png', webviewSrc: 'https://file+.vscode-resource.vscode-cdn.net/a.png' }]);
+  const images = collect(row, 'IMG');
+  check('没有缩略图时也能显示（用 webviewSrc）', images.length === 1);
+  check('webviewSrc 优先于缩略图', images[0]?.src === 'https://file+.vscode-resource.vscode-cdn.net/a.png');
+}
+{
+  const row = api.renderMessageAttachments([{
+    kind: 'image',
+    label: '旧附件',
+    thumbnailDataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+    webviewSrc: 'https://file+.vscode-resource.vscode-cdn.net/old.png',
+  }]);
+  check('两者都有时仍用 webviewSrc（不搬 base64）', collect(row, 'IMG')[0]?.src.includes('vscode-cdn.net') === true);
+}
+{
+  const row = api.renderMessageAttachments([{ kind: 'image', label: '没有地址的图片' }]);
+  check('完全没有地址时退回文件条目，不造破图', collect(row, 'IMG').length === 0 && textOf(row).includes('没有地址的图片'));
+}
+
+// ⑤ CSS 尺寸上限
+check('.message-block-image 有 max-height', /\.message-block-image\s*\{[^}]*max-height:[^;]*;/.test(css));
+check('.message-block-image 宽度不溢出', /\.message-block-image\s*\{[^}]*max-width:\s*100%/.test(css));
+check('.message-inline-image 有 max-height', /\.message-inline-image\s*\{[^}]*max-height:[^;]*;/.test(css));
+check('图注样式存在', /\.message-image-figure figcaption\s*\{/.test(css));
+
+console.log(`\n${checks - failures}/${checks} 项通过`);
+if (failures) process.exitCode = 1;

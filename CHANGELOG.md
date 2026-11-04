@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0
+
+- **输出图片：能生成了（`generate_image` 工具），也能显示了（正文 markdown 图片）**（用户原话：「hwchat 没有输出图片的能力，是否能增加？」）。
+  - **先把缺口说清楚**：输入图片一直是完整的（`image_url` + data URL），**输出侧一处都没接** —— 客户端不解析 `image_url` / `images` / `b64_json`，渲染层认不出 `![](…)`，也从没调用过 `/images/generations`；而且面板 CSP 的 `img-src` 只有 `${webview.cspSource}` 与 `data:`，远程图片必然被拦成破图。所以「增加输出」不是加个按钮，是三条链路一起补。
+  - **① 生成：`generate_image` 工具**（走后端 `POST {baseUrl}/images/generations`，OpenAI 兼容）。
+    - 配置：设置页「连接」区新增**每个接口配置档自己的「图片模型」**（`ApiProfile.imageModel`，示例 `gpt-image-1`）。留空就不下发这个工具 —— 摆在模型面前的工具它一定会调，然后每次都撞同一句错误、白烧一轮 token。
+    - 请求体只发 `{ model, prompt, n: 1, size? }`，**不发 `response_format`**：`gpt-image-1` 不接受这个参数（会 400），`dall-e-*` 默认就回临时 URL。两种响应都收：有 `b64_json` 直接用，只有 `url` 就在扩展侧下载（走同一个代理与同一套网络诊断；下载地址同样要求 HTTPS，本机回环除外），三种真实响应形状（`data[]` / `images[]` / `image`）都认，认不出来就报「没有图片数据」而不是猜。
+    - 超时语义单独一套：出图没有中间字节，只能限「整次调用最多多久」，取 `max(90 秒, 用户设置的 requestTimeoutSeconds)` —— 用户为了聊天更敏感把超时调到 20 秒，不该让一次正常出图必然失败。503/429 这类瞬时状态沿用聊天的重试与 `Retry-After`。
+    - 图片体积上限 20 MB（base64 后约 27 MB），超了就停下载并提示改小尺寸，不把内存撑爆。
+  - **② 存储：生成的图落成会话目录下的文件**，消息里只留描述信息（`{ id, label, kind:'image', path, bytes, mimeType }`）。
+    - 不能只存 base64：`stripMessagePayload` 会在保留期压缩与预算瘦身时删掉附件里的 `dataBase64`/`thumbnailDataUrl` —— 那样生成图**活不过一次清理**。
+    - 文件名内容寻址（`images/<sha256 前 32 位>.<ext>`）：同一张图重复生成不会在磁盘上堆两份；删对话/进回收站时图片跟着目录一起走，不留孤儿。
+  - **③ 显示：两条路径都补上。**
+    - **附件**：面板给落成文件的图片下发 `webviewSrc`（`asWebviewUri` 指向文件本身），前端 `attachment.webviewSrc || attachment.thumbnailDataUrl` —— 几 MB 的 base64 不再常驻前端；「复制图片 / 添加到输入框」在没有 base64 时从文件读回来，不会静默失败。
+    - **正文 markdown 图片**：`![说明](地址)` 独占一行渲染成 `<figure><img>` + 图注，夹在文字里的按内联图片渲染；**地址白名单只有 `data:image` 位图与 webview 资源地址**（远程 http(s) 一律不放 —— CSP 本来就拦，放过去只会得到破图，还顺手把「正在看这条对话」暴露给外部域名；SVG 也刻意排除）。白名单外的写法**原样显示 markdown 文字**，不造破图框。
+    - 正文里写**工作区相对路径**的图片（`![](docs/chart.png)`、带空格用 `<…>`、带标题）在**下发副本**上改写成 webview 资源地址，存档与模型原文一个字不动；绝对路径必须落在某个工作区根目录内，否则不渲染（`![](/Users/me/.ssh/xxx.png)` 不能被渲染成一张可拖走的图片）。
+  - 实测（真实本机 HTTP 服务，`127.0.0.1` 随机端口）：请求 `POST /v1/images/generations`、`Authorization: Bearer …`、body `{"model":"local-image","prompt":"本地联调：一只猫","n":1,"size":"1024x1024"}`（**无 `response_format`**）、返回 16 字节 PNG 原样落盘成 `images/02a3e298….png`、消息附件 `dataBase64` 为 `null`。
+  - 守护：`src/test/imageOutput.test.ts` **12 条**（端点拼接 / 尺寸白名单 / 三种响应形状 / 不发抖 `response_format` / url 下载 / 明文下载地址拒绝 / 503 重试与 401 不重试 / 没配图片模型不打接口 / 落盘去重与「附件不带 base64」/ markdown 改写 / 越界路径拒绝）+ `src/test/settings.test.ts` 里 1 条「图片模型跟着配置档走」（顺带抓到 `normalizeProfiles` 逐字段重建时会把它丢掉）+ `test/check-image-output.mjs` **31 项**（地址白名单 10 项、行内与块级渲染 12 项、附件 webviewSrc 4 项、CSS 尺寸上限 4 项、切不到源码即失败）。
+  - 全量：**931** 条单测、**47** 个 `check-*.mjs` 全绿。
+
 ## 0.3.9
 
 - **按你的要求撤掉资源管理器里的历史列表；顺手把示例里用的本机代理端口换成中性占位**。

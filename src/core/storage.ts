@@ -11,6 +11,8 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { imageExtensionFor } from '../agent/attachmentOpen';
 import { isEmptyDraftConversation } from './conversationControls';
 import { createId, createOrderedId, previewText, shortTitle } from './ids';
 import { readJsonWithBackup, removeIfPresent, writeJsonAtomic } from './jsonFile';
@@ -22,6 +24,7 @@ import {
   ConversationExport,
   ConversationSummary,
   ConversationMode,
+  MessageContext,
   MessageExecutionStatus,
   StorageStats,
   TodoArchive,
@@ -327,7 +330,7 @@ export class ConversationStorage {
   async updateMessage(
     conversationId: string,
     messageId: string,
-    patch: Partial<Pick<ChatMessage, 'content' | 'reasoning' | 'usage' | 'status' | 'model' | 'toolExecutions' | 'toolCalls' | 'usedSkills' | 'consumedByAssistantId' | 'replyToMessageId' | 'executionStatus'>>,
+    patch: Partial<Pick<ChatMessage, 'content' | 'reasoning' | 'usage' | 'status' | 'model' | 'toolExecutions' | 'toolCalls' | 'usedSkills' | 'attachments' | 'consumedByAssistantId' | 'replyToMessageId' | 'executionStatus'>>,
   ): Promise<ChatMessage> {
     await this.initialize();
     const summary = this.requireSummary(conversationId);
@@ -363,6 +366,49 @@ export class ConversationStorage {
       await this.persistManifest();
     });
     return { ...updated };
+  }
+
+  /**
+   * 把一张**生成的图片**存成这条消息的附件。
+   *
+   * 为什么不把 base64 直接塞进消息：`stripMessagePayload` 会在保留期压缩与预算瘦身时
+   * 删掉附件里的 `dataBase64`/`thumbnailDataUrl`，那样生成图活不过一次清理。所以字节
+   * 落成会话目录下的文件（`<对话>/images/<sha256>.<ext>`），消息里只留描述信息，
+   * 界面通过 `asWebviewUri` 读文件。删对话/进回收站时文件跟着目录一起走，不留孤儿。
+   *
+   * 文件名按内容寻址（sha256 前 32 位）：同一个提示词重复生成出同一张图时不会
+   * 在磁盘上堆两份。
+   */
+  async saveMessageImage(
+    conversationId: string,
+    messageId: string,
+    image: { dataBase64: string; mimeType?: string; label?: string },
+  ): Promise<MessageContext> {
+    await this.initialize();
+    const raw = (image.dataBase64 ?? '').trim();
+    const bytes = raw ? Buffer.from(raw, 'base64') : Buffer.alloc(0);
+    if (!bytes.byteLength) throw new Error(tt('api.imageNoData'));
+    const mimeType = (image.mimeType ?? '').trim() || 'image/png';
+    const digest = createHash('sha256').update(bytes).digest('hex').slice(0, 32);
+    const directory = join(this.conversationDirectory(conversationId), 'images');
+    const path = join(directory, `${digest}.${imageExtensionFor(mimeType)}`);
+    await mkdir(directory, { recursive: true });
+    if (!existsSync(path)) await writeFile(path, bytes);
+
+    const current = await this.getMessage(conversationId, messageId);
+    if (!current) throw new Error(tt('storage.messageMissing'));
+    const attachment: MessageContext = {
+      id: `img-${digest.slice(0, 16)}`,
+      label: (image.label ?? '').trim() || tt('chat.generatedImage'),
+      kind: 'image',
+      path,
+      bytes: bytes.byteLength,
+      mimeType,
+    };
+    // 同一张图重复生成时不要在同一条消息里挂两个一模一样的条目。
+    const attachments = [...(current.attachments ?? []).filter((item) => item.id !== attachment.id), attachment];
+    await this.updateMessage(conversationId, messageId, { attachments });
+    return { ...attachment };
   }
 
   /**

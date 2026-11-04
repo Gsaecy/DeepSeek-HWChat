@@ -258,6 +258,15 @@ Skills from other sources (`.hwchat/skills`, `.agents/skills`, `.claude/skills`,
 
 See [SECURITY.md](SECURITY.md) for the full boundary description.
 
+## Images
+
+- **Input** images work through the normal attachment path: screenshots, files and selections are sent as `image_url` data URLs. Images can be dragged from a past message back into the composer.
+- **Output** needs an image model. Fill in Settings → Connection → **Image model** for the API profile you use (for example `gpt-image-1`, or whatever name your gateway uses for an OpenAI-compatible `POST /images/generations`). Leave it empty and the `generate_image` tool is not offered to the model at all — an unconfigured tool only produces the same error every time.
+- Generated images are attached to the reply that asked for them, with a caption, and can be opened, copied or dragged back into the composer.
+- **They live in the conversation, not your repository**: bytes go to `<conversation>/images/<sha256>.<ext>`, the message keeps only `{ id, label, path, bytes, mimeType }`. Content-addressed, so generating the same picture twice does not duplicate it, and deleting the conversation removes the files with it.
+- Plain markdown images in a reply render too: `![caption](relative/path.png)` (or `<path with spaces>`) is resolved **inside a workspace folder** and shown as a figure; absolute paths outside the workspace and remote URLs are left as text. `data:image` bitmaps render inline; SVG data URLs are refused on purpose.
+- Reasons for the limits: the panel's CSP allows only `img-src` from the webview itself plus `data:`, so a remote URL would only ever be a broken image — and fetching it would leak "someone is reading this conversation" to an external host.
+
 ## History and cache
 
 - Every message is stored independently with same-directory temp files, atomic replacement and recovery backups; a corrupt index is rebuilt from disk.

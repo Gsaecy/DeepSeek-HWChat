@@ -17,6 +17,7 @@
   "command.showPermissionScope": "查看生效权限与来源",
   "viewsWelcome.chat": "还没有对话。\n[新建对话](command:hwchat.newChat)\n[配置 API](command:hwchat.openSettings)",
   "config.apiProfiles": "API 配置档列表。密钥不会写入这里，而是按配置档分别保存在 VS Code SecretStorage。",
+  "config.apiProfileImageModel": "这个接口配置档的出图模型（例如 gpt-image-1）。留空则不出图；填好后 agent 才会拿到「生成图片」工具。",
   "config.activeApiProfileId": "当前默认 API 配置档。",
   "config.baseUrl": "兼容 OpenAI 协议的接口地址，例如 `https://api.deepseek.com`、`https://api.moonshot.cn/v1`。",
   "config.model": "默认模型。可在对话面板顶部即时切换。",

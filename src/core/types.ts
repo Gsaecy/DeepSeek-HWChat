@@ -65,6 +65,14 @@ export interface ApiProfile {
   baseUrl: string;
   models: string[];
   excludedModels?: string[];
+  /**
+   * 出图用的模型名（例如 `gpt-image-1`、`dall-e-3`，或中转网关自己的名字）。
+   *
+   * 为什么单独一个字段：聊天模型（DeepSeek）与出图模型通常不是同一个，
+   * 而 `POST /images/generations` 必须显式带 `model`。留空时不出图并给出
+   * 明确提示，而不是拿聊天模型的名字去试 —— 那只会得到一句看不懂的 400。
+   */
+  imageModel?: string;
   requestHeaders: Record<string, string>;
 }
 
@@ -100,6 +108,12 @@ export interface MessageContext {
   language?: string;
   mimeType?: string;
   thumbnailDataUrl?: string;
+  /**
+   * **只给 webview 看**的图片地址：落成文件的附件（例如 agent 生成的图片）由面板
+   * 用 `asWebviewUri` 生成。它不是存档字段，也不参与 `stripMessagePayload` ——
+   * 只在 `attachmentForWebview` 里临时补上，避免 4 MB base64 常驻前端。
+   */
+  webviewSrc?: string;
 }
 
 export type AgentTaskStatus = 'routing' | 'active' | 'merged' | 'queued' | 'complete' | 'cancelled' | 'error';
@@ -329,6 +343,13 @@ export interface ChatSettings {
    * `.vscode/settings.json` 里），读取侧由 `workspaceSearch` 逐根取并集；设置页只
    * 负责把它呈现成一个逗号分隔的输入框并写回。可选能让既有测试夹具不必逐个补字段。
    */
+  /**
+   * 当前接口配置档的出图模型名；缺失/空表示这个档位不支持出图。
+   * 与 `baseUrl` 一样由 readSettings 从当前配置档镜像出来。
+   *
+   * 声明为可选：这是能力开关，不是必需配置；可选也让既有测试夹具不必逐个补字段。
+   */
+  imageModel?: string;
   searchExclude?: string[];
   requestHeaders: Record<string, string>;
   requestTimeoutSeconds: number;

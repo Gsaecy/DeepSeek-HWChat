@@ -1,10 +1,12 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, resolve } from 'node:path';
 import * as vscode from 'vscode';
 import { AgentRunner } from '../agent/agentRunner';
 import { attachmentCacheName, planAttachmentOpen } from '../agent/attachmentOpen';
 import { messagesSignatureKey } from './messageSignature';
 import { isInsideWorkspace, normalizeFileReference, revealTargetFor } from '../agent/fileReveal';
+import { resolveLocalImage, rewriteMarkdownImagePaths } from '../agent/markdownImages';
 import { chooseReferenceMatch } from '../agent/fileReferenceResolve';
 import { resolveFileReferences, type ReferenceQuery } from '../agent/fileReferenceBatch';
 import { SkillRegistry, type PreparedSkillContext } from '../agent/skillRegistry';
@@ -799,7 +801,16 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
   private async provideAttachmentData(message: { requestId: string; id?: string }): Promise<void> {
     const known = await this.resolveAttachment(message.id);
-    const base64 = known?.dataBase64;
+    // 落成文件的图片（生成图）没有 dataBase64：直接从文件读回来，否则「复制图片 /
+    // 添加到输入框」会静默失败 —— 前端只拿到一个 id 和一个 webview 地址。
+    let base64 = known?.dataBase64;
+    if (!base64 && known?.kind === 'image' && known.path) {
+      const file = known.path;
+      const size = existsSync(file) ? statSync(file).size : 0;
+      if (size > 0 && size <= Math.floor(ATTACHMENT_DATA_MAX_BASE64 * 0.75)) {
+        base64 = await readFile(file).then((buffer) => buffer.toString('base64')).catch(() => undefined);
+      }
+    }
     if (!known || !base64) {
       await this.post({ type: 'attachmentData', requestId: message.requestId, ok: false });
       return;
@@ -1638,6 +1649,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           extraTools: [
             todoToolDefinition(),
             decisionToolDefinition(),
+            // 没配图片模型就不下发：摆在模型面前的工具它一定会调，然后每次都撞同一句错误。
+            ...(String(settings.imageModel ?? '').trim() ? [generateImageToolDefinition()] : []),
             this.skills.toolDefinition(preparedSkills.routableIds),
             historyTool,
             ...this.vscodeTools.definitions(),
@@ -1648,6 +1661,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
             }
             if (call.function.name === 'ask_user_choice') {
               return { result: await this.askUserChoice(call, run) };
+            }
+            if (call.function.name === 'generate_image') {
+              return { result: await this.generateImageTool(conversationId!, call, run, settings) };
             }
             if (call.function.name === 'search_conversation_history') {
               return { result: await this.searchLinkedConversationHistory(conversationId!, call, mode, settings, run) };
@@ -3173,6 +3189,58 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   /**
+   * `generate_image`：调出图接口，把结果存成**当前这条助手回复**的附件。
+   *
+   * 为什么挂到消息上而不是写进工作区：用户在选项里选了「会话存储」——生成物属于
+   * 这条对话，不该悄悄往用户的仓库里丢文件。要落盘时由用户在附件上点「另存为」。
+   * 字节落成会话目录下的文件（见 `storage.saveMessageImage`），所以不会被保留期
+   * 压缩删掉。
+   */
+  private async generateImageTool(
+    conversationId: string,
+    call: ToolCall,
+    run: ConversationRun,
+    settings: ChatSettings,
+  ): Promise<ToolExecutionResult> {
+    const title = tt('tool.generateImage.title');
+    const fail = (content: string): ToolExecutionResult => ({ status: 'error', summary: title, content, approval: 'not-required' });
+    const args = parseToolArguments(call.function.arguments);
+    const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
+    const size = typeof args.size === 'string' ? args.size.trim() : undefined;
+    if (!prompt) return fail(tt('api.imageEmptyPrompt'));
+    const response = this.currentActiveResponse(run);
+    if (!response) return fail(tt('tool.generateImage.noMessage'));
+    const startedAt = Date.now();
+    try {
+      const image = await this.client.generateImage(settings, { prompt, size, signal: run.controller.signal });
+      const attachment = await this.storage.saveMessageImage(conversationId, response.assistantMessageId, {
+        dataBase64: image.dataBase64,
+        mimeType: image.mimeType,
+        label: prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt,
+      });
+      const stored = await this.storage.getMessage(conversationId, response.assistantMessageId);
+      if (stored) {
+        await this.post({ type: 'messageUpdated', conversationId, message: this.forWebview(stored, conversationId) });
+      }
+      const seconds = Math.round((Date.now() - startedAt) / 100) / 10;
+      return {
+        status: 'success',
+        summary: tt('tool.generateImage.summary', { model: image.model, seconds }),
+        content: tt('tool.generateImage.content', {
+          label: attachment.label,
+          size: size || 'auto',
+          mime: image.mimeType,
+          kb: Math.max(1, Math.round((attachment.bytes ?? 0) / 1024)),
+        }),
+        approval: 'not-required',
+      };
+    } catch (error) {
+      if (error instanceof RequestCancelledError) throw error;
+      return fail(tt('tool.generateImage.failed', { error: error instanceof Error ? error.message : String(error) }));
+    }
+  }
+
+  /**
    * `update_todos`：把模型给的整份清单落库并推给面板。
    *
    * 这里是清单的唯一写入口——面板不自己算状态，避免出现“界面已完成、存档还是执行中”。
@@ -3645,14 +3713,52 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private forWebview(message: ChatMessage, conversationId = this.activeConversationId): ChatMessage {
+    // 正文里的 `![](相对路径)` 只有变成 webview 资源地址才能显示（CSP 不允许 file:/远程图）。
+    // 只改发给前端的副本，存档里保留模型原本写的内容。
+    const localizedContent = this.localizeImageLinks(message.content);
     return {
       ...message,
+      ...(localizedContent === undefined ? {} : { content: localizedContent }),
       context: message.context
         ? this.attachmentForWebview(message.context, message.id, conversationId, 'context', 0)
         : undefined,
       attachments: message.attachments?.map((attachment, index) =>
         this.attachmentForWebview(attachment, message.id, conversationId, 'attachment', index)),
     };
+  }
+
+  /**
+   * 把正文里的本地图片引用换成 webview 资源地址。
+   *
+   * 为什么在前端解决不了：webview 拿不到工作区文件，而 CSP 的 `img-src` 只有
+   * `${webview.cspSource}` 与 `data:` —— 于是 `![](docs/chart.png)` 只能买到一张破图。
+   * 这里在**下发副本**上把它改成 `asWebviewUri` 的结果，模型写的内容与存档都不动。
+   */
+  private localizeImageLinks(content: string | undefined): string | undefined {
+    const view = this.view;
+    if (!view) return content;
+    return rewriteMarkdownImagePaths(content, (src) => {
+      const file = this.workspaceImageUri(src);
+      return file ? view.webview.asWebviewUri(file).toString() : undefined;
+    });
+  }
+
+  /**
+   * 把正文里写的图片地址解析成工作区内的文件 Uri。
+   *
+   * 绝对路径也必须落在某个工作区根目录里：否则 `![](/Users/me/.ssh/id_rsa.png)`
+   * 这类路径会被渲染成一张可被拖走的图片。
+   */
+  private workspaceImageUri(input: string): vscode.Uri | undefined {
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+    const found = resolveLocalImage(input, {
+      roots,
+      isAbsolute,
+      resolvePath: (root, path) => resolve(root, path),
+      insideWorkspace: (path) => isInsideWorkspace(path, roots),
+      exists: existsSync,
+    });
+    return found ? vscode.Uri.file(found) : undefined;
   }
 
   private attachmentForWebview(
@@ -3683,7 +3789,26 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       language: context.language,
       mimeType: context.mimeType,
       thumbnailDataUrl: context.thumbnailDataUrl,
+      webviewSrc: this.attachmentWebviewSrc(context),
     };
+  }
+
+  /**
+   * 落成文件的图片（agent 生成图、用户从磁盘加的图片）在面板里直接用
+   * `asWebviewUri` 指向文件本身：不复制副本、不塞 base64。
+   *
+   * 没有 `path`（或文件已不在）时返回 undefined，前端会退回 `thumbnailDataUrl`。
+   * 只对 `kind === 'image'` 生效 —— 普通文本附件不该被当成图去渲染。
+   */
+  private attachmentWebviewSrc(context: MessageContext): string | undefined {
+    if (context.kind !== 'image') return undefined;
+    const path = (context.path ?? '').trim();
+    if (!path || !existsSync(path)) return undefined;
+    try {
+      return this.view?.webview.asWebviewUri(vscode.Uri.file(path)).toString();
+    } catch {
+      return undefined;
+    }
   }
 
   private rememberAttachment(id: string, context: MessageContext): void {
@@ -4506,6 +4631,35 @@ function todoToolDefinition(): ToolDefinition {
           },
         },
         required: ['todos'],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
+/**
+ * 出图工具。
+ *
+ * 只在当前配置档填了「图片模型」时才下发 —— 没配却把工具摆在模型面前，它一定会调，
+ * 然后每次都拿到同一句错误，白烧一轮 token。
+ */
+function generateImageToolDefinition(): ToolDefinition {
+  return {
+    type: 'function',
+    function: {
+      name: 'generate_image',
+      description: tt('tool.generateImage.description'),
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: tt('tool.generateImage.promptParam') },
+          size: {
+            type: 'string',
+            enum: ['1024x1024', '1024x1536', '1536x1024', '1792x1024', '1024x1792', 'auto'],
+            description: tt('tool.generateImage.sizeParam'),
+          },
+        },
+        required: ['prompt'],
         additionalProperties: false,
       },
     },

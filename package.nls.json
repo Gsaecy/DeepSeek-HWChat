@@ -17,6 +17,7 @@
   "command.showPermissionScope": "Show effective permissions and sources",
   "viewsWelcome.chat": "No conversation yet.\n[New chat](command:hwchat.newChat)\n[Configure API](command:hwchat.openSettings)",
   "config.apiProfiles": "API profile list. Keys are never written here; each profile keeps its key in VS Code SecretStorage.",
+  "config.apiProfileImageModel": "Image model for this API profile (for example gpt-image-1). Leave empty to disable image output; the agent only gets the image tool once this is set.",
   "config.activeApiProfileId": "The active API profile.",
   "config.baseUrl": "OpenAI-compatible endpoint, for example `https://api.deepseek.com` or `https://api.moonshot.cn/v1`.",
   "config.model": "Default model. Can be switched from the chat panel header at any time.",

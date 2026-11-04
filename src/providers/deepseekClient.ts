@@ -26,6 +26,23 @@ export interface StreamChatResult {
   finishReason?: string;
 }
 
+export interface GenerateImageOptions {
+  prompt: string;
+  /** 例如 1024x1024。服务端不认识时会在校验阶段被丢掉（见 ALLOWED_IMAGE_SIZES）。 */
+  size?: string;
+  /** 覆盖配置档里的出图模型（一般不用给）。 */
+  model?: string;
+  signal?: AbortSignal;
+  apiKey?: string;
+}
+
+export interface GeneratedImage {
+  dataBase64: string;
+  mimeType: string;
+  /** 实际使用的模型名，写进工具结果让用户知道花了哪个模型的钱。 */
+  model: string;
+}
+
 export interface ListModelsOptions {
   signal?: AbortSignal;
   apiKey?: string;
@@ -260,6 +277,106 @@ export class DeepSeekClient {
     }
   }
 
+  /**
+   * 调 OpenAI 兼容的 `POST /images/generations` 生成图片。
+   *
+   * 为什么单独一条通道而不是复用 streamChat：出图接口是**一次性 JSON**（没有 SSE），
+   * 而且很慢（10–60 秒才吐第一个字节），超时语义与聊天完全不同 —— 聊天的超时是
+   * 「多久没有数据」，出图只能是「整次调用最多等多久」。
+   *
+   * 为什么不发 `response_format`：`gpt-image-1` **不接受**这个参数（会 400），而
+   * `dall-e-*` 默认返回临时 URL。所以这里两种都收：有 `b64_json` 直接用，只有 `url`
+   * 就在扩展侧下载（走同一个代理与同一套网络诊断），绝不让 webview 去取远程图片 ——
+   * CSP 里 `img-src` 只允许 `data:` 与本地资源，这既是技术限制也是隐私选择。
+   */
+  async generateImage(settings: ChatSettings, options: GenerateImageOptions): Promise<GeneratedImage> {
+    const apiKey = options.apiKey?.trim() || await this.getApiKey(settings.activeApiProfileId);
+    if (!apiKey?.trim()) throw new Error(tt('api.noKey'));
+    const model = String(options.model ?? settings.imageModel ?? '').trim();
+    if (!model) throw new Error(tt('api.imageNoModel'));
+    const prompt = options.prompt.trim();
+    if (!prompt) throw new Error(tt('api.imageEmptyPrompt'));
+
+    const endpoint = buildImagesEndpoint(settings.baseUrl);
+    const body: Record<string, unknown> = { model, prompt, n: 1 };
+    const size = normalizeImageSize(options.size);
+    if (size) body.size = size;
+
+    // 出图没有中间数据可等，所以给一个不短于 90 秒的总时限：用户设置的 120 秒仍然生效，
+    // 但把它调到 20 秒（为了聊天更敏感）不该让一次正常出图必然失败。
+    const timeoutMs = Math.max(90_000, settings.requestTimeoutSeconds * 1000);
+    const timeoutMessage = tt('api.imageTimeout', { seconds: Math.round(timeoutMs / 1000) });
+    let attempt = 0;
+    let payload: unknown;
+    const transport = this.transport(settings);
+    while (true) {
+      const controller = new AbortController();
+      const signal = mergeAbortSignals(options.signal, controller.signal);
+      let response: ResponseLike;
+      try {
+        response = await withDeadline(
+          fetchWithNetworkRetry(endpoint, {
+            method: 'POST',
+            headers: new Headers({
+              Accept: 'application/json',
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+              ...sanitizeHeaders(settings.requestHeaders),
+            }),
+            body: JSON.stringify(body),
+            signal,
+          }, {
+            signal,
+            onRetry: (event) => this.reportRetry(endpoint, event),
+          }, transport),
+          timeoutMs,
+          timeoutMessage,
+          () => controller.abort(),
+        );
+      } catch (error) {
+        if (isAbortError(error) && options.signal?.aborted) throw new RequestCancelledError();
+        if (isAbortError(error) || (error instanceof Error && error.message === timeoutMessage)) {
+          throw new Error(timeoutMessage);
+        }
+        this.logFailure(endpoint, error);
+        throw new Error(tt('api.connectFailed', { error: error instanceof Error ? error.message : String(error) }));
+      }
+      if (response.ok) {
+        payload = await response.json();
+        break;
+      }
+      const detail = await readError(response, apiKey);
+      attempt += 1;
+      if (shouldRetryStatus(response.status) && attempt < TRANSIENT_STATUS_ATTEMPTS && !options.signal?.aborted) {
+        const waitMs = transientRetryDelayMs(attempt, response.headers?.get('retry-after'));
+        this.reportStatusRetry(endpoint, response.status, attempt, waitMs, detail);
+        await sleepMs(waitMs, options.signal).catch(() => { throw new RequestCancelledError(); });
+        continue;
+      }
+      throw new Error(tt('api.requestFailed', { status: response.status, detail }));
+    }
+
+    const picked = pickGeneratedImage(payload);
+    if (!picked) throw new Error(tt('api.imageNoData'));
+    if (picked.dataBase64) {
+      return { dataBase64: picked.dataBase64, mimeType: picked.mimeType, model };
+    }
+    // 只有 URL：在扩展侧下载（这样代理/证书/超时都沿用同一条通道）。
+    // 明文 http 的地址一律不取：这台机器上的其余请求都要求 HTTPS（本机回环除外），
+    // 没有理由让一个服务端返回的 URL 绕过同一条底线。
+    assertSecureUrl(new URL(picked.url!));
+    const download = await withDeadline(
+      transport(picked.url!, { method: 'GET', signal: options.signal ?? new AbortController().signal }),
+      timeoutMs,
+      timeoutMessage,
+    );
+    if (!download.ok) throw new Error(tt('api.imageDownloadFailed', { status: download.status }));
+    const contentType = download.headers?.get('content-type') ?? '';
+    const mimeType = (contentType.split(';')[0] ?? '').trim() || picked.mimeType;
+    const bytes = Buffer.from(await readBodyCapped(download, MAX_GENERATED_IMAGE_BYTES));
+    return { dataBase64: bytes.toString('base64'), mimeType, model };
+  }
+
   async listModels(settings: ChatSettings, options: ListModelsOptions = {}): Promise<DiscoveredModel[]> {
     const apiKey = options.apiKey?.trim() || await this.getApiKey(settings.activeApiProfileId);
     if (!apiKey?.trim()) {
@@ -327,6 +444,104 @@ export function buildEndpoint(baseUrl: string): string {
     throw new Error(tt('api.httpsRequired'));
   }
   return endpoint;
+}
+
+/**
+ * 出图端点。
+ *
+ * `baseUrl` 允许写成 `https://host`、`https://host/v1`，也允许直接写到
+ * `/images/generations`（有些网关的聊天与出图不在同一个前缀下）。与聊天端点一样，
+ * 远程必须是 HTTPS；只有本机回环允许明文。
+ */
+export function buildImagesEndpoint(baseUrl: string): string {
+  const normalized = baseUrl.trim().replace(/\/+$/, '');
+  if (!normalized) throw new Error(tt('api.imageBaseUrlMissing'));
+  const endpoint = normalized.endsWith('/images/generations') ? normalized : `${normalized}/images/generations`;
+  const url = new URL(endpoint);
+  assertSecureUrl(url);
+  return endpoint;
+}
+
+/** 单张生成图片的字节上限（base64 之后约 27 MB）。超过就报错，不把内存撑爆。 */
+export const MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024;
+
+/**
+ * 允许透传给服务端的尺寸。
+ *
+ * 只列 OpenAI 图像接口真实接受过的取值；不在名单里的一律**丢弃**而不是原样透传 ——
+ * 一个 `size: "大图"` 会让整次请求 400，而用户其实只是没说尺寸。
+ */
+const ALLOWED_IMAGE_SIZES = new Set(['256x256', '512x512', '1024x1024', '1024x1536', '1536x1024', '1792x1024', '1024x1792', 'auto']);
+
+export function normalizeImageSize(value: string | undefined): string | undefined {
+  const size = String(value ?? '').trim().toLowerCase();
+  return ALLOWED_IMAGE_SIZES.has(size) ? size : undefined;
+}
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
+  gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml', avif: 'image/avif',
+};
+
+function mimeFromUrl(url: string): string {
+  const clean = url.split('?')[0] ?? '';
+  const extension = clean.slice(clean.lastIndexOf('.') + 1).toLowerCase();
+  return MIME_BY_EXTENSION[extension] ?? 'image/png';
+}
+
+/**
+ * 从出图响应里挑出第一张图。
+ *
+ * 三种真实形状都认：OpenAI 的 `{ data: [{ b64_json | url }] }`、部分网关的
+ * `{ images: [{ b64_json }] }`、以及直接把 base64 字符串放在 `{ image }` 里的实现。
+ * 认不出来就返回 undefined，由调用方报「没有返回图片」，不猜。
+ */
+export function pickGeneratedImage(payload: unknown): { dataBase64?: string; url?: string; mimeType: string } | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const record = payload as Record<string, unknown>;
+  const list = Array.isArray(record.data) ? record.data : Array.isArray(record.images) ? record.images : [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as Record<string, unknown>;
+    const base64 = typeof entry.b64_json === 'string' ? entry.b64_json.trim() : '';
+    const url = typeof entry.url === 'string' ? entry.url.trim() : '';
+    const mimeType = typeof entry.mime_type === 'string' && entry.mime_type.trim()
+      ? entry.mime_type.trim()
+      : url ? mimeFromUrl(url) : 'image/png';
+    if (base64) return { dataBase64: base64, mimeType };
+    if (url) return { url, mimeType };
+  }
+  if (typeof record.image === 'string' && record.image.trim()) {
+    return { dataBase64: record.image.trim(), mimeType: 'image/png' };
+  }
+  return undefined;
+}
+
+/** 读响应体，超过上限立刻中止（不把一张 200 MB 的图拉进内存）。 */
+async function readBodyCapped(response: ResponseLike, limit: number): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const buffer = Buffer.from(await response.text(), 'binary');
+    if (buffer.byteLength > limit) throw new Error(tt('api.imageTooLarge', { limit: Math.round(limit / 1024 / 1024) }));
+    return buffer;
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(tt('api.imageTooLarge', { limit: Math.round(limit / 1024 / 1024) }));
+    }
+    chunks.push(value);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.byteLength; }
+  return merged;
 }
 
 export function buildModelsEndpoint(baseUrl: string): string {

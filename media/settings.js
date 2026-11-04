@@ -20,7 +20,7 @@
   }
 
   const fieldIds = [
-    'apiKey', 'profileName', 'profileModels', 'baseUrl', 'model', 'requestHeaders', 'requestTimeoutSeconds', 'proxy',
+    'apiKey', 'profileName', 'profileModels', 'profileImageModel', 'baseUrl', 'model', 'requestHeaders', 'requestTimeoutSeconds', 'proxy',
     'temperature', 'maxTokens', 'maxMessagesInContext', 'sendOnEnter',
     'systemPrompt', 'historyRetentionDays', 'taskCacheRetentionHours',
     'cacheBudgetMB', 'cleanupIntervalMinutes', 'defaultMode',
@@ -159,6 +159,7 @@
       baseUrl: fields.baseUrl.value.trim(),
       models,
       excludedModels,
+      imageModel: fields.profileImageModel.value.trim() || undefined,
       requestHeaders: readRequestHeaders(),
     };
     if (fields.apiKey.value.trim()) pendingApiKeys[activeProfileId] = fields.apiKey.value.trim();
@@ -179,6 +180,7 @@
     fields.profileName.value = profile.name || '';
     fields.baseUrl.value = profile.baseUrl || '';
     fields.profileModels.value = (profile.models || []).join('\n');
+    fields.profileImageModel.value = profile.imageModel || '';
     if (!profile.models?.includes(fields.model.value)) fields.model.value = profile.models?.[0] || '';
     fields.requestHeaders.value = Object.keys(profile.requestHeaders || {}).length ? JSON.stringify(profile.requestHeaders, null, 2) : '';
     fields.apiKey.value = pendingApiKeys[profile.id] || '';
