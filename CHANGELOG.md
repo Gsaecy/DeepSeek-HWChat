@@ -18,6 +18,7 @@
     - 正文里写**工作区相对路径**的图片（`![](docs/chart.png)`、带空格用 `<…>`、带标题）在**下发副本**上改写成 webview 资源地址，存档与模型原文一个字不动；绝对路径必须落在某个工作区根目录内，否则不渲染（`![](/Users/me/.ssh/xxx.png)` 不能被渲染成一张可拖走的图片）。
   - 实测（真实本机 HTTP 服务，`127.0.0.1` 随机端口）：请求 `POST /v1/images/generations`、`Authorization: Bearer …`、body `{"model":"local-image","prompt":"本地联调：一只猫","n":1,"size":"1024x1024"}`（**无 `response_format`**）、返回 16 字节 PNG 原样落盘成 `images/02a3e298….png`、消息附件 `dataBase64` 为 `null`。
   - 守护：`src/test/imageOutput.test.ts` **12 条**（端点拼接 / 尺寸白名单 / 三种响应形状 / 不发抖 `response_format` / url 下载 / 明文下载地址拒绝 / 503 重试与 401 不重试 / 没配图片模型不打接口 / 落盘去重与「附件不带 base64」/ markdown 改写 / 越界路径拒绝）+ `src/test/settings.test.ts` 里 1 条「图片模型跟着配置档走」（顺带抓到 `normalizeProfiles` 逐字段重建时会把它丢掉）+ `test/check-image-output.mjs` **31 项**（地址白名单 10 项、行内与块级渲染 12 项、附件 webviewSrc 4 项、CSS 尺寸上限 4 项、切不到源码即失败）。
+  - 顺带补齐开发用的设置预览页（`test/preview-settings.html`）：它落后于真实设置页 —— 缺 `proxy` / `searchExclude` / 回收站两项，导致页面一加载就抛 `Cannot set properties of null`，新字段根本验证不到。补齐后该页控制台零报错，`图片模型` 按配置档保存/回填也实测过了。
   - 全量：**931** 条单测、**47** 个 `check-*.mjs` 全绿。
 
 ## 0.3.9
