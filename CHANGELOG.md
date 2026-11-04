@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **`replace_in_file` 重复执行同一处修改时不再报「oldText 不存在」：先认「已经改过了」，否则把文件的真实内容还回去**（用户原话：把失败原样贴回来 —— `oldText 在文件中不存在，未执行修改。`，而那条 `oldText` 是 `<link rel="icon"…>` 紧跟 `<link rel="stylesheet"…>` 的一段）。
+  - **实测那个 `index.html`：文件里已经是 `newText`**（上一轮就改好了，中间还多了整段 `theme-color` 注释与 `apple-touch-icon`）。模型重复执行同一处修改，得到一条「失败」，于是换个写法再试一遍 —— 这类无谓重试正是「工具老是失败」的来源。
+  - **① 已经改过**（`findAlreadyApplied`）：按行去首尾空白比较，忽略 EOL 与缩进。命中就返回 `success` + 「这段修改已经在文件里了（第 N 行起），没有重复执行；文件未改动」，并**不带 `changedFiles`**（文件确实没动），再补一句「若其实想改另一处，请给更长的唯一上下文，不要重复插入同一段」。
+  - **② 只差空白**（`diagnoseMissingOldText`）：内容其实在同一位置，只是缩进/行尾不同 → 给出**文件中的真实文本**，让它原样粘回去。**不做全量空白折叠**：行内空白差异会改变语义，被当成同一段会让模型以为位置找对了。
+  - **③ 首行在、后续变了**：报出起始行号 + 从那里开始的真实内容（needle 长度 + 6 行上下文，最多 14 行，不把整份文件塞进上下文）。
+  - **④ 完全不像**：仍然报原来的错误，不输出空壳提示。
+  - **实测**：对用户那个真实文件跑一遍 —— `findAlreadyApplied(...).line === 12`（正是 icon 那一行），`diagnoseMissingOldText` 判成 `first-line`，返回的片段里能看到插入的 `theme-color` 注释。样例里 3 行文件 → 命中 `第 3 行起`。
+  - 守护：`replaceDiagnostics.test.ts` **9 条** + `check-replace-diagnostics.mjs` **17 项**（含真实 `index.html` 存在时的端到端校验，不存在则跳过）。
+
 - **路径不存在时不再只回一行 `ENOENT`：把「真实结构」和同名文件还给模型**（用户两次贴回同一条失败：`read_file {"path":"…/web/i18n.js"}` → `Error: ENOENT … stat '…/web/i18n.js'`，而文件其实在 `…/web/assets/i18n.js`）。
   - 只回错误时模型只能**再猜一次**路径，猜错就撞「连续 3 轮无进展」停机 —— 用户看到的是「工具老是失败」。现在 `read_file` / `open_file` / `write_file` / `replace_in_file` / `delete_file` / `rename_file` 这类带路径的工具失败时（只认 `ENOENT` / `ENOTDIR`），错误后面会补上：**最近一层真实存在的目录**（不越过工作区根）、它下面的条目（目录在前、最多 40 条、说明还有多少没列）、**同一工作区里的同名文件**（最多 5 处、排除 `node_modules`），以及一句「直接改用上面的真实路径重试；不确定就先 `list_directory`」。
   - 刻意**不自动替换**成找到的同名文件：读错文件比读不到更糟。状态仍是 `error`（读数确实失败了），只是把能用的下一步一起给出。

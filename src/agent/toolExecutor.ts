@@ -20,6 +20,7 @@ import { commandPathViolation, maskPatternFlagArguments } from './commandPaths';
 import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './workspacePaths';
 import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
 import { shouldAutoBackground } from './serverCommands';
+import { diagnoseMissingOldText, findAlreadyApplied, renderMissingOldTextDiagnosis } from './replaceDiagnostics';
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
 import { gitWriteOperation, GIT_VERBS_WITHOUT_INTENT } from './conversationScope';
 import { detectVersionBump, versionBumpCommand } from './releasePolicy';
@@ -1032,7 +1033,25 @@ export class ToolExecutor implements vscode.Disposable {
     const current = decodeText(await vscode.workspace.fs.readFile(resolved.uri));
     const plan = planReplacement(current, oldText, newText);
     const occurrences = plan.occurrences;
-    if (occurrences < 1) throw new Error(tt('tool.oldTextMissing'));
+    if (occurrences < 1) {
+      /*
+       * 没找到 oldText 时先查两件能静态查清的事（真实故障见 replaceDiagnostics.ts）：
+       *  1. 这段修改是不是**已经改过了** —— 文件里已经是 newText，重复执行只会把内容插两遍；
+       *  2. 是不是**只差缩进/空白** —— 把文件里的真实文本还给模型，比让它再猜一次便宜得多。
+       */
+      const applied = findAlreadyApplied(current, newText);
+      if (applied) {
+        const summary = tt('tool.replace.alreadyApplied', { line: applied.line });
+        return {
+          status: 'success',
+          summary,
+          content: `${summary}\n${tt('tool.replace.alreadyAppliedAdvice')}`,
+          approval: 'not-required',
+        };
+      }
+      const diagnosis = renderMissingOldTextDiagnosis(diagnoseMissingOldText(current, oldText), tt);
+      throw new Error(diagnosis ? `${tt('tool.oldTextMissing')}\n\n${diagnosis}` : tt('tool.oldTextMissing'));
+    }
     if (occurrences > 1 && !Boolean(args.replaceAll)) {
       throw new Error(tt('tool.oldTextMultiple', { count: occurrences }));
     }
