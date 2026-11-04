@@ -142,6 +142,14 @@ export class AgentRunner {
     scope?: ToolExecutionScope;
     callbacks: AgentRunCallbacks;
     extraTools?: ToolDefinition[];
+    /**
+     * 本轮允许下发给模型的工具名（宿主按任务类型指定）。
+     *
+     * 为什么在 runner 里做：这里是**唯一**把三路工具（原生 / 桥接 / 额外工具）
+     * 合并成一份清单的地方。在别处过滤总会漏掉某一路，而"清单里没有"比"调用后被拒"
+     * 强得多 —— 模型连选错的机会都没有。
+     */
+    toolAllowList?: readonly string[];
     executeExtraTool?: (call: import('../core/types').ToolCall) => Promise<{ result: ToolExecutionResult; skill?: SkillUsage } | undefined>;
     takeTaskUpdate?: (phase: 'replan' | 'complete') => Promise<AgentTaskUpdate[]> | AgentTaskUpdate[];
   }): Promise<AgentRunResult> {
@@ -156,12 +164,20 @@ export class AgentRunner {
      * 关着的时候工具清单里就不该出现它们：模型不会、也不该自己去查网；
      * 打开时才把 search_github_repos / search_web / fetch_url 交给它。
      */
-    const definitions = options.mode === 'chat'
+    const merged = options.mode === 'chat'
       ? []
       : [
         ...this.tools.definitions(options.mode, { internetReference: options.settings.internetReference }),
         ...(options.extraTools ?? []),
       ];
+    /*
+     * 宿主指定的工具清单（按任务类型）。`undefined` = 不限制。
+     * 注意是**按名字**过滤而不是按来源：同名工具只可能来自一路，所以不会误伤。
+     */
+    const allow = options.toolAllowList;
+    const definitions = allow === undefined
+      ? merged
+      : merged.filter((tool) => allow.includes(tool.function.name));
     /**
      * 单轮执行预算。
      *

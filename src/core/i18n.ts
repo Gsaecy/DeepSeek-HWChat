@@ -822,6 +822,7 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.replaceInFile.description': { zh: '在一个工作区文本文件中进行精确文本替换，适合小范围修改。', en: 'Perform an exact text replacement in a workspace file; suited to small edits.' },
   'tool.renameFile.description': { zh: '重命名或移动工作区内的单个文件。', en: 'Rename or move a single file inside the workspace.' },
   'tool.deleteFile.description': { zh: '将工作区内的单个文件移到系统废纸篓。不能删除目录。', en: 'Move a single workspace file to the system trash. Directories cannot be deleted.' },
+  'tool.playbookBlocked': { zh: '本轮任务类型已指定首选工具', en: 'This task type has a prescribed tool' },
   'tool.runCommand.backgroundParam': { zh: '设为 true 表示这是常驻命令（静态服务器、watch、监听端口等）。宿主会立刻返回，并给出后台 id；进程不会自己结束，也不该用超时去等它。', en: 'Set to true for a long-running command (static server, watcher, port listener). The host returns immediately with a background id; the process never exits on its own, so do not wait on it with a timeout.' },
   'tool.runCommand.backgroundStarted': { zh: '已在后台启动（{seconds} 秒内没有退出，pid {pid}）', en: 'Started in the background (still alive after {seconds}s, pid {pid})' },
   'tool.runCommand.backgroundNotice': { zh: '后台进程已就绪：id `{id}`，pid {pid}。它会在本会话结束或你点「停止」时被一起收掉；要提前结束就用 `run_command` 执行 `kill {pid}`，或告诉我停掉 `{id}`。', en: 'Background process ready: id `{id}`, pid {pid}. It is cleaned up when this session ends or you press Stop; to end it early run `kill {pid}` via run_command, or tell me to stop `{id}`.' },

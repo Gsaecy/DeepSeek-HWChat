@@ -9,6 +9,7 @@ import { messagesSignatureKey } from './messageSignature';
 import { isInsideWorkspace, normalizeFileReference, revealTargetFor } from '../agent/fileReveal';
 import { embedMentionedImages, rehostWebviewImageUrls, resolveLocalImage, rewriteMarkdownImagePaths } from '../agent/markdownImages';
 import { imageCapabilityPrompt, looksLikeImageRequest } from '../agent/imageRequest';
+import { blockedToolReason, detectPlaybooks, hasWriteIntent, narrowToolNames, type ToolPlaybook } from '../agent/toolPlaybooks';
 import { findRemoteImages, resolveRemoteImages } from '../agent/remoteImages';
 import { chooseReferenceMatch } from '../agent/fileReferenceResolve';
 import { resolveFileReferences, type ReferenceQuery } from '../agent/fileReferenceBatch';
@@ -53,6 +54,12 @@ import {
 const ATTACHMENT_DATA_MAX_BASE64 = 11 * 1024 * 1024;
 /** 「图片地址 → 文件路径」表的上限：正常用量远低于它。 */
 const IMAGE_SRC_PATH_LIMIT = 400;
+
+/** 把本轮命中的任务类型拼成一段宿主指令（空则返回空串，不污染提示词）。 */
+function playbookDirective(playbooks: readonly ToolPlaybook[]): string {
+  if (!playbooks.length) return '';
+  return playbooks.map((playbook) => playbook.directive).join('\n\n');
+}
 
 /** 图片文件的 MIME：按扩展名判，认不出来按 png。 */
 function imageMimeTypeFor(path: string): string {
@@ -1669,9 +1676,23 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         // 首次绑定之外，改到别的项目也要记下来：标题旁的徽标要显示全部涉及的项目。
         touchProjectRoot: (fsPath) => this.touchProjectRoot(conversationId!, fsPath),
       };
-      const requestMessages = await this.requestMessages(conversationId, settings, mode, preparedSkills.prompt, options?.resumedTodos === true);
       const linkedConversation = await this.storage.getConversation(conversationId);
       const historyTool = linkedConversation?.sourceConversationId ? conversationHistoryToolDefinition() : undefined;
+      /*
+       * 按任务类型**由宿主指定首选工具**（见 `toolPlaybooks.ts` 里的事故记录）。
+       *
+       * 判定用的是用户这句话本身（正则），不是让模型自己判断 —— 模型一旦判断错，
+       * 就会去试一个根本调不通的工具，然后三轮失败停机。
+       */
+      const playbooks = detectPlaybooks(content, { looksLikeImage: looksLikeImageRequest });
+      const writingRequested = hasWriteIntent(content);
+      const allToolNames = this.toolCatalog(settings, mode);
+      const toolAllowList = playbooks.length
+        ? narrowToolNames(allToolNames, playbooks, writingRequested)
+        : undefined;
+      if (playbooks.length) {
+        this.log(`[playbook] ${playbooks.map((item) => item.kind).join('+')}｜工具 ${allToolNames.length} → ${toolAllowList?.length ?? allToolNames.length}（写意图：${writingRequested}）`);
+      }
       const controller = new AbortController();
       /**
        * 续跑绑定：通用续跑指令（「继续执行当前任务清单…」）本身没有交付物，
@@ -1679,6 +1700,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
        * 被判成 related，任务树里就把不相干的任务标成「已合并」。
        * 这里改用暂停清单的未完成条目当作用域；没有暂停清单时返回 undefined，退回原文。
        */
+      const requestMessages = await this.requestMessages(
+        conversationId,
+        settings,
+        mode,
+        preparedSkills.prompt,
+        options?.resumedTodos === true,
+        playbookDirective(playbooks),
+      );
       const resumeScope = resolveResumeScope({
         text: content,
         todos: existingConversation?.todos,
@@ -1738,6 +1767,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           signal: controller.signal,
           conversationId,
           scope,
+          toolAllowList,
           extraTools: [
             todoToolDefinition(),
             decisionToolDefinition(),
@@ -1748,6 +1778,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
             ...this.vscodeTools.definitions(),
           ].filter((tool): tool is NonNullable<typeof tool> => Boolean(tool)),
           executeExtraTool: async (call) => {
+            // 本轮任务类型已经指定了首选工具：模型凭记忆调了别的，直接拒并指出正确工具。
+            const blockedByPlaybook = blockedToolReason(call.function.name, playbooks, writingRequested);
+            if (blockedByPlaybook) {
+              return { result: { status: 'denied', summary: tt('tool.playbookBlocked'), content: blockedByPlaybook, approval: 'not-required' } };
+            }
             if (call.function.name === 'update_todos') {
               return { result: await this.updateTodos(conversationId!, call, hasTodoReplanIntent(content)) };
             }
@@ -2090,6 +2125,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
      * 注入的清单文案才能说清「这是被中断后接着做」。
      */
     resumed = false,
+    /**
+     * 宿主按任务类型指定的执行约定（首选工具序列）。
+     *
+     * 拼在系统提示词的**最前面**：它决定本轮怎么走，比后面那些"风格"类的规则
+     * 优先级更高 —— 排在后面会被模型当成可选项。
+     */
+    playbookDirective = '',
   ): Promise<ChatRequestMessage[]> {
     const stored = await this.storage.getContextMessages(conversationId, settings.maxMessagesInContext);
     const conversation = await this.storage.getConversation(conversationId);
@@ -2135,6 +2177,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         // 互联网参考在**这一层**注入：它是本轮的硬性工作方式，必须随每次请求
         // （含「继续执行」）重新拼进 system，而不是只在发送那一刻拼一次。
         withInternetReference(this.agentSystemPrompt(mode, settings.systemPrompt, skillPrompt, historyPrompt, settings.imageModel), settings.internetReference),
+        playbookDirective,
         todoContext,
       ]
         .filter(Boolean)
@@ -4404,6 +4447,30 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       await vscode.workspace.fs.writeFile(file, Buffer.from(dataBase64, 'base64'));
     }
     return file;
+  }
+
+  /**
+   * 本轮会下发的**工具名**清单（原生 + 桥接 + 额外工具）。
+   *
+   * 单独抽出来是为了让「按任务类型收窄」有用武之地：收窄必须基于**完整**清单，
+   * 否则会把本来该保留的工具一起算掉。这里只算名字，不构造定义（零成本）。
+   */
+  private toolCatalog(settings: ChatSettings, mode: ConversationMode): string[] {
+    if (mode === 'chat') return [];
+    const names = new Set<string>();
+    for (const definition of this.toolExecutor.definitions(mode, { internetReference: settings.internetReference })) {
+      names.add(definition.function.name);
+    }
+    for (const definition of this.vscodeTools.definitions()) names.add(definition.function.name);
+    // 额外工具：任务清单、方案决策、技能加载、对话历史检索、出图。
+    names.add('update_todos');
+    names.add('ask_user_choice');
+    // 名字与 `skillRegistry.toolDefinition()` 里写死的一致（它没有可路由技能时返回 undefined，
+    // 所以不能靠调它取名字）。
+    names.add('load_skill');
+    names.add('search_conversation_history');
+    if (imageProfileFor(settings)) names.add('generate_image');
+    return [...names];
   }
 
   private agentSystemPrompt(
