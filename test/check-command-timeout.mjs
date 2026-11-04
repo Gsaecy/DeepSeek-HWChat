@@ -72,6 +72,15 @@ check('建议里给出后台跑 + 轮询日志的具体写法', /background/.tes
 check('建议里说明「重试无用」（上限没变）', /重试一定同样超时/.test(adviceLine));
 check('示例 JSON 是单层大括号（`{{` 会原样显示给模型）', !adviceLine.includes('{{"command"'));
 
+/* ── 2.5 「cd 到自己所在目录」：能去掉就执行，去不掉就说明 ──────────── */
+const HINTS = read('src/agent/commandHints.ts');
+check('runCommand 会用去掉多余 cd 之后的命令执行', /const effectiveCommand = strippedCd\.command;/.test(EXECUTOR));
+check('去掉什么会写进结果（不偷偷改命令）', /tool\.runCommand\.cdStripped/.test(EXECUTOR) && /tool\.runCommand\.cdStripped/.test(I18N));
+check('三条判据都在（单参数 + 目标不存在 + 末段等于 cwd 名）',
+  /if \(exists\(resolve\(cwd, target\)\)\) return \{ command \};/.test(HINTS)
+  && /last !== basename\(resolve\(cwd\)\)/.test(HINTS),
+  '少一条就会把真正存在的同名子目录也去掉');
+
 /* ── 3. 纯函数真的按这个语义算 ───────────────────────────────────── */
 buildSync({
   entryPoints: ['src/agent/commandTimeout.ts'],

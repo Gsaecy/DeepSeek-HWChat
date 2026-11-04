@@ -104,7 +104,7 @@ check('中英文案齐全',
 
 // —— 4. 命令摘要 ——
 check('命令类摘要带上命令本身（不再只有退出码）',
-  /commandSummary\(command, result, timeout/.test(EXECUTOR) && /tool\.commandExitSummary/.test(I18N),
+  /commandSummary\(effectiveCommand, result, timeout/.test(EXECUTOR) && /tool\.commandExitSummary/.test(I18N),
   '一行「命令退出码 0」看不出在干什么');
 
 check('摘要里对凭据脱敏（会进界面与审计）',

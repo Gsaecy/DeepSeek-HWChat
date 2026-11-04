@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`cd` 到自己所在目录时，宿主直接把那段多余的 `cd` 去掉再执行（并说明去掉了什么）**（用户第二次贴回同一条失败：`cd "Personal Workstation OS" && grep -n … package.json` → `/bin/sh: line 0: cd: Personal Workstation OS: No such file or directory`）。
+  - 上一版只追加了一句解释，模型还得再跑一轮；而这条命令的 **cwd 本来就是** `…/Personal Workstation OS`，那个 `cd` 是纯噪声，执行原命令必然失败。
+  - **修法**（`stripRedundantLeadingCd`，判据严格到只认这一种情形，三条缺一不可）：① 命令以 `cd <单个参数>` 开头且后面还有别的命令；② 该参数按 cwd 解析**不存在**（真的没有同名子目录）；③ 该参数最后一段 == cwd 的 basename。
+    - 去掉之后**用生效命令执行**（`gitWriteOperation` / `versionBumpCommand` / `shouldAutoBackground` / `spawnCommand` / 摘要全部改成 `effectiveCommand`）。
+    - 结果首行写明「已去掉多余的 `cd "X"`：当前工作目录本来就是 `Y`」，并在失败时仍附带原来的解释。
+  - **实测**：用户那条命令跑 `stripRedundantLeadingCd` → 去掉 `Personal Workstation OS`，生效命令 = `grep -n "verify:web-i18n" -A 20 package.json | head -40 && ls scripts | head -30`。
+  - 守护：`commandHints.test.ts` 扩到 **12 条**（含同名子目录存在时不动、`cd src-tauri` 不动、只有 cd 没有后续命令不动、含 `$(…)` 不动）+ `check-command-timeout.mjs` 增 3 项接线检查。
+
 - **展开的命令步骤在流式更新时不再闪（第二版：改成「就地更新」，不再整条重建）**（用户第二次反馈：「展开的这种命令块窗口，还是会闪动」）。
   - **上一版只修了「展开态先空后满」和「`pre` 滚动重置」，漏掉了真正的元凶**：同一条消息里只要工具步骤变了，`patchMessage` 就走 `current.replaceWith(renderMessage(...))` —— **整条消息的节点全部重造**。于是 `<details>` 里 `animation: pulse` 的 pending 徽标从头播一遍、正在选中的命令文字丢失、悬停的「复制」按钮重建、滚动位置归零、长消息整体重排 —— 肉眼就是「一直在闪」。
   - **修法**：新增 `patchToolStepsOnly` / `applyToolStepsInPlace` / `applyToolStep`，按 `callId` 对上现有的 `details[data-detail-key="tool:<callId>"]`，**就地**同步状态类名、摘要、`<small>` 元信息与正文字段；状态没变时连徽标都不重建（避免 pulse 重播）。

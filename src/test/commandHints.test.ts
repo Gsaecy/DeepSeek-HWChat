@@ -42,3 +42,45 @@ test('这场失败与 cd 无关时不提示', () => {
 test('没有 cwd（解析失败）时不提示', () => {
   assert.equal(selfNestedCdHint(`cd "Personal Workstation OS" && ls`, undefined, FAIL), undefined);
 });
+
+// ── 去掉「cd 到自己所在目录」的多余前缀 ─────────────────────────────────
+import { stripRedundantLeadingCd } from '../agent/commandHints';
+
+const noDirs = () => false;
+
+test('用户那条命令：cd 到项目自己的名字可以去掉', () => {
+  const result = stripRedundantLeadingCd(
+    'cd "Personal Workstation OS" && grep -n "verify:web-i18n" -A 20 package.json | head -40 && ls scripts | head -30',
+    CWD,
+    noDirs,
+  );
+  assert.equal(result.removed, 'Personal Workstation OS');
+  assert.equal(result.command, 'grep -n "verify:web-i18n" -A 20 package.json | head -40 && ls scripts | head -30');
+});
+
+test('带路径 / 单引号 / 分号写法都认', () => {
+  assert.equal(stripRedundantLeadingCd(`cd "Personal Workstation OS/" && ls`, CWD, noDirs).removed, 'Personal Workstation OS/', '原样报出被去掉的内容');
+  assert.equal(stripRedundantLeadingCd(`cd 'Personal Workstation OS'; ls`, CWD, noDirs).removed, 'Personal Workstation OS');
+  assert.equal(stripRedundantLeadingCd(`cd /Users/me/AI\\ projects/Personal\\ Workstation\\ OS && ls`, CWD, noDirs).command, `cd /Users/me/AI\\ projects/Personal\\ Workstation\\ OS && ls`);
+});
+
+test('同名子目录真的存在时不动（保持原语义）', () => {
+  const result = stripRedundantLeadingCd('cd "Personal Workstation OS" && ls', CWD, () => true);
+  assert.equal(result.removed, undefined);
+  assert.match(result.command, /^cd /);
+});
+
+test('cd 到别的目录不动', () => {
+  const result = stripRedundantLeadingCd('cd src-tauri && cargo check', CWD, noDirs);
+  assert.equal(result.removed, undefined);
+});
+
+test('没有后续命令（只是 cd）时不碰', () => {
+  const result = stripRedundantLeadingCd('cd "Personal Workstation OS"', CWD, noDirs);
+  assert.equal(result.removed, undefined);
+});
+
+test('含变量/命令替换时不动（静态算不出目标）', () => {
+  const result = stripRedundantLeadingCd('cd "$(dirname x)" && ls', CWD, noDirs);
+  assert.equal(result.removed, undefined);
+});

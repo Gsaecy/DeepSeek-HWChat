@@ -30,3 +30,44 @@ export function selfNestedCdHint(command: string, cwd: string | undefined, outpu
   }
   return undefined;
 }
+
+export interface StrippedCd {
+  /** 去掉多余 `cd` 之后真正要执行的命令。 */
+  command: string;
+  /** 被去掉的那段 `cd <目标>`；没去掉时为 undefined。 */
+  removed?: string;
+}
+
+/**
+ * 去掉「`cd` 到自己所在目录」这种多余前缀。
+ *
+ * 现场（用户 2026-11-04，第二次贴回同一条失败）：
+ *
+ *     cd "Personal Workstation OS" && grep -n … package.json
+ *     → /bin/sh: line 0: cd: Personal Workstation OS: No such file or directory
+ *
+ * 这条命令的 cwd 本来就是 `…/Personal Workstation OS`，模型的意图就是「在这个项目里执行」，
+ * 那个 `cd` 是纯粹的噪声。只提示不处理的话，模型要再跑一轮；直接执行原命令又必然失败。
+ * 所以：**只在能百分百确定它是噪声时**把它去掉 ——
+ *   1. 命令以 `cd <单个参数>` 开头，且后面还有别的命令（`&& rest`）；
+ *   2. 该参数按 cwd 解析**不存在**（真的没有这个子目录）；
+ *   3. 该参数的最后一段 == cwd 的 basename（即「想进的就是当前目录」）。
+ * 三条缺一不可；被去掉什么会写进工具结果，不偷偷改。
+ */
+export function stripRedundantLeadingCd(
+  command: string,
+  cwd: string,
+  exists: (candidate: string) => boolean,
+): StrippedCd {
+  const match = /^\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s&;|]+))\s*(?:&&|;|\n)\s*([\s\S]+)$/.exec(command);
+  if (!match) return { command };
+  const target = (match[1] ?? match[2] ?? match[3] ?? '').trim();
+  const rest = match[4] ?? '';
+  if (!target || !rest.trim()) return { command };
+  // 变量、命令替换、通配符：静态算不出目标，一律不碰。
+  if (/[$`*?]/.test(target)) return { command };
+  if (exists(resolve(cwd, target))) return { command };
+  const last = target.replace(/[/\\]+$/, '').split(/[/\\]/).pop();
+  if (!last || last !== basename(resolve(cwd))) return { command };
+  return { command: rest.trim(), removed: target };
+}

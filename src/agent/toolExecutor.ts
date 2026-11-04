@@ -21,7 +21,7 @@ import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './wo
 import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
 import { shouldAutoBackground } from './serverCommands';
 import { effectiveTimeoutSeconds, timeoutAdvice, timeoutClampNotice, timeoutClampSummary } from './commandTimeout';
-import { selfNestedCdHint } from './commandHints';
+import { selfNestedCdHint, stripRedundantLeadingCd } from './commandHints';
 import { diagnoseMissingOldText, findAlreadyApplied, renderMissingOldTextDiagnosis } from './replaceDiagnostics';
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
 import { gitWriteOperation, GIT_VERBS_WITHOUT_INTENT } from './conversationScope';
@@ -1119,13 +1119,21 @@ export class ToolExecutor implements vscode.Disposable {
     // 于是「提交一下」可能提交掉了另一个项目。
     const explicitCwd = typeof args.cwd === 'string' && args.cwd.trim() ? args.cwd.trim() : undefined;
     const resolvedCwd = await this.resolvePath(explicitCwd ?? '.', scope);
-    const gitWrite = gitWriteOperation(command);
+    /*
+     * 去掉「cd 到自己所在目录」这种多余前缀（真实反馈 2026-11-04）：
+     * cwd 本来就是 `Personal Workstation OS`，命令还写 `cd "Personal Workstation OS"`，
+     * 于是 /bin/sh 去找它下面的同名子目录，必然失败。判据严格到只认这一种情形，
+     * 去掉什么会写进结果里，不偷偷改。
+     */
+    const strippedCd = stripRedundantLeadingCd(command, resolvedCwd.fsPath, existsSync);
+    const effectiveCommand = strippedCd.command;
+    const gitWrite = gitWriteOperation(effectiveCommand);
     if (gitWrite) {
       const blocked = await this.gitWriteBlockReason(gitWrite.verb, resolvedCwd, explicitCwd, scope, userApproved);
       if (blocked) return deniedResult(blocked);
     }
     // 版本号同理：`npm version` / `standard-version` 会直接改写清单并提交，未授权一律拒绝。
-    const versionTool = versionBumpCommand(command);
+    const versionTool = versionBumpCommand(effectiveCommand);
     if (versionTool && !scope?.versionBumpAllowed) {
       return deniedResult(tt('tool.versionBumpCommandNotAuthorized', { command: versionTool }));
     }
@@ -1152,9 +1160,9 @@ export class ToolExecutor implements vscode.Disposable {
      * 跑到超时，然后**连同服务一起被整组杀掉**，于是「命令跑过了，端口上却什么都没有」。
      * 所以服务类命令（`shouldAutoBackground`）由宿主补上后台，不再依赖模型记性。
      */
-    const autoBackground = args.background === true ? undefined : shouldAutoBackground(command);
+    const autoBackground = args.background === true ? undefined : shouldAutoBackground(effectiveCommand);
     if (args.background === true || autoBackground) {
-      const started = await this.startBackground(command, resolvedCwd.fsPath, scope, metrics);
+      const started = await this.startBackground(effectiveCommand, resolvedCwd.fsPath, scope, metrics);
       const autoNotice = autoBackground
         ? `${tt('tool.runCommand.autoBackground', { category: autoBackground.category })}\n`
         : '';
@@ -1189,7 +1197,7 @@ export class ToolExecutor implements vscode.Disposable {
         // 命令本身也按「暂时性资源错误」重试：EAGAIN 是 fork 失败，
         // 命令根本没起来，退避后重来是安全的；一旦有输出就不再重试。
         const attempt = await withTransientRetry(
-          () => spawnCommand(command, resolvedCwd.fsPath, timeout, settings.maxToolOutputBytes, scope?.onCommandProgress, {
+          () => spawnCommand(effectiveCommand, resolvedCwd.fsPath, timeout, settings.maxToolOutputBytes, scope?.onCommandProgress, {
             signal: scope?.signal,
             onSpawn: (child) => this.trackChild(child, scope?.signal),
           }),
@@ -1232,9 +1240,12 @@ export class ToolExecutor implements vscode.Disposable {
      * 真实反馈（2026-11-04）：cwd 本来就是 Personal Workstation OS，
      * 模型又写了 `cd "Personal Workstation OS"`，得到 /bin/sh 的 No such file or directory。
      */
-    const nestedCd = selfNestedCdHint(command, resolvedCwd.fsPath, output);
+    const nestedCd = selfNestedCdHint(effectiveCommand, resolvedCwd.fsPath, output);
     const nestedCdHint = nestedCd
       ? tt('tool.runCommand.alreadyThere', { dir: nestedCd, cwd: resolvedCwd.relativePath })
+      : undefined;
+    const strippedNote = strippedCd.removed
+      ? tt('tool.runCommand.cdStripped', { dir: strippedCd.removed, cwd: resolvedCwd.relativePath })
       : undefined;
     const clampSummary = result.timedOut ? timeoutClampSummary(timeoutPlan, tt) : '';
     const clampNotice = result.timedOut
@@ -1245,9 +1256,9 @@ export class ToolExecutor implements vscode.Disposable {
       : undefined;
     return {
       status: result.code === 0 && !result.timedOut ? 'success' : 'error',
-      summary: `${commandSummary(command, result, timeout, Date.now() - commandStartedAt)}${clampSummary}`,
+      summary: `${commandSummary(effectiveCommand, result, timeout, Date.now() - commandStartedAt)}${clampSummary}`,
       content: truncate(
-        redact([clampNotice, output || tt('tool.noOutput'), nestedCdHint, advice].filter(Boolean).join('\n\n')),
+        redact([strippedNote, clampNotice, output || tt('tool.noOutput'), nestedCdHint, advice].filter(Boolean).join('\n\n')),
         settings.maxToolOutputBytes,
       ),
       approval: 'approved',

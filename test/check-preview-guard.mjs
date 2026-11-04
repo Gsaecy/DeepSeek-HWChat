@@ -84,7 +84,7 @@ check(
 check(
   'runCommand 用 shouldAutoBackground 兜住「模型忘了写 background」',
   /if \(args\.background === true \|\| autoBackground\)/.test(EXECUTOR)
-    && /const autoBackground = args\.background === true \? undefined : shouldAutoBackground\(command\)/.test(EXECUTOR),
+    && /const autoBackground = args\.background === true \? undefined : shouldAutoBackground\(effectiveCommand\)/.test(EXECUTOR),
 );
 check(
   '自动转后台时明确告诉模型「为什么」（前台会被整组杀掉）',
