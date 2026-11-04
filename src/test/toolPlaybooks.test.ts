@@ -15,6 +15,7 @@ import test from 'node:test';
 import {
   blockedToolReason,
   detectPlaybooks,
+  detectTestCommand,
   hasWriteIntent,
   narrowToolNames,
   type ToolPlaybook,
@@ -198,4 +199,94 @@ test('runner 真的按清单裁剪（三路来源一起裁，不是只在提示�
     ['open_web_preview', 'run_command', 'update_todos'],
     '带清单时必须只下发清单里的（原生 / 桥接 / 额外三路一起裁）',
   );
+});
+
+/* ── 新增的三类任务 + 测试命令探测 + 路径替代建议 ─────────────────── */
+
+test('识别「跑测试」，并用探测到的真实命令（不让模型猜 npm test）', () => {
+  for (const text of ['跑一下测试', '运行全部测试', '重跑单测', 'run the tests', 'pytest 一下']) {
+    const kinds = detectPlaybooks(text, { looksLikeImage }).map((item) => item.kind);
+    assert.ok(kinds.includes('test-run'), `应识别为跑测试：${text}`);
+  }
+  const detected = detectPlaybooks('跑一下测试', {
+    looksLikeImage,
+    testCommand: { command: 'pnpm test', source: 'package.json scripts.test' },
+  }).find((item) => item.kind === 'test-run');
+  assert.match(detected!.directive, /pnpm test/, '探测到就必须写进指令');
+  assert.match(detected!.directive, /直接/);
+
+  const unknown = detectPlaybooks('跑一下测试', { looksLikeImage }).find((item) => item.kind === 'test-run');
+  assert.match(unknown!.directive, /未探测到测试命令/, '没探测到时要让它先读清单确认');
+  assert.match(unknown!.directive, /不要猜/);
+});
+
+test('detectTestCommand：六种工程类型各认一条', () => {
+  const probe = (files: Record<string, string>) => ({
+    exists: (path: string) => path in files,
+    readText: (path: string) => files[path],
+  });
+
+  assert.deepEqual(
+    detectTestCommand(probe({ 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }) })),
+    { command: 'npm test', source: 'package.json scripts.test' },
+  );
+  // 锁文件决定入口：pnpm 项目跑 npm test 会得到"测试全部失败"的假结果
+  assert.equal(detectTestCommand(probe({ 'package.json': '{"scripts":{"test":"x"}}', 'pnpm-lock.yaml': '' }))?.command, 'pnpm test');
+  assert.equal(detectTestCommand(probe({ 'package.json': '{"scripts":{"test":"x"}}', 'yarn.lock': '' }))?.command, 'yarn test');
+  assert.equal(detectTestCommand(probe({ 'go.mod': '' }))?.command, 'go test ./...');
+  assert.equal(detectTestCommand(probe({ 'Cargo.toml': '' }))?.command, 'cargo test');
+  assert.equal(detectTestCommand(probe({ 'pyproject.toml': '[tool.pytest.ini_options]' }))?.command, 'python3 -m pytest -q');
+  assert.equal(detectTestCommand(probe({ Makefile: 'build:\n\ttrue\ntest:\n\ttrue\n' }))?.command, 'make test');
+  // 没有任何测试配置 → undefined（指令会退回「先探测」）
+  assert.equal(detectTestCommand(probe({ 'README.md': '# hi' })), undefined);
+  // package.json 没有 scripts.test 时不要瞎猜
+  assert.equal(detectTestCommand(probe({ 'package.json': '{"scripts":{"build":"x"}}' })), undefined);
+});
+
+test('识别「发布」时只给发布指令，不再叠加 git 指令（避免两条打架）', () => {
+  const kinds = detectPlaybooks('发布成 0.5.0 并推送', { looksLikeImage }).map((item) => item.kind);
+  assert.ok(kinds.includes('release'));
+  assert.equal(kinds.includes('git-write'), false, '发布包含 git，但规矩更严，只保留 release');
+  const release = detectPlaybooks('发布成 0.5.0', { looksLikeImage })[0]!;
+  assert.match(release.directive, /ask_user_choice|先问/, '版本号必须先确认');
+  assert.match(release.directive, /npm version/, '要明确禁止 npm version 自己改文件');
+});
+
+test('识别「敏感配置」，首选读模板而不是真 .env', () => {
+  for (const text of ['读一下 .env 看配置', '检查 API key 配置', '这个 token 在哪配']) {
+    const kinds = detectPlaybooks(text, { looksLikeImage }).map((item) => item.kind);
+    assert.ok(kinds.includes('sensitive-config'), `应识别为敏感配置：${text}`);
+  }
+  const playbook = detectPlaybooks('读一下 .env', { looksLikeImage }).find((item) => item.kind === 'sensitive-config')!;
+  assert.deepEqual(playbook.preferred, ['read_file', 'search_files']);
+  assert.match(playbook.directive, /\.env\.example/);
+  assert.match(playbook.directive, /不要\*\*用 `run_command`/, '必须禁止 cat .env');
+});
+
+test('写意图统一关闭收窄（跑测试失败就修 / 读配置再加变量 都要能写）', () => {
+  for (const [text, writeText] of [
+    ['跑一下测试', '跑一下测试，失败就修好'],
+    ['读一下 .env', '读一下 .env 再加一个变量'],
+    ['先给我预览一下效果', '预览效果顺便把标题改大'],
+  ]) {
+    const readOnly = detectPlaybooks(text, { looksLikeImage });
+    const withWrite = detectPlaybooks(writeText, { looksLikeImage });
+    const names = ['read_file', 'write_file', 'delete_file', 'run_command'];
+    assert.equal(hasWriteIntent(text), false, `${text} 不该算写意图`);
+    assert.equal(hasWriteIntent(writeText), true, `${writeText} 应算写意图`);
+    assert.equal(narrowToolNames(names, readOnly, false).includes('write_file'), false, `${text} 应拿走写工具`);
+    assert.deepEqual(narrowToolNames(names, withWrite, true), names, `${writeText} 必须保留写工具`);
+  }
+});
+
+test('六类任务都在守护范围内，没有遗漏的「会被拒」路径', () => {
+  // 这一条不是验证某个行为，而是钉住"审计过的清单"：新增一类就必须同时更新这里，
+  // 否则审计表会和实现脱节（上一版就出过 blocked 名单为空却声称硬拒的事）。
+  const kinds = new Set<string>();
+  for (const text of ['先给我预览一下效果', '生成一张海报', '提交并推送', '跑一下测试', '发布成 0.5.0', '读一下 .env']) {
+    for (const playbook of detectPlaybooks(text, { looksLikeImage })) kinds.add(playbook.kind);
+  }
+  assert.deepEqual([...kinds].sort(), [
+    'git-write', 'image-generation', 'release', 'sensitive-config', 'test-run', 'web-preview',
+  ]);
 });

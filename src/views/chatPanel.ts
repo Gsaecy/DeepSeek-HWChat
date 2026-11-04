@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -9,7 +9,7 @@ import { messagesSignatureKey } from './messageSignature';
 import { isInsideWorkspace, normalizeFileReference, revealTargetFor } from '../agent/fileReveal';
 import { embedMentionedImages, rehostWebviewImageUrls, resolveLocalImage, rewriteMarkdownImagePaths } from '../agent/markdownImages';
 import { imageCapabilityPrompt, looksLikeImageRequest } from '../agent/imageRequest';
-import { blockedToolReason, detectPlaybooks, hasWriteIntent, narrowToolNames, type ToolPlaybook } from '../agent/toolPlaybooks';
+import { blockedToolReason, detectPlaybooks, detectTestCommand, hasWriteIntent, narrowToolNames, type ToolPlaybook } from '../agent/toolPlaybooks';
 import { findRemoteImages, resolveRemoteImages } from '../agent/remoteImages';
 import { chooseReferenceMatch } from '../agent/fileReferenceResolve';
 import { resolveFileReferences, type ReferenceQuery } from '../agent/fileReferenceBatch';
@@ -1684,7 +1684,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
        * 判定用的是用户这句话本身（正则），不是让模型自己判断 —— 模型一旦判断错，
        * 就会去试一个根本调不通的工具，然后三轮失败停机。
        */
-      const playbooks = detectPlaybooks(content, { looksLikeImage: looksLikeImageRequest });
+      const playbooks = detectPlaybooks(content, {
+        looksLikeImage: looksLikeImageRequest,
+        testCommand: this.detectProjectTestCommand(this.projectRootFor(existingConversation)),
+      });
       const writingRequested = hasWriteIntent(content);
       const allToolNames = this.toolCatalog(settings, mode);
       const toolAllowList = playbooks.length
@@ -4455,6 +4458,37 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 单独抽出来是为了让「按任务类型收窄」有用武之地：收窄必须基于**完整**清单，
    * 否则会把本来该保留的工具一起算掉。这里只算名字，不构造定义（零成本）。
    */
+  /**
+   * 探测项目真实的测试命令（给「跑测试」任务用）。
+   *
+   * 为什么不让模型猜：pnpm / uv / go / cargo 项目跑 `npm test` 不会报"命令不存在"，
+   * 而是报一堆"测试全部失败"的假结果 —— 比报错更难排查。
+   *
+   * 只在项目根**读几个小文件**，不递归、不执行任何东西。
+   */
+  private detectProjectTestCommand(projectRoot: string | undefined): { command: string; source: string } | undefined {
+    if (!projectRoot) return undefined;
+    const read = (relativePath: string): string | undefined => {
+      try {
+        const target = join(projectRoot, relativePath);
+        // 只读小文件：清单/Makefile 都是 KB 级，超过 1 MB 说明是别的东西。
+        if (!existsSync(target) || statSync(target).size > 1_024 * 1_024) return undefined;
+        return readFileSync(target, 'utf8');
+      } catch {
+        return undefined;
+      }
+    };
+    try {
+      return detectTestCommand({
+        exists: (relativePath) => existsSync(join(projectRoot, relativePath)),
+        readText: read,
+      });
+    } catch (error) {
+      this.log(`[playbook] 探测测试命令失败：${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
   private toolCatalog(settings: ChatSettings, mode: ConversationMode): string[] {
     if (mode === 'chat') return [];
     const names = new Set<string>();

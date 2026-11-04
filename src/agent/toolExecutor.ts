@@ -1,7 +1,7 @@
 import { fetchUrl, searchGitHubRepos, searchWeb } from './webResearch';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { basename, dirname, extname, resolve } from 'node:path';
+import { basename, dirname, extname, resolve, join } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import * as vscode from 'vscode';
 import { readSettings } from '../core/settings';
@@ -1384,12 +1384,13 @@ export class ToolExecutor implements vscode.Disposable {
           return undefined;
         }
       })();
+      const command = String(args.command ?? '');
       const violation = commandPathViolation(
-        String(args.command ?? ''),
+        command,
         roots.map((root) => root.fsPath),
         cwd,
       );
-      if (violation) return violation;
+      if (violation) return `${violation}${pathRewriteSuggestion(command, roots.map((root) => root.fsPath), preferredRoot?.fsPath ?? cwd)}`;
     }
     return undefined;
   }
@@ -1641,6 +1642,36 @@ function numberArg(args: Record<string, unknown>, key: string, fallback: number)
 
 function success(summary: string, content: string): ToolExecutionResult {
   return { status: 'success', summary, content, approval: 'not-required' };
+}
+
+/**
+ * 路径被拒时给出**可直接使用**的替代命令，而不只是"换路径"。
+ *
+ * 为什么（真实故障 2026-11-03 / 2026-11-04 各一次）：模型被拦后要么换写法硬撞
+ * （`/tmp/x` → `../../tmp/x` → 工作区内路径但命令里带 `--exclude '.env'`），
+ * 要么干脆停机。只说"换路径"等于让它自己再猜一次；把改写结果直接摆出来，
+ * 它下一步就能成功，也进不了「连续 3 轮失败」。
+ *
+ * 做法：把最外层的临时目录（`/tmp`、`$TMPDIR`、`~/…`）替换成工作区内的 `tmp/`。
+ * 其它情况返回空串（不瞎猜）。
+ */
+function pathRewriteSuggestion(command: string, roots: readonly string[], preferredRoot?: string): string {
+  const root = preferredRoot && roots.includes(preferredRoot) ? preferredRoot : roots[0];
+  if (!root) return '';
+  const directory = join(root, 'tmp');
+  /*
+   * 前缀（空白 / 引号 / `=`）必须**原样保留**。
+   * 第一版把它吞掉了，于是 `tar czf /tmp/x.tgz` 被建议成 `tar czf/var/…/x.tgz` ——
+   * 一条敲下去会更糟的命令，比不给建议还差。
+   */
+  const pattern = /(^|[\s"'=])((?:\/tmp|\/var\/tmp|\$TMPDIR|~)(?:\/[^\s"']*)?)/;
+  const match = command.match(pattern);
+  if (!match) return '';
+  const [whole, prefix, path] = match;
+  const tail = (path ?? '').replace(/^(?:\/tmp|\/var\/tmp|\$TMPDIR|~)/, '');
+  const rewritten = command.replace(whole, `${prefix}${directory}${tail}`);
+  if (rewritten === command) return '';
+  return tt('path.blockedSuggestion', { command: rewritten, directory });
 }
 
 function deniedResult(summary: string): ToolExecutionResult {

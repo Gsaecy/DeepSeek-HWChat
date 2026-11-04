@@ -22,7 +22,13 @@
  * 「预览效果顺便把标题改大」必须仍然能改。
  */
 
-export type ToolPlaybookKind = 'web-preview' | 'image-generation' | 'git-write';
+export type ToolPlaybookKind =
+  | 'web-preview'
+  | 'image-generation'
+  | 'git-write'
+  | 'test-run'
+  | 'release'
+  | 'sensitive-config';
 
 export interface ToolPlaybook {
   kind: ToolPlaybookKind;
@@ -34,7 +40,13 @@ export interface ToolPlaybook {
   allowed: readonly string[];
   /** 宿主口吻的指令，直接拼进系统提示词。 */
   directive: string;
-  /** 这类任务是否收窄写工具（用户明确要改东西时为 false）。 */
+  /**
+   * 是否按 `allowed` 收窄工具清单。
+   *
+   * **统一语义（所有内置任务类型都是 true）**：用户这句话里一旦有写意图，
+   * 收窄就整个失效 —— 「预览并顺手改标题」「跑测试，失败就修」「读 .env 再加一个变量」
+   * 都必须仍然能改文件。留成字段是为了将来能有「即使要写也必须收窄」的安全型任务。
+   */
   narrowWrites: boolean;
 }
 
@@ -92,6 +104,77 @@ function isGitWriteRequest(text: string): boolean {
     && !/(?:不要|别|不用|无需)\s*(?:提交|推送|commit|push)/i.test(text);
 }
 
+/** 「跑测试」：判据最硬的一类 —— 用户就是要执行项目自己的测试。 */
+function isTestRunRequest(text: string): boolean {
+  return /(?:跑|运行|执行|重跑|再跑)\s*(?:一下|一遍|下)?\s*(?:测试|单测|全部测试)/.test(text)
+    // 英文允许冠词与形容词挡在中间（`run the tests` / `run all unit tests`）。
+    || /\b(?:run|execute)\s+(?:the\s+|all\s+|a\s+)?(?:\w+\s+){0,2}(?:tests?|specs?)\b/i.test(text)
+    || /(?:npm test|yarn test|pnpm test|pytest|go test|cargo test|vitest|jest)\b/i.test(text);
+}
+
+/**
+ * 「发布 / 升版本 / 上架」。
+ *
+ * 与 `releasePolicy` 的分工：那边判的是「这次有没有被授权改版本号」；
+ * 这里判的是「用户在做发布这类事，所以该按发布的规矩走」。
+ */
+function isReleaseRequest(text: string): boolean {
+  if (/(?:不要|别|不用|无需)\s*(?:发布|上架|升版本|改版本)/.test(text)) return false;
+  return /(?:发布|上架|发版|升版本|改版本号|版本号改成|版本号定为|bump\s+version|release|publish)/i.test(text);
+}
+
+/** 「敏感配置」：想读 .env / 密钥 / 凭据这类东西。 */
+function isSensitiveConfigRequest(text: string): boolean {
+  const mentionsSecret = /(?:\.env\b|\.npmrc\b|\.netrc\b|密钥|私钥|凭据|凭证|API\s*key|apikey|token|secret|password|密码)/i.test(text);
+  if (!mentionsSecret) return false;
+  // 动词可以在前（读 .env）也可以在后（token 在哪配 / 这个 secret 怎么设置）。
+  return /(?:读|看|查|找|改|填|配置|设置|在哪|怎么|读取|read|check|find|config|set|where)/i.test(text);
+}
+
+/**
+ * 探测项目真实的测试命令。
+ *
+ * 为什么要探测：用户说「跑测试」，模型会猜 `npm test` —— 而项目可能用 pnpm / uv / go / cargo。
+ * 猜错的后果不是报错，而是报一个"测试全部失败"的假结果（比如 pnpm 项目跑 npm test 会
+ * 因为缺 node_modules 而失败）。
+ *
+ * 纯函数：文件存在性与内容由调用方注入，所以每种项目类型都能单测。
+ */
+export function detectTestCommand(probe: {
+  exists: (relativePath: string) => boolean;
+  readText: (relativePath: string) => string | undefined;
+}): { command: string; source: string } | undefined {
+  const packageJson = probe.readText('package.json');
+  if (packageJson) {
+    try {
+      const parsed = JSON.parse(packageJson) as { scripts?: Record<string, string> };
+      const testScript = parsed.scripts?.test;
+      if (typeof testScript === 'string' && testScript.trim()) {
+        // 包管理器只看锁文件：pnpm / yarn / bun 的 `test` 都是同一条脚本，但入口不同。
+        const manager = probe.exists('pnpm-lock.yaml') ? 'pnpm'
+          : probe.exists('yarn.lock') ? 'yarn'
+            : probe.exists('bun.lockb') || probe.exists('bun.lock') ? 'bun'
+              : 'npm';
+        return { command: `${manager} test`, source: 'package.json scripts.test' };
+      }
+    } catch {
+      // package.json 坏了：交给后面的工程类型继续判断。
+    }
+  }
+  if (probe.exists('go.mod')) return { command: 'go test ./...', source: 'go.mod' };
+  if (probe.exists('Cargo.toml')) return { command: 'cargo test', source: 'Cargo.toml' };
+  const pyproject = probe.readText('pyproject.toml') ?? '';
+  if (/\[tool\.pytest/.test(pyproject) || probe.exists('pytest.ini') || probe.exists('conftest.py')) {
+    return { command: 'python3 -m pytest -q', source: 'pytest 配置' };
+  }
+  const makefile = probe.readText('Makefile') ?? '';
+  if (/^test:/m.test(makefile)) return { command: 'make test', source: 'Makefile test 目标' };
+  const composer = probe.readText('composer.json') ?? '';
+  if (/"(?:test|tests)"\s*:/.test(composer)) return { command: 'composer test', source: 'composer.json scripts' };
+  if (probe.exists('Gemfile') && probe.exists('spec')) return { command: 'bundle exec rspec', source: 'spec/ 目录' };
+  return undefined;
+}
+
 /* ── 首选工具的具体写法（宿主口吻） ─────────────────────────────────── */
 
 const WEB_PREVIEW_PLAYBOOK: ToolPlaybook = {
@@ -116,7 +199,7 @@ const IMAGE_PLAYBOOK: ToolPlaybook = {
   preferred: ['generate_image'],
   blocked: [],
   allowed: ['generate_image', 'read_file', 'run_command'],
-  narrowWrites: false,
+  narrowWrites: true,
   directive: [
     '## 本轮任务类型：生成图片（宿主已指定执行路径）',
     '要一张新图时直接调 `generate_image`（参数：`prompt` 必填，`size` 可选），生成结果会作为附件显示在这条回复里。',
@@ -130,13 +213,55 @@ const GIT_WRITE_PLAYBOOK: ToolPlaybook = {
   preferred: ['run_command'],
   blocked: [],
   allowed: ['run_command'],
-  narrowWrites: false,
+  narrowWrites: true,
   directive: [
     '## 本轮任务类型：git 写操作（宿主已指定执行路径）',
     '所有 git 写操作都通过 `run_command` 执行，并**显式传 `cwd`**（本次对话所属的项目根）：',
     '`{"command":"git ...","cwd":"<项目根>"}`。',
     '禁止：`git -C <别的路径>`、`cd <别的项目> && git ...`、桥接终端工具 —— 这些会跨项目提交，或在 HWChat 里根本调不通。',
     '先 `git status --short` 看清要提交什么；版本号不要自己改。',
+  ].join('\n'),
+};
+
+const TEST_RUN_PLAYBOOK: ToolPlaybook = {
+  kind: 'test-run',
+  preferred: ['run_command'],
+  blocked: [],
+  allowed: ['run_command', 'read_file'],
+  narrowWrites: true,
+  directive: [
+    '## 本轮任务类型：跑测试（宿主已指定执行路径）',
+    '用 `run_command` 执行**项目自己的**测试命令，并显式传 `cwd`（本次对话的项目根）。',
+    '先读 `package.json` 的 `scripts.test` / `pyproject.toml` / `go.mod` / `Cargo.toml` / `Makefile` 确认命令；**不要猜** `npm test`。',
+    '测试失败时先看失败用例的断言与堆栈，再决定改代码还是改测试；**不要为了让测试变绿而放宽断言**。',
+  ].join('\n'),
+};
+
+const RELEASE_PLAYBOOK: ToolPlaybook = {
+  kind: 'release',
+  preferred: ['ask_user_choice', 'run_command'],
+  blocked: [],
+  allowed: ['run_command', 'replace_in_file', 'read_file'],
+  narrowWrites: true,
+  directive: [
+    '## 本轮任务类型：发布 / 升版本（宿主已指定执行路径）',
+    '1. 版本号**必须先问**（`ask_user_choice`）：改成多少、是否连打 tag、是否推送。用户已经明确说了版本号时跳过这一步。',
+    '2. 改版本号用 `replace_in_file` 精确改清单里的那一行，**不要**跑 `npm version` / `standard-version`（它们会自己改文件并提交）。',
+    '3. 推送用 `run_command` 并显式传 `cwd`；不要用 `git -C` 指向别的项目。',
+  ].join('\n'),
+};
+
+const SENSITIVE_CONFIG_PLAYBOOK: ToolPlaybook = {
+  kind: 'sensitive-config',
+  preferred: ['read_file', 'search_files'],
+  blocked: [],
+  allowed: ['read_file', 'search_files', 'run_command'],
+  narrowWrites: true,
+  directive: [
+    '## 本轮任务类型：敏感配置（宿主已指定执行路径）',
+    '读配置优先用 `read_file` / `search_files` 打开**模板或示例**：`.env.example`、`.env.sample`、`config.example.*`、README 里的说明。',
+    '**不要**用 `run_command` 去 `cat` / `grep` / `tar` 真实的 `.env`、`.npmrc`、`.netrc`、密钥文件 —— 敏感文件守卫会拒绝，换写法也一样。',
+    '确实需要真实值时，停下来问用户，或请用户自己粘贴需要的字段名（不要索取具体值）。',
   ].join('\n'),
 };
 
@@ -148,7 +273,11 @@ const GIT_WRITE_PLAYBOOK: ToolPlaybook = {
  */
 export function detectPlaybooks(
   text: string | undefined,
-  options: { looksLikeImage?: (value: string) => boolean } = {},
+  options: {
+    looksLikeImage?: (value: string) => boolean;
+    /** 探测到的项目测试命令（没有就留空，指令会退回「先探测再跑」）。 */
+    testCommand?: { command: string; source: string };
+  } = {},
 ): ToolPlaybook[] {
   const value = String(text ?? '');
   if (!value.trim()) return [];
@@ -156,7 +285,23 @@ export function detectPlaybooks(
   const playbooks: ToolPlaybook[] = [];
   if (isWebPreviewRequest(value)) playbooks.push(WEB_PREVIEW_PLAYBOOK);
   if (isImageGenerationRequest(value, looksLikeImage)) playbooks.push(IMAGE_PLAYBOOK);
-  if (isGitWriteRequest(value)) playbooks.push(GIT_WRITE_PLAYBOOK);
+  // 发布包含 git 写操作，但发布的规矩更严，所以只保留 release（避免两条指令互相打架）。
+  const release = isReleaseRequest(value);
+  if (release) playbooks.push(RELEASE_PLAYBOOK);
+  else if (isGitWriteRequest(value)) playbooks.push(GIT_WRITE_PLAYBOOK);
+  if (isTestRunRequest(value)) {
+    // 探测到了就把命令写死在指令里：模型不用猜，也不会报出"假失败"。
+    playbooks.push(options.testCommand
+      ? {
+        ...TEST_RUN_PLAYBOOK,
+        directive: `${TEST_RUN_PLAYBOOK.directive}\n宿主已探测到本项目的测试命令：\`${options.testCommand.command}\`（来源：${options.testCommand.source}），直接用这一条。`,
+      }
+      : {
+        ...TEST_RUN_PLAYBOOK,
+        directive: `${TEST_RUN_PLAYBOOK.directive}\n宿主未探测到测试命令：先读 \`package.json\` / \`pyproject.toml\` / \`go.mod\` / \`Cargo.toml\` / \`Makefile\` 确认，再执行。`,
+      });
+  }
+  if (isSensitiveConfigRequest(value)) playbooks.push(SENSITIVE_CONFIG_PLAYBOOK);
   return playbooks;
 }
 

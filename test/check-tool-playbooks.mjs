@@ -124,9 +124,29 @@ check(
 
 /* ── 5. 只在「路径固定」的任务上生效（避免误伤）─────────────────────── */
 check(
-  '没有把任务类型判定做成万能分类器（仅三类）',
-  /export type ToolPlaybookKind = 'web-preview' \| 'image-generation' \| 'git-write'/.test(PLAYBOOKS),
-  '其它任务缺少可靠判据，硬套会误伤',
+  '只覆盖判据可靠的六类，没有做成万能分类器',
+  /'web-preview'/.test(PLAYBOOKS) && /'image-generation'/.test(PLAYBOOKS) && /'git-write'/.test(PLAYBOOKS)
+  && /'test-run'/.test(PLAYBOOKS) && /'release'/.test(PLAYBOOKS) && /'sensitive-config'/.test(PLAYBOOKS)
+  && /'refactor'/.test(PLAYBOOKS) === false && /'debug'/.test(PLAYBOOKS) === false,
+  '重构 / 排查这类没有固定路径的任务不该硬套',
+);
+check(
+  '发布时只给发布指令（不与 git 指令叠加）',
+  /const release = isReleaseRequest\(value\);/.test(PLAYBOOKS)
+  && /else if \(isGitWriteRequest\(value\)\)/.test(PLAYBOOKS),
+  '两条指令同时出现会互相打架',
+);
+check(
+  '跑测试用宿主探测到的命令，而不是让模型猜',
+  /export function detectTestCommand\(/.test(PLAYBOOKS)
+  && /pnpm-lock\.yaml/.test(PLAYBOOKS) && /Cargo\.toml/.test(PLAYBOOKS),
+  'pnpm 项目跑 npm test 会得到"测试全部失败"的假结果',
+);
+check(
+  '路径被拒时给出可直接使用的替代命令',
+  /function pathRewriteSuggestion\(/.test(read('src/agent/toolExecutor.ts'))
+  && /path\.blockedSuggestion/.test(read('src/core/i18n.ts')),
+  '只说"换路径"等于让模型再猜一次',
 );
 check(
   '日志可复盘：收窄前后数量与写意图',

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **审计了「还有哪些工具调用会被拒」，把其中路径固定的三类也做成宿主指定首选工具**（用户原话：「只有我提到的任务才指定首选工具吗，你检查下，还有哪些工具调用会被拒，然后给我也做成指定首选工具这种模式」）。
+  - **① 完整审计（15 处拒绝点）**：`toolAccessError`（工具名不存在 / 联网工具开关关着）、`policy=deny`、plan 模式写、未信任工作区、`commandPathViolation`（工作区外路径）、`sensitiveGuard`（敏感文件）、`gitWriteBlockReason`、`versionBumpBlockReason`、桥接工具缺 chat 上下文、桥接工具路径越界、playbook 硬拒、工具循环守卫（同一调用 3 次）、无进展停机（连续 3 轮）、用户拒绝、图片地址不在宿主表里。
+  - **② 新增三类任务类型**（只收判据可靠的，**没有**做成万能分类器 —— 重构 / 排查这类路径不固定，硬套会误伤）：
+    | 类型 | 判据 | 首选工具 | 拒绝的是原来哪种失败 |
+    | --- | --- | --- | --- |
+    | `test-run` | 跑/运行/重跑测试、`run the tests`、`npm test`/`pytest`/`go test`… | `run_command` + **宿主探测到的真实命令** | 猜 `npm test` 导致「测试全部失败」的假结果 |
+    | `release` | 发布/上架/升版本/版本号改成/bump/release | `ask_user_choice`（先问版本）→ `replace_in_file` → `run_command` | 擅自改版本号被 `versionBumpBlockReason` 拒、`npm version` 自己改文件 |
+    | `sensitive-config` | `.env`/密钥/token/凭据 + 读/查/配 | `read_file` / `search_files`（读模板） | `cat .env` 被敏感文件守卫拒 |
+  - **③ 测试命令探测**（`detectTestCommand`，纯函数、六种工程类型）：`package.json scripts.test` + **锁文件决定入口**（`pnpm-lock.yaml` → `pnpm test`，`yarn.lock` → `yarn test`，`bun.lockb` → `bun test`）、`go.mod` → `go test ./...`、`Cargo.toml` → `cargo test`、`pyproject [tool.pytest]`/`pytest.ini`/`conftest.py` → `python3 -m pytest -q`、`Makefile test:` → `make test`、`composer.json`、`Gemfile+spec/` → `bundle exec rspec`。探测不到时指令退回「先读清单确认，不要猜」。
+  - **④ 参数级「首选」：路径被拒时给出可直接使用的替代命令**。以前只说「换路径，不要重试同一写法」，模型要么换个写法硬撞、要么停机。现在把 `/tmp`、`/var/tmp`、`$TMPDIR`、`~/…` 替换成工作区内的 `tmp/`，并**原样保留前面的空格 / 引号 / `=`**（第一版把空格吞了，建议出 `tar czf/var/…` 这种更糟的命令 —— 已修）。实测三条真实命令都能得到可敲的改写结果。
+  - **⑤ 统一「写意图关闭收窄」的语义**：这六类一律如此 —— 「跑测试，失败就修」「读 .env 再加变量」「预览并顺手改标题」都必须仍然能写文件。留 `narrowWrites` 字段是为了将来能有「即使要写也必须收窄」的安全型任务。
+  - 守护：`src/test/toolPlaybooks.test.ts` **20 条**（新增测试识别 5 例、六种工程类型探测、发布不与 git 叠加、敏感配置首选模板、写意图豁免 3 组、**六类清单断言** —— 新增一类必须同步更新这里，防止审计表与实现脱节）+ `check-tool-playbooks.mjs` **20 项**。
+  - 全量：**979** 条单测、**50** 个 `check-*.mjs` 全绿。
+
 - **按任务类型由宿主指定首选工具：收窄工具清单 + 执行期硬拒 + 提示词约定，三道同时在**（用户原话：「**给每类任务指定首选工具**」，承接上一问「调用工具全部靠提示词吗？」）。
   - **为什么不能只加提示词**：同一天的三次真实故障里，模型都是「选错了工具」而不是「不会用工具」——
     - 「先给我预览一下效果」→ 选了 `run_in_terminal`（在 HWChat 里永远调不通）→ 三轮失败停机；
