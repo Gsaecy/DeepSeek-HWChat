@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import * as vscode from 'vscode';
 import { AgentRunner } from '../agent/agentRunner';
 import { attachmentCacheName, planAttachmentOpen } from '../agent/attachmentOpen';
@@ -50,6 +51,35 @@ import {
  * 抽成常量是因为上一版把「注释写 8 MB、代码写 11 MB」对不上 —— 阈值必须只有一个来源。
  */
 const ATTACHMENT_DATA_MAX_BASE64 = 11 * 1024 * 1024;
+/** 「图片地址 → 文件路径」表的上限：正常用量远低于它。 */
+const IMAGE_SRC_PATH_LIMIT = 400;
+
+/** 图片文件的 MIME：按扩展名判，认不出来按 png。 */
+function imageMimeTypeFor(path: string): string {
+  const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+  const table: Record<string, string> = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
+    gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml', avif: 'image/avif',
+  };
+  return table[extension] ?? 'image/png';
+}
+
+/** 另存为对话框里的扩展名（不带点）。 */
+function imageExtensionOf(path: string): string {
+  const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+  return /^[a-z0-9]{1,5}$/.test(extension) ? extension : 'png';
+}
+
+/**
+ * 另存为的默认目录：**工作区首选根**，没开工作区就退回用户主目录。
+ *
+ * 为什么不默认当前工作目录：那样「保存」会悄悄往用户仓库里丢文件 ——
+ * 生成图属于对话，落盘必须是用户明确选的位置。
+ */
+function defaultSaveDirectory(): string {
+  const first = vscode.workspace.workspaceFolders?.[0];
+  return first ? first.uri.fsPath : homedir();
+}
 import { NEW_CONVERSATION_CONTROLS, controlChangeScope, isReasoningEffort, presetChangeScope, resolveConversationControls, resolveNewConversationControls, type ConversationControls } from '../core/conversationControls';
 import { PERMISSION_PRESET_IDS, permissionPresetDetail, permissionPresetDetails } from '../core/permissions';
 import { currentLanguage, messageScriptTag, t, tt, type Language } from '../core/i18n';
@@ -317,6 +347,15 @@ type IncomingMessage =
    * 只回标识不回内容的老约定在这里反过来用：界面明确开口要，才给。
    */
   | { type: 'requestAttachmentData'; requestId: string; id?: string }
+  /**
+   * 正文里 markdown 图片的操作（复制 / 保存 / 打开）。
+   *
+   * 只传 `src`（面板自己发出去的那个 webview 地址），不传路径 —— 面板用
+   * `imageSrcPaths` 反查真实文件，查不到就拒绝。这样 webview 无法诱导宿主读任意文件。
+   */
+  | { type: 'requestImageData'; requestId: string; src: string }
+  | { type: 'saveImageAs'; src: string }
+  | { type: 'openImage'; src: string }
   | { type: 'attachClipboardFiles'; files: ClipboardFile[] }
   | { type: 'copyText'; text: string; requestId?: string }
   | { type: 'readClipboardText'; requestId: string }
@@ -1063,6 +1102,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    */
   private readonly remoteImageStates = new Map<string, { status: 'loading' | 'ready' | 'failed'; path?: string }>();
 
+  /** 「图片地址 → 真实文件」：正文里渲染出来的 `<img>` 只有地址，靠它反查。 */
+  private readonly imageSrcPaths = new Map<string, string>();
+
   private pushedMessagesKey = '';
 
   /** webview 每次重建（首次解析、被切到后台再回来）都 +1，用来强制下一次推全量。 */
@@ -1252,6 +1294,16 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           break;
         case 'requestAttachmentData':
           await this.provideAttachmentData(message);
+          break;
+        case 'requestImageData':
+          await this.provideImageData(message);
+          break;
+        case 'saveImageAs':
+          await this.saveImageAs(message.src);
+          break;
+        case 'openImage':
+          await this.openImage(message.src);
+          break;
           break;
         case 'attachClipboardFiles':
           await this.attachClipboardFiles(message.files);
@@ -3803,10 +3855,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private localizeImageLinks(content: string | undefined, message?: ChatMessage): string | undefined {
     const view = this.view;
     if (!view) return content;
-    const toWebviewUri = (src: string): string | undefined => {
-      const file = this.workspaceImageUri(src);
-      return file ? view.webview.asWebviewUri(file).toString() : undefined;
-    };
+    const toWebviewUri = (src: string): string | undefined => this.imageSrcFor(this.workspaceImageUri(src)?.fsPath);
     /*
      * 三步，顺序有讲究：
      *  ① 已经是 webview 地址的，能反解回工作区文件的重新用 `asWebviewUri` 生成一遍 ——
@@ -3959,13 +4008,119 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    */
   private attachmentWebviewSrc(context: MessageContext): string | undefined {
     if (context.kind !== 'image') return undefined;
-    const path = (context.path ?? '').trim();
-    if (!path || !existsSync(path)) return undefined;
+    return this.imageSrcFor(context.path);
+  }
+
+  /**
+   * 图片文件 → webview 地址，并记下「地址 → 文件」的对应关系。
+   *
+   * 为什么必须记：正文里渲染出来的 `<img>` 只有地址，没有附件 id。用户点「复制图片 /
+   * 保存」时，前端只能把地址回传；宿主靠这张表反查出真实文件 —— **只认自己发出去的
+   * 地址**，webview 无法借此读到任意文件（安全边界与 `openAttachment` 的 path 参数不同）。
+   */
+  private imageSrcFor(path: string | undefined): string | undefined {
+    const file = (path ?? '').trim();
+    if (!file || !existsSync(file)) return undefined;
+    const view = this.view;
+    if (!view) return undefined;
     try {
-      return this.view?.webview.asWebviewUri(vscode.Uri.file(path)).toString();
+      const src = view.webview.asWebviewUri(vscode.Uri.file(file)).toString();
+      if (src) {
+        this.imageSrcPaths.delete(src);
+        this.imageSrcPaths.set(src, file);
+        // 上限：正常用量远低于它，超过说明有人在刷历史。
+        while (this.imageSrcPaths.size > IMAGE_SRC_PATH_LIMIT) {
+          const oldest = this.imageSrcPaths.keys().next();
+          if (oldest.done) break;
+          this.imageSrcPaths.delete(oldest.value);
+        }
+      }
+      return src;
     } catch {
       return undefined;
     }
+  }
+
+  /** 反查：这个地址是不是我们自己发出去的？返回真实文件路径。 */
+  private pathForImageSrc(src: string | undefined): string | undefined {
+    const value = (src ?? '').trim();
+    if (!value) return undefined;
+    const path = this.imageSrcPaths.get(value);
+    if (!path || !existsSync(path)) return undefined;
+    return path;
+  }
+
+  /** 前端要原图（复制到剪贴板需要 base64，前端只有地址）。 */
+  private async provideImageData(message: { requestId: string; src: string }): Promise<void> {
+    const path = this.pathForImageSrc(message.src);
+    if (!path) {
+      await this.post({ type: 'imageData', requestId: message.requestId, ok: false, missing: true });
+      return;
+    }
+    const size = statSync(path).size;
+    if (size > Math.floor(ATTACHMENT_DATA_MAX_BASE64 * 0.75)) {
+      await this.post({ type: 'imageData', requestId: message.requestId, ok: false, tooLarge: true });
+      return;
+    }
+    try {
+      const buffer = await readFile(path);
+      await this.post({
+        type: 'imageData',
+        requestId: message.requestId,
+        ok: true,
+        mimeType: imageMimeTypeFor(path),
+        dataBase64: buffer.toString('base64'),
+      });
+    } catch (error) {
+      await this.post({
+        type: 'imageData',
+        requestId: message.requestId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * 另存为。
+   *
+   * 用 `showSaveDialog` + `copyFile` 而不是让 webview 触发下载：webview 的下载在
+   * VS Code 里会被拦（没有下载目录的概念），用户点了只会「没反应」。
+   */
+  private async saveImageAs(src: string | undefined): Promise<void> {
+    const path = this.pathForImageSrc(src);
+    if (!path) {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('chat.imageMissing') });
+      return;
+    }
+    const target = await vscode.window.showSaveDialog({
+      saveLabel: tt('chat.imageSave'),
+      defaultUri: vscode.Uri.file(join(defaultSaveDirectory(), basename(path))),
+      filters: { [tt('chat.generatedImage')]: [imageExtensionOf(path)] },
+    });
+    if (!target) return;
+    try {
+      await vscode.workspace.fs.copy(vscode.Uri.file(path), target, { overwrite: true });
+      await this.post({ type: 'toast', tone: 'success', text: tt('chat.imageSaved', { path: target.fsPath }) });
+    } catch (error) {
+      await this.post({
+        type: 'toast',
+        tone: 'error',
+        text: tt('chat.imageSaveFailed', { error: error instanceof Error ? error.message : String(error) }),
+      });
+    }
+  }
+
+  /** 在编辑器里打开这张图（与附件「点击打开」同一套语义）。 */
+  private async openImage(src: string | undefined): Promise<void> {
+    const path = this.pathForImageSrc(src);
+    if (!path) {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('chat.imageMissing') });
+      return;
+    }
+    await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(path)).then(undefined, (error: unknown) => {
+      this.log(`[image] 打开失败：${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   private rememberAttachment(id: string, context: MessageContext): void {

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **对话框里的图片现在可以复制、另存、点开**（用户原话：「对话框显示的图片无法复制或者保存？」）。
+  - **缺口**：附件形式的图一直有「添加到输入框 / 点击查看 / 拖回输入框」，但**正文里 `![]()` 渲染出来的 `<img>` 只有 src** —— 没有任何操作入口。上一版把图片显示修好之后，这个缺口才第一次被用户摸到。
+  - **新增三个动作**（悬停或键盘聚焦时浮现，平时淡出，不在每张图上压一条工具条）：
+    - **复制图片**：把**原图**写进剪贴板（不是面板里那个缩放后的显示尺寸）。走「前端取回 base64 → `canvas` 转 PNG → `navigator.clipboard.write`」这条路 —— VS Code 的剪贴板 API 只有 `writeText`，写不了图片。悬停/聚焦时**预取**原图并转好 PNG，点下去只剩一次写入，避开 Chrome 约 5 秒的 transient activation 窗口。
+    - **保存…**：宿主弹 `showSaveDialog`，默认目录是**工作区首选根**（没开工作区退为主目录），再 `workspace.fs.copy`。不让 webview 触发下载 —— 那在 VS Code 里会被拦掉，用户点了只会「没反应」。
+    - **点图打开**：在编辑器里打开原文件（`cursor: zoom-in` + 悬停描边，让人知道能点）。
+  - **安全边界**：前端只回传**地址**，不传路径。宿主用自己维护的「地址 → 文件」表（`imageSrcPaths`，上限 400 条）反查；表里没有的地址一律拒绝并提示「这张图已经找不到了」。这样就等于一条白名单，webview 无法借此读任意文件。
+  - **实测（无头 Chromium + 真实 `chat.js`，剪贴板真实读回）**：
+    - 点「复制图片」→ 发出 `requestImageData` → 剪贴板读回 **`["image/png"]`**，toast 显示「图片已复制到剪贴板」；
+    - 点「保存…」→ 发出 `saveImageAs`，`src` 与面板下发的一致；
+    - 点图片本身 → 发出 `openImage`；
+    - 页面零报错。
+  - 顺手把开发预览页的文案快照与源码对齐（从 `src/core/i18n.ts` 自动补齐缺失键，本次补进 141 条），否则新按钮会直接显示成 `chat.imageCopy` 这种键名。
+  - 守护：`check-image-output.mjs` 扩到 **58 项**（操作条存在、悬停才显示、复制走异步剪贴板、悬停预取、保存/打开由宿主执行、宿主只认自己发出去的地址、另存为不默认写仓库）。
+  - 全量：**954** 条单测、**48** 个 `check-*.mjs` 全绿。
+
 - **图片在对话框里始终不显示的真正根因：`localResourceRoots` 被覆盖，`asWebviewUri` 给出的地址被 webview 资源服务 403 拒掉**（用户第四次报「对话框里还是没法输出图片」，附「正在下载图片…（file+.vscode-resource.vscode-cdn.net）」与「图片未能加载（file+.vscode-resource.vscode-cdn.net）」）。
   - **权威依据（先查文档再动手）**：官方 `vscode.d.ts` 对 `WebviewOptions.localResourceRoots` 的原文是 —— *"Root paths from which the webview can load local (filesystem) resources using uris from `asWebviewUri`. **Default to the root folders of the current workspace plus the extension's install directory.**"*，并且 `asWebviewUri` 一节明确要求 *"ensure the resource's directory is listed in `localResourceRoots`"*。
   - **我们干了什么**：`resolveWebviewView` 里把 `localResourceRoots` **显式覆盖**成只有 `media` 与 `resources` —— 这同时丢掉了「工作区根目录」这个默认值，也没有包含 `globalStorage`。于是

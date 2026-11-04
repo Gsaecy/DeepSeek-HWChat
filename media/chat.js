@@ -561,6 +561,52 @@
     }
   }
 
+  /**
+   * 图片数据请求（按 webview 地址）。
+   *
+   * 正文里的 `<img>` 只有地址、没有附件 id，所以复制原图要另开一条通道：把地址回传，
+   * 宿主用自己记下的「地址 → 文件」表反查并读回 base64。宿主只认自己发出去的地址，
+   * webview 拿不到任意文件。
+   */
+  const pendingImageData = new Map();
+  let imageDataSequence = 0;
+
+  function requestImageData(src) {
+    return new Promise((resolve) => {
+      const requestId = `imgdata-${Date.now()}-${++imageDataSequence}`;
+      const timer = setTimeout(() => {
+        if (pendingImageData.delete(requestId)) resolve(null);
+      }, 5_000);
+      pendingImageData.set(requestId, { resolve, timer });
+      post('requestImageData', { requestId, src });
+    });
+  }
+
+  function finishImageData(message) {
+    const pending = pendingImageData.get(message.requestId);
+    if (!pending) return;
+    pendingImageData.delete(message.requestId);
+    clearTimeout(pending.timer);
+    pending.resolve(message.ok && message.dataBase64 ? message : null);
+  }
+
+  /** 已经取回并转好 PNG 的正文图片（按地址），悬停时预取，点击时只剩一次写入。 */
+  const inlineClipboardCache = new Map();
+  const INLINE_CLIPBOARD_CACHE_MAX = 3;
+
+  async function prefetchInlineImage(src) {
+    if (!src || inlineClipboardCache.has(src)) return;
+    const data = await requestImageData(src);
+    if (!data) return;
+    let png = null;
+    try { png = await toPngBlob(data); } catch { png = null; }
+    if (!png) return;
+    inlineClipboardCache.set(src, png);
+    while (inlineClipboardCache.size > INLINE_CLIPBOARD_CACHE_MAX) {
+      inlineClipboardCache.delete(inlineClipboardCache.keys().next().value);
+    }
+  }
+
   /** 向扩展要附件的原始 base64（前端只有 160×120 的缩略图，复制要用原图）。 */
   function requestAttachmentData(id) {
     return new Promise((resolve) => {
@@ -4214,7 +4260,53 @@
     if (inline) return image;
     const figure = document.createElement('figure');
     figure.className = 'message-image-figure';
-    figure.append(image);
+    /*
+     * 块级图片必须有「复制 / 保存 / 打开」。
+     *
+     * 真实反馈（2026-11-04）：「对话框显示的图片无法复制或者保存？」——
+     * 附件形式的图一直有这套操作，而正文里 `![]()` 渲染出来的 `<img>` 只有 src，
+     * 一个可点的入口都没有。这里补齐三个动作，并把地址回传给宿主反查文件。
+     */
+    const actions = document.createElement('div');
+    actions.className = 'message-image-actions';
+    actions.setAttribute('role', 'group');
+    actions.setAttribute('aria-label', t('chat.imageActionsHint'));
+
+    const copy = actionButton(t('chat.imageCopy'), 'copy');
+    copy.title = t('chat.imageCopyHint');
+    copy.addEventListener('pointerenter', () => { void prefetchInlineImage(src); });
+    copy.addEventListener('focus', () => { void prefetchInlineImage(src); });
+    copy.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      let png = inlineClipboardCache.get(src);
+      if (!png) {
+        const data = await requestImageData(src);
+        if (data) {
+          try { png = await toPngBlob(data); } catch { png = null; }
+        }
+      }
+      if (!png || typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) {
+        showToast(t('chat.imageCopyFailed', { error: t('chat.copyImageUnsupported') }), 'warning');
+        return;
+      }
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+        showToast(t('chat.imageCopied'), 'success');
+      } catch (error) {
+        showToast(t('chat.imageCopyFailed', { error: error?.message || String(error) }), 'warning');
+      }
+    });
+
+    const save = actionButton(t('chat.imageSave'), 'file');
+    save.title = t('chat.imageSaveHint');
+    save.addEventListener('click', (event) => { event.stopPropagation(); post('saveImageAs', { src }); });
+
+    actions.append(copy, save);
+    figure.append(actions, image);
+    // 点图本身 = 在编辑器里打开（与附件「点击查看」一致）。
+    image.title = t('chat.imageOpenHint');
+    image.classList.add('message-block-image-openable');
+    image.addEventListener('click', () => post('openImage', { src }));
     if (alt) figure.append(textElement('figcaption', '', alt));
     return figure;
   }
@@ -5298,6 +5390,7 @@
       case 'layoutReportRequest': post('layoutReport', { report: collectLayoutReport() }); break;
       case 'clipboardWriteResult': finishClipboardWrite(message.requestId, Boolean(message.ok), message.error); break;
       case 'attachmentData': finishAttachmentData(message); break;
+      case 'imageData': finishImageData(message); break;
       case 'clipboardText':
         if (message.requestId === pendingPaste?.requestId) {
           const snapshot = pendingPaste;

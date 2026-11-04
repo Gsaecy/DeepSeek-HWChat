@@ -100,6 +100,15 @@ const context = vm.createContext({
   appendList: () => ({ nextIndex: 0, node: null }),
   appendTable: () => ({ nextIndex: 0, node: null }),
   makeAttachmentOpenable: () => undefined,
+  // inlineImageNode 现在会给块级图片加「复制 / 保存」操作条
+  actionButton: (label) => ({ tagName: 'BUTTON', ariaLabel: label, title: label, children: [], append() {}, addEventListener() {}, setAttribute() {} }),
+  iconNode: () => ({ tagName: 'SPAN', children: [], append() {} }),
+  prefetchInlineImage: () => undefined,
+  requestImageData: () => Promise.resolve(null),
+  toPngBlob: async () => null,
+  showToast: () => undefined,
+  ClipboardItem: class {},
+  post: () => undefined,
   makeAttachmentDraggable: () => undefined,
   attachmentOpenPayload: (attachment) => ({ id: attachment?.id, label: attachment?.label }),
   console,
@@ -274,6 +283,32 @@ check('远程图识别排除面板自己的 webview 地址',
 check('渲染层支持 `<带 空格 的路径>` 写法',
   CHAT_JS.includes('<([^>\\n]+)>|([^)\\s]+)'),
   '多根工作区里模型写的就是 <Personal Workstation OS/tmp/x.png>，旧正则遇到空格整条不匹配');
+
+/* ── 图片的复制 / 保存 / 打开（用户 2026-11-04：「无法复制或者保存？」）────── */
+check('块级图片有「复制图片 / 保存」操作条',
+  /message-image-actions/.test(CHAT_JS) && /chat\.imageCopy/.test(CHAT_JS) && /chat\.imageSave/.test(CHAT_JS),
+  '附件形式的图一直能复制，正文 ![]() 渲染出来的 <img> 之前一个入口都没有');
+check('操作条平时淡出、悬停浮现（不挡图）',
+  /\.message-image-figure:hover \.message-image-actions/.test(css),
+  '一直显示会在每张图上压一条工具条');
+check('复制走「前端取原图 → 异步剪贴板」通道',
+  /requestImageData\(src\)/.test(CHAT_JS) && /ClipboardItem\(\{ 'image\/png': png \}\)/.test(CHAT_JS),
+  'VS Code 的剪贴板 API 只能写文字，图片必须由 webview 自己写');
+check('悬停预取原图（避开剪贴板 5 秒手势窗口）',
+  /pointerenter', \(\) => \{ void prefetchInlineImage\(src\); \}/.test(CHAT_JS)
+  && /focus', \(\) => \{ void prefetchInlineImage\(src\); \}/.test(CHAT_JS),
+  '点下去才去要原图，大图容易超过 transient activation');
+check('保存 / 打开都由宿主执行',
+  /post\('saveImageAs', \{ src \}\)/.test(CHAT_JS) && /post\('openImage', \{ src \}\)/.test(CHAT_JS)
+  && /private async saveImageAs\(/.test(PANEL) && /private async openImage\(/.test(PANEL),
+  'webview 里触发下载会被 VS Code 拦掉，用户点了只会「没反应」');
+check('宿主只认自己发出去的图片地址（webview 传不了任意路径）',
+  /private pathForImageSrc\(/.test(PANEL) && /this\.imageSrcPaths\.get\(value\)/.test(PANEL)
+  && !/case 'saveImageAs':\s*await this\.saveImageAs\(message\.path\)/.test(PANEL),
+  '地址→文件的反查表由宿主维护，等于一条白名单；直接收 path 就成了任意文件读取');
+check('另存为不默认写进用户仓库',
+  /function defaultSaveDirectory\(/.test(PANEL) && /showSaveDialog/.test(PANEL),
+  '生成图属于对话，落盘必须是用户明确选的位置');
 
 console.log(`\n${checks - failures}/${checks} 项通过`);
 if (failures) process.exitCode = 1;
