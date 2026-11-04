@@ -1036,6 +1036,7 @@ const DICTIONARY: Record<string, Entry> = {
     en: ' (Temporary server overload — HWChat retried automatically and still failed. Sending again usually works; you can also switch model or endpoint in settings.)',
   },
   'api.noStream': { zh: '接口没有返回可读取的数据流。', en: 'The endpoint returned no readable stream.' },
+  'chat.imageLoadFailed': { zh: '图片未能加载（{host}）', en: 'Image failed to load ({host})' },
   'chat.generatedImage': { zh: '生成的图片', en: 'Generated image' },
   'api.noKeyForModels': { zh: '尚未配置 API Key，无法获取模型列表。', en: 'No API key configured, so the model list cannot be fetched.' },
   'api.imageBaseUrlMissing': { zh: '当前接口配置档没有填写接口地址，无法出图。', en: 'This API profile has no endpoint configured, so images cannot be generated.' },

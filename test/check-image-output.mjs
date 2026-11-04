@@ -28,6 +28,7 @@ function check(label, condition) {
 
 const source = readFileSync(new URL('../media/chat.js', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../media/chat.css', import.meta.url), 'utf8');
+const CHAT_JS = source;
 
 /** 按「起点标记 → 终点标记」切一段源码；切不到就让脚本失败，避免静默通过。 */
 function slice(startMarker, endMarker, label) {
@@ -124,7 +125,11 @@ check('data:image/jpeg 放行', api.imageSourceAllowed('data:image/jpeg;base64,/
 check('data:image/webp 放行', api.imageSourceAllowed('data:image/webp;base64,UklGRg==') === true);
 check('data:image/svg+xml 不放行', api.imageSourceAllowed('data:image/svg+xml;base64,PHN2Zz4=') === false);
 check('data:text/html 不放行', api.imageSourceAllowed('data:text/html;base64,PHNjcmlwdD4=') === false);
-check('远程 https 图片不放行（CSP 会拦成破图）', api.imageSourceAllowed('https://example.com/a.png') === false);
+// 用户 2026-11-04 明确要求放宽 CSP：远程 https 图片现在可以直接显示。
+check('远程 https 图片放行（CSP 已带 https:）', api.imageSourceAllowed('https://example.com/a.png') === true);
+check('远程 https 带查询串也放行', api.imageSourceAllowed('https://cdn.example.com/a.png?v=2&w=800') === true);
+// 明文 http 仍然拒绝：会把「正在看这条对话」暴露给中间人，与项目其余远程请求口径一致。
+check('明文 http 图片不放行', api.imageSourceAllowed('http://example.com/a.png') === false);
 check('javascript: 不放行', api.imageSourceAllowed('javascript:alert(1)') === false);
 check('webview 资源地址放行（`+` 形式）', api.imageSourceAllowed('https://file+.vscode-resource.vscode-cdn.net/a.png') === true);
 // 真实事故 2026-11-04：`asWebviewUri().toString()` 实际输出的是 `%2B` 形式，
@@ -135,8 +140,10 @@ check('webview 资源地址放行（小写 `%2b`）',
   api.imageSourceAllowed('https://file%2b.vscode-resource.vscode-cdn.net/a.png') === true);
 check('网页版 `<guid>.vscode-cdn.net` 放行',
   api.imageSourceAllowed('https://abc123def.vscode-cdn.net/a.png') === true);
-check('随便一个 vscode-cdn.net 子域不放行（前缀必须是 file+/file%2B 或 guid 形式）',
-  api.imageSourceAllowed('https://evil.file%2B.vscode-cdn.net.attacker.com/a.png') === false);
+// 放宽 CSP 之后，任何 https 主机都放行 —— 这是**明知**的取舍（外部主机能看到
+// 「有人正在看这条对话」）。用一条显式断言把这个事实钉住，避免以后有人以为它是漏洞。
+check('任何 https 主机都放行（这是放宽 CSP 的既定取舍）',
+  api.imageSourceAllowed('https://evil.file%2B.vscode-cdn.net.attacker.com/a.png') === true);
 check('vscode-resource: 放行', api.imageSourceAllowed('vscode-resource://file/a.png') === true);
 check('空地址不放行', api.imageSourceAllowed('  ') === false);
 
@@ -154,8 +161,8 @@ check('空地址不放行', api.imageSourceAllowed('  ') === false);
 {
   const parent = { tagName: 'P', children: [], append(...nodes) { this.children.push(...nodes); } };
   api.appendInline(parent, '![x](https://example.com/a.png)');
-  check('远程图片不生成 img', collect(parent, 'IMG').length === 0);
-  check('远程图片原样显示 markdown（不出现破图）', textOf(parent).includes('![x](https://example.com/a.png)'));
+  check('远程 https 图片生成 img', collect(parent, 'IMG').length === 1);
+  check('远程图片 src 原样保留', collect(parent, 'IMG')[0]?.src === 'https://example.com/a.png');
 }
 
 // ③ 独占一行的图片
@@ -171,8 +178,8 @@ check('空地址不放行', api.imageSourceAllowed('  ') === false);
 }
 {
   const container = { tagName: 'DIV', children: [], append(...nodes) { this.children.push(...nodes); } };
-  api.appendRichText(container, '![x](../outside.png)');
-  check('非白名单地址不生成块级图片', collect(container, 'IMG').length === 0);
+  api.appendRichText(container, '![x](http://insecure.example.com/x.png)');
+  check('非白名单地址（明文 http）不生成块级图片', collect(container, 'IMG').length === 0);
 }
 
 // ④ 落成文件的附件
@@ -224,6 +231,20 @@ check('回复里只提到本地图片路径时，自动补成可见的图片',
   /return embedMentionedImages\(rewriteMarkdownImagePaths\(rehosted, toWebviewUri\), toWebviewUri\);/.test(PANEL)
   && /rehostWebviewImageUrls\(content, toWebviewUri\)/.test(PANEL),
   '那次 agent 生成了 architecture.svg 并写进了正文，但只写成反引号路径，对话里什么都没显示');
+
+/* ── 远程图片（用户 2026-11-04 明确要求放宽 CSP）─────────────────────── */
+check('CSP 的 img-src 允许远程 https',
+  /img-src \$\{webview\.cspSource\} data: https:/.test(PANEL),
+  '不放宽的话，远程图片一定被 CSP 拦成破图 —— 这一条必须与白名单同步修改');
+check('白名单与 CSP 口径一致（https 放行 / http 拒绝）',
+  /if \(\/\^https:\\\/\\\/\[\^\\s\]\+\$\/i\.test\(value\)\) return true;/.test(CHAT_JS),
+  '只放宽 CSP 不改白名单，图片仍然只是文字');
+check('加载失败给出可读说明而不是破图图标',
+  /message-image-fallback/.test(CHAT_JS) && /chat\.imageLoadFailed/.test(CHAT_JS),
+  '远程图会 404 / 需要鉴权，碎图框既不说明原因也不给地址');
+check('失败替身的文案键真实存在',
+  /'chat\.imageLoadFailed'/.test(readFileSync('src/core/i18n.ts', 'utf8')),
+  'i18n 里没有这个键，界面上会直接显示键名');
 
 console.log(`\n${checks - failures}/${checks} 项通过`);
 if (failures) process.exitCode = 1;

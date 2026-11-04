@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **放宽 CSP：远程 https 图片现在能直接显示在对话框里**（用户原话：「**要放宽 CSP 允许远程图片**」）。
+  - **改了什么**：面板的 CSP 从 `img-src ${webview.cspSource} data:` 改成 `img-src ${webview.cspSource} data: https:`；渲染层白名单同步放行任意 `https:` 地址（上一版只放本地资源与 `data:`）。
+  - **仍然拒绝明文 `http://`**：图片走明文会把「有人正在看这条对话」暴露给中间人，而且项目里其余远程请求本来就要求 HTTPS，这里保持一致（`![x](http://…)` 保持原样文字）。
+  - **这是明知的取舍，已写进文档**：加载远程图片等于告诉那个外部主机「有人正在看这条对话」并暴露 IP。README 两版都写清了这一点与替代方案（由面板代下载再本地呈现）。`generate_image` 返回 URL 时走的仍然是「扩展侧下载 → 落成会话文件」，所以出图这条路不会外泄。
+  - **加载失败不再只是一个碎图框**：新增 `message-image-fallback`，把失败的 `<img>` 换成「图片未能加载（主机名）」的小标签，完整地址放在悬停提示里。远程图会 404 / 需要鉴权 / 被网络阻断，碎图框既不说原因也不给地址。
+  - **实测**（无头 Chromium + 真实 `chat.js`/`chat.css`，远程图床用本地 route 模拟）：
+    - `https://cdn.example.com/ok.png` → 渲染出 **1960×1680**（真实 `architecture-v2.png`）✓
+    - `https://cdn.example.com/missing.png`（404）→ 显示「图片未能加载（cdn.example.com）」，**不是**碎图 ✓
+    - `http://insecure.example.com/x.png` → 保持原样文字 ✓
+    - 控制台零报错
+  - 守护：`check-image-output.mjs` 扩到 **46 项**（新增 CSP 与白名单必须同步、https 放行 / http 拒绝、失败替身结构与文案键、以及一条显式承认「任何 https 主机都放行」的断言 —— 把取舍钉住，避免以后被当成漏洞误修）。
+  - 顺带把开发用的 `test/preview-chat.html` 文案快照补上这个键（从 `src/core/i18n.ts` 取真实文案，不手写副本）。
+  - 全量：**943** 条单测、**48** 个 `check-*.mjs` 全绿。
+
 - **图片在对话框里始终不显示：面板自己生成的地址被自己的白名单拒掉了**（用户原话：「对话框还是没有发图片给我」→「copilot也能输出图片到对话框」）。
   - **根因（一行就能说清）**：`asWebviewUri().toString()` 在当前 VS Code 里输出的是 **`https://file%2B.vscode-resource.vscode-cdn.net/…`** —— `+` 被百分号编码成 `%2B`。而渲染层的白名单写的是 `/^https:\/\/[a-z0-9.+-]*vscode-cdn\.net\//`，`%` 不在字符集里，于是**面板自己生成的地址被自己判成非法**，图片被当成纯文本原样显示。
   - **为什么上一轮「以为修好了」**：我只测了 `+` 形式（文档里的写法），没测真实输出。这次先用你贴的那条真实链接做**单点验证**：4 种拼法里 `file%2B`、`file%2b` 两种被拒，`file+`、`<guid>.vscode-cdn.net` 放行 —— 而 `asWebviewUri` 输出的正是被拒的那两种。

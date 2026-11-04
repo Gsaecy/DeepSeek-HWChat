@@ -664,6 +664,8 @@ body.editor-open .message-viewport { overflow: hidden; }
 .message-block-image { display: block; max-width: 100%; max-height: 420px; width: auto; height: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); object-fit: contain; }
 .message-image-figure figcaption { color: var(--muted); font: 10px var(--mono); }
 .message-inline-image { max-width: 100%; max-height: 180px; vertical-align: middle; border-radius: 4px; }
+/* 图片加载失败的替身：说清是哪个主机，地址留在 title 里可悬停核对。 */
+.message-image-fallback { display: inline-block; padding: 2px 7px; border: 1px dashed var(--border); border-radius: 4px; color: var(--muted); font: 10px var(--mono); }
 /* 「添加到输入框」：平时淡出，悬停 / 键盘聚焦时浮现。
    不能一直显示 —— 每条消息的图片上都压一条按钮会把缩略图挡住一半。 */
 .message-attachment-reuse {

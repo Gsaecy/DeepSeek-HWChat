@@ -4166,6 +4166,12 @@
     if (!value) return false;
     if (/^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);base64,[a-z0-9+/=\s]+$/i.test(value)) return true;
     /*
+     * 远程图片：CSP 的 `img-src` 现在带 `https:`（用户 2026-11-04 明确要求放宽），所以
+     * 模型/工具给出的 https 图片可以直接显示。**只放 https**：明文 http 会把「正在看
+     * 这条对话」暴露给中间人，而项目里其余远程请求也都要求 HTTPS。
+     */
+    if (/^https:\/\/[^\s]+$/i.test(value)) return true;
+    /*
      * 桌面端资源地址有两种拼法，**都要放行**：
      *   - `file+.vscode-resource.vscode-cdn.net`（文档与旧版本的样子）
      *   - `file%2B.vscode-resource.vscode-cdn.net`（`asWebviewUri().toString()` 在当前
@@ -4190,6 +4196,18 @@
     image.decoding = 'async';
     // 图片可以被拖回输入框（扩展按路径取回内容），与历史附件同一套通道。
     image.draggable = false;
+    /*
+     * 加载失败要有可读的说明，而不是一个破图图标。
+     * 远程图片现在允许了（CSP 带 `https:`），于是 404 / 需要鉴权 / 被网络阻断
+     * 都会走到这里；只留一个碎图框，用户既不知道发生了什么，也不知道地址是哪个。
+     */
+    image.addEventListener('error', () => {
+      let host = '';
+      try { host = new URL(src).host; } catch { host = 'data:'; }
+      const fallback = textElement('span', 'message-image-fallback', t('chat.imageLoadFailed', { host }));
+      fallback.title = src;
+      image.replaceWith(fallback);
+    });
     if (inline) return image;
     const figure = document.createElement('figure');
     figure.className = 'message-image-figure';

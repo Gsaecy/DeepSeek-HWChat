@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { embedMentionedImages } from '../agent/markdownImages';
+import { embedMentionedImages, rehostWebviewImageUrls } from '../agent/markdownImages';
 import { imageCapabilityPrompt, looksLikeImageRequest } from '../agent/imageRequest';
 
 test('looksLikeImageRequest：中文「要一张图」的常见说法都认', () => {
@@ -104,16 +104,15 @@ test('embedMentionedImages：最多补 limit 张，避免刷屏', () => {
   assert.equal((out?.match(/!\[/g) ?? []).length, 3);
 });
 
-test('rehostWebviewImageUrls：模型抄来的 `%2B` 地址换成宿主生成的规范地址', async () => {
-  const { rehostWebviewImageUrls } = await import('../agent/markdownImages');
+test('rehostWebviewImageUrls：模型抄来的 `%2B` 地址换成宿主生成的规范地址', () => {
   const copied = '![架构](https://file%2B.vscode-resource.vscode-cdn.net/Users/me/app/tmp/a.png)';
   const canonical = 'https://file+.vscode-resource.vscode-cdn.net/Users/me/app/tmp/a.png';
-  const out = rehostWebviewImageUrls(copied, (path) => (path === '/Users/me/app/tmp/a.png' ? canonical : undefined));
+  const out = rehostWebviewImageUrls(copied, (path: string) => (path === '/Users/me/app/tmp/a.png' ? canonical : undefined));
   assert.equal(out, `![架构](${canonical})`);
 
   // `+` 形式同样会重新生成一遍（保证只有一个规范形状）
   const plus = '![x](https://file+.vscode-resource.vscode-cdn.net/Users/me/app/tmp/a.png)';
-  assert.equal(rehostWebviewImageUrls(plus, (path) => (path === '/Users/me/app/tmp/a.png' ? canonical : undefined)), `![x](${canonical})`);
+  assert.equal(rehostWebviewImageUrls(plus, (path: string) => (path === '/Users/me/app/tmp/a.png' ? canonical : undefined)), `![x](${canonical})`);
 
   // 工作区外 / 反解不出来的地址原样保留（交给渲染层白名单判断）
   assert.equal(rehostWebviewImageUrls(copied, () => undefined), copied);
@@ -124,10 +123,9 @@ test('rehostWebviewImageUrls：模型抄来的 `%2B` 地址换成宿主生成的
   assert.equal(rehostWebviewImageUrls('没有图片', () => canonical), '没有图片');
 });
 
-test('rehostWebviewImageUrls：Windows 的 `/c:/…` 反解成 `c:/…`', async () => {
-  const { rehostWebviewImageUrls } = await import('../agent/markdownImages');
+test('rehostWebviewImageUrls：Windows 的 `/c:/…` 反解成 `c:/…`', () => {
   let seen = '';
-  rehostWebviewImageUrls('![w](https://file%2B.vscode-resource.vscode-cdn.net/c:/Users/me/a.png)', (path) => {
+  rehostWebviewImageUrls('![w](https://file%2B.vscode-resource.vscode-cdn.net/c:/Users/me/a.png)', (path: string) => {
     seen = path;
     return undefined;
   });
