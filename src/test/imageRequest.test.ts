@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { embedMentionedImages, rehostWebviewImageUrls } from '../agent/markdownImages';
+import { embedMentionedImages, rehostWebviewImageUrls, rewriteMarkdownImagePaths } from '../agent/markdownImages';
 import { imageCapabilityPrompt, looksLikeImageRequest } from '../agent/imageRequest';
+import { findRemoteImages, isWebviewResourceUrl } from '../agent/remoteImages';
 
 test('looksLikeImageRequest：中文「要一张图」的常见说法都认', () => {
   for (const text of [
@@ -130,4 +131,35 @@ test('rehostWebviewImageUrls：Windows 的 `/c:/…` 反解成 `c:/…`', () => 
     return undefined;
   });
   assert.equal(seen, 'c:/Users/me/a.png');
+});
+
+test('rewriteMarkdownImagePaths：支持带空格的尖括号路径与 %20 编码', () => {
+  const canonical = 'https://file%2B.vscode-resource.vscode-cdn.net/Users/me/AI%20projects/Personal%20Workstation%20OS/tmp/a.png';
+  const resolve = (path: string) => (path.endsWith('tmp/a.png') ? canonical : undefined);
+
+  // 模型在多根工作区里的真实写法（用户 2026-11-04 的回复原文）
+  assert.equal(
+    rewriteMarkdownImagePaths('![架构](<Personal Workstation OS/tmp/a.png>)', resolve),
+    `![架构](${canonical})`,
+  );
+  // URL 编码的空格也要反解回来才找得到文件
+  assert.equal(
+    rewriteMarkdownImagePaths('![架构](Personal%20Workstation%20OS/tmp/a.png)', resolve),
+    `![架构](${canonical})`,
+  );
+  // 普通的无空格写法仍然可以
+  assert.equal(rewriteMarkdownImagePaths('![x](tmp/a.png)', resolve), `![x](${canonical})`);
+  // 找不到文件就原样保留
+  assert.equal(rewriteMarkdownImagePaths('![x](<other/x.png>)', resolve), '![x](<other/x.png>)');
+});
+
+test('isWebviewResourceUrl：面板自己的资源地址绝不能被当成远程图', () => {
+  // 14:46 的真实故障：asWebviewUri 的输出被 findRemoteImages 当成远程图，
+  // 于是界面显示「正在下载图片…」→「图片未能加载」，把一张本来就存在的图弄丢了。
+  const own = 'https://file%2B.vscode-resource.vscode-cdn.net/Users/me/a.png';
+  assert.equal(isWebviewResourceUrl(own), true);
+  assert.equal(isWebviewResourceUrl('https://file+.vscode-resource.vscode-cdn.net/a.png'), true);
+  assert.equal(isWebviewResourceUrl('https://abc.vscode-cdn.net/a.png'), true);
+  assert.equal(isWebviewResourceUrl('https://cdn.example.com/a.png'), false);
+  assert.deepEqual(findRemoteImages(`![x](${own})`), [], 'webview 地址不该被列为待下载');
 });

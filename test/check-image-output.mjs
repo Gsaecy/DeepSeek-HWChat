@@ -256,5 +256,24 @@ check('工具按「任一配置档能出图」下发，并切到该配置档',
   /imageProfileFor\(settings, profile\.id\)/.test(PANEL) && /imageProfileFor\(settings\)/.test(PANEL),
   '只认当前档会导致「用户明明配了出图档，工具却不下发」');
 
+/* ── webview 资源根：asWebviewUri 的地址能不能被取到 ───────────────── */
+// 官方 vscode.d.ts：`localResourceRoots` 是「webview 能用 asWebviewUri 加载本地资源的根路径」，
+// 默认值是「当前工作区的根目录 + 扩展安装目录」。HWChat 覆盖了这个默认值，
+// 只写了 media / resources —— 于是工作区里的图与 globalStorage 里的生成图
+// 都拿不到（用户 2026-11-04 连报三次「对话框里看不到图片」）。
+check('localResourceRoots 包含附件/生成图所在的 globalStorage',
+  /localResourceRoots: \[[\s\S]{0,400}this\.attachmentStorageUri/.test(PANEL),
+  '生成图落在 globalStorage 下，不在根里就取不到 —— asWebviewUri 仍会给地址，但加载会失败');
+check('localResourceRoots 包含工作区根目录（正文里引用工作区图片）',
+  /localResourceRoots: \[[\s\S]{0,400}vscode\.workspace\.workspaceFolders/.test(PANEL),
+  '覆盖 localResourceRoots 就丢掉了「工作区根」这个默认值，正文里的本地图片会全部加载失败');
+check('远程图识别排除面板自己的 webview 地址',
+  /isWebviewResourceUrl\(url\)/.test(readFileSync('src/agent/remoteImages.ts', 'utf8')),
+  '把 asWebviewUri 的输出当远程图下载，界面会显示「正在下载图片…」→「图片未能加载」');
+// 直接按源码里的实际片段判断，别写一个自己都难对的正则。
+check('渲染层支持 `<带 空格 的路径>` 写法',
+  CHAT_JS.includes('<([^>\\n]+)>|([^)\\s]+)'),
+  '多根工作区里模型写的就是 <Personal Workstation OS/tmp/x.png>，旧正则遇到空格整条不匹配');
+
 console.log(`\n${checks - failures}/${checks} 项通过`);
 if (failures) process.exitCode = 1;

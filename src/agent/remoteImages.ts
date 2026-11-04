@@ -15,7 +15,26 @@ export interface RemoteImageRef {
 /** 单条消息里最多代下载几张：再多只会拖慢首屏，也更容易撞上对方限流。 */
 export const REMOTE_IMAGE_LIMIT = 4;
 
-const IMAGE_URL = /!\[([^\]\n]*)\]\(\s*<?(https:\/\/[^)\s>]+)>?\s*(?:"[^"]*")?\s*\)/g;
+/**
+ * 匹配 markdown 图片。两种写法都认：
+ *   - `![说明](https://…)` / `![说明](relative/path.png)`
+ *   - `![说明](<带空格的 路径.png>)` —— 多根工作区里模型会写成
+ *     `<Personal Workstation OS/tmp/x.png>`，空格让普通写法无法解析。
+ */
+const IMAGE_URL = /!\[([^\]\n]*)\]\(\s*(?:<(https:\/\/[^>\n]+)>|(https:\/\/[^)\s]+))\s*(?:"[^"]*")?\s*\)/g;
+
+/**
+ * 这个地址是不是**面板自己的** webview 资源地址。
+ *
+ * 必须排除：`asWebviewUri` 的输出也是 `https://…`，如果把它当远程图去下载，
+ * 结果就是「正在下载图片…」→「图片未能加载」，把一张本来好好的本地图弄丢。
+ * 真实事故（2026-11-04）：用户在 14:46 的回复里看到的就是这两句，
+ * 而那张图本身是存在的。
+ */
+export function isWebviewResourceUrl(url: string): boolean {
+  return /^https:\/\/(?:file(?:\+|%2b)\.vscode-resource\.|[a-z0-9-]+\.)?vscode-cdn\.net\//i.test(url)
+    || /^vscode-(?:webview-)?resource:\/\//i.test(url);
+}
 
 /**
  * 找出正文里的远程图片（只认 https，按 URL 去重）。
@@ -28,8 +47,9 @@ export function findRemoteImages(content: string | undefined, limit = REMOTE_IMA
   const found: RemoteImageRef[] = [];
   const seen = new Set<string>();
   for (const match of content.matchAll(IMAGE_URL)) {
-    const url = (match[2] ?? '').trim();
-    if (!url || seen.has(url)) continue;
+    const url = (match[2] ?? match[3] ?? '').trim();
+    // webview 资源地址本来就是本地的，绝不能再当远程图去下载。
+    if (!url || isWebviewResourceUrl(url) || seen.has(url)) continue;
     seen.add(url);
     found.push({ alt: (match[1] ?? '').trim(), url });
     if (found.length >= limit) break;
@@ -51,8 +71,10 @@ export function replaceRemoteImages(
   map: (url: string, alt: string) => string | undefined,
 ): string | undefined {
   if (!content || !content.includes('https://')) return content;
-  return content.replace(IMAGE_URL, (whole, alt: string, rawUrl: string) => {
-    const replacement = map((rawUrl ?? '').trim(), (alt ?? '').trim());
+  return content.replace(IMAGE_URL, (whole, alt: string, angleUrl: string, plainUrl: string) => {
+    const url = (angleUrl ?? plainUrl ?? '').trim();
+    if (!url || isWebviewResourceUrl(url)) return whole;
+    const replacement = map(url, (alt ?? '').trim());
     return replacement === undefined ? whole : replacement;
   });
 }

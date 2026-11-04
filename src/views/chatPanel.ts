@@ -1,6 +1,6 @@
 import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { basename, isAbsolute, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import * as vscode from 'vscode';
 import { AgentRunner } from '../agent/agentRunner';
 import { attachmentCacheName, planAttachmentOpen } from '../agent/attachmentOpen';
@@ -530,9 +530,22 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     this.pushedMessagesKey = '';
     webviewView.webview.options = {
       enableScripts: true,
+      /*
+       * 这里必须列出**所有**会被 `asWebviewUri` 转成图片的目录。
+       *
+       * 真实事故（2026-11-04，用户连着三次报「对话框里看不到图片」）：原来只有
+       * `media` 与 `resources`，于是
+       *  - 生成的图片在 `globalStorage/history-v1/<对话>/images/…`（不在里面），
+       *  - 正文里的图片在工作区的某个根目录（不在里面），
+       * `asWebviewUri` 仍然会给出一个 `file+.vscode-resource…` 地址，但 webview 资源
+       * 服务拒绝服务它 —— `<img>` 触发 error，用户看到的就是「图片未能加载」。
+       * 我之前的验证用的是模拟资源主机，绕过了这条限制，所以三次都「测过没问题」。
+       */
       localResourceRoots: [
         vscode.Uri.joinPath(this.extensionUri, 'media'),
         vscode.Uri.joinPath(this.extensionUri, 'resources'),
+        this.attachmentStorageUri,
+        ...(vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri),
       ],
     };
     webviewView.webview.html = this.html(webviewView.webview);
@@ -3886,13 +3899,22 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    */
   private workspaceImageUri(input: string): vscode.Uri | undefined {
     const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
-    const found = resolveLocalImage(input, {
-      roots,
+    const attempt = (candidateRoots: readonly string[]): string | undefined => resolveLocalImage(input, {
+      roots: candidateRoots,
       isAbsolute,
       resolvePath: (root, path) => resolve(root, path),
-      insideWorkspace: (path) => isInsideWorkspace(path, roots),
+      insideWorkspace: (path) => isInsideWorkspace(path, candidateRoots),
       exists: existsSync,
     });
+    /*
+     * 先按「相对某个工作区根」解析；再按「相对某个根的**上一级**」解析一次。
+     *
+     * 后者是硬需求：多根工作区里模型（和 HWChat 自己的列表）都用
+     * `<根目录名>/子路径` 这种写法，例如 `<Personal Workstation OS/tmp/x.png>`。
+     * 若 `AI projects` 不在根列表里，这种路径就只有第二遍才能解析出来 ——
+     * 而这正是用户 2026-11-04 那三条回复里图片一直不显示的原因之一。
+     */
+    const found = attempt(roots) ?? attempt([...new Set(roots.map((root) => dirname(root)))]);
     return found ? vscode.Uri.file(found) : undefined;
   }
 

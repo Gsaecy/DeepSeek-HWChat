@@ -6,6 +6,24 @@
  * 「本地路径 → asWebviewUri」的映射，正则边界不该散落在 4600 行的面板文件里。
  */
 
+/**
+ * markdown 图片的两种写法：`![alt](路径)` 与 `![alt](<带 空格 的路径>)`。
+ *
+ * 为什么必须支持尖括号：多根工作区里图片路径天然带空格
+ * （`<Personal Workstation OS/tmp/x.png>`）。旧正则用 `[^)\s]+` 取地址，
+ * 遇到空格就整条不匹配 —— 模型写对了，面板却当成文字显示（用户 2026-11-04 连报三次）。
+ */
+const IMAGE_LINK = /!\[([^\]\n]*)\]\(\s*(?:<([^>\n]+)>|([^)\s]+))\s*(?:"[^"]*")?\s*\)/g;
+
+/** `%20` → 空格（只处理路径里合法的编码，解析失败就原样用）。 */
+function decodePath(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 const LOCAL_IMAGE_EXTENSIONS = /\.(?:png|jpe?g|gif|webp|bmp|avif|svg)$/i;
 
 /**
@@ -35,8 +53,13 @@ export function rewriteMarkdownImagePaths(
   map: (src: string) => string | undefined,
 ): string | undefined {
   if (!content || !content.includes('![')) return content;
-  return content.replace(/!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?\s*(?:"[^"]*")?\s*\)/g, (whole, alt: string, src: string) => {
-    if (/^[a-z][a-z0-9+.-]*:/i.test(src)) return whole;
+  return content.replace(IMAGE_LINK, (whole, alt: string, angleSrc: string, plainSrc: string) => {
+    const raw = (angleSrc ?? plainSrc ?? '').trim();
+    if (!raw) return whole;
+    // 带 scheme 的（data:、https:、vscode-*:）交给前端白名单判断，这里不猜。
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return whole;
+    // `%20` 是 URL 编码里的空格：反解回来才能在工作区里找到那个文件。
+    const src = decodePath(raw);
     const replacement = map(src);
     return replacement ? `![${alt}](${replacement})` : whole;
   });
@@ -99,12 +122,17 @@ export function embedMentionedImages(
     embedded.add(match[1] ?? '');
   }
   // 只认「像路径」的写法：可带 ./ 或 ../ 前缀，允许子目录，扩展名必须是图片。
-  const candidate = /(?:^|[\s`("'（[<])((?:\.{1,2}\/)?[\w\u4e00-\u9fa5.@+\-/]+\.(?:png|jpe?g|gif|webp|bmp|avif|svg))(?=[\s`)"'）\],。；;:]|$)/g;
+  /*
+   * 路径可能带空格（`<Personal Workstation OS/tmp/x.png>`）：先匹配尖括号里的整段，
+   * 再匹配普通的不含空白写法。空格路径只取「从某个工作区根名开始」的整段交给
+   * `resolve` 去判断，判断不了就不会嵌 —— 不会凭空造图。
+   */
+  const candidate = /(?:^|[\s`("'（[<])(?:<([^>\n]+\.(?:png|jpe?g|gif|webp|bmp|avif|svg))>|((?:\.{1,2}\/)?[\w\u4e00-\u9fa5.@+\-/]+\.(?:png|jpe?g|gif|webp|bmp|avif|svg)))(?=[\s`)"'）\],。；;:]|$)/g;
   const appended: string[] = [];
   const seen = new Set<string>();
   for (const match of content.matchAll(candidate)) {
     if (appended.length >= limit) break;
-    const path = match[1] ?? '';
+    const path = (match[1] ?? match[2] ?? '').trim();
     if (!path || seen.has(path)) continue;
     seen.add(path);
     const src = resolve(path);

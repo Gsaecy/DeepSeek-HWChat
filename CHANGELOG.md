@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **图片在对话框里始终不显示的真正根因：`localResourceRoots` 被覆盖，`asWebviewUri` 给出的地址被 webview 资源服务 403 拒掉**（用户第四次报「对话框里还是没法输出图片」，附「正在下载图片…（file+.vscode-resource.vscode-cdn.net）」与「图片未能加载（file+.vscode-resource.vscode-cdn.net）」）。
+  - **权威依据（先查文档再动手）**：官方 `vscode.d.ts` 对 `WebviewOptions.localResourceRoots` 的原文是 —— *"Root paths from which the webview can load local (filesystem) resources using uris from `asWebviewUri`. **Default to the root folders of the current workspace plus the extension's install directory.**"*，并且 `asWebviewUri` 一节明确要求 *"ensure the resource's directory is listed in `localResourceRoots`"*。
+  - **我们干了什么**：`resolveWebviewView` 里把 `localResourceRoots` **显式覆盖**成只有 `media` 与 `resources` —— 这同时丢掉了「工作区根目录」这个默认值，也没有包含 `globalStorage`。于是
+    - 正文里引用的工作区图片（`tmp/.../architecture-v3.png`）→ 403；
+    - `generate_image` 落在 `globalStorage/history-v1/<对话>/images/…` 的生成图 → 403。
+    `asWebviewUri` **仍然会返回**一个 `file+.vscode-resource…` 地址（它不做校验），`<img>` 加载失败，用户看到的就是破图 / 「图片未能加载」。
+  - **为什么前三次都「测过没问题」**：我的验证脚本用本地 route **模拟**了资源主机，直接返回真实文件，绕过了 `localResourceRoots` 这条限制。这次改成**按真实规则复刻**（不在根里的路径一律 403），做了前后对照：
+    - 修复前：`images: 0`、`brokenChips: 1`、`deniedByRoots: ["…/architecture-v3.png"]`；
+    - 修复后：`images: 1`、`natural: 1900×1120`、`brokenChips: 0`、`deniedByRoots: []`。
+  - **修法**：`localResourceRoots` 补上 `attachmentStorageUri`（globalStorage）与**所有工作区根目录**。
+  - **顺带修掉两个同批暴露的真 bug**：
+    - **把 webview 地址当成远程图**：`findRemoteImages` / `replaceRemoteImages` 只判断 `^https:`，而 `asWebviewUri` 的输出也是 https —— 于是「已经本地化好的图片」又被当成待下载的远程图，先显示「正在下载图片…（主机）」再变成「图片未能加载（主机）」（14:46 那一条就是这个）。现在 `isWebviewResourceUrl()` 显式排除 `file+` / `file%2B` / `<guid>.vscode-cdn.net` 与 `vscode-resource:`。
+    - **带空格的路径整条不匹配**：多根工作区里模型（以及 HWChat 自己的列表）写的是 `<Personal Workstation OS/tmp/x.png>`，而旧正则是 `[^)\s]+`，遇到空格直接不匹配 → 那行 markdown 原样漏成文字。现在 TS 侧（`rewriteMarkdownImagePaths` / `embedMentionedImages`）与渲染层（`chat.js` 的块级与行内）都支持 `<…>` 写法，并对 `%20` 做反解。
+    - 另外 `workspaceImageUri` 增加「按工作区根的**上一级**再解析一次」：`<根目录名>/子路径` 这种写法在父目录不是根时也能命中。
+  - 守护：`check-image-output.mjs` 扩到 **51 项**（`localResourceRoots` 必须含 globalStorage 与工作区根、远程识别必须排除 webview 地址、渲染层必须支持尖括号写法）；`imageRequest.test.ts` 扩到 **13 条**（尖括号 / `%20` / webview 地址排除）。
+  - 全量：**954** 条单测、**48** 个 `check-*.mjs` 全绿。
+
 - **CSP 改回严格、远程图由面板代下载；同时让 `generate_image` 真的能用**（用户原话：「**保持严格、由面板代下载**」→「**要让 `generate_image` 也真的能用**」）。
   - **① 撤销上一版的 CSP 放宽**：`img-src` 回到 `${webview.cspSource} data:`，渲染层白名单重新拒绝一切远程地址。上一版把口子开给 webview 之后，加载一张远程图就等于告诉那个外部主机「有人正在看这条对话」并暴露 IP —— 这个代价不划算。
   - **② 改成面板代下载**：正文里的 `![](https://…)` 由扩展走**同一套代理/超时/体积上限**取回（`downloadImage()`），存进会话目录（`<对话>/images/<sha256>.<ext>`），消息上挂一条带 `sourceUrl` 的附件，再把正文里的 markdown 换成 `asWebviewUri` 的本地地址。三条分支都翻成可读内容：已下载 → 真图；下载中 → 「正在下载图片…（主机）」；失败 → 「图片未能加载（主机）」。**绝不把裸 URL 丢给 CSP 去拦成破图**。

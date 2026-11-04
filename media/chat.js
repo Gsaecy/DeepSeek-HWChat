@@ -3542,10 +3542,13 @@
       // 独占一行的 markdown 图片：`![说明](地址)`。
       // 地址不在白名单里就让它落到下面的正文流程，按纯文本原样显示 —— 破图比看不懂
       // 的图片框更糟，而「原样显示」至少能让用户看见模型到底写了什么。
-      const standaloneImage = line.match(/^\s{0,3}!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?\s*(?:"[^"]*")?\s*\)\s*$/);
-      if (standaloneImage && imageSourceAllowed(standaloneImage[2])) {
+      // 地址可能写成 `<带 空格的 路径>`（多根工作区里模型就这么写），
+      // 也可能是不含空白的普通写法 —— 两种都要认，否则那段 markdown 会原样漏成文字。
+      const standaloneImage = line.match(/^\s{0,3}!\[([^\]\n]*)\]\(\s*(?:<([^>\n]+)>|([^)\s]+))\s*(?:"[^"]*")?\s*\)\s*$/);
+      const standaloneSrc = standaloneImage ? (standaloneImage[2] || standaloneImage[3] || '') : '';
+      if (standaloneImage && imageSourceAllowed(standaloneSrc)) {
         flushParagraph();
-        push(inlineImageNode(standaloneImage[1], standaloneImage[2], false), index);
+        push(inlineImageNode(standaloneImage[1], standaloneSrc, false), index);
         index += 1;
         continue;
       }
@@ -4224,7 +4227,7 @@
     // 旧的 `\*[^\s*][^*\n]*\*` 会把第二个 `*` 和结尾那个 `*` 配成斜体，于是可见文字从
     // `**重点*` 跳成 `*重点`——已经显示出来的星号少了一个，用户看到的就是「同一位置闪过
     // 不一样的文字」。加上边界后，半截的粗体一律按字面量显示，直到 `**` 真正闭合。
-    const pattern = /(`[^`]+`|\*\*[^*\n]+\*\*|(?<!\*)\*(?!\*)[^\s*][^*\n]*\*(?!\*)|~~[^~\n]+~~|!\[[^\]\n]*\]\([^)\s]+\)|\[[^\]\n]+\]\((?:https?:\/\/|mailto:|#|\/)[^)\s]*\)|https?:\/\/[^\s<]+)/g; let cursor = 0;
+    const pattern = /(`[^`]+`|\*\*[^*\n]+\*\*|(?<!\*)\*(?!\*)[^\s*][^*\n]*\*(?!\*)|~~[^~\n]+~~|!\[[^\]\n]*\]\(\s*(?:<[^>\n]+>|[^)\s]+)\s*\)|\[[^\]\n]+\]\((?:https?:\/\/|mailto:|#|\/)[^)\s]*\)|https?:\/\/[^\s<]+)/g; let cursor = 0;
     for (const match of value.matchAll(pattern)) {
       const index = match.index || 0; if (index > cursor) appendPlainText(parent, value.slice(cursor, index)); const token = match[0];
       if (token.startsWith('`')) {
@@ -4234,8 +4237,9 @@
         parent.append(fileReferenceNode(codeText, { compact: true, allowSpaces: true }) || textElement('code', '', codeText));
       }
       else if (token.startsWith('![')) {
-        const image = token.match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/);
-        if (image && imageSourceAllowed(image[2])) parent.append(inlineImageNode(image[1], image[2], true));
+        const image = token.match(/^!\[([^\]]*)\]\(\s*(?:<([^>\n]+)>|([^)\s]+))\s*\)$/);
+        const inlineSrc = image ? (image[2] || image[3] || '') : '';
+        if (image && imageSourceAllowed(inlineSrc)) parent.append(inlineImageNode(image[1], inlineSrc, true));
         else appendPlainText(parent, token);
       }
       else if (token.startsWith('**')) parent.append(textElement('strong', '', token.slice(2, -2)));
