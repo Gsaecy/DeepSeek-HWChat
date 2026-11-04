@@ -367,19 +367,101 @@ export class DeepSeekClient {
       return { dataBase64: picked.dataBase64, mimeType: picked.mimeType, model };
     }
     // 只有 URL：在扩展侧下载（这样代理/证书/超时都沿用同一条通道）。
-    // 明文 http 的地址一律不取：这台机器上的其余请求都要求 HTTPS（本机回环除外），
-    // 没有理由让一个服务端返回的 URL 绕过同一条底线。
-    assertSecureUrl(new URL(picked.url!));
-    const download = await withDeadline(
-      transport(picked.url!, { method: 'GET', signal: options.signal ?? new AbortController().signal }),
-      timeoutMs,
-      timeoutMessage,
-    );
-    if (!download.ok) throw new Error(tt('api.imageDownloadFailed', { status: download.status }));
-    const contentType = download.headers?.get('content-type') ?? '';
-    const mimeType = (contentType.split(';')[0] ?? '').trim() || picked.mimeType;
-    const bytes = Buffer.from(await readBodyCapped(download, MAX_GENERATED_IMAGE_BYTES));
-    return { dataBase64: bytes.toString('base64'), mimeType, model };
+    const downloaded = await this.downloadImage(settings, picked.url!, { signal: options.signal, mimeType: picked.mimeType });
+    return { dataBase64: downloaded.dataBase64, mimeType: downloaded.mimeType, model };
+  }
+
+  /**
+   * 探测「这个接口地址下到底有没有出图端点」——**不花钱**。
+   *
+   * 做法：发一个**空 body** 的 POST。OpenAI 兼容实现会先校验参数，于是
+   *   - 端点存在 → 400 / 422（缺 model / 缺 prompt）；
+   *   - 端点不存在 → 404；
+   *   - Key 不对 → 401。
+   * 三种结果已经足够回答「我该填什么」。真正生成一张图要花钱，所以探针不生成。
+   */
+  async probeImageEndpoint(settings: ChatSettings): Promise<{
+    endpoint: string;
+    exists: boolean;
+    status?: number;
+    detail?: string;
+  }> {
+    const endpoint = buildImagesEndpoint(settings.baseUrl);
+    const apiKey = await this.getApiKey(settings.activeApiProfileId);
+    let response: ResponseLike;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), Math.min(20_000, Math.max(5_000, settings.requestTimeoutSeconds * 1000)));
+      try {
+        response = await this.transport(settings)(endpoint, {
+          method: 'POST',
+          headers: new Headers({
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+            ...sanitizeHeaders(settings.requestHeaders),
+          }),
+          body: '{}',
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (error) {
+      return { endpoint, exists: false, detail: error instanceof Error ? error.message : String(error) };
+    }
+    const detail = response.ok ? '' : await readError(response, apiKey ?? '');
+    // 200 说明对方对空 body 也照单全收（少见），那当然算端点存在。
+    return { endpoint, exists: response.status !== 404, status: response.status, detail };
+  }
+
+  /**
+   * 由**扩展**取回一张远程图片，返回 base64。
+   *
+   * 为什么不让 webview 自己去取（用户 2026-11-04 的决定：保持严格）：
+   * 那样等于告诉外部主机「有人正在看这条对话」，还会带上 webview 自身的来源信息。
+   * 走这里之后，请求使用用户配置的代理、扩展自己的身份、有明确的超时与体积上限，
+   * 面板的 CSP 就可以继续保持 `img-src ${webview.cspSource} data:`。
+   *
+   * 明文 http 一律不取（本机回环除外）：这台机器上其余远程请求都要求 HTTPS，
+   * 没有理由让一条图片地址绕过同一条底线。
+   */
+  async downloadImage(
+    settings: ChatSettings,
+    url: string,
+    options: { signal?: AbortSignal; mimeType?: string; maxBytes?: number } = {},
+  ): Promise<{ dataBase64: string; mimeType: string }> {
+    const target = new URL(url);
+    assertSecureUrl(target);
+    const timeoutMs = Math.max(30_000, settings.requestTimeoutSeconds * 1000);
+    const timeoutMessage = tt('api.imageTimeout', { seconds: Math.round(timeoutMs / 1000) });
+    const transport = this.transport(settings);
+    const controller = new AbortController();
+    const signal = mergeAbortSignals(options.signal, controller.signal);
+    let response: ResponseLike;
+    try {
+      response = await withDeadline(
+        transport(url, { method: 'GET', signal }),
+        timeoutMs,
+        timeoutMessage,
+        () => controller.abort(),
+      );
+    } catch (error) {
+      if (options.signal?.aborted) throw new RequestCancelledError();
+      if (isAbortError(error) || (error instanceof Error && error.message === timeoutMessage)) {
+        throw new Error(timeoutMessage);
+      }
+      throw new Error(tt('api.connectFailed', { error: error instanceof Error ? error.message : String(error) }));
+    }
+    if (!response.ok) throw new Error(tt('api.imageDownloadFailed', { status: response.status }));
+    const contentType = response.headers?.get('content-type') ?? '';
+    const declared = (contentType.split(';')[0] ?? '').trim().toLowerCase();
+    // 服务端常常回 `application/octet-stream`：这种「不认识的类型」按 URL 扩展名兜底，
+    // 总比让整张图因为一个错误的 content-type 被拒要好。
+    const mimeType = declared.startsWith('image/') ? declared : (options.mimeType || declared || 'image/png');
+    const bytes = Buffer.from(await readBodyCapped(response, options.maxBytes ?? GENERATED_IMAGE_MAX_BYTES));
+    if (!bytes.byteLength) throw new Error(tt('api.imageNoData'));
+    return { dataBase64: bytes.toString('base64'), mimeType };
   }
 
   async listModels(settings: ChatSettings, options: ListModelsOptions = {}): Promise<DiscoveredModel[]> {
@@ -468,7 +550,9 @@ export function buildImagesEndpoint(baseUrl: string): string {
 }
 
 /** 单张生成图片的字节上限（base64 之后约 27 MB）。超过就报错，不把内存撑爆。 */
-export const MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024;
+export const GENERATED_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+/** 正文远程图更保守：一屏可能出现好几张，别把内存撑爆。 */
+export const REMOTE_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
  * 允许透传给服务端的尺寸。

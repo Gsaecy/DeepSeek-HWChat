@@ -114,6 +114,13 @@ export interface MessageContext {
    * 只在 `attachmentForWebview` 里临时补上，避免 4 MB base64 常驻前端。
    */
   webviewSrc?: string;
+  /**
+   * 这张图的**原始远程地址**（面板代下载时记下来）。
+   *
+   * 用途：正文里的 `![](https://…)` 被下载并挂成附件之后，渲染时需要知道
+   * 「这个 URL 已经有一份本地副本」，才不会又把原文的 markdown 显示成一段文字。
+   */
+  sourceUrl?: string;
 }
 
 export type AgentTaskStatus = 'routing' | 'active' | 'merged' | 'queued' | 'complete' | 'cancelled' | 'error';

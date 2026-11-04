@@ -30,6 +30,7 @@
   const fields = Object.fromEntries(fieldIds.map((id) => [id, document.getElementById(id)]));
   const elements = {
     saveButton: document.getElementById('saveButton'),
+    testImageButton: document.getElementById('testImageButton'),
     testButton: document.getElementById('testButton'),
     clearKeyButton: document.getElementById('clearKeyButton'),
     cleanupButton: document.getElementById('cleanupButton'),
@@ -321,6 +322,10 @@
   }));
   elements.testButton.addEventListener('click', () => withForm((settings) => {
     post('test', { settings, apiKey: fields.apiKey.value });
+  }));
+  // 出图端点与聊天端点常常不是同一个服务：单独给一个只探测、不花钱的入口。
+  elements.testImageButton?.addEventListener('click', () => withForm((settings) => {
+    post('testImage', { settings });
   }));
   elements.clearKeyButton.addEventListener('click', () => {
     fields.apiKey.value = '';

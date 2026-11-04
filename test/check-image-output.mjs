@@ -29,6 +29,10 @@ function check(label, condition) {
 const source = readFileSync(new URL('../media/chat.js', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../media/chat.css', import.meta.url), 'utf8');
 const CHAT_JS = source;
+const PANEL = readFileSync('src/views/chatPanel.ts', 'utf8');
+const REQUEST = readFileSync('src/agent/imageRequest.ts', 'utf8');
+const CLIENT = readFileSync('src/providers/deepseekClient.ts', 'utf8');
+
 
 /** 按「起点标记 → 终点标记」切一段源码；切不到就让脚本失败，避免静默通过。 */
 function slice(startMarker, endMarker, label) {
@@ -125,11 +129,13 @@ check('data:image/jpeg 放行', api.imageSourceAllowed('data:image/jpeg;base64,/
 check('data:image/webp 放行', api.imageSourceAllowed('data:image/webp;base64,UklGRg==') === true);
 check('data:image/svg+xml 不放行', api.imageSourceAllowed('data:image/svg+xml;base64,PHN2Zz4=') === false);
 check('data:text/html 不放行', api.imageSourceAllowed('data:text/html;base64,PHNjcmlwdD4=') === false);
-// 用户 2026-11-04 明确要求放宽 CSP：远程 https 图片现在可以直接显示。
-check('远程 https 图片放行（CSP 已带 https:）', api.imageSourceAllowed('https://example.com/a.png') === true);
-check('远程 https 带查询串也放行', api.imageSourceAllowed('https://cdn.example.com/a.png?v=2&w=800') === true);
-// 明文 http 仍然拒绝：会把「正在看这条对话」暴露给中间人，与项目其余远程请求口径一致。
-check('明文 http 图片不放行', api.imageSourceAllowed('http://example.com/a.png') === false);
+// 用户 2026-11-04 的决定：CSP 保持严格，远程图由**面板代下载**成本地文件再呈现。
+// 所以 webview 绝不直接连外部主机 —— 远程地址一律不放行。
+check('远程 https 图片不放行（改由面板代下载）', api.imageSourceAllowed('https://example.com/a.png') === false);
+check('远程 http 图片不放行', api.imageSourceAllowed('http://example.com/a.png') === false);
+check('CSP 未放宽（img-src 仍然只有 cspSource 与 data:）',
+  /img-src \$\{webview\.cspSource\} data:;/.test(PANEL) && !/img-src \$\{webview\.cspSource\} data: https:/.test(PANEL),
+  '放宽过又改回来的地方最容易残留 https: —— 那会让 webview 直接连外部主机');
 check('javascript: 不放行', api.imageSourceAllowed('javascript:alert(1)') === false);
 check('webview 资源地址放行（`+` 形式）', api.imageSourceAllowed('https://file+.vscode-resource.vscode-cdn.net/a.png') === true);
 // 真实事故 2026-11-04：`asWebviewUri().toString()` 实际输出的是 `%2B` 形式，
@@ -140,10 +146,7 @@ check('webview 资源地址放行（小写 `%2b`）',
   api.imageSourceAllowed('https://file%2b.vscode-resource.vscode-cdn.net/a.png') === true);
 check('网页版 `<guid>.vscode-cdn.net` 放行',
   api.imageSourceAllowed('https://abc123def.vscode-cdn.net/a.png') === true);
-// 放宽 CSP 之后，任何 https 主机都放行 —— 这是**明知**的取舍（外部主机能看到
-// 「有人正在看这条对话」）。用一条显式断言把这个事实钉住，避免以后有人以为它是漏洞。
-check('任何 https 主机都放行（这是放宽 CSP 的既定取舍）',
-  api.imageSourceAllowed('https://evil.file%2B.vscode-cdn.net.attacker.com/a.png') === true);
+
 check('vscode-resource: 放行', api.imageSourceAllowed('vscode-resource://file/a.png') === true);
 check('空地址不放行', api.imageSourceAllowed('  ') === false);
 
@@ -161,8 +164,8 @@ check('空地址不放行', api.imageSourceAllowed('  ') === false);
 {
   const parent = { tagName: 'P', children: [], append(...nodes) { this.children.push(...nodes); } };
   api.appendInline(parent, '![x](https://example.com/a.png)');
-  check('远程 https 图片生成 img', collect(parent, 'IMG').length === 1);
-  check('远程图片 src 原样保留', collect(parent, 'IMG')[0]?.src === 'https://example.com/a.png');
+  check('远程 https 图片不生成 img（面板会先下载再换成本地地址）', collect(parent, 'IMG').length === 0);
+  check('远程图片原样显示 markdown（不出现破图）', textOf(parent).includes('![x](https://example.com/a.png)'));
 }
 
 // ③ 独占一行的图片
@@ -178,8 +181,8 @@ check('空地址不放行', api.imageSourceAllowed('  ') === false);
 }
 {
   const container = { tagName: 'DIV', children: [], append(...nodes) { this.children.push(...nodes); } };
-  api.appendRichText(container, '![x](http://insecure.example.com/x.png)');
-  check('非白名单地址（明文 http）不生成块级图片', collect(container, 'IMG').length === 0);
+  api.appendRichText(container, '![x](https://remote.example.com/x.png)');
+  check('非白名单地址（远程图）不生成块级图片', collect(container, 'IMG').length === 0);
 }
 
 // ④ 落成文件的附件
@@ -210,9 +213,6 @@ check('.message-inline-image 有 max-height', /\.message-inline-image\s*\{[^}]*m
 check('图注样式存在', /\.message-image-figure figcaption\s*\{/.test(css));
 
 /* ── 图片能力的可发现性（真实事故 2026-11-04）─────────────────────────── */
-const PANEL = readFileSync('src/views/chatPanel.ts', 'utf8');
-const REQUEST = readFileSync('src/agent/imageRequest.ts', 'utf8');
-const CLIENT = readFileSync('src/providers/deepseekClient.ts', 'utf8');
 
 check('系统提示词里带上图片能力（有/没有两种说法）',
   /imageCapabilityPrompt\(imageModel/.test(PANEL)
@@ -228,23 +228,33 @@ check('出图端点 404 有专门解释（换配置档，而不是重试）',
   /api\.imageEndpointMissing/.test(CLIENT) && /response\.status === 404/.test(CLIENT),
   '「接口请求失败（404）」无法指导下一步');
 check('回复里只提到本地图片路径时，自动补成可见的图片',
-  /return embedMentionedImages\(rewriteMarkdownImagePaths\(rehosted, toWebviewUri\), toWebviewUri\);/.test(PANEL)
+  /return embedMentionedImages\(this\.applyRemoteImages\(message, localized, toWebviewUri\), toWebviewUri\);/.test(PANEL)
+  && /const localized = rewriteMarkdownImagePaths\(rehosted, toWebviewUri\);/.test(PANEL)
   && /rehostWebviewImageUrls\(content, toWebviewUri\)/.test(PANEL),
   '那次 agent 生成了 architecture.svg 并写进了正文，但只写成反引号路径，对话里什么都没显示');
 
 /* ── 远程图片（用户 2026-11-04 明确要求放宽 CSP）─────────────────────── */
-check('CSP 的 img-src 允许远程 https',
-  /img-src \$\{webview\.cspSource\} data: https:/.test(PANEL),
-  '不放宽的话，远程图片一定被 CSP 拦成破图 —— 这一条必须与白名单同步修改');
-check('白名单与 CSP 口径一致（https 放行 / http 拒绝）',
-  /if \(\/\^https:\\\/\\\/\[\^\\s\]\+\$\/i\.test\(value\)\) return true;/.test(CHAT_JS),
-  '只放宽 CSP 不改白名单，图片仍然只是文字');
+
 check('加载失败给出可读说明而不是破图图标',
   /message-image-fallback/.test(CHAT_JS) && /chat\.imageLoadFailed/.test(CHAT_JS),
   '远程图会 404 / 需要鉴权，碎图框既不说明原因也不给地址');
 check('失败替身的文案键真实存在',
   /'chat\.imageLoadFailed'/.test(readFileSync('src/core/i18n.ts', 'utf8')),
   'i18n 里没有这个键，界面上会直接显示键名');
+
+/* ── 面板代下载远程图 ─────────────────────────────────────────────── */
+check('正文远程图由面板下载并挂成附件（带 sourceUrl）',
+  /ensureRemoteImages\(/.test(PANEL) && /sourceUrl: item\.url/.test(PANEL),
+  '不挂 sourceUrl 就无法把「已下载的 URL」和正文里的 markdown 对应起来');
+check('远程下载走扩展通道（代理 / HTTPS / 体积上限）',
+  /async downloadImage\(/.test(readFileSync('src/providers/deepseekClient.ts', 'utf8')),
+  '让 webview 自己取就是上一版被否掉的做法');
+check('下载状态被翻成可读内容，而不是破图',
+  /chat\.imageDownloading/.test(PANEL) && /chat\.imageLoadFailed/.test(PANEL),
+  '截图里那种「图片框里什么都没有」正是缺这一步');
+check('工具按「任一配置档能出图」下发，并切到该配置档',
+  /imageProfileFor\(settings, profile\.id\)/.test(PANEL) && /imageProfileFor\(settings\)/.test(PANEL),
+  '只认当前档会导致「用户明明配了出图档，工具却不下发」');
 
 console.log(`\n${checks - failures}/${checks} 项通过`);
 if (failures) process.exitCode = 1;

@@ -4166,11 +4166,11 @@
     if (!value) return false;
     if (/^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);base64,[a-z0-9+/=\s]+$/i.test(value)) return true;
     /*
-     * 远程图片：CSP 的 `img-src` 现在带 `https:`（用户 2026-11-04 明确要求放宽），所以
-     * 模型/工具给出的 https 图片可以直接显示。**只放 https**：明文 http 会把「正在看
-     * 这条对话」暴露给中间人，而项目里其余远程请求也都要求 HTTPS。
+     * 远程 http(s) 图片**不放行**：CSP 保持 `img-src ${webview.cspSource} data:` 的严格口径
+     * （用户 2026-11-04 的决定）。正文里的 `![](https://…)` 由**面板代下载**成本地文件后
+     * 换成 webview 地址再下发，所以这里看不到远程地址；万一漏过来，宁可显示成文字，
+     * 也不要在 webview 里直接连外部主机。
      */
-    if (/^https:\/\/[^\s]+$/i.test(value)) return true;
     /*
      * 桌面端资源地址有两种拼法，**都要放行**：
      *   - `file+.vscode-resource.vscode-cdn.net`（文档与旧版本的样子）

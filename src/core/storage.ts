@@ -390,7 +390,7 @@ export class ConversationStorage {
   async saveMessageImage(
     conversationId: string,
     messageId: string,
-    image: { dataBase64: string; mimeType?: string; label?: string },
+    image: { dataBase64: string; mimeType?: string; label?: string; sourceUrl?: string },
   ): Promise<MessageContext> {
     await this.initialize();
     const raw = (image.dataBase64 ?? '').trim();
@@ -412,6 +412,7 @@ export class ConversationStorage {
       path,
       bytes: bytes.byteLength,
       mimeType,
+      ...(image.sourceUrl ? { sourceUrl: image.sourceUrl } : {}),
     };
     // 同一张图重复生成时不要在同一条消息里挂两个一模一样的条目。
     const attachments = [...(current.attachments ?? []).filter((item) => item.id !== attachment.id), attachment];

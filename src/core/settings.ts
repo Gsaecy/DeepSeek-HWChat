@@ -288,6 +288,30 @@ function normalizeProfiles(value: unknown, fallback: ApiProfile): ApiProfile[] {
   return profiles.length ? profiles : [fallback];
 }
 
+/**
+ * 挑一个**能出图**的接口配置档。
+ *
+ * 为什么不是「只用当前配置档」：聊天模型和出图模型几乎不可能是同一个服务。
+ * 用户很可能把 DeepSeek 当聊天档、再单独加一个中转档专做出图 —— 如果只认当前档，
+ * `generate_image` 永远不会被下发（真实情况：用户两个档位都没有图片模型，
+ * 于是工具根本不出现，界面上也没有任何解释）。
+ *
+ * 顺序：给定档位 → 当前档位 → 任意配了图片模型的档位。
+ */
+export function imageProfileFor(
+  settings: Pick<ChatSettings, 'apiProfiles' | 'activeApiProfileId'>,
+  preferredProfileId?: string,
+): ApiProfile | undefined {
+  const hasModel = (profile: ApiProfile | undefined): profile is ApiProfile =>
+    Boolean(profile && String(profile.imageModel ?? '').trim());
+  const byId = (id: string | undefined) => settings.apiProfiles.find((profile) => profile.id === id);
+  const preferred = byId(preferredProfileId);
+  if (hasModel(preferred)) return preferred;
+  const active = byId(settings.activeApiProfileId);
+  if (hasModel(active)) return active;
+  return settings.apiProfiles.find(hasModel);
+}
+
 export function isPermissionPreset(value: unknown): value is PermissionPreset {
   return value === 'askAll' || value === 'review' || value === 'autopilot' || value === 'full';
 }

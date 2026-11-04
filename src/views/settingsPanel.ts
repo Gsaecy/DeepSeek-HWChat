@@ -4,7 +4,7 @@ import { deleteApiKey, hasApiKey, storeApiKey } from '../core/apiKeys';
 import { PERMISSION_PRESET_IDS, DEFAULT_PERMISSION_PRESET, permissionPresetDetail, permissionPresetDetails } from '../core/permissions';
 import { currentLanguage, messageScriptTag, t, tt, type Language } from '../core/i18n';
 import { isConversationMode } from '../core/modes';
-import { profileFor, readSettings, updateSettings } from '../core/settings';
+import { imageProfileFor, profileFor, readSettings, updateSettings } from '../core/settings';
 import { ConversationStorage } from '../core/storage';
 import { ChatSettings } from '../core/types';
 import { DeepSeekClient } from '../providers/deepseekClient';
@@ -21,6 +21,7 @@ type IncomingMessage =
   | { type: 'ready' }
   | { type: 'save'; settings: Partial<ChatSettings>; apiKeys?: Record<string, string>; clearApiKeyIds?: string[] }
   | { type: 'test'; settings: Partial<ChatSettings>; apiKey?: string }
+  | { type: 'testImage'; settings: Partial<ChatSettings> }
   | { type: 'cleanup' }
   | { type: 'exportAll' }
   | { type: 'rescanSkills' }
@@ -107,6 +108,9 @@ export class SettingsPanel implements vscode.Disposable {
         case 'test':
           await this.test(message.settings, message.apiKey);
           break;
+        case 'testImage':
+          await this.testImage(message.settings);
+          break;
         case 'cleanup':
           await this.cleanup();
           break;
@@ -182,6 +186,47 @@ export class SettingsPanel implements vscode.Disposable {
         { apiKey, onDelta: () => undefined },
       );
       await this.post({ type: 'toast', tone: 'success', text: tt('settings.connectOk') });
+    } finally {
+      await this.post({ type: 'testing', active: false });
+    }
+  }
+
+  /**
+   * 「测试出图」：先解释端点存不存在（免费探针），再报告用的哪个模型。
+   *
+   * 为什么要单独一个按钮：出图档与聊天档常常不是同一个服务，而 `generate_image`
+   * 只在**某个**配置档配了图片模型时才会出现。用户填完没有任何反馈的话，
+   * 只能靠「发一句话试试」来发现填错了。
+   */
+  private async testImage(values: Partial<ChatSettings>): Promise<void> {
+    const settings = { ...readSettings(), ...validateSettings(values) };
+    const profile = imageProfileFor(settings);
+    if (!profile) {
+      await this.post({ type: 'toast', tone: 'warning', text: tt('settings.imageTestNoProfile') });
+      return;
+    }
+    const model = String(profile.imageModel ?? '').trim();
+    await this.post({ type: 'testing', active: true });
+    try {
+      const probe = await this.client.probeImageEndpoint({
+        ...settings,
+        activeApiProfileId: profile.id,
+        baseUrl: profile.baseUrl,
+        requestHeaders: profile.requestHeaders,
+      });
+      await this.post({
+        type: 'toast',
+        tone: probe.exists ? 'success' : 'warning',
+        text: probe.exists
+          ? tt('settings.imageTestOk', { profile: profile.name, model })
+          : tt('settings.imageTestMissing', { endpoint: probe.endpoint, status: probe.status ?? 0 }),
+      });
+    } catch (error) {
+      await this.post({
+        type: 'toast',
+        tone: 'warning',
+        text: tt('settings.imageTestFailed', { error: error instanceof Error ? error.message : String(error) }),
+      });
     } finally {
       await this.post({ type: 'testing', active: false });
     }
@@ -335,7 +380,7 @@ export class SettingsPanel implements vscode.Disposable {
             <label class="setting-row"><span><strong>${t(lang, 'settings.baseUrl.label')}</strong><small>${t(lang, 'settings.baseUrl.hint')}</small></span><input id="baseUrl" class="control" type="url" spellcheck="false"></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.model.label')}</strong><small>${t(lang, 'settings.model.hint')}</small></span><input id="model" class="control mono" list="settingsModelPresets" spellcheck="false"><datalist id="settingsModelPresets"><option value="deepseek-flash"></option><option value="deepseek-v4-pro"></option></datalist></label>
             <label class="setting-row setting-row-stack"><span><strong>${t(lang, 'settings.models.label')}</strong><small>${t(lang, 'settings.models.hint')}</small></span><textarea id="profileModels" class="control mono" rows="4" spellcheck="false"></textarea></label>
-            <label class="setting-row"><span><strong>${t(lang, 'settings.imageModel.label')}</strong><small>${t(lang, 'settings.imageModel.hint')}</small></span><input id="profileImageModel" class="control mono" type="text" spellcheck="false" maxlength="120" placeholder="gpt-image-1"></label>
+            <label class="setting-row"><span><strong>${t(lang, 'settings.imageModel.label')}</strong><small>${t(lang, 'settings.imageModel.hint')}</small></span><span class="profile-control"><input id="profileImageModel" class="control mono" type="text" spellcheck="false" maxlength="120" placeholder="gpt-image-1"><button id="testImageButton" type="button">${t(lang, 'settings.imageModel.test')}</button></span></label>
             <label class="setting-row setting-row-stack"><span><strong>${t(lang, 'settings.headers.label')}</strong><small>${t(lang, 'settings.headers.hint')}</small></span><textarea id="requestHeaders" class="control mono" rows="4" spellcheck="false"></textarea></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.timeout.label')}</strong><small>${t(lang, 'settings.timeout.hint')}</small></span><span class="stepper"><input id="requestTimeoutSeconds" type="number" min="10" max="900"><span>${t(lang, 'common.seconds')}</span></span></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.proxy.label')}</strong><small>${t(lang, 'settings.proxy.hint')}</small></span><input id="proxy" class="control mono" type="text" spellcheck="false" placeholder="http://127.0.0.1:8080"></label>

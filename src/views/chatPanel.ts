@@ -8,6 +8,7 @@ import { messagesSignatureKey } from './messageSignature';
 import { isInsideWorkspace, normalizeFileReference, revealTargetFor } from '../agent/fileReveal';
 import { embedMentionedImages, rehostWebviewImageUrls, resolveLocalImage, rewriteMarkdownImagePaths } from '../agent/markdownImages';
 import { imageCapabilityPrompt, looksLikeImageRequest } from '../agent/imageRequest';
+import { findRemoteImages, resolveRemoteImages } from '../agent/remoteImages';
 import { chooseReferenceMatch } from '../agent/fileReferenceResolve';
 import { resolveFileReferences, type ReferenceQuery } from '../agent/fileReferenceBatch';
 import { SkillRegistry, type PreparedSkillContext } from '../agent/skillRegistry';
@@ -58,6 +59,7 @@ import {
   AGENT_STEP_PRESETS,
   AGENT_MAX_STEPS_UNLIMITED,
   applyRuntimeControls,
+  imageProfileFor,
   isPermissionPreset,
   normalizeAgentMaxSteps,
   normalizeReasoningEffort,
@@ -104,7 +106,7 @@ import {
   planTodoSettlement,
   TodoRunOutcome,
 } from '../core/todoArchives';
-import { DeepSeekClient, RequestCancelledError } from '../providers/deepseekClient';
+import { DeepSeekClient, REMOTE_IMAGE_MAX_BYTES, RequestCancelledError } from '../providers/deepseekClient';
 import { icon, mediaUri, nonce } from './webview';
 
 interface ChatPanelCallbacks {
@@ -1039,6 +1041,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 现在：签名没变就不发 `messages`，只发一个 `messagesUnchanged: true`，
    * webview 保留自己已有的列表（它本来就按同一套签名决定要不要重绘）。
    */
+  /**
+   * 正文里的远程图片：`url → 状态`。
+   *
+   * 为什么要这张表：CSP 保持严格（webview 不许直接取远程图），所以远程图必须由面板
+   * 下载成本地文件再呈现。表里记住「已下载 / 下载中 / 失败」，同一条 URL 只下一次，
+   * 也保证重绘时不会又把原文的 markdown 显示成一段文字。
+   */
+  private readonly remoteImageStates = new Map<string, { status: 'loading' | 'ready' | 'failed'; path?: string }>();
+
   private pushedMessagesKey = '';
 
   /** webview 每次重建（首次解析、被切到后台再回来）都 +1，用来强制下一次推全量。 */
@@ -1665,8 +1676,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           extraTools: [
             todoToolDefinition(),
             decisionToolDefinition(),
-            // 没配图片模型就不下发：摆在模型面前的工具它一定会调，然后每次都撞同一句错误。
-            ...(String(settings.imageModel ?? '').trim() ? [generateImageToolDefinition()] : []),
+            // 任何一个配置档配了图片模型就下发（出图档可以与聊天档不同）。
+            ...(imageProfileFor(settings, profile.id) ? [generateImageToolDefinition()] : []),
             this.skills.toolDefinition(preparedSkills.routableIds),
             historyTool,
             ...this.vscodeTools.definitions(),
@@ -1969,6 +1980,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     });
     response.completed = true;
     await this.post({ type: 'messageComplete', conversationId: run.conversationId, message: this.forWebview(completed) });
+    // 这条回复里可能有远程图片：下载完成后会再推一次 messageUpdated 把它换成真图。
+    void this.ensureRemoteImages([completed], run.conversationId);
     /*
      * 用户消息的最终状态。
      *
@@ -2201,6 +2214,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
      * 消息列表的签名：只取「会让画面不同」的字段，不序列化正文（与 webview 侧
      * `messageListSignature` 同源思路）。签名不变就不发这 5 MB。
      */
+    // 正文里的远程图片由面板代下载（CSP 保持严格）。不 await：下载不该拖慢状态推送，
+    // 完成后会对那几条消息各推一次 messageUpdated。
+    if (conversation) void this.ensureRemoteImages(page.messages, conversation.id);
     const webviewMessages = page.messages.map((message) => this.forWebview(message));
     const messagesKey = messagesSignatureKey(this.webviewGeneration, conversation?.id ?? '', webviewMessages);
     const messagesUnchanged = messagesKey === this.pushedMessagesKey;
@@ -3236,7 +3252,20 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     if (!response) return fail(tt('tool.generateImage.noMessage'));
     const startedAt = Date.now();
     try {
-      const image = await this.client.generateImage(settings, { prompt, size, signal: run.controller.signal });
+      /*
+       * 出图档可能与聊天档不同：这里显式切到「能出图的那个配置档」，用它自己的
+       * baseUrl / 请求头 / API Key。找不到就明确告诉用户去哪里配。
+       */
+      const imageProfile = imageProfileFor(settings);
+      if (!imageProfile) return fail(tt('api.imageNoModel'));
+      const imageSettings = {
+        ...settings,
+        activeApiProfileId: imageProfile.id,
+        baseUrl: imageProfile.baseUrl,
+        requestHeaders: imageProfile.requestHeaders,
+        imageModel: imageProfile.imageModel,
+      };
+      const image = await this.client.generateImage(imageSettings, { prompt, size, signal: run.controller.signal });
       const attachment = await this.storage.saveMessageImage(conversationId, response.assistantMessageId, {
         dataBase64: image.dataBase64,
         mimeType: image.mimeType,
@@ -3739,7 +3768,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private forWebview(message: ChatMessage, conversationId = this.activeConversationId): ChatMessage {
     // 正文里的 `![](相对路径)` 只有变成 webview 资源地址才能显示（CSP 不允许 file:/远程图）。
     // 只改发给前端的副本，存档里保留模型原本写的内容。
-    const localizedContent = this.localizeImageLinks(message.content);
+    const localizedContent = this.localizeImageLinks(message.content, message);
     return {
       ...message,
       ...(localizedContent === undefined ? {} : { content: localizedContent }),
@@ -3758,7 +3787,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * `${webview.cspSource}` 与 `data:` —— 于是 `![](docs/chart.png)` 只能买到一张破图。
    * 这里在**下发副本**上把它改成 `asWebviewUri` 的结果，模型写的内容与存档都不动。
    */
-  private localizeImageLinks(content: string | undefined): string | undefined {
+  private localizeImageLinks(content: string | undefined, message?: ChatMessage): string | undefined {
     const view = this.view;
     if (!view) return content;
     const toWebviewUri = (src: string): string | undefined => {
@@ -3774,7 +3803,79 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
      * 三步都只认**工作区内真实存在**的文件，所以不会凭空造出一张破图。
      */
     const rehosted = rehostWebviewImageUrls(content, toWebviewUri);
-    return embedMentionedImages(rewriteMarkdownImagePaths(rehosted, toWebviewUri), toWebviewUri);
+    const localized = rewriteMarkdownImagePaths(rehosted, toWebviewUri);
+    return embedMentionedImages(this.applyRemoteImages(message, localized, toWebviewUri), toWebviewUri);
+  }
+
+  /**
+   * 正文里的远程图片：有本地副本就显示副本，没有就说明「正在下载 / 加载失败」。
+   *
+   * 为什么不能直接把 `https://…` 交给 webview：CSP 是严格的（用户 2026-11-04 的决定），
+   * 远程地址会被拦成破图 —— 而一条破图既不说原因也不给地址。这里把三种状态都翻成
+   * 可读的内容：下载完成 → 真正的图片；下载中 → 一行说明；失败 → 说明 + 主机名。
+   */
+  private applyRemoteImages(
+    message: ChatMessage | undefined,
+    content: string | undefined,
+    toWebviewUri: (src: string) => string | undefined,
+  ): string | undefined {
+    return resolveRemoteImages(content, {
+      attachments: message?.attachments ?? [],
+      state: (url) => this.remoteImageStates.get(url)?.status,
+      toWebviewUri,
+      text: {
+        downloading: (host) => tt('chat.imageDownloading', { host }),
+        failed: (host) => tt('chat.imageLoadFailed', { host }),
+      },
+    });
+  }
+
+  /**
+   * 把当前这批消息里出现的远程图片下载成本地副本（挂成附件）。
+   *
+   * 幂等：同一条 URL 只下一次，已经挂过 `sourceUrl` 附件的消息直接跳过。
+   * 失败不重试、不阻塞界面 —— 记成 `failed` 让渲染层显示可读说明，
+   * 用户重开对话时才会再试一次。
+   */
+  private async ensureRemoteImages(messages: readonly ChatMessage[], conversationId: string): Promise<void> {
+    const settings = readSettings();
+    const pending: Array<{ messageId: string; url: string; alt: string }> = [];
+    for (const message of messages) {
+      if (!message.content?.includes('https://')) continue;
+      const covered = new Set((message.attachments ?? []).map((attachment) => attachment.sourceUrl).filter(Boolean));
+      for (const ref of findRemoteImages(message.content)) {
+        if (covered.has(ref.url) || this.remoteImageStates.has(ref.url)) continue;
+        this.remoteImageStates.set(ref.url, { status: 'loading' });
+        pending.push({ messageId: message.id, url: ref.url, alt: ref.alt });
+      }
+    }
+    if (!pending.length) return;
+    // 表本身要有上限：长时间浏览历史不该把每条 URL 都留在内存里。
+    if (this.remoteImageStates.size > 200) {
+      const oldest = this.remoteImageStates.keys().next();
+      if (!oldest.done) this.remoteImageStates.delete(oldest.value);
+    }
+    const changed = new Set<string>();
+    for (const item of pending) {
+      try {
+        const image = await this.client.downloadImage(settings, item.url, { maxBytes: REMOTE_IMAGE_MAX_BYTES });
+        const saved = await this.storage.saveMessageImage(conversationId, item.messageId, {
+          dataBase64: image.dataBase64,
+          mimeType: image.mimeType,
+          label: item.alt || tt('chat.generatedImage'),
+          sourceUrl: item.url,
+        });
+        this.remoteImageStates.set(item.url, { status: 'ready', path: saved.path });
+      } catch (error) {
+        this.remoteImageStates.set(item.url, { status: 'failed' });
+        this.log(`[remote-image] 下载失败 ${item.url}：${error instanceof Error ? error.message : String(error)}`);
+      }
+      changed.add(item.messageId);
+    }
+    for (const messageId of changed) {
+      const stored = await this.storage.getMessage(conversationId, messageId).catch(() => undefined);
+      if (stored) await this.post({ type: 'messageUpdated', conversationId, message: this.forWebview(stored, conversationId) });
+    }
   }
 
   /**
@@ -4405,7 +4506,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${scriptNonce}'; img-src ${webview.cspSource} data: https:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${scriptNonce}'; img-src ${webview.cspSource} data:;">
   <link rel="stylesheet" href="${style}">
   <title>HWChat</title>
 </head>
