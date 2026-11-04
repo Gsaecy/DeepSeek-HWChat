@@ -6,7 +6,8 @@ import { AgentRunner } from '../agent/agentRunner';
 import { attachmentCacheName, planAttachmentOpen } from '../agent/attachmentOpen';
 import { messagesSignatureKey } from './messageSignature';
 import { isInsideWorkspace, normalizeFileReference, revealTargetFor } from '../agent/fileReveal';
-import { resolveLocalImage, rewriteMarkdownImagePaths } from '../agent/markdownImages';
+import { embedMentionedImages, resolveLocalImage, rewriteMarkdownImagePaths } from '../agent/markdownImages';
+import { imageCapabilityPrompt, looksLikeImageRequest } from '../agent/imageRequest';
 import { chooseReferenceMatch } from '../agent/fileReferenceResolve';
 import { resolveFileReferences, type ReferenceQuery } from '../agent/fileReferenceBatch';
 import { SkillRegistry, type PreparedSkillContext } from '../agent/skillRegistry';
@@ -1470,6 +1471,17 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         this.callbacks.openSettings();
         return;
       }
+      /*
+       * 用户要图、但这个配置档没配图片模型：当场告诉他。
+       *
+       * 真实事故（2026-11-04）：用户在没配图片模型的情况下说「给我这个 skill 的原理图」，
+       * 界面上没有任何解释，模型只好自己想办法 —— `npx -y @mermaid-js/mermaid-cli`
+       * 下载渲染器 **整整超时 2 分钟**，最后手写 SVG 落盘，对话框里什么也没出现，
+       * 用户的结论就是「图片输出功能没成功」。这一句提示是确定性的，不依赖模型自觉。
+       */
+      if (!String(settings.imageModel ?? '').trim() && looksLikeImageRequest(content)) {
+        await this.post({ type: 'toast', tone: 'warning', text: tt('notice.imageModelMissing') });
+      }
       // 界面选的模式优先；没传或传了非法值时：已落库对话沿用存档模式，草稿沿用设置默认值。
       const mode = resolveActiveMode({
         conversationMode: isConversationMode(requestedMode) ? requestedMode : existingConversation?.mode,
@@ -2044,7 +2056,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       content: [
         // 互联网参考在**这一层**注入：它是本轮的硬性工作方式，必须随每次请求
         // （含「继续执行」）重新拼进 system，而不是只在发送那一刻拼一次。
-        withInternetReference(this.agentSystemPrompt(mode, settings.systemPrompt, skillPrompt, historyPrompt), settings.internetReference),
+        withInternetReference(this.agentSystemPrompt(mode, settings.systemPrompt, skillPrompt, historyPrompt, settings.imageModel), settings.internetReference),
         todoContext,
       ]
         .filter(Boolean)
@@ -3749,10 +3761,16 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private localizeImageLinks(content: string | undefined): string | undefined {
     const view = this.view;
     if (!view) return content;
-    return rewriteMarkdownImagePaths(content, (src) => {
+    const toWebviewUri = (src: string): string | undefined => {
       const file = this.workspaceImageUri(src);
       return file ? view.webview.asWebviewUri(file).toString() : undefined;
-    });
+    };
+    /*
+     * 顺序：先把已有的 `![]()` 换成 webview 地址，再把「只在正文里提了一句路径」的
+     * 本地图片补成真正的图片。只补**工作区内真实存在**的文件，所以既能兜住
+     * 「生成了图但只发了路径」的情况，也不会凭空造出一张破图。
+     */
+    return embedMentionedImages(rewriteMarkdownImagePaths(content, toWebviewUri), toWebviewUri);
   }
 
   /**
@@ -4106,7 +4124,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     return file;
   }
 
-  private agentSystemPrompt(mode: ConversationMode, customPrompt: string, skillPrompt: string, historyPrompt = ''): string {
+  private agentSystemPrompt(
+    mode: ConversationMode,
+    customPrompt: string,
+    skillPrompt: string,
+    historyPrompt = '',
+    imageModel = '',
+  ): string {
     return [
       'You are HWChat, a precise coding agent running inside VS Code.',
       // 模式说明由 core/modes 统一生成：名字与界面下拉一致，并声明以本轮为准。
@@ -4118,6 +4142,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       'Messages labeled as task-tree updates are authoritative runtime guidance. Related updates modify the current branch; queued branch messages begin only after the prior branch completes. Preserve completed work that remains valid and do not execute skipped stale steps.',
       'For workspace navigation, prefer the native list_workspace_roots, list_directory, list_files, read_file, open_file, and get_diagnostics tools. When the user asks to open a workspace file, call open_file directly. Do not use a terminal, code CLI, external Copilot file tools, or third-party preview tools when a native HWChat tool can perform the action.',
       'Use VS Code preview and extension tools only for capabilities not already covered by native HWChat tools, such as a webpage preview or a temporary diff.',
+      // 图片能力必须由宿主明说（有/没有两种说法）。
+      // 真实事故（2026-11-04）：没配图片模型时模型不知道，自己去 npx 装 mermaid-cli，
+      // 超时 2 分钟，最后手写 SVG 落盘 —— 用户界面上什么都没看到，以为功能坏了。
+      imageCapabilityPrompt(imageModel, currentLanguage()),
       // 真实事故（2026-11-03）：replace_in_file 未命中后，模型改用
       // `powershell -Command "$enc=GetEncoding(936); ... WriteAllLines(...,$enc)"`
       // 重写整个文件，把 UTF-8 中文写坏 33 处。这条规则要求改文件只走原生工具。

@@ -353,6 +353,11 @@ export class DeepSeekClient {
         await sleepMs(waitMs, options.signal).catch(() => { throw new RequestCancelledError(); });
         continue;
       }
+      // 404 几乎只有一个原因：这个接口地址下根本没有出图端点。
+      // 单独说清楚，比「接口请求失败（404）」有用得多 —— 用户下一步该换配置档，而不是重试。
+      if (response.status === 404) {
+        throw new Error(tt('api.imageEndpointMissing', { endpoint, detail }));
+      }
       throw new Error(tt('api.requestFailed', { status: response.status, detail }));
     }
 

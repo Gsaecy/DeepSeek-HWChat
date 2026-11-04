@@ -127,8 +127,11 @@ check('注入早于 chat.js（否则加载时读不到模块）', injected > 0 &
 /* ── 4. 提示词接线 ───────────────────────────────────────── */
 
 check('系统提示词引用 FOLLOW_UP_PROMPT', PANEL.includes('FOLLOW_UP_PROMPT,'));
-const promptAt = PANEL.indexOf('FOLLOW_UP_PROMPT,');
-const historyAt = PANEL.indexOf('historyPrompt,');
+// 只看 `agentSystemPrompt` 的**函数体**：调用点里也会出现 `historyPrompt,`，
+// 按全文首尾比较会把「调用早于定义」误当成顺序错误。
+const promptBody = PANEL.slice(PANEL.indexOf('private agentSystemPrompt('));
+const promptAt = promptBody.indexOf('FOLLOW_UP_PROMPT,');
+const historyAt = promptBody.indexOf('historyPrompt,');
 check('提示词排在历史摘要之前', promptAt > 0 && historyAt > promptAt);
 
 console.log('');

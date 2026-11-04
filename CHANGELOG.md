@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **图片输出：修掉「生成了但对话里看不到」，并让「没配图片模型」当场说清楚**（用户原话：「hwchat的图片输出功能没成功」→「他生成了，但是对话框里没有出现，只是放在文件夹里了」）。
+  - **先分清两件事**：
+    1. `generate_image` **一次都没被调用** —— 查你的 `settings.json`，两个配置档（DeepSeek / Minimax）都**没有 `imageModel`**，按设计这个工具根本不会下发给模型。
+    2. 但 agent 确实「出了图」：它自己跑 `npx -y @mermaid-js/mermaid-cli`（**超时 2 分钟**），最后用 `qlmanage` 把自写的 SVG 转成 `architecture.svg.png` 落在工作区里；回复里只写了反引号路径 +「已在编辑器打开」，**没有一行 markdown 图片**，所以对话里当然什么也看不到。
+  - **① 回复里提到本地图片就让它显示出来**（确定性，不依赖模型自觉）。`forWebview` 现在在**下发副本**上多走一步 `embedMentionedImages()`：正文里出现的、**工作区内真实存在**的图片路径（png/jpg/gif/webp/bmp/avif/svg）如果还没有被嵌成图片，就在回复末尾补一行 `![文件名](webview 地址)`；最多 3 张、不重复追加、路径不存在或不是图片则原样不动；存档与模型原文一个字都不改（重算结果恒定）。
+  - **② 图片能力必须由宿主讲给模型**。系统提示词新增 `imageCapabilityPrompt(图片模型)`：配了就说明可以用 `generate_image`、并且本地图片能直接显示；**没配就明确禁止**去安装渲染器（mermaid-cli / puppeteer / rsvg-convert / ImageMagick），并说明该去哪里填。每次请求重新拼，用户中途填上模型下一轮立刻可用。
+  - **③ 要图却没配图片模型 → 当场提示**。发送时用纯函数 `looksLikeImageRequest()` 判断（「画一张…」「生成一张海报」「给我这个 skill 的原理图」「draw me a…」「generate an image of…」等；明确在说代码/脚本/CSS 时不算），命中就弹一条 warning toast 指向「设置 → 连接 → 图片模型」。这条是确定性的，不再依赖模型想起来解释。
+  - **④ 出图端点 404 单独解释**：`POST /images/generations` 返回 404 时直接说「这个接口地址下没有图片生成端点」，并建议换一个支持 OpenAI 兼容出图的配置档 —— 「接口请求失败（404）」无法指导下一步。
+  - **实测取证**（用你机器上那两个真实文件跑，不是构造的假路径）：把 `tmp/enterprise-agent-architecture/architecture.svg`（13 KB，1280×1220）与 `architecture.svg.png`（408 KB）按真实 webview 地址喂进面板，在无头 Chromium 里渲染 —— `naturalWidth×Height = 1280×1220`、显示 441×420（受 `max-height:420px` 约束、不变形），截图可见图内的 7 层流水线与治理闭环；补图逻辑对同一份正文跑两次结果一致（不重复追加）。
+  - 顺带修掉 `check-follow-up-format.mjs` 的一处误判：它用全文首个 `historyPrompt,` 做顺序比较，而新增的函数参数让「调用点」排在「定义」之前 —— 现在只看 `agentSystemPrompt` 的函数体。
+  - 守护：`src/test/imageRequest.test.ts` **9 条**（中英文要图判定 21 例含 11 个不该命中的反例、两种能力说明、补图的幂等/上限/非图片路径）+ `check-image-output.mjs` 扩到 **36 项**（新增 5 项接线校验）。
+  - 全量：**941** 条单测、**48** 个 `check-*.mjs` 全绿。
+
 - **修掉「不同对话相互混乱污染」：两条独立根因，都会让一个对话里出现另一条对话的内容**（用户原话：「hwchat不同的对话相互混乱污染了」→「我在一个对话发的消息，但是别的对话框也出现了我发的消息，回复也是两个对话框都显示一样的」，附六张截图）。
 
   ### 根因一：整页推送的合并函数不知道「正在看哪条对话」

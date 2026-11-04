@@ -69,3 +69,50 @@ export function resolveLocalImage(
   }
   return undefined;
 }
+
+/**
+ * 回复里「提到了某个本地图片」却没有把它嵌进去时，补一行 `![说明](地址)`。
+ *
+ * 现场（用户 2026-11-04）：让 agent 画一张原理图，它确实生成了
+ * `tmp/enterprise-agent-architecture/architecture.svg`（和 `.svg.png`），回复里也写了
+ * 这个路径，但只写成反引号路径 +「已在编辑器打开」。用户在对话里什么也没看到，
+ * 得到的结论是「图片输出功能没成功」。
+ *
+ * 为什么不改存档、只在下发副本上补：这是**呈现层**的兜底，重算结果恒定（同一份正文
+ * 每次得到同样的图），存档里保留模型原文，刷新/换窗口后依然一致。
+ *
+ * 幂等靠「已存在的图片地址」判断：补进去的地址来自 `resolve`，下次算出同一个，
+ * 于是不会重复追加。
+ *
+ * @param resolve 把正文里的路径解析成可显示的地址（工作区内真实存在的图片才返回）
+ */
+export function embedMentionedImages(
+  content: string | undefined,
+  resolve: (path: string) => string | undefined,
+  limit = 3,
+): string | undefined {
+  if (!content || content.length > 60_000) return content;
+  const embedded = new Set<string>();
+  // 捕获到右括号为止（而不是到空白）：路径本身可能带空格（`<a b.png>` 或未编码的
+  // webview 地址），按空白截断会把同一张图认成另一张，于是反复追加。
+  for (const match of content.matchAll(/!\[[^\]\n]*\]\(\s*<?([^)>]+?)>?\s*\)/g)) {
+    embedded.add(match[1] ?? '');
+  }
+  // 只认「像路径」的写法：可带 ./ 或 ../ 前缀，允许子目录，扩展名必须是图片。
+  const candidate = /(?:^|[\s`("'（[<])((?:\.{1,2}\/)?[\w\u4e00-\u9fa5.@+\-/]+\.(?:png|jpe?g|gif|webp|bmp|avif|svg))(?=[\s`)"'）\],。；;:]|$)/g;
+  const appended: string[] = [];
+  const seen = new Set<string>();
+  for (const match of content.matchAll(candidate)) {
+    if (appended.length >= limit) break;
+    const path = match[1] ?? '';
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    const src = resolve(path);
+    if (!src || embedded.has(src)) continue;
+    embedded.add(src);
+    const label = path.split('/').pop() ?? path;
+    appended.push(`![${label}](${src})`);
+  }
+  if (!appended.length) return content;
+  return `${content.replace(/\s+$/, '')}\n\n${appended.join('\n\n')}`;
+}

@@ -192,5 +192,27 @@ check('.message-block-image 宽度不溢出', /\.message-block-image\s*\{[^}]*ma
 check('.message-inline-image 有 max-height', /\.message-inline-image\s*\{[^}]*max-height:[^;]*;/.test(css));
 check('图注样式存在', /\.message-image-figure figcaption\s*\{/.test(css));
 
+/* ── 图片能力的可发现性（真实事故 2026-11-04）─────────────────────────── */
+const PANEL = readFileSync('src/views/chatPanel.ts', 'utf8');
+const REQUEST = readFileSync('src/agent/imageRequest.ts', 'utf8');
+const CLIENT = readFileSync('src/providers/deepseekClient.ts', 'utf8');
+
+check('系统提示词里带上图片能力（有/没有两种说法）',
+  /imageCapabilityPrompt\(imageModel/.test(PANEL)
+  && /this\.agentSystemPrompt\(mode, settings\.systemPrompt, skillPrompt, historyPrompt, settings\.imageModel\)/.test(PANEL),
+  '不告诉模型「这个档位不能出图」，它就会自己去装渲染器（实测 npx 超时 2 分钟）');
+check('没配图片模型时禁止去装渲染器',
+  /mermaid-cli/.test(REQUEST) && /不要为了满足这种请求去安装/.test(REQUEST),
+  '这是那次事故的直接教训');
+check('要图却没配图片模型时弹出确定性提示',
+  /looksLikeImageRequest\(content\)/.test(PANEL) && /notice\.imageModelMissing/.test(PANEL),
+  '不能指望模型自觉告知；用户看到的必须是「去设置里填」而不是两分钟超时');
+check('出图端点 404 有专门解释（换配置档，而不是重试）',
+  /api\.imageEndpointMissing/.test(CLIENT) && /response\.status === 404/.test(CLIENT),
+  '「接口请求失败（404）」无法指导下一步');
+check('回复里只提到本地图片路径时，自动补成可见的图片',
+  /embedMentionedImages\(rewriteMarkdownImagePaths\(content, toWebviewUri\), toWebviewUri\)/.test(PANEL),
+  '那次 agent 生成了 architecture.svg 并写进了正文，但只写成反引号路径，对话里什么都没显示');
+
 console.log(`\n${checks - failures}/${checks} 项通过`);
 if (failures) process.exitCode = 1;
