@@ -358,6 +358,18 @@
   let pendingPaste = null;
   let deferredMessageRenderMode = null;
   /**
+   * 当前 `#messageList` 里**真正画着**的是哪条对话。
+   *
+   * 为什么必须记：重绘会被「用户正在选字 / 正在交互」推迟（`renderMessages` 开头的守卫），
+   * 而 `state.conversation` 是立刻换掉的 —— 于是出现「标题是 B、列表还是 A」。更糟的是
+   * 推迟期间来的 `messageStart` 会把 B 的新消息**追加到 A 的列表末尾**（用户 2026-11-04
+   * 报的「两个对话显示一样」就是这个），而追加后还会把「画面签名」对齐成 state 的签名，
+   * 让后续推送误判成「没变化」再也不重绘。
+   *
+   * 有了这个值就能在每一处「往列表里写」的入口做一次硬判断：不是同一条对话，先整段重画。
+   */
+  let renderedConversationId = '';
+  /**
    * 长用户消息默认折叠。
    *
    * 用户贴进来的长篇需求（一份 ADR、一整段决策表）会把整个对话框顶成几屏，
@@ -718,8 +730,10 @@
 
   function renderAll(options) {
     const skipMessages = Boolean(options && options.skipMessages);
+    // `forceMessages`：换对话时必须整段重画，不能被「正在选字 / 正在交互」推迟。
+    const forceMessages = Boolean(options && options.forceMessages);
     renderHistory(); renderHeader(); renderSkills();
-    if (!skipMessages) renderMessages('replace');
+    if (!skipMessages) renderMessages('replace', { force: forceMessages });
     renderHistoryLink(); renderAttachments(); renderTaskTree(); renderTodos(); renderArchivePanel(); renderTodoArchives(); renderApproval(); renderDecision(); updateComposerState();
   }
 
@@ -1649,6 +1663,7 @@
         buildMessageWindow(window.start, window.end);
       }
     }
+    renderedConversationId = conversationId;
     renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
     requestAnimationFrame(() => {
       if (shouldFollow) viewport.scrollTop = viewport.scrollHeight;
@@ -1669,6 +1684,12 @@
    * 每一毫秒都在用户眼前，所以追加必须走增量。
    */
   function appendMessageToList(message, index = state.messages.length - 1) {
+    // 当前 DOM 属于另一条对话（切换被推迟了）：绝不能把这条消息追加进去 ——
+    // 那正是「A 的消息和 B 的消息出现在同一个列表里」的成因。整段重画再走正常流程。
+    if (state.conversation?.id !== renderedConversationId) {
+      renderMessages('replace', { force: true });
+      return elements.messageList.querySelector(`[data-message-id="${message.id}"]`);
+    }
     if (virtualList.active) {
       // 窗口化时，追加的消息只有在窗口尾部才需要立刻建节点；否则它还在视口外，
       // 光更新占位块高度就够了（用户滚到那里时会按需重建）。
@@ -1708,8 +1729,14 @@
     return article;
   }
 
-  /** 把「当前 DOM 对应的那份列表签名」对齐到 state.messages。 */
+  /**
+   * 把「当前 DOM 对应的那份列表签名」对齐到 state.messages。
+   *
+   * 只在 DOM 真的画着当前对话时才对齐：否则签名会谎报「画面已经是最新的」，
+   * 之后每次状态推送都判成「没变化」，界面就永久停在另一条对话的画面上。
+   */
   function syncRenderedSignature() {
+    if (state.conversation?.id !== renderedConversationId) return;
     renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
   }
 
@@ -4996,6 +5023,15 @@
           // 乐观气泡同理是全局的：在 A 里刚发的那句话不能跟着人跑去 B。
           optimisticMessages = [];
           sendAwaitingHost = false;
+          /*
+           * 「正在选字 / 正在交互」这两道守卫是为了保护**同一份列表**里的操作
+           * （防止流式重排把选区或刚点开的折叠块弄丢）。换对话意味着整份列表要被替换，
+           * 那两份状态已经没有意义 —— 留着它们会让重绘被无限推迟，界面就停在
+           * 上一条对话的画面上（用户 2026-11-04 报的「两个对话显示一样」）。
+           */
+          interactingWithMessages = false;
+          selectingMessageText = false;
+          deferredMessageRenderMode = null;
         }
         /*
          * `messagesUnchanged: true` 表示宿主**没有发消息列表**（签名没变，省下 5 MB 传输）。
@@ -5083,7 +5119,11 @@
         // 消息内容没变（例如只切换了预设 / 模型 / 附件）时不再重建整个消息区：
         // 这就是「点一下界面卡半拍」的主要来源。
         const nextSignature = messageListSignature(state.messages, state.conversation?.id);
-        renderAll({ skipMessages: nextSignature === renderedMessageSignature });
+        renderAll({
+          skipMessages: nextSignature === renderedMessageSignature,
+          // 换对话永远整段重画：签名相同也不可能（签名里带对话 id），这里再兜一层。
+          forceMessages: switchedConversation,
+        });
         break;
       }
       case 'draft': elements.promptInput.value = message.text || ''; saveDraft(state.conversation?.id); state.pendingAttachments = message.attachments || []; renderAttachments(); autoResize(); elements.promptInput.focus(); break;
@@ -5160,7 +5200,13 @@
        */
       case 'decisionRequest': if (message.request) { state.pendingDecisions = [...state.pendingDecisions.filter((item) => item.requestId !== message.request.requestId), message.request]; renderDecision(); updateComposerState(); } break;
       case 'decisionResolved': state.pendingDecisions = state.pendingDecisions.filter((item) => item.requestId !== message.requestId); renderDecision(); updateComposerState(); break;
-      case 'olderMessages': state.messages = [...message.messages, ...state.messages]; state.hasMore = Boolean(message.hasMore); renderMessages('prepend'); break;
+      case 'olderMessages': {
+        // 补载回来时可能已经换了对话：这批消息属于别的对话，直接丢弃。
+        // 不校验的话，A 的一页会被拼到 B 的列表前面（看起来就像两个对话混在一起）。
+        if (message.conversationId && message.conversationId !== state.conversation?.id) break;
+        if (state.conversation?.id !== renderedConversationId) break;
+        state.messages = [...message.messages, ...state.messages]; state.hasMore = Boolean(message.hasMore); renderMessages('prepend'); break;
+      }
       case 'modelChanged': state.model = message.model; if (state.conversation) state.conversation.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; elements.modelInput.value = message.model; syncReasoningSelector(); updateComposerState(); showToast(t('chat.modelChanged', { model: message.model })); break;
       case 'profileChanged': state.activeApiProfileId = message.profileId; state.model = message.model; state.reasoningEffort = message.reasoningEffort || 'default'; if (state.conversation) { state.conversation.apiProfileId = message.profileId; state.conversation.model = message.model; } elements.modelInput.value = message.model; renderHeader(); showToast(t('chat.profileChanged')); break;
       case 'modelsLoading': state.modelLoadingProfileId = message.active ? message.profileId : state.modelLoadingProfileId === message.profileId ? null : state.modelLoadingProfileId; renderHeader(); updateComposerState(); break;

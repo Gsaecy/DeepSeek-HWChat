@@ -44,6 +44,7 @@ function check(label, pass, detail) {
 
 const CHAT_JS = readFileSync('media/chat.js', 'utf8');
 const STORAGE = readFileSync('src/core/storage.ts', 'utf8');
+const PANEL_FOR_LOAD = readFileSync('src/views/chatPanel.ts', 'utf8');
 
 /* ── 静态契约 ─────────────────────────────────────────────────────────── */
 check(
@@ -66,6 +67,46 @@ check(
   '宿主只在补正文时刷新侧边栏预览',
   /if \(patch\.content !== undefined && updated\.content\) \{[\s\S]{0,80}summary\.preview = previewText\(updated\.content\);/.test(STORAGE),
   '旧实现任何 updateMessage 都会用 updated.content 覆盖预览 —— 用户消息改「已执行」时会把预览变成那句旧话',
+);
+
+check(
+  '记住「列表里真正画着的是哪条对话」',
+  /let renderedConversationId = '';/.test(CHAT_JS) && /renderedConversationId = conversationId;/.test(CHAT_JS),
+  '重绘会被选字/交互推迟，而 state.conversation 是立刻换的；没有这个值就分不清',
+);
+check(
+  '换对话时强制整段重绘（不吃延迟守卫）',
+  /forceMessages: switchedConversation/.test(CHAT_JS)
+  && /renderMessages\('replace', \{ force: forceMessages \}\)/.test(CHAT_JS),
+  'renderAll 必须把 force 传下去，否则标题换了列表不动',
+);
+check(
+  '换对话时清掉「正在选字 / 正在交互 / 待重绘」三个标记',
+  /interactingWithMessages = false;[\s\S]{0,120}selectingMessageText = false;[\s\S]{0,120}deferredMessageRenderMode = null;/.test(CHAT_JS),
+  '这三个标记只为保护同一份列表里的操作，换对话后继续留着会永久推迟重绘',
+);
+check(
+  '追加消息前校验列表属于当前对话',
+  /if \(state\.conversation\?\.id !== renderedConversationId\) \{[\s\S]{0,200}renderMessages\('replace', \{ force: true \}\);/.test(CHAT_JS),
+  '推迟期间来的 messageStart 会把新对话的消息追加到旧对话的列表末尾',
+);
+check(
+  '签名不许在没对齐时谎报「画面已最新」',
+  /function syncRenderedSignature\(\) \{\s*if \(state\.conversation\?\.id !== renderedConversationId\) return;/.test(CHAT_JS),
+  '谎报之后每次推送都会跳重重绘，界面永久停在另一条对话上',
+);
+check(
+  '补载历史按对话校验（两侧都要）',
+  /message\.conversationId !== state\.conversation\?\.id\) break;/.test(CHAT_JS)
+  && /if \(this\.activeConversationId !== conversationId\)/.test(PANEL_FOR_LOAD)
+  && /type: 'olderMessages',\s*\n\s*conversationId,/.test(PANEL_FOR_LOAD),
+  'A 的一页被拼到 B 的列表前面，看起来就是两个对话混在一起',
+);
+check(
+  '切换对话时读摘要失败也要推状态',
+  /\[selectConversation\] 读取摘要失败/.test(PANEL_FOR_LOAD)
+  && /catch \(error\) \{\s*\/\/[\s\S]{0,300}await this\.sendState\(\);/.test(PANEL_FOR_LOAD),
+  '宿主已切、界面停在旧对话，之后发的消息就会落到另一条对话里',
 );
 
 /* ── 真实浏览器行为 ───────────────────────────────────────────────────── */
@@ -142,7 +183,39 @@ if (!playwrightRoot || !chromiumDir) {
       const bAfterSwitch = ids();
       const bTexts = texts();
 
+        // 6) 冻结窗口：用户在 A 的正文里选着字（或正按住消息区），此时切到 B，
+      //    并且 B 在 3 秒守卫窗口内就发出了新消息 —— 旧实现会把 B 的新消息追加到
+      //    A 的列表末尾，画面签名还会谎报「已最新」，于是永久停住。
+      await push({ ...base, conversation: conversationA, messages: [a1, a2] });
+      const body = document.querySelector('[data-message-id="a2"] .message-body')
+        || document.querySelector('[data-message-id="a2"] .message-content');
+      const guard = await (async () => {
+        body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+        const range = document.createRange();
+        range.selectNodeContents(document.querySelector('[data-message-id="a2"] .message-content'));
+        const selection = window.getSelection();
+        selection.removeAllRanges(); selection.addRange(range);
+        window.postMessage({ type: 'state', state: { ...base, conversation: conversationB, messages: [b1, b2] } }, '*');
+        await settle(); await settle();
+        const immediately = ids();
+        window.postMessage({
+          type: 'messageStart', conversationId: 'convB',
+          userMessage: { id: 'b3', role: 'user', content: 'B 的新问题', createdAt: now, updatedAt: now, status: 'complete' },
+          assistant: { id: 'b4', role: 'assistant', content: '', createdAt: now, updatedAt: now, status: 'streaming' },
+          pendingAttachments: [],
+        }, '*');
+        await settle();
+        const afterStart = ids();
+        await new Promise((resolve) => setTimeout(resolve, 3500));
+        const afterTimer = ids();
+        selection.removeAllRanges();
+        document.dispatchEvent(new Event('selectionchange'));
+        await settle();
+        return { immediately, afterStart, afterTimer, final: ids(), texts: texts() };
+      })();
+
       return {
+        guard,
         onA, onB, backOnA, backTexts, afterComplete,
         afterSendA, bAfterSwitch, bTexts,
         leakedIntoA: backOnA.includes('b2'),
@@ -160,6 +233,22 @@ if (!playwrightRoot || !chromiumDir) {
     check('A 里发送后乐观气泡出现在 A', outcome.afterSendA.some((id) => id.startsWith('optimistic')), `实际：${outcome.afterSendA.join(',')}`);
     check('切到 B 后没有 A 的乐观气泡', !outcome.optimisticLeakedIntoB, `实际：${outcome.bAfterSwitch.join(',')}`);
     check('切到 B 后看不到 A 里那句没确认的话', !outcome.optimisticTextInB);
+    // 冻结窗口场景：任何时刻都不允许出现「A 的消息 + B 的消息」混在一个列表里
+    const aIds = new Set(['a1', 'a2']);
+    const mixedIn = (list) => list.some((id) => aIds.has(id));
+    check('选着字切到 B：立即就是 B 的列表（不吃延迟守卫）',
+      !mixedIn(outcome.guard.immediately) && outcome.guard.immediately.includes('b1'),
+      `实际：${outcome.guard.immediately.join(',')}`);
+    check('冻结窗口内 B 发新消息：不追加到 A 的列表里',
+      !mixedIn(outcome.guard.afterStart) && outcome.guard.afterStart.includes('b3'),
+      `实际：${outcome.guard.afterStart.join(',')}`);
+    check('3 秒后依然是纯 B 的列表（签名没被污染）',
+      !mixedIn(outcome.guard.afterTimer), `实际：${outcome.guard.afterTimer.join(',')}`);
+    check('收起选区后也不会翻回 A',
+      !mixedIn(outcome.guard.final), `实际：${outcome.guard.final.join(',')}`);
+    check('冻结窗口里也没有 A 的正文',
+      !outcome.guard.texts.some((text) => text.includes('A 的长回复') || text.includes('A 的问题')),
+      `实际：${JSON.stringify(outcome.guard.texts.slice(0, 4))}`);
     check('浏览器控制台没有报错', pageErrors.length === 0, pageErrors.slice(0, 3).join(' / '));
 
     await browser.close();

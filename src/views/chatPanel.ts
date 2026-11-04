@@ -1064,10 +1064,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           this.activeConversationId = message.id;
           this.pendingContext = undefined;
           this.pendingAttachments = [];
-          {
+          try {
             const summary = await this.storage.getConversation(message.id);
             this.activeSkillIds = this.seedSkillSelection(summary);
             this.skillDraftTouched = false;
+          } catch (error) {
+            // 读摘要失败不能让整个切换停在半路：那会让「宿主已经切了、界面还停在旧对话」
+            // 这一矛盾状态一直留着，用户之后发的消息就会落到另一条对话里。
+            this.log(`[selectConversation] 读取摘要失败：${error instanceof Error ? error.message : String(error)}`);
           }
           await this.sendState();
           break;
@@ -2280,13 +2284,21 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async loadOlder(before: string): Promise<void> {
-    if (!this.activeConversationId) {
+    const conversationId = this.activeConversationId;
+    if (!conversationId) {
       return;
     }
-    const page = await this.storage.getMessages(this.activeConversationId, { limit: 80, before });
+    const page = await this.storage.getMessages(conversationId, { limit: 80, before });
+    // 读盘期间用户可能已经切走：这批消息属于上一条对话，绝不能塞进现在这条。
+    // 前端也会按 conversationId 校验，这里先挡住（免得白传一批数据过去）。
+    if (this.activeConversationId !== conversationId) {
+      this.log(`[loadOlder] 读取期间已切到别的对话，丢弃 ${conversationId} 的一页`);
+      return;
+    }
     await this.post({
       type: 'olderMessages',
-      messages: page.messages.map((message) => this.forWebview(message)),
+      conversationId,
+      messages: page.messages.map((message) => this.forWebview(message, conversationId)),
       hasMore: page.hasMore,
     });
   }
