@@ -20,6 +20,7 @@ import { commandPathViolation, maskPatternFlagArguments } from './commandPaths';
 import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './workspacePaths';
 import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
 import { shouldAutoBackground } from './serverCommands';
+import { effectiveTimeoutSeconds, timeoutAdvice, timeoutClampNotice, timeoutClampSummary } from './commandTimeout';
 import { diagnoseMissingOldText, findAlreadyApplied, renderMissingOldTextDiagnosis } from './replaceDiagnostics';
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
 import { gitWriteOperation, GIT_VERBS_WITHOUT_INTENT } from './conversationScope';
@@ -195,6 +196,10 @@ const SENSITIVE_PARTS = /(^|\/)(\.git|\.ssh|\.aws|\.kube)(\/|$)/i;
 const SENSITIVE_COMMAND = /(^|[\s'"/])(?:\.env(?:\.[^\s'"]*)?|\.ssh|\.aws|\.kube|credentials?(?:\.[^\s'"]*)?|secrets?(?:\.[^\s'"]*)?|service[-_]?account(?:\.[^\s'"]*)?|id_(?:rsa|dsa|ecdsa|ed25519)|[^\s'"]+\.(?:pem|key|p12|pfx))(?:[\s'"/]|$)/i;
 
 /** 带路径参数、需要单独做敏感文件守卫的工具。 */
+/** `hwchat.maxCommandSeconds` 的设置名与上限（与 package.json 的 maximum 保持一致）。 */
+const COMMAND_TIMEOUT_SETTING = 'hwchat.maxCommandSeconds';
+const COMMAND_TIMEOUT_MAX = 900;
+
 const PATH_TOOLS = ['list_directory', 'read_file', 'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file', 'delete_file'];
 
 export class ToolExecutor implements vscode.Disposable {
@@ -1123,7 +1128,16 @@ export class ToolExecutor implements vscode.Disposable {
     if (versionTool && !scope?.versionBumpAllowed) {
       return deniedResult(tt('tool.versionBumpCommandNotAuthorized', { command: versionTool }));
     }
-    const timeout = Math.min(settings.maxCommandSeconds, Math.max(5, numberArg(args, 'timeoutSeconds', settings.maxCommandSeconds)));
+    /*
+     * 请求值与生效值分开算：模型可以要求 900 秒，但设置 `hwchat.maxCommandSeconds` 是硬上限。
+     * 旧实现直接 `Math.min()` 吞掉，结果只说「超时（120 秒）」—— 用户那次 `cargo check`
+     * 就是这样莫名其妙失败的（要求 900、实际 120、还因为 `| tail` 看不到任何输出）。
+     */
+    const timeoutPlan = effectiveTimeoutSeconds(
+      typeof args.timeoutSeconds === 'number' ? args.timeoutSeconds : undefined,
+      settings.maxCommandSeconds,
+    );
+    const timeout = timeoutPlan.effective;
     const commandStartedAt = Date.now();
 
     /*
@@ -1212,10 +1226,20 @@ export class ToolExecutor implements vscode.Disposable {
      * 根本没动过的项目，比漏掉更误导。
      */
     if (gitWrite && result.code === 0) this.recordProjectRoot(scope, resolvedCwd);
+    const clampSummary = result.timedOut ? timeoutClampSummary(timeoutPlan, tt) : '';
+    const clampNotice = result.timedOut
+      ? timeoutClampNotice(timeoutPlan, { t: tt, settingKey: COMMAND_TIMEOUT_SETTING, maxSeconds: COMMAND_TIMEOUT_MAX })
+      : undefined;
+    const advice = result.timedOut
+      ? timeoutAdvice(timeoutPlan, { t: tt, settingKey: COMMAND_TIMEOUT_SETTING, maxSeconds: COMMAND_TIMEOUT_MAX })
+      : undefined;
     return {
-      status: result.code === 0 ? 'success' : 'error',
-      summary: commandSummary(command, result, timeout, Date.now() - commandStartedAt),
-      content: truncate(output || tt('tool.noOutput'), settings.maxToolOutputBytes),
+      status: result.code === 0 && !result.timedOut ? 'success' : 'error',
+      summary: `${commandSummary(command, result, timeout, Date.now() - commandStartedAt)}${clampSummary}`,
+      content: truncate(
+        redact([clampNotice, output || tt('tool.noOutput'), advice].filter(Boolean).join('\n\n')),
+        settings.maxToolOutputBytes,
+      ),
       approval: 'approved',
     };
   }

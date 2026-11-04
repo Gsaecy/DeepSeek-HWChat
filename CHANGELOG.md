@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`run_command` 不再把 `timeoutSeconds: 900` 静默压成 120：超时时说清「被上限截断」并给出可执行的三条路**（用户贴回的失败：`{"command":"cd \"…/Personal Workstation OS\" && cargo check --manifest-path src-tauri/Cargo.toml 2>&1 | tail -40","timeoutSeconds":900}` → `超时（120 秒）` + `(无输出)`）。
+  - **根因**：`Math.min(settings.maxCommandSeconds, requested)` 直接吞掉请求值，结果只说「超时（120 秒）」。用户看到的是「命令莫名其妙失败」，模型看到的是「没有输出」，双方都不知道**它其实还能跑 900 秒**——上限只在设置里。
+  - **① 请求值与生效值分开算**（`src/agent/commandTimeout.ts`）：`effectiveTimeoutSeconds()` 返回 `{ requested, effective, clamped }`，不再静默截断用户设置（设置仍然是硬上限，只是不再隐瞒）。
+  - **② 摘要直接写出来**：`… → 超时（120 秒）（要求 900 秒，上限 120 秒）`。
+  - **③ 结果内容补两段**：`你要求 900 秒，但设置 hwchat.maxCommandSeconds 只有 120 秒 —— 本次是按 120 秒执行后被宿主打断的`，以及三条可执行建议：调大设置（上限 900）／**后台跑 + 把输出写进工作区日志再轮询**（`> tmp/build.log 2>&1` + `background: true`，再 `tail -n 60`）／别再用 `| tail -40` 包长构建（它会缓冲全部输出，超时后只剩空结果——正是这次「无输出」的真身）与「等一会儿再重试」（上限没变，一定同样超时）。
+  - **④ 超时一定算 `error`**（以前若退出码碰巧为 0 会被算成成功）。
+  - 守护：`commandTimeout.test.ts` **5 条** + `check-command-timeout.mjs` **15 项**（含真实词表渲染断言：`| tail`、`background`、`tail -n 60`、`重试一定同样超时` 都必须在文案里）。
+
 - **`replace_in_file` 重复执行同一处修改时不再报「oldText 不存在」：先认「已经改过了」，否则把文件的真实内容还回去**（用户原话：把失败原样贴回来 —— `oldText 在文件中不存在，未执行修改。`，而那条 `oldText` 是 `<link rel="icon"…>` 紧跟 `<link rel="stylesheet"…>` 的一段）。
   - **实测那个 `index.html`：文件里已经是 `newText`**（上一轮就改好了，中间还多了整段 `theme-color` 注释与 `apple-touch-icon`）。模型重复执行同一处修改，得到一条「失败」，于是换个写法再试一遍 —— 这类无谓重试正是「工具老是失败」的来源。
   - **① 已经改过**（`findAlreadyApplied`）：按行去首尾空白比较，忽略 EOL 与缩进。命中就返回 `success` + 「这段修改已经在文件里了（第 N 行起），没有重复执行；文件未改动」，并**不带 `changedFiles`**（文件确实没动），再补一句「若其实想改另一处，请给更长的唯一上下文，不要重复插入同一段」。
