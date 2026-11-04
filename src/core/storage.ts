@@ -357,7 +357,15 @@ export class ConversationStorage {
         await removeIfPresent(`${this.messagePath(conversationId, messageId)}.bak`);
       }
       summary.updatedAt = updated.updatedAt;
-      if (updated.content) {
+      /*
+       * 只有**这次真的写了正文**才刷新侧边栏预览。
+       *
+       * 现场（用户 2026-11-04 的四张截图里出现过）：一条对话的列表预览显示成「继续」——
+       * 那是 agent 跑完之后回头把用户那条消息从「执行中」改成「已执行」，而旧实现
+       * 任何 patch 都会拿 `updated.content` 覆盖预览，于是两三条消息之前的那句话
+       * 顶掉了真正的最后一条回复。预览必须跟着「最后一条有正文的消息」走。
+       */
+      if (patch.content !== undefined && updated.content) {
         summary.preview = previewText(updated.content);
       }
       if (updated.model) {

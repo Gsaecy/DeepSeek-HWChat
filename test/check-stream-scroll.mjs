@@ -73,7 +73,11 @@ check(
 check(
   '全量状态不再整份覆盖流式中的正文',
   /function mergeIncomingMessages\(/.test(CHAT_JS)
-    && /incoming\.messagesUnchanged !== true\) state\.messages = mergeIncomingMessages\(/.test(CHAT_JS),
+    // 列表只能从合并函数进来：直接 `state.messages = incoming.messages` 会把存档里
+    // 更旧的正文换回来（实测 90→65 字符的回缩）。
+    && !/state\.messages = incoming\.messages/.test(CHAT_JS)
+    // 换对话时传空列表是**有意**的（见 check-conversation-isolation）：同一对话内仍然合并。
+    && /state\.messages = mergeIncomingMessages\(incoming\.messages \|\| \[\], switchedConversation \? \[\] : state\.messages\);/.test(CHAT_JS),
   '直接赋值 incoming.messages 会把存档里更旧的正文换回来（实测 90→65 字符的回缩）',
 );
 

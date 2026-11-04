@@ -4980,11 +4980,33 @@
         const incoming = message.state; state.conversations = incoming.conversations || []; state.archivedConversations = incoming.archivedConversations || [];
         state.conversation = incoming.conversation;
         /*
+         * 换对话 = 换一份消息列表，**本地不留任何东西**。
+         *
+         * 现场（用户 2026-11-04 报「不同的对话相互混乱污染了」）：A 正在实时输出，
+         * 用户切到 B，A 那条还没写完的回复被缝进 B 的列表末尾；因为 A 的
+         * `messageComplete` 有会话校验会被丢弃，它就一直卡在 B 里不再变化。
+         *
+         * 原因不是「合并」本身，而是合并时不知道正在看的是哪条对话：
+         * `mergeIncomingMessages` 会保留「本地在流式、不在 incoming 里」的消息
+         * （整页推送只带首页 80 条，正在写的第 81 条不能丢），换了对话也照样保留。
+         * 所以跨对话时传空列表给它，行为等价于「整份替换」。
+         */
+        const switchedConversation = previousConversationId !== incoming.conversation?.id;
+        if (switchedConversation) {
+          // 乐观气泡同理是全局的：在 A 里刚发的那句话不能跟着人跑去 B。
+          optimisticMessages = [];
+          sendAwaitingHost = false;
+        }
+        /*
          * `messagesUnchanged: true` 表示宿主**没有发消息列表**（签名没变，省下 5 MB 传输）。
          * 这时必须保留当前列表，绝不能当成「消息被清空」—— 否则每点一次置顶/归档，
          * 对话就会闪一下变成空白再重画。
+         * 唯一的例外是刚换了对话：宿主的签名里带对话 id，换对话必然重发全量，
+         * 走到这里还写着「没变」说明调用方有 bug，此时**宁可空着也不能显示别人的消息**。
          */
-        if (incoming.messagesUnchanged !== true) state.messages = mergeIncomingMessages(incoming.messages || [], state.messages);
+        if (incoming.messagesUnchanged !== true || switchedConversation) {
+          state.messages = mergeIncomingMessages(incoming.messages || [], switchedConversation ? [] : state.messages);
+        }
         state.hasMore = Boolean(incoming.hasMore);
         /*
          * 全量状态到达时，乐观气泡怎么处理？
@@ -4998,7 +5020,7 @@
         if (optimisticMessages.length) {
           const stored = state.messages.filter((item) => !item.optimistic && item.role === 'user');
           optimisticMessages = optimisticMessages.filter((item) => !stored.some((real) => real.content === item.content));
-          if (sendAwaitingHost) {
+          if (sendAwaitingHost && !switchedConversation) {
             for (const item of optimisticMessages) state.messages.push(item);
           } else {
             optimisticMessages = [];

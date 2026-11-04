@@ -1129,3 +1129,35 @@ test('页缓存：单页就超预算时不缓存它，避免挤掉别的页', as
     assert.ok(after.pageBytes <= budget, '总占用仍要在预算内');
   });
 });
+
+test('只改执行状态的更新不会用旧提问覆盖对话预览', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation();
+    const user = await storage.appendMessage(conversation.id, {
+      role: 'user',
+      content: '这条旧提问不该变成侧边栏预览',
+      status: 'complete',
+      executionStatus: 'running',
+    });
+    await storage.appendMessage(conversation.id, {
+      role: 'assistant',
+      content: '真正的最新回复',
+      status: 'complete',
+    });
+    assert.match((await storage.getConversation(conversation.id))?.preview ?? '', /真正的最新回复/);
+
+    // 现场：agent 跑完回头把用户消息从「执行中」改成「已执行」，旧实现会顺手把
+    // preview 覆盖成这句旧提问（用户看到侧边栏预览显示「继续」）。
+    await storage.updateMessage(conversation.id, user.id, { executionStatus: 'done' });
+    assert.match(
+      (await storage.getConversation(conversation.id))?.preview ?? '',
+      /真正的最新回复/,
+      '状态类 patch 不该动预览',
+    );
+
+    // 真的写了正文才刷新。
+    const assistant = (await storage.getAllMessages(conversation.id)).find((item) => item.role === 'assistant');
+    await storage.updateMessage(conversation.id, assistant!.id, { content: '改过的回复正文' });
+    assert.match((await storage.getConversation(conversation.id))?.preview ?? '', /改过的回复正文/);
+  });
+});
