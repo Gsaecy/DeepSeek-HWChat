@@ -105,14 +105,30 @@ test('收窄：白名单配错导致一个都不剩时放弃收窄（不能让�
   assert.deepEqual(kept, ['run_command'], '宁可放弃收窄，也不能给空清单');
 });
 
-test('执行期硬拒：blocked 里点名的工具会被拒，并指出首选工具', () => {
-  const withBlocked: ToolPlaybook = { ...preview(), blocked: ['run_in_terminal'] };
-  const reason = blockedToolReason('run_in_terminal', [withBlocked], false);
-  assert.ok(reason);
+test('执行期硬拒：不在允许范围内的工具一律被拒，并指出首选工具', () => {
+  // 判据与收窄同源：纯预览时 write_file 既不在清单里，硬调也要被拒。
+  const reason = blockedToolReason('write_file', [preview()], false);
+  assert.ok(reason, '纯预览时硬调 write_file 必须被拒');
   assert.match(reason!, /run_command/, '必须告诉模型该用哪个');
-  assert.equal(blockedToolReason('run_command', [withBlocked], false), undefined, '首选工具不能被拦');
-  // 有写意图时不按写侧规则拦（与收窄同一套口径）
-  assert.equal(blockedToolReason('run_in_terminal', [{ ...withBlocked, narrowWrites: true }], true), undefined);
+  assert.match(reason!, /web-preview/);
+
+  for (const allowed of ['run_command', 'open_web_preview', 'read_file', 'update_todos', 'get_diagnostics']) {
+    assert.equal(blockedToolReason(allowed, [preview()], false), undefined, `${allowed} 应放行`);
+  }
+});
+
+test('执行期硬拒：有写意图时不按写侧规则拦（与收窄同一套豁免）', () => {
+  assert.equal(blockedToolReason('write_file', [preview()], true), undefined, '要改东西时必须放行写工具');
+  assert.equal(blockedToolReason('delete_file', [preview()], true), undefined);
+  // 没有命中任务类型时一律放行
+  assert.equal(blockedToolReason('write_file', [], false), undefined);
+});
+
+test('执行期硬拒：显式 blocked 的文案更具体', () => {
+  const explicit: ToolPlaybook = { ...preview(), blocked: ['run_in_terminal'] };
+  const reason = blockedToolReason('run_in_terminal', [explicit], false);
+  assert.ok(reason);
+  assert.match(reason!, /不该用 run_in_terminal/);
 });
 
 test('指令必须写清「工具名 + 参数形状 + 顺序 + 禁用项」', () => {

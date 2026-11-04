@@ -89,8 +89,16 @@ check(
   '凭记忆硬调时必须拒绝，并告诉模型该用哪个',
 );
 check(
+  '硬拒的判据与收窄同源（不维护第二张名单）',
+  /const narrowing = playbooks\.filter\(\(playbook\) => !playbook\.narrowWrites \|\| !writingRequested\)/.test(PLAYBOOKS)
+  && /const allowed = new Set<string>\(ALWAYS_ALLOWED\)/.test(PLAYBOOKS)
+  && /if \(allowed\.has\(name\)\) return undefined;/.test(PLAYBOOKS),
+  '两份名单迟早漂移，漂移之后「清单里没有却仍能调」就成了后门',
+);
+check(
   '硬拒文案要指出首选工具',
-  /请改用 \$\{playbook\.preferred\.join\(' → '\)\}/.test(PLAYBOOKS),
+  /请改用 \$\{preferred\.join\(' → '\)\}/.test(PLAYBOOKS)
+  || /请改用 \$\{playbook\.preferred\.join\(' → '\)\}/.test(PLAYBOOKS),
 );
 
 /* ── 4. 指令进提示词，且写清四要素 ──────────────────────────────────── */

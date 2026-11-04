@@ -12,12 +12,13 @@
   - **② 收窄工具清单（真·决定性）**：`AgentRunner` 新增 `toolAllowList`，在**三路工具（原生 / 桥接 / 额外）合并之后**按名字过滤 —— 清单里没有的工具，模型连选的机会都没有。面板用 `toolCatalog()` 算完整清单（原生 + 桥接 + `update_todos`/`ask_user_choice`/`load_skill`/`search_conversation_history`/`generate_image`），再按任务类型收窄。
     - **安全阀**：只读工具（`read_file` / `list_directory` / `search_files` / `get_diagnostics` …）与元工具**永远保留** —— 预览任务也要能先看代码；收窄后若一个都不剩，放弃收窄而不是给空清单。
     - **写意图豁免**：`hasWriteIntent()` 判定用户这句话是否要改东西。「预览效果顺便把标题改大」含写意图 → 不做写侧收窄；「别改代码，只预览」→ 收窄。实测这条区分靠 11 个用例钉住。
-  - **③ 执行期硬拒**：模型凭记忆硬调了本轮不该用的工具，`blockedToolReason()` 直接返回 `denied`，文案指出该用哪个（`请改用 run_command → open_web_preview`）。
+  - **③ 执行期硬拒**：模型凭记忆硬调了本轮不在允许范围内的工具，`blockedToolReason()` 直接返回 `denied`，文案指出该用哪个（`请改用 run_command → open_web_preview`）。
+    - **判据与收窄同源**：用的是同一套 `ALWAYS_ALLOWED ∪ allowed ∪ preferred`，**不另维护一份 `blocked` 名单** —— 两份名单迟早漂移，而漂移之后「清单里没有却仍能调」就成了后门。第一版这里写成了一张手工 `blocked` 列表且三项全空，等于硬拒从来没生效过；这次改成同源并补了用例（纯预览硬调 `write_file` → 拒；有写意图 → 放行）。
   - **④ 提示词只作第三道**：`directive` 以宿主口吻拼进系统提示词最前面，写清**工具名 + 参数形状 + 顺序 + 禁用项**。例如预览：`run_command {"command":"…","cwd":"…","background":true}` → `open_web_preview {"url":"http://127.0.0.1:<端口>/"}`，并禁止桥接终端工具与「用超时等服务器」。
   - **实测（不是只在提示词里说）**：把真实工具链跑一遍，抓下**发往模型的请求体** —— 不限制时 14 个工具；带 `toolAllowList` 时只剩 `["run_command","open_web_preview","update_todos"]`（原生一个、额外两个，三路一起裁）。这条已固化进单测。
   - 日志可复盘：命中时输出 `[playbook] web-preview｜工具 14 → 5（写意图：false）`。
-  - 守护：`src/test/toolPlaybooks.test.ts` **12 条**（六种预览说法、预览图片不误判、三类任务判定、写意图 5 例、收窄 4 例、硬拒、指令四要素、runner 真实裁剪）+ `test/check-tool-playbooks.mjs` **16 项**。
-  - 全量：**971** 条单测、**50** 个 `check-*.mjs` 全绿。
+  - 守护：`src/test/toolPlaybooks.test.ts` **14 条**（六种预览说法、预览图片不误判、三类任务判定、写意图 5 例、收窄 4 例、硬拒、指令四要素、runner 真实裁剪）+ `test/check-tool-playbooks.mjs` **17 项**。
+  - 全量：**973** 条单测、**50** 个 `check-*.mjs` 全绿。
 
 - **「经常调用 VS Code 工具失败」的根因：`run_in_terminal` 在 HWChat 里永远调不通；同时补上 `run_command` 的后台常驻能力**（用户原话：「经常调用vs code工具失败」，附执行记录：`Invocation context must be provided for this tool` → 两次写日志被路径隔离拦 → 连续 3 轮失败停机）。
   - **根因（读 VS Code Workbench 打包产物确认，不是猜）**：`run_in_terminal` 的 `invoke` 是

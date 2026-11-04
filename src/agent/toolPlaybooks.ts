@@ -188,7 +188,10 @@ export function narrowToolNames(
 }
 
 /**
- * 执行期硬拒：模型凭记忆调了本轮不该用的工具时，明确告诉它该用哪个。
+ * 执行期硬拒：模型凭记忆调了本轮**不该用**的工具时，明确告诉它该用哪个。
+ *
+ * 判据与收窄**完全同源**（`ALWAYS_ALLOWED ∪ allowed ∪ preferred`），不另维护一张
+ * `blocked` 名单 —— 两份名单迟早会漂移，漂移之后「清单里没有却仍能调」就成了后门。
  *
  * 返回 undefined 表示放行。
  */
@@ -197,10 +200,24 @@ export function blockedToolReason(
   playbooks: readonly ToolPlaybook[],
   writingRequested: boolean,
 ): string | undefined {
-  for (const playbook of playbooks) {
-    if (!playbook.blocked.includes(name)) continue;
-    if (playbook.narrowWrites && writingRequested) continue;
-    return `本轮任务类型是「${playbook.kind}」，不该用 ${name}；请改用 ${playbook.preferred.join(' → ')}。`;
+  // 只对「本轮确实在收窄」的任务类型生效：有写意图时收窄被豁免，这里同样放行。
+  const narrowing = playbooks.filter((playbook) => !playbook.narrowWrites || !writingRequested);
+  if (!narrowing.length) return undefined;
+
+  const allowed = new Set<string>(ALWAYS_ALLOWED);
+  for (const playbook of narrowing) {
+    for (const item of playbook.allowed) allowed.add(item);
+    for (const item of playbook.preferred) allowed.add(item);
   }
-  return undefined;
+  if (allowed.has(name)) return undefined;
+
+  // 显式的「绝不该用」优先，文案更具体（例如桥接终端工具）。
+  for (const playbook of narrowing) {
+    if (playbook.blocked.includes(name)) {
+      return `本轮任务类型是「${playbook.kind}」，不该用 ${name}；请改用 ${playbook.preferred.join(' → ')}。`;
+    }
+  }
+  const preferred = [...new Set(narrowing.flatMap((playbook) => playbook.preferred))];
+  return `本轮任务类型是「${narrowing.map((playbook) => playbook.kind).join(' + ')}」，${name} 不在允许范围内；`
+    + `请改用 ${preferred.join(' → ')}（只读工具与清单工具仍然可用）。`;
 }
