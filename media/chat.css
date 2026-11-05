@@ -1284,6 +1284,13 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
 .task-node.status-complete .task-node-status { color: var(--success); }
 .task-node.status-error .task-node-status { color: var(--danger); }
 .task-node.status-routing .task-node-status, .task-node.status-active .task-node-status { color: var(--accent); }
+/* 「上次没执行、这次接着跑」的节点：左边一条强调色细线 + 状态字换成「恢复执行」。
+   只用一条 2px 的 inset 描边，不额外占位，节点高度和别的行完全一致。 */
+.task-node.is-restored { box-shadow: inset 2px 0 0 var(--accent); }
+.task-node.is-restored .task-node-title { color: var(--fg); }
+.task-node .task-node-restored { color: var(--accent); font-weight: 700; }
+/* 尾巴一列：状态字与行内操作并排（操作默认透明，悬停整行才出现）。 */
+.task-node-tail { display: flex; align-items: center; gap: 6px; justify-self: end; }
 /* 排队消息的行内操作：常态几乎不可见（任务树是背景信息），悬停/聚焦时显形。 */
 .task-node-actions { display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity .12s ease; }
 .task-node:hover .task-node-actions, .task-node:focus-within .task-node-actions { opacity: 1; }

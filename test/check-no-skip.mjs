@@ -16,10 +16,11 @@
  *
  * 用法：node test/check-no-skip.mjs
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { buildSync } from 'esbuild';
 
 let checks = 0;
@@ -124,6 +125,33 @@ check(
   /this\.findSummary\(conversationId\)\?\.pendingTaskIds \?\? \[\]\)\.includes\(message\.replyToMessageId!\)/.test(STORAGE),
 );
 
+/* ── 4.5 任务树：恢复的节点要看得见 ───────────────────────────────── */
+check(
+  '恢复的节点带 restored 标记（界面据此显示「恢复执行」）',
+  /restored: true/.test(QUEUE) && /restored\?: boolean;/.test(TYPES),
+);
+check(
+  '界面把 restored 节点渲染成「恢复执行」并加左边线',
+  /node\.restored/.test(read('media/chat.js')) && /\.task-node\.is-restored/.test(read('media/chat.css')),
+);
+check(
+  '运行结束后任务树不消失：没有活动运行时用存档里的清单重建',
+  /this\.retainedTaskTree\(conversation, page\.messages\)/.test(PANEL),
+  '不然面板一收尾就整块消失，用户看不到还有几条没执行',
+);
+check(
+  '恢复待办树里的节点可以直接删掉（不再需要先跑起来）',
+  /await this\.removeRetainedTask\(nodeId\);/.test(PANEL) && /private async removeRetainedTask/.test(PANEL),
+);
+check(
+  '恢复待办树里的节点也能改内容（改完下一轮读到新内容）',
+  /await this\.editRetainedTask\(nodeId, content\);/.test(PANEL),
+);
+check(
+  '「恢复执行」文案中英都齐',
+  /'taskQueue\.restored'/.test(I18N) && /'taskQueue\.restoredHint'/.test(I18N),
+);
+
 /* ── 5. 真实队列跑一遍用户的场景 ─────────────────────────────────── */
 mkdirSync('out/check', { recursive: true });
 buildSync({
@@ -177,10 +205,84 @@ for (let index = 0; index < 5; index += 1) {
   order.push(taken[0].userMessageId);
 }
 check(
+  '续跑放回的节点在任务树里标记为「恢复执行」',
+  resumed.state().nodes.filter((node) => node.restored).length === 3,
+  JSON.stringify(resumed.state().nodes.map((node) => [node.title, node.restored])),
+);
+check(
   '续跑按原顺序执行完三条，一条不落',
   JSON.stringify(order) === JSON.stringify(['user-1', 'user-2', 'user-3']),
   JSON.stringify(order),
 );
+
+/* ── 6. 真实渲染：恢复的操办在任务树里看得见 ──────────────────────── */
+const PLAYWRIGHT_ROOTS = [
+  join(process.cwd(), 'node_modules', 'playwright'),
+  join(homedir(), 'AI projects', 'Safevault_windows', 'node_modules', 'playwright'),
+];
+const playwrightRoot = PLAYWRIGHT_ROOTS.find((candidate) => existsSync(join(candidate, 'package.json')));
+const cacheRoot = join(homedir(), 'Library/Caches/ms-playwright');
+const chromium = existsSync(cacheRoot)
+  ? (readdirSync(cacheRoot).filter((name) => name.startsWith('chromium_headless_shell')).sort().pop() ?? null)
+  : null;
+
+if (!playwrightRoot || !chromium) {
+  console.log('SKIP 浏览器部分：找不到 playwright 或 chromium');
+} else {
+  const { chromium: launcher } = await import(join(playwrightRoot, 'index.mjs'));
+  const executablePath = join(cacheRoot, chromium, 'chrome-headless-shell-mac-arm64', 'chrome-headless-shell');
+  if (!existsSync(executablePath)) {
+    console.log('SKIP 浏览器部分：chromium 可执行文件不在预期路径');
+  } else {
+    const browser = await launcher.launch({ executablePath });
+    const page = await browser.newPage({ viewport: { width: 900, height: 900 } });
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(`file://${join(process.cwd(), 'test', 'preview-chat.html')}`);
+    await page.waitForSelector('#composer');
+    const rendered = await page.evaluate(async () => {
+      const conv = { id: 'c', title: 't', mode: 'agent', createdAt: Date.now(), updatedAt: Date.now(), messageCount: 2, preview: 'p', pinned: false, archived: false };
+      const messages = [
+        { id: 'u1', role: 'user', content: '这条上次没执行：改登录刷新', createdAt: Date.now(), updatedAt: Date.now(), status: 'complete', executionStatus: 'pending' },
+        { id: 'a1', role: 'assistant', content: '这条消息还没被执行，下一次运行会自动接着执行。', createdAt: Date.now(), updatedAt: Date.now(), status: 'queued', replyToMessageId: 'u1' },
+      ];
+      window.postMessage({ type: 'state', state: {
+        conversations: [conv], archivedConversations: [], conversation: conv, messages, hasMore: false,
+        settings: { sendOnEnter: true, apiProfiles: [], activeApiProfileId: '', model: 'm', permissionPreset: 'askAll', agentMaxSteps: 24, reasoningEffort: 'default', internetReference: false },
+        skills: [], selectedSkillIds: [], mode: 'agent', workspaceTrusted: true, agentAvailable: true,
+        availableToolCount: 1, showArchived: false, todos: [], project: null,
+        modelOptionsByProfile: {}, quickLaunchInstalled: true, fileRoots: {}, streaming: false,
+        // 运行结束后由面板从 pendingTaskIds 重建的那份树（没有活动队列）。
+        taskTree: { active: false, nodes: [
+          { id: 'retained-0', title: '这条上次没执行：改登录刷新', status: 'queued', relation: 'queued', userMessageId: 'u1', pending: true, restored: true },
+        ] },
+      } }, '*');
+      for (let i = 0; i < 300; i += 1) {
+        if (document.querySelector('#taskTreeList .task-node')) break;
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      await new Promise((r) => setTimeout(r, 120));
+      const row = document.querySelector('#taskTreeList .task-node');
+      return {
+        treeVisible: document.querySelector('#taskTree')?.hidden === false,
+        restoredClass: row?.classList.contains('is-restored') === true,
+        label: row?.querySelector('small')?.textContent ?? '',
+        hint: row?.querySelector('small')?.title ?? '',
+        accentBar: row ? getComputedStyle(row).boxShadow.includes('inset') : false,
+        bubbleBadge: document.querySelector('.message.user .message-execution-badge')?.textContent ?? '',
+        editEntry: Boolean(document.querySelector('.message.user .message-execution-edit')),
+      };
+    });
+    check('运行结束后任务树仍然可见（不是整块消失）', rendered.treeVisible === true);
+    check('恢复的节点带 is-restored 标记与左边线', rendered.restoredClass === true && rendered.accentBar === true);
+    check('节点上写着「恢复执行」', rendered.label === '恢复执行', rendered.label);
+    check('悬停说明它为什么在这里', rendered.hint.includes('上次没被执行'), rendered.hint);
+    check('气泡徽标仍然是「还没执行」', rendered.bubbleBadge === '还没执行', rendered.bubbleBadge);
+    check('气泡里仍能编辑这条消息', rendered.editEntry === true);
+    check('渲染没有脚本错误', errors.length === 0, errors.join('; '));
+    await browser.close();
+  }
+}
 
 console.log(`\n${checks - failures}/${checks} 项通过`);
 if (failures) {

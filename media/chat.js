@@ -2338,13 +2338,32 @@
       const row = document.createElement('div');
       row.className = `task-node status-${node.status}${node.id === tree.currentNodeId ? ' current' : ''}`;
       if (node.parentId && node.parentId !== rootId) row.classList.add('nested');
+      if (node.restored) {
+        // 「上次没执行、这次接着跑」：单独标记，否则和普通排队节点长得一样。
+        row.classList.add('is-restored');
+        row.dataset.restored = '1';
+      }
       const statusCell = textElement('span', 'task-node-status', '');
       statusCell.append(iconNode(taskStatusIconName(node.status)));
       const titleCell = textElement('span', 'task-node-title', node.title);
       // 还没执行的节点在这里不给编辑（只有一行，长内容看不清），入口在消息气泡里。
       if (node.pending) titleCell.title = t('taskQueue.editInBubble');
       const actions = taskNodeActions(node);
-      row.append(statusCell, titleCell, actions || textElement('small', '', taskStatusLabel(node.status)));
+      const label = node.restored ? t('taskQueue.restored') : taskStatusLabel(node.status);
+      const small = textElement('small', node.restored ? 'task-node-restored' : '', label);
+      if (node.restored) {
+        // 悬停说明它为什么在这里、以及怎么让它不再执行。
+        small.title = t('taskQueue.restoredHint');
+      }
+      /*
+       * 尾巴那一列同时放「状态/恢复标记」和行内操作。
+       * 旧写法是 `actions || small` —— 只要节点能删（排队节点都能），标记就被操作按钮顶掉了，
+       * 于是「恢复执行」根本显示不出来。
+       */
+      const tail = textElement('span', 'task-node-tail', '');
+      if (node.restored || !actions) tail.append(small);
+      if (actions) tail.append(actions);
+      row.append(statusCell, titleCell, tail);
       elements.taskTreeList.append(row);
     }
   }

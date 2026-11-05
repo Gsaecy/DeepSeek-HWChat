@@ -107,7 +107,10 @@ import {
 import { REASONING_DEPTHS, reasoningEffortForModel, withFallbackCapabilities } from '../core/modelCapabilities';
 import { SingleFlight } from '../core/singleFlight';
 import { ConversationStorage } from '../core/storage';
+import { shortTitle } from '../core/ids';
 import {
+  AgentTaskNode,
+  AgentTaskTreeState,
   ChatMessage,
   ChatRequestMessage,
   ChatSettings,
@@ -2219,6 +2222,40 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   /**
+   * 「还没执行」的任务树快照（运行结束 / 重开窗口后使用）。
+   *
+   * 用户要求（2026-11-05）：「跳过的消息恢复执行的时候在任务树里面也恢复显示」。
+   * 真实的队列随运行结束一起销毁了，所以这里按存档里的 `pendingTaskIds` 重建最小节点集：
+   * 顺序、标题、`userMessageId` 都在，状态一律 `queued` + `restored`，界面据此显示
+   * 「恢复执行」标记，并且仍然可以在任务树里删掉它（删掉就不会再执行）。
+   */
+  private retainedTaskTree(conversation: ConversationSummary, messages: readonly ChatMessage[]): AgentTaskTreeState | undefined {
+    const ids = conversation.pendingTaskIds ?? [];
+    if (!ids.length) return undefined;
+    const byId = new Map(messages.map((message) => [message.id, message]));
+    const nodes: AgentTaskNode[] = [];
+    for (const [index, id] of ids.entries()) {
+      const message = byId.get(id);
+      const text = message?.content?.trim() ?? '';
+      const attachments = message?.attachments ?? [];
+      const title = text
+        || (attachments.length
+          ? `${tt('notice.attachmentTaskPrefix')}${attachments.map((attachment) => attachment.label).join(tt('common.listSeparator'))}`
+          : tt('taskQueue.retainedTitle'));
+      nodes.push({
+        id: `retained-${index}`,
+        title: shortTitle(title, tt('taskQueue.retainedTitle')),
+        status: 'queued',
+        relation: 'queued',
+        userMessageId: id,
+        pending: Boolean(message),
+        restored: true,
+      });
+    }
+    return { active: false, nodes };
+  }
+
+  /**
    * 读回上一轮没执行的消息，准备放进新队列。
    *
    * 只认仍然存在的用户消息（用户可能已经把气泡删了 —— 那就是「他自己删掉」，
@@ -2545,9 +2582,16 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         + this.toolExecutor.definitions(activeMode, { internetReference: controls.internetReference }).length
         + 1
         + (conversation?.sourceConversationId ? 1 : 0),
+      /*
+       * 任务树：在跑的时候用队列的真实状态；**没在跑但存档里还有未执行消息**时，
+       * 用一份「恢复待办」树顶上 —— 否则运行一结束（或重载窗口后）整块面板就消失，
+       * 用户看不到「还有几条没执行」，也就不知道下一轮会接着做什么。
+       */
       taskTree: conversation?.id && this.runs.has(conversation.id)
         ? this.runs.get(conversation.id)?.taskQueue.state()
-        : undefined,
+        : (conversation?.id && conversation.pendingTaskIds?.length
+          ? this.retainedTaskTree(conversation, page.messages)
+          : undefined),
       todos: todoView.todos,
       todosInterrupted: todoView.interrupted,
       todosIncomplete: todoView.incomplete,
@@ -3330,7 +3374,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     if (!content) return;
     const run = this.runOfTask(nodeId);
     if (!run) {
-      await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.editExpired') });
+      // 「恢复待办」树里的节点：没有活动队列，但改的是那条还没执行的消息本身。
+      await this.editRetainedTask(nodeId, content);
       return;
     }
     const conversationId = run.conversationId;
@@ -3363,7 +3408,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private async removeTaskMessage(nodeId: string): Promise<void> {
     const run = this.runOfTask(nodeId);
     if (!run) {
-      await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.editExpired') });
+      /*
+       * 节点属于「运行已结束后重建的恢复待办树」：没有队列可改，直接按存档删。
+       * 用户要求「除非用户自己删除」—— 这条入口必须一直可用，否则那几条消息只能被执行。
+       */
+      await this.removeRetainedTask(nodeId);
       return;
     }
     const conversationId = run.conversationId;
@@ -3389,6 +3438,75 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.removed') });
   }
 
+
+  /**
+   * 改一条「恢复待办」消息的内容（运行已结束、没有活动队列时）。
+   *
+   * 它还没被执行，所以直接改存档里那条用户消息就等于「下一轮读到新内容」——
+   * 与排队期间 `editPending` 的语义一致，不需要重发一条新消息。
+   */
+  private async editRetainedTask(nodeId: string, text: string): Promise<void> {
+    const conversationId = this.activeConversationId;
+    const index = /^retained-(\d+)$/.exec(nodeId)?.[1];
+    if (!conversationId || index === undefined) {
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.editExpired') });
+      return;
+    }
+    const conversation = await this.storage.getConversation(conversationId).catch(() => undefined);
+    const userMessageId = (conversation?.pendingTaskIds ?? [])[Number(index)];
+    if (!userMessageId) {
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.editExpired') });
+      return;
+    }
+    const updated = await this.storage.updateMessage(conversationId, userMessageId, { content: text });
+    await this.post({ type: 'messageUpdated', conversationId, message: this.forWebview(updated) });
+    this.callbacks.onHistoryChanged();
+    // 任务树那一行的标题也要跟着改（列表是按存档重建的，重新算一遍即可）。
+    const page = await this.storage.getMessages(conversationId, { limit: 400 }).catch(() => ({ messages: [] as ChatMessage[], hasMore: false }));
+    await this.post({
+      type: 'taskTreeChanged',
+      conversationId,
+      taskTree: this.retainedTaskTree(await this.storage.getConversation(conversationId) ?? conversation!, page.messages),
+    });
+  }
+
+  /**
+   * 删掉一条「恢复待办」消息（运行已经结束、没有活动队列时）。
+   *
+   * 节点 id 形如 `retained-<index>`，index 指向存档里 `pendingTaskIds` 的位置 ——
+   * 这份树就是照那个数组生成的，所以能精确对回去，不用再猜标题。
+   */
+  private async removeRetainedTask(nodeId: string): Promise<void> {
+    const conversationId = this.activeConversationId;
+    const index = /^retained-(\d+)$/.exec(nodeId)?.[1];
+    if (!conversationId || index === undefined) {
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.editExpired') });
+      return;
+    }
+    const conversation = await this.storage.getConversation(conversationId).catch(() => undefined);
+    const ids = conversation?.pendingTaskIds ?? [];
+    const userMessageId = ids[Number(index)];
+    if (!userMessageId) {
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.editExpired') });
+      return;
+    }
+    const remaining = ids.filter((id) => id !== userMessageId);
+    await this.storage.updateConversation(conversationId, { pendingTaskIds: remaining });
+    // 占位回复（`replyToMessageId` 指向这条用户消息）一起删，免得留下一条空的「排队中」。
+    const { messages } = await this.storage.getMessages(conversationId, { limit: 400 }).catch(() => ({ messages: [] as ChatMessage[], hasMore: false }));
+    const assistant = messages.find((message) => message.role === 'assistant' && message.replyToMessageId === userMessageId);
+    await this.storage.deleteMessage(conversationId, userMessageId).catch(() => undefined);
+    if (assistant) await this.storage.deleteMessage(conversationId, assistant.id).catch(() => undefined);
+    this.callbacks.onHistoryChanged();
+    await this.post({
+      type: 'messageRemoved',
+      conversationId,
+      userMessageId,
+      assistantMessageId: assistant?.id,
+    });
+    await this.sendState();
+    await this.post({ type: 'toast', tone: 'neutral', text: tt('taskQueue.removed') });
+  }
 
   /**
    * 放宽权限前的确认。

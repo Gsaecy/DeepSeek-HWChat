@@ -444,6 +444,8 @@ export class AgentTaskQueue {
         title: shortTitle(item.title, tt('taskQueue.retainedTitle')),
         status: 'queued',
         relation: 'queued',
+        // 任务树里要能看出「这条是上次没执行、这次接着跑的」。
+        restored: true,
       };
       this.nodes.push(node);
       this.bindings.set(node.id, { ...item.binding });
