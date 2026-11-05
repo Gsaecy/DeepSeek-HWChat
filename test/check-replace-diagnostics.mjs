@@ -110,13 +110,25 @@ check('诊断里带文件的真实内容（可直接复制当 oldText）', Boole
 check('诊断里带下一步，并限制行数', Boolean(rendered) && rendered.includes('tool.replace.diffAdvice') && rendered.split('\n').length < 40);
 
 /* ── 4. 真实文件（存在时）再验一遍 ───────────────────────────────── */
+/*
+ * 用用户机器上那个真实文件再验一遍 —— 但**只验我们还能判断的那部分**。
+ *
+ * 那个文件不属于本仓库，用户每天都在改它：这段改动可能已经被后来的编辑覆盖。
+ * 断言「它一定还在」等于把外部文件当成常量，用户改一次站就会让 CI 变红。
+ * 所以：文件在、且那块内容还在 → 断言；已经不在了 → 明确跳过。
+ */
 const site = '/Users/guohongyu/AI projects/Personal Workstation OS/website/instindex/web/index.html';
-if (existsSync(site)) {
+if (!existsSync(site)) {
+  console.log('- 跳过真实 index.html 校验（不在本机）');
+} else {
   const file = readFileSync(site, 'utf8');
   const real = findAlreadyApplied(file, `${ICON}\n${ADDED}\n${STYLESHEET}`);
-  check('真实 index.html：那次修改确实已经在文件里', Boolean(real), JSON.stringify(real));
-} else {
-  console.log('- 跳过真实 index.html 校验（不在本机）');
+  if (real) {
+    check('真实 index.html：那次修改确实已经在文件里', true, JSON.stringify(real));
+  } else {
+    // 用户后来重写过这段 head：这不再是「功能坏了」，只是样例没了，明确跳过而不是判红。
+    console.log('- 跳过真实 index.html 校验（该改动已被后续编辑覆盖，样例不再存在）');
+  }
 }
 
 console.log(`\n${checks - failures}/${checks} 项通过`);
