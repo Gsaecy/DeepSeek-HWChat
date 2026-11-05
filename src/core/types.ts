@@ -268,6 +268,13 @@ export interface ConversationSummary {
    * 分开存是为了界面不把「跑完忘了打勾」说成「已中断」——后者会让用户以为工作被腰斩。
    */
   todosIncomplete?: boolean;
+  /**
+   * 还没被 agent 执行过的用户消息 id（按发送顺序）。
+   *
+   * 窗口关掉、用户点停止、步数用尽都会留下这种消息。它们不是「失败」，也不是「跳过」：
+   * 下一轮开始时按原顺序放回任务队列继续执行，直到全部读过为止。
+   */
+  pendingTaskIds?: string[];
 }
 
 export interface ConversationHistoryHit {

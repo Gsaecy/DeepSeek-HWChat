@@ -16,7 +16,7 @@ import { resolveFileReferences, type ReferenceQuery } from '../agent/fileReferen
 import { SkillRegistry, type PreparedSkillContext } from '../agent/skillRegistry';
 import { classifyTaskRelation } from '../agent/taskRouter';
 import { reviewQueuedTasks } from '../agent/taskReview';
-import { AgentTaskQueue, type AgentTaskUpdate, type TaskRelation } from '../agent/taskQueue';
+import { AgentTaskQueue, type AgentTaskBinding, type AgentTaskUpdate, type TaskRelation } from '../agent/taskQueue';
 import { resolveResumeScope } from '../agent/resumeScope';
 import { ToolExecutor, type ToolExecutionScope } from '../agent/toolExecutor';
 import { VscodeToolBridge } from '../agent/vscodeTools';
@@ -211,6 +211,13 @@ interface ConversationRun {
   toolContentOffsets: Map<string, number>;
   checkpointTail: Promise<void>;
   lastCheckpointByMessage: Map<string, number>;
+  /**
+   * 上次写进存档的「未执行消息清单」（`id1\u0000id2`）。
+   *
+   * 清单在每一轮边界都会重算一次，但只有真变了才写盘 —— 否则一轮长任务里
+   * 会白写几十次 manifest。
+   */
+  lastPendingPersisted?: string;
 }
 
 interface PendingApproval {
@@ -1762,6 +1769,29 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         activated: true,
         completed: false,
       });
+      /*
+       * 上一轮（被停止 / 步数用尽 / 报错）还没执行的消息：放回队列，这一轮按顺序执行。
+       *
+       * 用户的要求：「继续后需要读取未执行清单，继续执行」。它们排在用户新发的这条消息
+       * 之后开始（新消息是根分支），但**不会被跳过**：根分支结束时 `take('complete')`
+       * 会按发送顺序把它们交回给 agent。用户自己删掉的那条不会再出现在清单里。
+       */
+      for (const seed of await this.pendingTaskSeed(conversationId)) {
+        const [node] = taskQueue.seedPending([seed]);
+        if (!node) continue;
+        run.responses.set(node.id, {
+          taskId: node.id,
+          userMessageId: seed.binding.userMessageId ?? '',
+          assistantMessageId: seed.binding.assistantMessageId ?? '',
+          content: '',
+          reasoning: '',
+          tools: [],
+          usedSkills: [],
+          toolStartIndex: 0,
+          activated: false,
+          completed: false,
+        });
+      }
       // 同一个对话不会重复进 send()（界面上按钮已禁用），覆盖写只是防御。
       this.runs.set(conversationId, run);
       await this.post({ type: 'runs', runningConversationIds: [...this.runs.keys()] });
@@ -1844,8 +1874,16 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
              * 一条已完成的分支，反而把原有行为改坏了。
              */
             if (phase === 'replan') await this.reviewQueuedMessages(run, conversationId!, settings);
-            return taskQueue.take(phase, (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
+            const taken = await taskQueue.take(phase, (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
+            // 取走一条就等于「它不再待执行」：清单立刻收窄，崩溃后重开才不会重复执行。
+            await this.persistPendingTaskIds(run);
+            return taken;
           },
+          /*
+           * 步数用尽但队列里还有消息时，Agent 循环会给它一份新预算继续跑
+           * （见 `agentRunner` 的 `while` 顶部）。这里只需要如实回答「还有没执行的吗」。
+           */
+          hasPendingTasks: () => taskQueue.pendingTaskCount() > 0,
           callbacks: {
             onTaskUpdate: async (update) => {
               this.authorizeFollowUp(run, update);
@@ -1906,7 +1944,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         const rootResponse = run.responses.get(rootTaskId);
         if (rootResponse) rootResponse.usage = addUsage(rootResponse.usage, taskQueue.classifierUsage());
         await run.checkpointTail;
+        // 还没被执行的消息留在清单里等下一轮，不能在这一轮结算成「失败 / 跳过」。
+        const retained = await this.retainPendingTasks(run);
         for (const response of run.responses.values()) {
+          if (retained.has(response.assistantMessageId)) continue;
           if (!response.activated) {
             await this.completeResponse(run, response, 'error', tt('chat.queuedNotExecuted'));
           } else if (!response.completed) {
@@ -1921,8 +1962,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         const rootResponse = run.responses.get(rootTaskId);
         if (rootResponse) rootResponse.usage = addUsage(rootResponse.usage, taskQueue.classifierUsage());
         const errorText = error instanceof Error ? error.message : String(error);
+        // 被停止 / 报错时同样要把没执行的消息留下来：用户按了停止不等于「这些话可以丢掉」。
+        const retained = await this.retainPendingTasks(run);
         for (const response of run.responses.values()) {
-          if (response.completed) continue;
+          if (response.completed || retained.has(response.assistantMessageId)) continue;
           const fallback = response.activated
             ? cancelled ? tt('chat.stopped') : tt('chat.requestFailed', { error: errorText })
             : cancelled ? tt('chat.stoppedBeforeRun') : tt('chat.taskNotRun', { error: errorText });
@@ -2107,6 +2150,115 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
      * 用户根本看不出那句排队的任务其实一次都没跑（多个气泡时最容易漏）。
      */
     await this.setUserExecutionStatus(run.conversationId, response.userMessageId, response.activated ? 'done' : 'skipped');
+  }
+
+  /**
+   * 记下这一轮**还没被执行**的用户消息，等下一轮继续。
+   *
+   * 用户的要求（原话）：「让 agent 不要跳过未执行的消息，除非用户自己删除，不然需要根据状态
+   * 之下，只要对话框还有未执行的消息都需要继续执行，包括执行中断、暂停等，继续后需要读取
+   * 未执行清单，继续执行。」
+   *
+   * 所以这里做三件事，缺一不可：
+   *  1. 把清单写进对话存档（`pendingTaskIds`）—— 内存里的任务树会随运行结束消失；
+   *  2. 用户消息保持 `executionStatus: 'pending'`，不标成 `skipped`（那是「被跳过」的说法）；
+   *  3. 占位回复保持 `queued` 并换成「还没执行、下次自动继续」的说明，不标成 error。
+   *
+   * 返回这些占位消息的 id，调用方据此跳过 `completeResponse`（否则会被结算成失败）。
+   */
+  private async retainPendingTasks(run: ConversationRun): Promise<Set<string>> {
+    const retained = run.taskQueue.retainedTasks();
+    const messageIds = retained
+      .map((task) => task.userMessageId)
+      .filter((id): id is string => Boolean(id));
+    const assistantIds = retained
+      .map((task) => task.assistantMessageId)
+      .filter((id): id is string => Boolean(id));
+    // 强制写一次：这一轮的最终清单必须落在存档里（哪怕和上一轮相同）。
+    run.lastPendingPersisted = undefined;
+    await this.persistPendingTaskIds(run, messageIds);
+    for (const assistantMessageId of assistantIds) {
+      try {
+        const updated = await this.storage.updateMessage(run.conversationId, assistantMessageId, {
+          status: 'queued',
+          content: tt('chat.queuedRetained'),
+        });
+        if (this.activeConversationId === run.conversationId) {
+          await this.post({ type: 'messageUpdated', conversationId: run.conversationId, message: this.forWebview(updated) });
+        }
+      } catch {
+        // 占位消息已被删除（用户撤回了这条队列消息）：没什么要留的。
+      }
+    }
+    if (retained.length) {
+      this.log(`[retain] ${retained.length} 条未执行的消息已留在清单里，等下一轮继续`);
+      // 明说一句：用户不会去数气泡上的徽标，而「以为它已经跑过了」正是最坏的误解。
+      await this.post({ type: 'toast', tone: 'warning', text: tt('chat.pendingRetained', { count: retained.length }) });
+    }
+    return new Set(assistantIds);
+  }
+
+  /**
+   * 把「还没被执行的消息 id」写进对话存档（顺序即发送顺序）。
+   *
+   * 只在内容真的变了时写：清单在每一轮边界都会重算，一轮长任务里能重算几十次，
+   * 每次都写 manifest 是纯浪费。
+   */
+  private async persistPendingTaskIds(run: ConversationRun, explicit?: string[]): Promise<void> {
+    const ids = explicit ?? run.taskQueue.retainedTasks()
+      .map((task) => task.userMessageId)
+      .filter((id): id is string => Boolean(id));
+    const signature = ids.join('\u0000');
+    if (run.lastPendingPersisted === signature) return;
+    run.lastPendingPersisted = signature;
+    try {
+      await this.storage.updateConversation(run.conversationId, { pendingTaskIds: ids });
+    } catch {
+      // 写不进存档不影响这一轮的正确性；内存里的队列还在，这一轮照样会执行。
+    }
+  }
+
+  /**
+   * 读回上一轮没执行的消息，准备放进新队列。
+   *
+   * 只认仍然存在的用户消息（用户可能已经把气泡删了 —— 那就是「他自己删掉」，
+   * 不该再执行）。按存档里的顺序返回，配合 `seedPending` 保持先来先做。
+   */
+  private async pendingTaskSeed(conversationId: string): Promise<Array<{ title: string; request: ChatRequestMessage; binding: AgentTaskBinding }>> {
+    const conversation = await this.storage.getConversation(conversationId).catch(() => undefined);
+    const ids = conversation?.pendingTaskIds ?? [];
+    if (!ids.length) return [];
+    const seed: Array<{ title: string; request: ChatRequestMessage; binding: AgentTaskBinding }> = [];
+    const kept: string[] = [];
+    /*
+     * 占位回复要靠 `replyToMessageId` 反查：排队时是先写用户消息、再写一条
+     * `replyToMessageId = 用户消息 id` 的空 assistant 占位，链接在 assistant 那侧。
+     */
+    const { messages } = await this.storage.getMessages(conversationId, { limit: 400 }).catch(() => ({ messages: [] as ChatMessage[], hasMore: false }));
+    const replies = new Map<string, string>();
+    for (const message of messages) {
+      if (message.role !== 'assistant' || !message.replyToMessageId) continue;
+      replies.set(message.replyToMessageId, message.id);
+    }
+    for (const id of ids) {
+      const message = messages.find((candidate) => candidate.id === id)
+        ?? await this.storage.getMessage(conversationId, id).catch(() => undefined);
+      if (!message || message.role !== 'user') continue;
+      const text = message.content?.trim() ?? '';
+      const attachments = message.attachments ?? [];
+      if (!text && !attachments.length) continue;
+      kept.push(id);
+      seed.push({
+        title: text || `${tt('notice.attachmentTaskPrefix')}${attachments.map((attachment) => attachment.label).join(tt('common.listSeparator'))}`,
+        request: this.requestMessageFromParts(message.content, message.context, attachments),
+        binding: { userMessageId: message.id, assistantMessageId: replies.get(message.id) },
+      });
+    }
+    // 已经被删掉的那些不算数：清单要跟着收窄，否则下一轮还会去找它们。
+    if (kept.length !== ids.length) {
+      await this.storage.updateConversation(conversationId, { pendingTaskIds: kept }).catch(() => undefined);
+    }
+    return seed;
   }
 
   /**

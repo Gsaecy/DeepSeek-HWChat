@@ -1,5 +1,6 @@
 import { AgentTaskNode, AgentTaskTreeState, ChatRequestMessage, UsageInfo } from '../core/types';
 import { createId, shortTitle } from '../core/ids';
+import { tt } from '../core/i18n';
 
 export type TaskRelation = 'related' | 'queued';
 
@@ -27,6 +28,13 @@ interface PendingTask extends AgentTaskUpdate {
    * 判过就记在这里 —— 同一条消息在同一条分支上只重判一次，不会把判断成本摊到每一步。
    */
   reviewedFor: string[];
+  /**
+   * 用户发送顺序（单调递增）。
+   *
+   * 合并分支与独立分支分在两个数组里，光看数组顺序还原不出「谁先发的」。
+   * 收尾时要把还没执行的消息按原顺序交还给调用方、判定「不许插队」也要用它。
+   */
+  seq: number;
 }
 
 /**
@@ -66,6 +74,8 @@ export class AgentTaskQueue {
    */
   private readonly resumeNodeId: string | undefined;
   private accepting = true;
+  /** 用户消息的到达序号；见 `PendingTask.seq`。 */
+  private seq = 0;
   private usage: UsageInfo | undefined;
   /** 每个节点对应的消息 id：节点被取走执行之后，队列里的那条就没了，界面仍需要它。 */
   private readonly bindings = new Map<string, AgentTaskBinding>();
@@ -229,6 +239,7 @@ export class AgentTaskQueue {
     binding: AgentTaskBinding = {},
   ): AgentTaskNode {
     if (!this.accepting) throw new Error('当前 Agent 已进入收尾阶段。');
+    const seq = ++this.seq;
     const node: AgentTaskNode = {
       id: createId('task'),
       parentId: this.currentNodeId,
@@ -252,21 +263,32 @@ export class AgentTaskQueue {
         classified = { relation: fallbackTaskRelation(this.currentTitle(), title) };
       }
       this.usage = addUsage(this.usage, classified.usage);
-      node.relation = classified.relation;
-      if (classified.relation === 'related') {
+      /*
+       * 不许插队（真实反馈 2026-11-05）：「如果合并执行的消息中间还有消息，会被跳过」。
+       *
+       * 合并进当前分支的消息会被**立刻**读走，而更早那条被判成「独立任务」的消息要等
+       * 整条分支跑完。于是后发的那条先执行、先发的那条被无限期压后 —— 分支一旦因为
+       * 步数用尽 / 用户停止而结束，它就被跳过。只要前面还有没执行的独立消息，这条也
+       * 必须排在它后面：先来先做。
+       */
+      const relation: TaskRelation = classified.relation === 'related' && this.hasEarlierQueued(seq)
+        ? 'queued'
+        : classified.relation;
+      node.relation = relation;
+      if (relation === 'related') {
         node.parentId = this.currentNodeId;
         node.status = 'merged';
-        this.related.push({ nodeId: node.id, request, relation: 'related', reviewedFor: [], ...binding });
+        this.related.push({ nodeId: node.id, request, relation: 'related', reviewedFor: [], seq, ...binding });
       } else {
         node.parentId = this.nodes[0]?.id;
         node.status = 'queued';
-        this.queued.push({ nodeId: node.id, request, relation: 'queued', reviewedFor: [], ...binding });
+        this.queued.push({ nodeId: node.id, request, relation: 'queued', reviewedFor: [], seq, ...binding });
       }
       await onChange(this.state());
     }).catch(async () => {
       node.relation = 'queued';
       node.status = 'queued';
-      this.queued.push({ nodeId: node.id, request, relation: 'queued', reviewedFor: [], ...binding });
+      this.queued.push({ nodeId: node.id, request, relation: 'queued', reviewedFor: [], seq, ...binding });
       await onChange(this.state());
     });
     return { ...node };
@@ -360,7 +382,12 @@ export class AgentTaskQueue {
     if (index < 0) return 'kept';
     const task = this.queued[index]!;
     const node = this.nodes.find((candidate) => candidate.id === nodeId);
-    if (relation === 'related') {
+    /*
+     * 边界重判同样不许插队：它前面还有没执行的独立消息时，即使这条被重判成「相关」，
+     * 也只能排在后面 —— 否则先发的那条又会被后发的越过（见 `enqueue` 的说明）。
+     */
+    const relation2: TaskRelation = relation === 'related' && this.hasEarlierQueued(task.seq) ? 'queued' : relation;
+    if (relation2 === 'related') {
       this.queued.splice(index, 1);
       // 合并之后它属于当前分支：`related` 队列按先进先出交给 agent。
       this.related.push({ ...task, relation: 'related', reviewedFor: task.reviewedFor });
@@ -375,6 +402,63 @@ export class AgentTaskQueue {
     task.reviewedFor = [...task.reviewedFor, this.currentNodeId];
     await onChange?.(this.state());
     return 'kept';
+  }
+
+  /** 队列里还有多少条用户消息没被 agent 读过（合并分支 + 独立分支）。 */
+  pendingTaskCount(): number {
+    return this.related.length + this.queued.length;
+  }
+
+  /**
+   * 运行收尾时「还没被执行」的任务，**按用户发送顺序**。
+   *
+   * 收尾时不能把它们当垃圾丢掉：用户发的每一条消息都必须被执行，除非他自己删掉。
+   * 面板拿到这份清单后负责持久化，并在下一轮开始时原样放回队列。
+   */
+  retainedTasks(): AgentTaskUpdate[] {
+    return [...this.related, ...this.queued]
+      .slice()
+      .sort((left, right) => left.seq - right.seq)
+      .map((task) => ({ ...task }));
+  }
+
+  /** 有没有比它更早、仍在等着的独立分支。 */
+  private hasEarlierQueued(seq: number): boolean {
+    return this.queued.some((task) => task.seq < seq);
+  }
+
+  /**
+   * 把上次运行没来得及执行的消息放回队列（保持原顺序，排在新消息之前）。
+   *
+   * 不重新分类：它们的身份上一次就定过了（独立任务），再判一次只会引入不确定性；
+   * 也不给它们在当前分支上留「待重判」标记 —— 它们本来就该按顺序依次执行。
+   */
+  seedPending(items: ReadonlyArray<{ title: string; request: ChatRequestMessage; binding: AgentTaskBinding }>): AgentTaskNode[] {
+    if (!items.length) return [];
+    const created: AgentTaskNode[] = [];
+    const seeded: PendingTask[] = [];
+    for (const item of items) {
+      const node: AgentTaskNode = {
+        id: createId('task'),
+        parentId: this.nodes[0]?.id,
+        title: shortTitle(item.title, tt('taskQueue.retainedTitle')),
+        status: 'queued',
+        relation: 'queued',
+      };
+      this.nodes.push(node);
+      this.bindings.set(node.id, { ...item.binding });
+      seeded.push({
+        nodeId: node.id,
+        request: item.request,
+        relation: 'queued',
+        reviewedFor: [this.currentNodeId],
+        seq: ++this.seq,
+        ...item.binding,
+      });
+      created.push({ ...node });
+    }
+    this.queued.unshift(...seeded);
+    return created;
   }
 
   async take(phase: 'replan' | 'complete', onChange: (state: AgentTaskTreeState) => void | Promise<void>): Promise<AgentTaskUpdate[]> {
@@ -412,7 +496,14 @@ export class AgentTaskQueue {
     // 运行结束：所有编辑闸门都要放行，否则等待中的 take() 会一直挂着。
     for (const nodeId of [...this.editHolds.keys()]) this.releaseEdit(nodeId);
     this.accepting = false;
+    /*
+     * 还在队列里的节点保持 `queued`（界面继续显示「未执行」），不要跟着运行一起
+     * 记成完成 / 取消 —— 那正是「消息被跳过」的观感来源。它们会被 `retainedTasks()`
+     * 交给面板持久化，等下一轮继续执行。
+     */
+    const held = new Set([...this.related, ...this.queued].map((task) => task.nodeId));
     for (const node of this.nodes) {
+      if (held.has(node.id)) continue;
       if (node.status === 'routing' || node.status === 'active' || node.status === 'queued') {
         node.status = status;
       }

@@ -152,6 +152,13 @@ export class AgentRunner {
     toolAllowList?: readonly string[];
     executeExtraTool?: (call: import('../core/types').ToolCall) => Promise<{ result: ToolExecutionResult; skill?: SkillUsage } | undefined>;
     takeTaskUpdate?: (phase: 'replan' | 'complete') => Promise<AgentTaskUpdate[]> | AgentTaskUpdate[];
+    /**
+     * 任务队列里还有没有「没被读过的用户消息」。
+     *
+     * 步数预算用尽时如果还有，就不能直接收尾结束 —— 那几条消息会被跳过。
+     * 续跑同一条消息的 Agent 需要它（见下方 `while` 循环顶部）。
+     */
+    hasPendingTasks?: () => boolean | Promise<boolean>;
   }): Promise<AgentRunResult> {
     const requestMessages = [...options.messages];
     const executions: ToolExecution[] = [];
@@ -195,7 +202,26 @@ export class AgentRunner {
     let stopNotice = '';
     let loopToolName = '';
 
-    while (step < maxSteps) {
+    /** 因「队列里还有消息」而追加的预算次数上限：防御模型无限调用工具导致的死循环。 */
+    const MAX_BUDGET_EXTENSIONS = 10;
+    let budgetExtensions = 0;
+    while (true) {
+      if (step >= maxSteps) {
+        /*
+         * 步数用尽，但队列里还压着用户消息：**不能收尾**。
+         *
+         * 真实故障（用户 2026-11-05）：「如果合并执行的消息中间还有消息，会被跳过」。
+         * 旧实现整轮共用一份 `maxSteps`：前面那条分支跑满预算，后面排队的消息一步都
+         * 轮不到，循环直接退出，它们就成了「未执行」。这里给它一份新预算继续跑 ——
+         * 用户发的每一句都要被读过，除非他自己删掉。
+         */
+        const pending = budgetExtensions < MAX_BUDGET_EXTENSIONS && (await options.hasPendingTasks?.() ?? false);
+        if (!pending) break;
+        budgetExtensions += 1;
+        step = 0;
+        stopReason = 'complete';
+        stopNotice = '';
+      }
       step += 1;
       this.assertRunning(options.signal);
       const beforeRound = await options.takeTaskUpdate?.('replan') ?? [];
@@ -230,6 +256,18 @@ export class AgentRunner {
           for (const update of guidance) {
             await options.callbacks.onTaskUpdate?.(update);
             requestMessages.push(update.request);
+            /*
+             * 独立分支（用户排队的那条消息）= 一个新的小任务：**重新给一份步数预算**。
+             *
+             * 真实故障（用户 2026-11-05）：「如果合并执行的消息中间还有消息，会被跳过」。
+             * 旧实现里整轮（含之后所有排队分支）共用同一个 `maxSteps`：前面那条分支跑满
+             * 24 步，后面排队的两条消息就一步都轮不到 —— 循环到点退出，它们被标成
+             * 「未执行」跳过了。每条消息各自有预算，才谈得上「先来先做、不跳过」。
+             */
+            if (update.relation === 'queued') {
+              step = 0;
+              stopReason = 'complete';
+            }
           }
           continue;
         }

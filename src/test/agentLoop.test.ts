@@ -335,3 +335,64 @@ test('agent loop: a stall hint updates the view only and never counts as a state
   assert.deepEqual(leaked, [], '停滞提示绝不能进入落盘通道');
   assert.ok(stateChanges.length <= hints.length, `状态变化次数(${stateChanges.length})不应随提示次数增长`);
 });
+
+// ── 队列里还有用户消息时，步数用尽不能直接收尾（2026-11-05 真实故障）──────────
+/*
+ * 用户原话：「如果合并执行的消息中间还有消息，会被跳过」。
+ * 旧实现整轮（含之后所有排队分支）共用一份 `maxSteps`：前面那条跑满预算，
+ * 后面排队的消息一步都轮不到，循环直接退出 —— 它们就成了「未执行」被跳过。
+ */
+test('agent loop: 队列里还有消息时，步数用尽要给新预算继续跑', async () => {
+  let pending = true;
+  let round = 0;
+  const client = {
+    async streamChat() {
+      round += 1;
+      // 前两轮调工具（把预算耗掉），第三轮不再调工具 → 走到 take('complete')
+      if (round <= 2) {
+        return { content: '', reasoning: '', toolCalls: [{ id: `c${round}`, type: 'function' as const, function: { name: 'read_file', arguments: `{"path":"${round}.txt"}` } }] };
+      }
+      return { content: 'done', reasoning: '', toolCalls: [] };
+    },
+  };
+  const tools = countingTools();
+  const taken: string[] = [];
+  const runner = new AgentRunner(client as never, tools as never);
+  const result = await runner.run({
+    settings: { ...baseSettings, agentMaxSteps: 2 },
+    messages: [{ role: 'user', content: 'go' }],
+    mode: 'agent',
+    signal: new AbortController().signal,
+    conversationId: 'budget-test',
+    callbacks: { onDelta: () => undefined, onToolsChanged: () => undefined, requestApproval: async () => true },
+    hasPendingTasks: () => pending,
+    takeTaskUpdate: async (phase) => {
+      if (phase !== 'complete') return [];
+      if (!pending) return [];
+      pending = false;
+      taken.push('queued-task');
+      return [{ nodeId: 'n2', request: { role: 'user' as const, content: '第二条消息' }, relation: 'queued' as const }];
+    },
+  });
+
+  assert.deepEqual(taken, ['queued-task'], '队列里的那条必须被取到并执行');
+  assert.equal(result.stopReason, 'complete', '执行完这条才算正常结束，不能被报成步数上限');
+  assert.ok(round >= 4, `应当为新分支再跑一轮（实际 ${round} 轮）`);
+});
+
+test('agent loop: 没有待执行消息时，步数用尽照常收尾', async () => {
+  const client = endlessClient((round) => ({ name: 'read_file', args: `{"path":"${round}.txt"}` }));
+  const tools = countingTools();
+  const runner = new AgentRunner(client as never, tools as never);
+  const result = await runner.run({
+    settings: { ...baseSettings, agentMaxSteps: 2 },
+    messages: [{ role: 'user', content: 'go' }],
+    mode: 'agent',
+    signal: new AbortController().signal,
+    conversationId: 'budget-test-2',
+    callbacks: { onDelta: () => undefined, onToolsChanged: () => undefined, requestApproval: async () => true },
+    hasPendingTasks: () => false,
+  });
+  assert.equal(result.stopReason, 'stepLimit');
+  assert.equal(client.rounds, 2);
+});

@@ -1161,3 +1161,33 @@ test('只改执行状态的更新不会用旧提问覆盖对话预览', async ()
     assert.match((await storage.getConversation(conversation.id))?.preview ?? '', /改过的回复正文/);
   });
 });
+
+test('未执行消息清单随对话持久化，重启后还在、可清空', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('pending tasks');
+    await storage.updateConversation(conversation.id, { pendingTaskIds: ['u2', 'u1', 'u2'] });
+    // 保序 + 去重：顺序就是用户的发送顺序，重复 id 没有意义。
+    assert.deepEqual((await storage.getConversation(conversation.id))?.pendingTaskIds, ['u2', 'u1']);
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    assert.deepEqual((await reloaded.getConversation(conversation.id))?.pendingTaskIds, ['u2', 'u1'], '重启后仍能接着执行');
+
+    await reloaded.updateConversation(conversation.id, { pendingTaskIds: [] });
+    assert.equal((await reloaded.getConversation(conversation.id))?.pendingTaskIds, undefined);
+  });
+});
+
+test('manifest 里的脏「未执行清单」在载入时被丢掉', async () => {
+  await withStorage(async (storage, root) => {
+    const conversation = await storage.createConversation('bad pending');
+    const manifestPath = join(root, 'manifest.json');
+    const raw = JSON.parse(await readFile(manifestPath, 'utf8'));
+    raw.conversations[0].pendingTaskIds = ['ok', '', 42, 'ok'];
+    await writeFile(manifestPath, JSON.stringify(raw, null, 2));
+
+    const reloaded = new ConversationStorage(root);
+    await reloaded.initialize();
+    assert.deepEqual((await reloaded.getConversation(conversation.id))?.pendingTaskIds, ['ok']);
+  });
+});

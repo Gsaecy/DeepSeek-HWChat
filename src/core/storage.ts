@@ -694,6 +694,13 @@ export class ConversationStorage {
       todoArchives?: TodoArchive[] | null;
       todosInterrupted?: boolean | null;
       todosIncomplete?: boolean | null;
+      /**
+       * 还没被执行过的用户消息 id（按发送顺序）。
+       *
+       * 用户发的每一句都要被 agent 读过，除非他自己删掉；这里记下来，下一轮开始时
+       * 原样放回队列继续执行（见 `AgentTaskQueue.seedPending`）。
+       */
+      pendingTaskIds?: string[] | null;
     },
   ): Promise<ConversationSummary> {
     await this.initialize();
@@ -745,6 +752,14 @@ export class ConversationStorage {
           delete summary.todosIncomplete;
         } else {
           delete summary.todosInterrupted;
+        }
+      }
+      // 未执行消息清单：整体替换（调用方给的一定是当前队列的真实快照）；空数组表示清空。
+      if (patch.pendingTaskIds !== undefined) {
+        if (patch.pendingTaskIds && patch.pendingTaskIds.length) {
+          summary.pendingTaskIds = [...new Set(patch.pendingTaskIds)];
+        } else {
+          delete summary.pendingTaskIds;
         }
       }
       // 「未完成」标记同理，且与中断标记互斥：置一个就把另一个清掉，避免面板同时挂两个标签。
@@ -1649,6 +1664,23 @@ export class ConversationStorage {
     }
     if (message.status !== 'streaming' && message.status !== 'queued') return message;
     const previousStatus = message.status;
+    /*
+     * 排队但**仍在未执行清单里**的占位消息：保持 `queued`，不要改成错误。
+     *
+     * 用户的要求（2026-11-05）：「只要对话框还有未执行的消息都需要继续执行，包括执行中断、
+     * 暂停等」。把它标成错误既会让人以为这条任务失败，又会让下一轮认不出它是「待执行」。
+     */
+    const retained = previousStatus === 'queued'
+      && Boolean(message.replyToMessageId)
+      && (this.findSummary(conversationId)?.pendingTaskIds ?? []).includes(message.replyToMessageId!);
+    if (retained) {
+      message.content = message.content || tt('chat.queuedRetained');
+      message.updatedAt = Date.now();
+      await writeJsonAtomic(path, message);
+      this.invalidateMessagePages();
+      this.markConversationChanged(conversationId);
+      return message;
+    }
     message.status = 'error';
     message.content = message.content || (previousStatus === 'queued' ? tt('storage.queuedNotRun') : tt('storage.interrupted'));
     message.updatedAt = Date.now();
@@ -1822,6 +1854,12 @@ function sanitizeSummary(item: ConversationSummary): ConversationSummary {
   applyOptional(withIncomplete, 'permissionPreset', normalizeStoredPreset(withIncomplete.permissionPreset));
   applyOptional(withIncomplete, 'agentMaxSteps', normalizeStoredSteps(withIncomplete.agentMaxSteps));
   applyOptional(withIncomplete, 'reasoningEffort', normalizeStoredReasoning(withIncomplete.reasoningEffort));
+  // 未执行消息清单：只认非空字符串数组；脏值直接丢掉（宁可让用户重发，也不要凭脏 id 乱跑）。
+  {
+    const ids = normalizePendingTaskIds(withIncomplete.pendingTaskIds);
+    if (ids.length) withIncomplete.pendingTaskIds = ids;
+    else delete withIncomplete.pendingTaskIds;
+  }
   return withIncomplete;
 }
 
@@ -1832,6 +1870,19 @@ function applyOptional<K extends keyof ConversationSummary>(
   value: ConversationSummary[K] | null | undefined,
 ): void {
   assignOptional(target, key, value);
+}
+
+/** 未执行消息 id 归一化：去空、去重、保序。 */
+function normalizePendingTaskIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const text = item.trim();
+    if (!text || ids.includes(text)) continue;
+    ids.push(text);
+  }
+  return ids;
 }
 
 function normalizeProjectRoot(value: unknown): string | null | undefined {
