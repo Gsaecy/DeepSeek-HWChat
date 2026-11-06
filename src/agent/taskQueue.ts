@@ -145,6 +145,8 @@ export class AgentTaskQueue {
       currentNodeId: this.currentNodeId,
       nodes: this.nodes.map((node) => ({
         ...node,
+        // 回复消息 id 也要下发：任务树点击要跳到**输出**位置，不是用户那句话。
+        assistantMessageId: this.bindingOf(node.id)?.assistantMessageId,
         userMessageId: this.bindingOf(node.id)?.userMessageId,
         pending: held.has(node.id),
         // 这条正在被用户编辑；`waiting` 表示 agent 已经走到它、正停着等改完。

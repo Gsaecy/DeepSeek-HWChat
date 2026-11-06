@@ -1002,6 +1002,8 @@ const DICTIONARY: Record<string, Entry> = {
   'taskQueue.retainedTitle': { zh: '未执行的消息', en: 'Unexecuted message' },
   'taskQueue.restored': { zh: '恢复执行', en: 'Resumed' },
   'taskQueue.restoredHint': { zh: '这条消息上次没被执行，这一轮会按原顺序接着执行；不需要它就在任务树或气泡里删掉。', en: 'This message did not run last time and will run in its original order now. Delete it in the task tree or the bubble if you no longer need it.' },
+  'taskQueue.jumpToOutput': { zh: '跳到这条任务的输出位置', en: 'Jump to this task\'s output' },
+  'taskQueue.jumpToCursor': { zh: '跳到正在输出的光标位置', en: 'Jump to the output cursor' },
   'taskQueue.save': { zh: '保存', en: 'Save' },
   'taskQueue.cancelEdit': { zh: '取消', en: 'Cancel' },
   'taskQueue.editInBubble': { zh: '编辑入口在消息气泡里（这里一行看不全长内容）', en: 'Edit it in the message bubble — one line here cannot show a long message' },

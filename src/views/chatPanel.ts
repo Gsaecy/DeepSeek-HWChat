@@ -2253,6 +2253,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const ids = conversation.pendingTaskIds ?? [];
     if (!ids.length) return undefined;
     const byId = new Map(messages.map((message) => [message.id, message]));
+    // 占位回复靠 `replyToMessageId` 反查（与 `pendingTaskSeed` 同一套链接方向）。
+    const assistantOf = new Map<string, string>();
+    for (const message of messages) {
+      if (message.role === 'assistant' && message.replyToMessageId) assistantOf.set(message.replyToMessageId, message.id);
+    }
     const nodes: AgentTaskNode[] = [];
     for (const [index, id] of ids.entries()) {
       const message = byId.get(id);
@@ -2268,6 +2273,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         status: 'queued',
         relation: 'queued',
         userMessageId: id,
+        assistantMessageId: assistantOf.get(id),
         pending: Boolean(message),
         restored: true,
       });

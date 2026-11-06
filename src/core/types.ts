@@ -139,6 +139,13 @@ export interface AgentTaskNode {
    */
   userMessageId?: string;
   /**
+   * 这条任务对应**回复**消息的 id。
+   *
+   * 点了任务树里的一行就要跳到它的输出位置；回复气泡才是「输出」，
+   * 只给 userMessageId 会让界面跳到用户自己的那句话上，等于没跳。
+   */
+  assistantMessageId?: string;
+  /**
    * 还没被 agent 取走执行。
    *
    * 只有这类节点能原地改、能删：队列里持有它的 request，改完下一轮读到的就是新内容。

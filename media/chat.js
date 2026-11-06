@@ -2348,6 +2348,37 @@
       const titleCell = textElement('span', 'task-node-title', node.title);
       // 还没执行的节点在这里不给编辑（只有一行，长内容看不清），入口在消息气泡里。
       if (node.pending) titleCell.title = t('taskQueue.editInBubble');
+      /*
+       * 整行可点：跳到这条任务的**输出位置**（用户 2026-11-06 的需求）。
+       *
+       * 为什么需要：合并执行时后发的消息可能先跑完，接着才轮到中间那条 —— 此时输出
+       * 光标在列表中间，用户想「立刻看到它现在写到哪」就得自己翻。点一行就过去。
+       */
+      const target = node.assistantMessageId || node.userMessageId;
+      if (target) {
+        row.classList.add('is-jumpable');
+        row.dataset.jumpMessageId = target;
+        row.tabIndex = 0;
+        row.setAttribute('role', 'button');
+        /*
+         * 提示语按「那条回复是不是正在写」来定，而不是按 `state.streaming`：
+         * 合并执行时光标可能停在中间那条上，正是本条需求的场景；而 `state.streaming`
+         * 只表示「这条对话在跑」，判不出具体是哪一条在写。
+         */
+        const writing = state.messages.some((message) => message.id === target && message.status === 'streaming');
+        row.title = writing ? t('taskQueue.jumpToCursor') : t('taskQueue.jumpToOutput');
+        const jump = () => focusMessageOutput(target);
+        row.addEventListener('click', (event) => {
+          // 行内操作（删除/编辑）自己处理点击，不要顺带跳走。
+          if (event.target.closest('.task-node-actions')) return;
+          jump();
+        });
+        row.addEventListener('keydown', (event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          jump();
+        });
+      }
       const actions = taskNodeActions(node);
       const label = node.restored ? t('taskQueue.restored') : taskStatusLabel(node.status);
       const small = textElement('small', node.restored ? 'task-node-restored' : '', label);
@@ -2366,6 +2397,55 @@
       row.append(statusCell, titleCell, tail);
       elements.taskTreeList.append(row);
     }
+  }
+
+  /**
+   * 跳到某条消息的**输出位置**，并短暂高亮它。
+   *
+   * 三种情况都要能到位：
+   *  1. 消息在当前虚拟窗口里 → 直接滚过去；
+   *  2. 消息在窗口外（长对话被虚拟化了）→ 先把窗口搬到它附近，再滚；
+   *  3. 这条消息正在流式输出 → 滚到**光标**（`.stream-cursor`）而不是消息顶部，
+   *     否则长回复里用户仍要自己往下翻。
+   *
+   * 滚完把 `autoFollow` 关掉：用户主动来读中间那段，不该被下一次增量拽回底部。
+   */
+  function focusMessageOutput(messageId) {
+    const index = state.messages.findIndex((message) => message.id === messageId);
+    if (index < 0) return false;
+    if (virtualList.active && (index < virtualList.start || index >= virtualList.end)) {
+      const span = Math.max(1, virtualList.end - virtualList.start);
+      const start = Math.max(0, Math.min(index - Math.floor(span / 2), state.messages.length - span));
+      buildMessageWindow(start, start + span);
+    }
+    const node = findMessageNode(messageId);
+    if (!node) return false;
+    state.autoFollow = false;
+    const viewport = elements.messageViewport;
+    const cursor = node.querySelector('.stream-cursor');
+    const target = cursor ?? node;
+    const viewportRect = viewport.getBoundingClientRect();
+    const rect = target.getBoundingClientRect();
+    // 位置已经在视口里（且离边缘有余量）就不动，避免「点了却像没反应」的假象。
+    const margin = 24;
+    const inside = rect.top >= viewportRect.top + margin && rect.bottom <= viewportRect.bottom - margin;
+    if (!inside) {
+      const offset = rect.top - viewportRect.top + viewport.scrollTop;
+      viewport.scrollTop = Math.max(0, offset - viewport.clientHeight / 2 + rect.height / 2);
+    }
+    flashMessageOutput(node);
+    updateScrollToBottom();
+    return true;
+  }
+
+  /** 高亮一下落点（2 秒后自动撤掉）：不闪一下，用户不知道跳到了哪。 */
+  function flashMessageOutput(node) {
+    node.classList.remove('is-jump-target');
+    // 强制重排，让同一节点连续点击也能重新播一次动画。
+    void node.offsetWidth;
+    node.classList.add('is-jump-target');
+    clearTimeout(flashMessageOutput.timer);
+    flashMessageOutput.timer = setTimeout(() => node.classList.remove('is-jump-target'), 2_000);
   }
 
   /**

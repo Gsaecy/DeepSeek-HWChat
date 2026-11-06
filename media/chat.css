@@ -1288,6 +1288,23 @@ body.vscode-high-contrast .todo-panel { --todo-green: #3fb950; }
    只用一条 2px 的 inset 描边，不额外占位，节点高度和别的行完全一致。 */
 .task-node.is-restored { box-shadow: inset 2px 0 0 var(--accent); }
 .task-node.is-restored .task-node-title { color: var(--fg); }
+/* 任务树整行可点（跳到该任务的输出位置）：给出手型与 hover 反馈，
+   否则一行看起来只是文字，用户不会想到它能点。 */
+.task-node.is-jumpable { cursor: pointer; }
+.task-node.is-jumpable:hover { background: var(--surface); }
+.task-node.is-jumpable:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* 跳转落点的高亮：2 秒后由脚本撤掉。用左侧描边而不是背景色，
+   这样正在流式输出的气泡本身不会被染色影响可读性。 */
+.message.is-jump-target { box-shadow: inset 2px 0 0 var(--accent); }
+.message.is-jump-target .message-body { animation: jump-target-fade 2s ease-out 1; }
+@keyframes jump-target-fade {
+  from { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  to { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .message.is-jump-target .message-body { animation: none; }
+}
 .task-node .task-node-restored { color: var(--accent); font-weight: 700; }
 /* 尾巴一列：状态字与行内操作并排（操作默认透明，悬停整行才出现）。 */
 .task-node-tail { display: flex; align-items: center; gap: 6px; justify-self: end; }
