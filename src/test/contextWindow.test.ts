@@ -279,5 +279,11 @@ test('存储：正文永远保留，工具输出搬进 payloads 且能按需还�
     const hits = await storage.searchConversationMessages(conversation.id, '胶囊');
     assert.equal(hits.length, 1);
     assert.equal(hits[0]?.hasDetail, true, '检索结果要告诉模型「还能读原文」');
+
+    // 关键词只存在于被搬走的工具输出里：不翻 payloads 就永远搜不到（记录还在，检索装瞎）。
+    const archivedHits = await storage.searchConversationMessages(conversation.id, 'tool-output-xyz');
+    assert.equal(archivedHits.length, 1, '归档的工具输出也要能被检索到');
+    assert.equal(archivedHits[0]?.messageId, message.id);
+    assert.match(archivedHits[0]!.excerpt, /tool-output-xyz/);
   });
 });

@@ -177,6 +177,14 @@ export interface AgentTaskNode {
    * 但不再逐轮发给模型；任务树里这一行就是它「记得自己做过什么」的唯一来源。
    */
   summary?: string;
+  /**
+   * 这条任务里用户提过的硬约束（「不要动胶囊样式」「必须保留 Esc」）。
+   *
+   * 为什么单独存：结论回答「做成了什么」，约束回答「不许做什么」。
+   * 只留结论时，模型下一轮很可能把已经明确禁止的改动又做回去 ——
+   * 这是「记忆只剩结果」最典型的翻车方式，所以约束要单独摘、单独渲染。
+   */
+  constraints?: string[];
 }
 
 export interface AgentTaskTreeState {

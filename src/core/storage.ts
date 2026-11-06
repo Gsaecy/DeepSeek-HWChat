@@ -734,12 +734,33 @@ export class ConversationStorage {
         ...(message.toolExecutions ?? []).flatMap((tool) => [tool.summary, tool.output, ...(tool.changedFiles ?? [])]),
         ...(message.usedSkills ?? []).flatMap((skill) => [skill.name, skill.relativePath]),
       ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\n');
-      if (normalizedQuery && !searchable.toLocaleLowerCase().includes(normalizedQuery)) continue;
+      let matched = !normalizedQuery || searchable.toLocaleLowerCase().includes(normalizedQuery);
+      /*
+       * 正文没有命中时，再翻一下 `payloads/`（清理时搬走的工具输出/附件正文）。
+       * 不翻这一步的话，「那轮到底报了什么错」这种只有工具输出里才有的关键词
+       * 会永远搜不到 —— 记录还在，但检索假装它不存在。
+       * 代价受控：只对「本条没命中」且有旁挂文件的消息多读一次。
+       */
+      let archiveText = '';
+      if (!matched && existsSync(this.payloadPath(conversationId, message.id))) {
+        const detail = await readJsonWithBackup<{
+          tools?: Array<{ summary?: string; input?: string; output?: string }>;
+          attachments?: Array<{ content?: string }>;
+        }>(this.payloadPath(conversationId, message.id));
+        if (detail) {
+          archiveText = [
+            ...(detail.tools ?? []).flatMap((tool) => [tool.summary, tool.input, tool.output]),
+            ...(detail.attachments ?? []).map((item) => item.content),
+          ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\n');
+          matched = !normalizedQuery || archiveText.toLocaleLowerCase().includes(normalizedQuery);
+        }
+      }
+      if (!matched) continue;
       hits.push({
         messageId: message.id,
         role: message.role,
         createdAt: message.createdAt,
-        excerpt: historyExcerpt(searchable, normalizedQuery, 1_200),
+        excerpt: historyExcerpt(searchable + (archiveText ? `\n${archiveText}` : ''), normalizedQuery, 1_200),
         ...(existsSync(this.payloadPath(conversationId, message.id)) ? { hasDetail: true } : {}),
       });
       if (hits.length >= cappedLimit) break;
@@ -2001,6 +2022,9 @@ function normalizeTaskNodes(value: unknown): AgentTaskNode[] {
       userMessageId: typeof node.userMessageId === 'string' ? node.userMessageId : undefined,
       assistantMessageId: typeof node.assistantMessageId === 'string' ? node.assistantMessageId : undefined,
       summary: typeof node.summary === 'string' && node.summary.trim() ? node.summary.trim().slice(0, 200) : undefined,
+      constraints: Array.isArray(node.constraints)
+        ? node.constraints.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => item.trim().slice(0, 120)).slice(0, 3)
+        : undefined,
     });
   }
   return nodes;

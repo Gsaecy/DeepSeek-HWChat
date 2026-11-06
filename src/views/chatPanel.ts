@@ -36,7 +36,7 @@ import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChange
 import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
 import { outcomeOf, renderWorkDigest, requestPayloadOf } from '../core/contextWindow';
-import { mergeTaskNodes, renderTaskMemory } from '../core/taskMemory';
+import { constraintsOf, mergeTaskNodes, renderTaskMemory } from '../core/taskMemory';
 import { withInternetReference } from '../core/research';
 import { checkReuseLimits, planAttachmentReuse } from '../core/attachmentReuse';
 import {
@@ -1105,10 +1105,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   dispose(): void {
     for (const run of this.runs.values()) run.controller.abort();
     // 关窗口前把还没落盘的任务记忆写掉：这是下一轮的记忆，不能只停在去抖计时器里。
-    for (const [conversationId, pending] of [...this.pendingTaskMemory]) {
-      clearTimeout(pending.timer);
-      this.pendingTaskMemory.delete(conversationId);
-      void this.storage.updateConversation(conversationId, { taskNodes: pending.nodes }).catch(() => undefined);
+    for (const conversationId of [...this.pendingTaskMemory.keys()]) {
+      // 走合并路径：直接写 `pending.nodes` 会把上一轮做完的任务覆盖掉（真实丢记忆点）。
+      void this.flushTaskMemory(conversationId);
     }
     this.settleAllApprovals();
     this.settleAllDecisions();
@@ -3489,10 +3488,21 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     return {
       ...tree,
       nodes: tree.nodes.map((node) => {
-        if (node.summary) return node;
         const content = responses.get(node.id)?.content;
-        const summary = content ? outcomeOf(content) : '';
-        return summary ? { ...node, summary } : node;
+        const summary = node.summary || (content ? outcomeOf(content) : '');
+        /*
+         * 约束优先从**用户原话**里摘（节点标题就是那句请求），回复里的约束作补充。
+         * 只记结论的话，模型下一轮很可能把用户已经明确禁止的改动又做回去。
+         */
+        const constraints = node.constraints?.length
+          ? node.constraints
+          : constraintsOf([node.title, content]);
+        const next = {
+          ...node,
+          ...(summary ? { summary } : {}),
+          ...(constraints.length ? { constraints } : {}),
+        };
+        return summary || constraints.length ? next : node;
       }),
     };
   }
@@ -4355,7 +4365,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       })),
       reasoning: clip(detail?.reasoning),
       tools: (message.toolExecutions ?? []).map((tool, index) => {
-        const saved = detail?.tools?.find((entry) => entry.name === tool.name) ?? detail?.tools?.[index];
+        // 同一个工具名可能出现多次：先按序号对，再退回按名字找。
+        const saved = detail?.tools?.[index] ?? detail?.tools?.find((entry) => entry.name === tool.name);
         return {
           name: tool.name,
           status: tool.status,
@@ -4486,12 +4497,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * （见 `media/chat.js` 的 `state.todoArchives`）。也就是说列表里那份是纯死重，
    * 而且随对话数线性增长（100 条对话就是 3 MB 以上的无效载荷）。
    */
-  private historySummary(summary: ConversationSummary): Omit<ConversationSummary, 'todoArchives'> {
-    const { todoArchives: _archives, ...rest } = summary;
+  private historySummary(summary: ConversationSummary): Omit<ConversationSummary, 'todoArchives' | 'taskNodes'> {
+    // 任务记忆只服务模型请求：下发给界面会让每次 state/history 都多背几十个节点。
+    const { todoArchives: _archives, taskNodes: _taskNodes, ...rest } = summary;
     return rest;
   }
 
-  private historyList(list: ConversationSummary[]): Array<Omit<ConversationSummary, 'todoArchives'>> {
+  private historyList(list: ConversationSummary[]): Array<Omit<ConversationSummary, 'todoArchives' | 'taskNodes'>> {
     return list.map((item) => this.historySummary(item));
   }
 

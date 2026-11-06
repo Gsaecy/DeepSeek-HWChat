@@ -15,7 +15,15 @@
   - 清理不再直接删重字段：`packMessagePayload()` 把它们搬进 `<对话>/payloads/<messageId>.json`，`readMessageDetail()` 随时原样取回；只有搬不动时才退回旧的 `stripMessagePayload()`。消息正文（`content`）永远留在消息本体里。
   - 历史存档里的老数据在下次清理时自动迁移（图片先落盘、再瘦身）。
 - **一次运行内也不再重发全部工具输出**：`pruneToolPayloads()` 让最近 6 条工具结果保留全文、更早的压成一行摘要（保留 `tool_call_id` 与摘要，API 结构不变）。实测原存档里工具文本 12.07 MB，单轮 prompt 出现过 1.37M / 4.99M / 10.6M / **20.28M** tokens。
-- 守护：`src/test/contextWindow.test.ts`（12 条，含用真实事故大小复现）、`src/test/taskMemory.test.ts`（7 条）、`test/check-context-memory.mjs`（21 项，含真实 2.7 MB 形状的可执行断言）。全量：**1113 条单测 + 61 个 `check-*.mjs` 全绿**。
+- **自审发现的 6 个问题一起修掉了**（用户追问：「你说的可能只保存结果不保存约束，以及其他新方案可能的 bug 修复了吗」）。
+  - **只记结果、不记约束**（真没修，现在修了）：新增 `constraintsOf()` 从**用户原话**里摘「不要 / 必须 / 保持 / 禁止 / must / do not」这类硬规则，存进 `AgentTaskNode.constraints` 并随记忆块渲染（`｜ 约束：…`），系统提示明确写「已给过的规则，违反它即使看起来更好也是错的」；同一 id 再下发时旧约束不会被抹掉。
+  - **结论会把「需要你做的」当成结果**：旧实现取「最后一个非标题段落」，于是「重载窗口后试一下」会变成下一轮的项目记忆。现在按小标题切段，优先级：`### 结果` → `我的理解` 之后的正文 → `我的理解` 段的最后一段 → 最后一个非「需要你做的」段。
+  - **关窗口会丢任务记忆（数据丢失）**：`dispose()` 里直接把去抖中的节点整体覆盖写库，会抹掉上一轮已完成的任务。改成走 `flushTaskMemory()` 的合并路径。
+  - **归档后的工具输出搜不到**：正文被搬进 `payloads/` 之后，`searchConversationMessages` 只在消息本体里找关键词——「那轮到底报了什么错」永远返回空。现在本条没命中时会翻一次 `payloads/`，命中后再给出 `hasDetail`。
+  - **还原消息时同名工具会串**：`read_message_detail` 先按工具名找第一条，重复调用同一工具就会张冠李戴。改成先按序号对、名字只作兜底。
+  - **任务记忆随 state 下发界面**：`historySummary` 只剥 `todoArchives`，`taskNodes` 会跟着每次 state/history 推送多背几十个节点。一起剥掉。
+  - 另外给未结束任务加了 20 条上限（此前只有已完成任务有上限，一次排几十条消息会把记忆块撑大）。
+- 守护：`src/test/contextWindow.test.ts`（12 条，含用真实事故大小复现 + 归档内容可检索）、`src/test/taskMemory.test.ts`（13 条，含约束摘取/合并/上限）、`test/check-context-memory.mjs`（28 项，含真实 2.7 MB 形状的可执行断言）。全量：**1120 条单测 + 61 个 `check-*.mjs` 全绿**。
 
 ## 0.4.2
 

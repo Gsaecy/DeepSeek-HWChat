@@ -51,10 +51,10 @@ check('签名函数是独立纯模块（可单测）',
   '签名逻辑要能被单测覆盖');
 
 /* ── 列表载荷：todoArchives 是纯死重（占 96%）─────────────────────────── */
-check('宿主侧：历史列表去掉 todoArchives',
-  /historySummary\(summary: ConversationSummary\): Omit<ConversationSummary, 'todoArchives'>/.test(PANEL)
-  && /const \{ todoArchives: _archives, \.\.\.rest \} = summary;/.test(PANEL),
-  '实测 5 条对话的列表 JSON 174.8 KB，其中 167.7 KB 是 todoArchives，而侧边栏并不用它');
+check('宿主侧：历史列表去掉 todoArchives 与 taskNodes',
+  /historySummary\(summary: ConversationSummary\): Omit<ConversationSummary, 'todoArchives' \| 'taskNodes'>/.test(PANEL)
+  && /const \{ todoArchives: _archives, taskNodes: _taskNodes, \.\.\.rest \} = summary;/.test(PANEL),
+  '实测 5 条对话的列表 JSON 174.8 KB，其中 167.7 KB 是 todoArchives；任务记忆同理，侧边栏两样都不用');
 check('宿主侧：state 的两个列表都走精简',
   /conversations: this\.historyList\(conversations\)/.test(PANEL)
   && /archivedConversations: this\.historyList\(archivedConversations\)/.test(PANEL)

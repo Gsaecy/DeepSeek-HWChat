@@ -130,6 +130,19 @@ test('requestMessages：任务树进 system，已有结论与进行中的任务�
 });
 
 /** 旧对话没有任务树：不注入记忆块（退回按消息摘要那条老路）。 */
+/** 约束必须跟着任务一起进记忆，否则模型会把已经禁止的改动又做回去。 */
+test('requestMessages：任务里的约束进 system', async () => {
+  const [system] = await fakePanel({
+    id: 'c1',
+    taskNodes: [{
+      id: 't1', title: '改录制胶囊', status: 'complete', relation: 'root',
+      summary: '挪到顶部栏', constraints: ['不要动胶囊的样式'],
+    }],
+  }).requestMessages(false);
+  assert.match(system!.content, /约束：不要动胶囊的样式/);
+  assert.match(system!.content, /always honour the 约束/);
+});
+
 test('requestMessages：没有任务树时不注入记忆块', async () => {
   const [system] = await fakePanel({ id: 'c1' }).requestMessages(false);
   assert.doesNotMatch(system!.content, /<project_memory>/);

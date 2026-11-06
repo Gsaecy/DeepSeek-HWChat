@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mergeTaskNodes, renderTaskMemory, taskMark } from '../core/taskMemory';
+import { constraintsOf, mergeTaskNodes, renderTaskMemory, taskMark } from '../core/taskMemory';
 import { pruneToolPayloads } from '../agent/agentRunner';
 import type { AgentTaskNode, ChatRequestMessage } from '../core/types';
 
@@ -126,4 +126,62 @@ test('运行内：工具数量没超过阈值时不动', () => {
   const messages: ChatRequestMessage[] = [toolMessage(0), toolMessage(1)];
   assert.equal(pruneToolPayloads(messages), 0);
   assert.equal((JSON.parse((messages[0] as { content: string }).content) as { result: string }).result.length, 1000);
+});
+
+/* ── 约束：光有结论不够 ───────────────────────────────────────────── */
+
+test('约束：从用户原话里摘出「不要 / 必须 / 保持」这类硬规则', () => {
+  const constraints = constraintsOf([
+    '录制状态和停止按钮胶囊，能显示在顶部栏吗？不要动胶囊的样式，必须保留 Esc 快捷键。',
+    '顺手把标题栏也改一下',
+  ]);
+  assert.equal(constraints.length, 2);
+  assert.match(constraints[0]!, /不要动胶囊的样式/);
+  assert.match(constraints[1]!, /必须保留 Esc 快捷键/);
+});
+
+test('约束：普通描述不会被当成约束（否则模型不敢动手）', () => {
+  assert.deepEqual(constraintsOf(['把胶囊挪到顶部栏', '看下这个文件', '跑一下测试']), []);
+  assert.deepEqual(constraintsOf([]), []);
+});
+
+test('约束：英文说法同样识别', () => {
+  const constraints = constraintsOf(['Move the capsule up. Do not change the capsule style. Must keep the Esc shortcut.']);
+  assert.equal(constraints.length, 2);
+  assert.match(constraints.join(' '), /Do not change the capsule style/i);
+});
+
+test('记忆块：约束跟着任务一起出现，并明确要求遵守', () => {
+  const memory = renderTaskMemory({
+    nodes: [
+      node({
+        id: 't1',
+        title: '改录制胶囊',
+        status: 'complete',
+        summary: '挪到顶部栏',
+        constraints: ['不要动胶囊的样式', '必须保留 Esc 快捷键'],
+      }),
+    ],
+  });
+  assert.match(memory, /\[x\] 改录制胶囊 — 挪到顶部栏 ｜ 约束：不要动胶囊的样式；必须保留 Esc 快捷键/);
+  assert.match(memory, /always honour the 约束/);
+});
+
+test('合并：新一轮没带约束时，旧约束不能被抹掉', () => {
+  const merged = mergeTaskNodes(
+    [node({ id: 't1', title: '改录制胶囊', status: 'complete', constraints: ['不要动胶囊的样式'] })],
+    [node({ id: 't1', title: '改录制胶囊', status: 'complete', summary: '改完了' })],
+  );
+  assert.deepEqual(merged[0]?.constraints, ['不要动胶囊的样式']);
+});
+
+test('记忆块：未结束任务过多时也要有上限', () => {
+  const nodes: AgentTaskNode[] = [];
+  for (let index = 0; index < 30; index += 1) {
+    nodes.push(node({ id: `q-${index}`, title: `排队任务 ${index}`, status: 'queued' }));
+  }
+  const memory = renderTaskMemory({ nodes });
+  assert.match(memory, /排队任务 29/, '最近的任务要在');
+  assert.ok(!/排队任务 0\b/.test(memory), '最早的那批要折叠');
+  assert.match(memory, /older open task\(s\) not listed/);
 });

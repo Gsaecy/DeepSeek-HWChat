@@ -182,24 +182,55 @@ function oneLine(text: string, limit = DIGEST_LINE_LIMIT): string {
 export function outcomeOf(content: string | undefined): string {
   const text = (content ?? '').trim();
   if (!text) return '';
-  const blocks = text.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
-  const isHeading = (block: string): boolean => /^#{1,6}\s*\S/.test(block) && !/\n/.test(block);
-  const resultIndex = blocks.findIndex((block) => /^#{1,6}\s*(结果|result|done|结论)/i.test(block));
-  if (resultIndex >= 0) {
-    // `### 结果` 自己是一段、正文是下一段：只看标题会得到空结果。
-    const body = isHeading(blocks[resultIndex]!) ? blocks[resultIndex + 1] : blocks[resultIndex]!;
-    const cleaned = oneLine((body ?? '').replace(/^#{1,6}\s*/, ''));
+  /*
+   * 回复的形状是固定的（`### 我的理解` → 结果 → `### 需要你做的`，见 replyShapePrompt）。
+   * 旧实现只看「最后一个非标题段落」，于是经常把「需要你做的」当成结论写进记忆 ——
+   * 那句「重载窗口后试一下」会变成下一轮的项目记忆，纯噪音。
+   * 现在按小标题切段，按优先级取：结果 → 我的理解之后的那段 → 最后一个普通段落。
+   */
+  const sections: Array<{ title: string; body: string }> = [];
+  let current = { title: '', body: '' };
+  for (const line of text.split(/\n/)) {
+    const heading = /^#{1,6}\s*(.+?)\s*$/.exec(line.trim());
+    if (heading) {
+      if (current.title || current.body.trim()) sections.push({ title: current.title, body: current.body.trim() });
+      current = { title: heading[1]!.trim(), body: '' };
+      continue;
+    }
+    current.body += `${line}\n`;
+  }
+  if (current.title || current.body.trim()) sections.push({ title: current.title, body: current.body.trim() });
+
+  const paragraphsOf = (body: string): string[] => body.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
+  const byTitle = (pattern: RegExp): string[] => {
+    const section = sections.find((item) => pattern.test(item.title));
+    return section ? paragraphsOf(section.body) : [];
+  };
+  const skipTitle = /^(需要你做的|需要你|follow[- ]?up|next steps?|what you need)/i;
+  const isUnderstanding = (title: string): boolean => /^(我的理解|我理解|理解需求|需求理解|what i understood|understanding|my understanding)$/i.test(title);
+  const understanding = sections.find((item) => isUnderstanding(item.title));
+  const afterUnderstanding = understanding
+    ? sections.slice(sections.indexOf(understanding) + 1).filter((item) => !skipTitle.test(item.title) && !isUnderstanding(item.title))
+    : [];
+  const plainSections = sections.filter((item) => !skipTitle.test(item.title));
+
+  const candidates = [
+    // 1) 明确的「结果」段
+    ...byTitle(/^(结果|结论|result|done|已完成|完成的)/i),
+    // 2) 「我的理解」之后的第一个普通段落
+    ...afterUnderstanding.flatMap((item) => paragraphsOf(item.body)).slice(0, 1),
+    // 3) 「我的理解」段里的**最后**一段：模型常把复述和正文写在同一小节下
+    ...(understanding ? paragraphsOf(understanding.body).slice(-1) : []),
+    // 4) 最后一个不是「需要你做的」的段落
+    ...(plainSections.at(-1) ? paragraphsOf(plainSections.at(-1)!.body).slice(-1) : []),
+    // 5) 兜底：整段最后一段
+    ...paragraphsOf(text).slice(-1),
+  ];
+  for (const candidate of candidates) {
+    const cleaned = oneLine(candidate.replace(/^#{1,6}\s*/gm, '').replace(/^[-*]\s+/gm, ''));
     if (cleaned) return cleaned;
   }
-  const withoutUnderstanding = blocks.filter((block) => !/^#{1,6}\s*(我的理解|我理解|what i understood)/i.test(block));
-  /*
-   * 没有 `### 结果` 时优先取**最后一段正文**：回复的形状是
-   * 「复述需求 → 做了什么 → 需要你做的」，最后一段最接近结论；
-   * 只取第一段会把「我理解你要做 X」当成结果写进摘要。
-   */
-  const paragraphs = withoutUnderstanding.filter((block) => !isHeading(block) && !/^[-*]\s/.test(block));
-  const candidate = paragraphs.at(-1) ?? withoutUnderstanding.find((block) => !isHeading(block)) ?? withoutUnderstanding[0] ?? blocks[0] ?? '';
-  return oneLine(candidate.replace(/^#{1,6}\s*/, ''));
+  return '';
 }
 
 /** 这条回复动过哪些工具（最多 `limit` 个，去重保序）。 */

@@ -78,6 +78,38 @@ check(
   /await this\.flushTaskMemory\(conversationId\)/.test(PANEL),
 );
 check(
+  '结论之外还记约束（只记结果会让模型把禁止的改动做回去）',
+  /export function constraintsOf/.test(MEMORY)
+    && /constraintsOf\(\[node\.title, content\]\)/.test(PANEL)
+    && /约束：/.test(MEMORY),
+);
+check(
+  '约束随任务落库，且新一轮下发不会抹掉旧约束',
+  /constraints: Array\.isArray\(node\.constraints\)/.test(STORAGE)
+    && /constraints: node\.constraints\?\.length \? node\.constraints : previous\.constraints/.test(MEMORY),
+);
+check(
+  '记忆块里明确要求遵守约束',
+  /always honour the 约束/.test(MEMORY),
+);
+check(
+  '任务记忆不随 state/history 下发界面（否则每次推送都多背几十个节点）',
+  /taskNodes: _taskNodes, \.\.\.rest/.test(PANEL),
+);
+check(
+  '关窗口前走合并路径写记忆（直接覆盖会丢上一轮的任务）',
+  /void this\.flushTaskMemory\(conversationId\);/.test(PANEL)
+    && !/updateConversation\(conversationId, \{ taskNodes: pending\.nodes \}\)/.test(PANEL),
+);
+check(
+  '检索会翻 payloads/（否则归档的工具输出永远搜不到）',
+  /archiveText/.test(STORAGE) && /existsSync\(this\.payloadPath\(conversationId, message\.id\)\)/.test(STORAGE),
+);
+check(
+  '还原一条消息时先按序号对工具记录（同名工具不会串行）',
+  /detail\?\.tools\?\.\[index\] \?\? detail\?\.tools\?\.find/.test(PANEL),
+);
+check(
   '运行内工具输出只留最近几条全文',
   /pruneToolPayloads\(requestMessages\)/.test(RUNNER) && /const TOOL_PAYLOAD_KEEP = 6;/.test(RUNNER),
 );
