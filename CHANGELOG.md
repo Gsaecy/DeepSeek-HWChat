@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- （下一版的内容写在这里）
+
+## 0.4.3
+
 - **多轮对话后「突然忘记项目」：根因是上下文预算把用户当下这句话挤掉了**（用户原话：「hwchat 有时候会突然忘记项目」，贴回的现场是面板里出现「我的理解 / 我这边没有收到具体请求：当前对话里只有运行环境与工具说明」）。
   - **实测复现**：拿用户真实存档 `conversation_fde3da6a…`（154 条消息、23.5 MB）跑一遍旧的 `getContextMessages()`，只回来 **1 条** 消息——而且是一条内容为空的助手占位。模型自己的 reasoning 写得很清楚：`The conversation starts with the system prompt only. Wait, there's no user message.` 那一轮 `promptTokens = 50,509`，正好只有 system + 工具定义。
   - **机制**：旧预算按**原始 JSON 字节**从新到旧累加、上限 2 MB。用户贴了两张截图的那条消息有 **2747 KB**（图片 base64 直接存在消息里）：2 KB 的助手占位先进窗口，轮到用户消息时「2 KB + 2747 KB > 2 MB」→ `break`，用户这句话被整个丢掉；占位消息随后又因为「内容为空」被跳过 → 请求里只剩 system。
