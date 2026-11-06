@@ -143,6 +143,12 @@ export function mergeTaskNodes(
     if (index < 0) break;
     nodes.splice(index, 1);
   }
+  /*
+   * 硬上限：上面只丢「没有信息量」的节点，但如果一次排了几十条未执行消息，
+   * 它们都不可丢，数组会无限长（manifest 每写一次都变大）。这里按最旧的截断，
+   * 丢掉的未执行消息仍由 `pendingTaskIds` 与消息存档兜底。
+   */
+  if (nodes.length > FINISHED_LIMIT) nodes.splice(0, nodes.length - FINISHED_LIMIT);
   return nodes;
 }
 

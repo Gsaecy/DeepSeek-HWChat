@@ -80,7 +80,7 @@ check(
 check(
   '结论之外还记约束（只记结果会让模型把禁止的改动做回去）',
   /export function constraintsOf/.test(MEMORY)
-    && /constraintsOf\(\[node\.title, content\]\)/.test(PANEL)
+    && /constraints: constraintsOf\(\[content\]\)/.test(PANEL)
     && /约束：/.test(MEMORY),
 );
 check(
@@ -156,13 +156,29 @@ check(
 check(
   '关键词模糊匹配（换说法也能命中）',
   /export function matchTokens/.test(read('src/core/searchText.ts'))
-    && /matchTokens\(text, queryTokens\)\.score >= 0\.5/.test(STORAGE),
+    && /matchTokens\(text, queryTokens\)/.test(STORAGE)
+    && /match\.score >= 0\.2 && strong/.test(STORAGE),
 );
 check(
   '多义术语：分不清就问，分得清就说明假设（不打断用户）',
   /export function resolveAmbiguousTerms/.test(read('src/core/searchText.ts'))
     && /<term_conflict>/.test(PANEL)
     && /<term_assumption>/.test(PANEL),
+);
+check(
+  '约束只从用户原话摘（入队时摘，不靠 48 字的标题、不用助手语气句）',
+  /constraints\?: string\[\];/.test(read('src/agent/taskQueue.ts'))
+    && /constraints: constraintsOf\(\[content\]\)/.test(PANEL)
+    && !/constraintsOf\(\[node\.title, content\]\)/.test(PANEL),
+);
+check(
+  '排队消息也有自动检索（它的请求在发起时就固定了）',
+  /recallForTask\(conversationId, content \|\| userMessage\.content\)/.test(PANEL),
+);
+check(
+  '自动检索有门槛（错证据比不检索更糟）',
+  /match\.score >= 0\.2 && strong/.test(STORAGE)
+    && /RECALL_HAYSTACK_LIMIT/.test(STORAGE),
 );
 check(
   '清单归属按节点时间窗取差集（不再广播整份清单）',
@@ -174,7 +190,7 @@ check(
   '清单执行结果当成任务的变动总结',
   /todos\?: TodoItem\[\]/.test(read('src/core/types.ts'))
     && /清单：/.test(MEMORY)
-    && /newlyCompletedTodos\(baseline, todos\)/.test(PANEL),
+    && /newlyCompletedTodos\(baseline\.contents, todos\)/.test(PANEL),
 );
 check(
   '记忆块明确告诉模型「记不清就查原文」',

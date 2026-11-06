@@ -218,3 +218,28 @@ test('清单归属：同一条目不会同时算给两个节点', () => {
 test('清单归属：只有一行结论、没有清单时不硬造条目', () => {
   assert.deepEqual(newlyCompletedTodos([], []), []);
 });
+
+test('清单归属：排队节点开始时才拍基线（入队时的旧基线不算数）', () => {
+  const atEnqueue = [
+    { content: '读代码', status: 'completed' as const },
+  ];
+  const atStart = [
+    { content: '读代码', status: 'completed' as const },
+    { content: '改代码', status: 'completed' as const },
+  ];
+  // 若沿用入队基线，「改代码」会被误算给这条排队任务（其实是前面那条任务做的）。
+  const wrong = newlyCompletedTodos(todoBaseline(atEnqueue), atStart);
+  assert.deepEqual(wrong.map((todo) => todo.content), ['改代码']);
+  const right = newlyCompletedTodos(todoBaseline(atStart), atStart);
+  assert.deepEqual(right, [], '按真正开始时的基线算，这条排队任务此刻还没做任何事');
+});
+
+test('合并：节点再多也不会无限增长（硬上限）', () => {
+  const nodes: AgentTaskNode[] = [];
+  for (let index = 0; index < 60; index += 1) {
+    nodes.push(node({ id: `q-${index}`, title: `排队 ${index}`, status: 'queued' }));
+  }
+  const merged = mergeTaskNodes(nodes, []);
+  assert.ok(merged.length <= 40, `硬上限没生效：${merged.length}`);
+  assert.equal(merged.at(-1)?.id, 'q-59', '最近的留着');
+});

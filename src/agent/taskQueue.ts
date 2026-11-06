@@ -7,6 +7,14 @@ export type TaskRelation = 'related' | 'queued';
 export interface AgentTaskBinding {
   userMessageId?: string;
   assistantMessageId?: string;
+  /**
+   * 这条任务**用户原话里**的硬约束。
+   *
+   * 为什么不从节点标题里现摘：标题会被截到 48 字，后半句的「不要动 X」直接丢掉；
+   * 也不从助手回复里摘：它常写「不要忘了跑测试」这种语气句，会变成假约束。
+   * 所以入队这一刻（还拿着完整原话）就摘好，跟着节点走。
+   */
+  constraints?: string[];
 }
 
 export interface AgentTaskUpdate extends AgentTaskBinding {
@@ -148,6 +156,8 @@ export class AgentTaskQueue {
         // 回复消息 id 也要下发：任务树点击要跳到**输出**位置，不是用户那句话。
         assistantMessageId: this.bindingOf(node.id)?.assistantMessageId,
         userMessageId: this.bindingOf(node.id)?.userMessageId,
+        // 约束随节点下发，面板据此写进记忆（不靠标题，标题只有 48 字）。
+        ...(this.bindingOf(node.id)?.constraints?.length ? { constraints: [...this.bindingOf(node.id)!.constraints!] } : {}),
         pending: held.has(node.id),
         // 这条正在被用户编辑；`waiting` 表示 agent 已经走到它、正停着等改完。
         editing: this.editHolds.has(node.id),

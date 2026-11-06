@@ -15,6 +15,9 @@ import { createHash } from 'node:crypto';
 import { imageExtensionFor } from '../agent/attachmentOpen';
 import { ContextWindowBuilder, ContextWindowResult, lightForDigest } from './contextWindow';
 import { excerptAround, matchTokens, normalizeSearchText, recallTokens } from './searchText';
+
+/** 自动检索时单条消息参与匹配的最大字符数（头 3/4 + 尾 1/4）。 */
+const RECALL_HAYSTACK_LIMIT = 32 * 1024;
 import { isEmptyDraftConversation } from './conversationControls';
 import { createId, createOrderedId, previewText, shortTitle } from './ids';
 import { readJsonWithBackup, removeIfPresent, writeJsonAtomic } from './jsonFile';
@@ -633,8 +636,18 @@ export class ConversationStorage {
         ...(message.attachments ?? []).map((attachment) => attachment.content),
         message.context?.content,
       ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\n');
-      const match = matchTokens(haystack, tokens);
-      if (match.score > 0) {
+      /*
+       * 自动检索的门槛要高于「随便命中一个词」：错证据会被模型当事实，
+       * 比不检索更糟。要求至少两个词命中（或一个足够长的词），且加权分 ≥ 0.2。
+       * 另外对超长正文只取头尾：老存档里可能内联着几 MB 的工具输出，
+       * 整段归一化的开销没必要付。
+       */
+      const bounded = haystack.length > RECALL_HAYSTACK_LIMIT
+        ? `${haystack.slice(0, RECALL_HAYSTACK_LIMIT * 0.75)}\n${haystack.slice(-RECALL_HAYSTACK_LIMIT * 0.25)}`
+        : haystack;
+      const match = matchTokens(bounded, tokens);
+      const strong = match.hits.length >= 2 || match.hits.some((hit) => hit.length >= 4);
+      if (match.score >= 0.2 && strong) {
         scored.push({
           messageId: message.id,
           role: message.role,
@@ -660,8 +673,10 @@ export class ConversationStorage {
           ...(detail.tools ?? []).flatMap((tool) => [tool.summary, tool.input, tool.output]),
           ...(detail.attachments ?? []).map((item) => item.content),
         ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\n');
-        const match = matchTokens(haystack, tokens);
-        if (match.score > 0) {
+        const bounded = haystack.length > RECALL_HAYSTACK_LIMIT ? haystack.slice(0, RECALL_HAYSTACK_LIMIT) : haystack;
+        const match = matchTokens(bounded, tokens);
+        const strong = match.hits.length >= 2 || match.hits.some((hit) => hit.length >= 4);
+        if (match.score >= 0.2 && strong) {
           scored.push({
             messageId: candidate.id,
             role: candidate.role,
@@ -810,7 +825,10 @@ export class ConversationStorage {
       const queryTokens = normalizedQuery ? recallTokens(rawQuery, 12) : [];
       const fuzzy = (text: string): boolean => {
         if (normalizeSearchText(text).includes(normalizedQuery)) return true;
-        return queryTokens.length > 0 && matchTokens(text, queryTokens).score >= 0.5;
+        if (!queryTokens.length) return false;
+        const match = matchTokens(text, queryTokens);
+        const strong = match.hits.length >= 2 || match.hits.some((hit) => hit.length >= 4);
+        return strong && match.score >= 0.2;
       };
       let matched = !normalizedQuery || fuzzy(searchable);
       /*
