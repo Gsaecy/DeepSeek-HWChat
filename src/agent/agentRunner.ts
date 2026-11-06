@@ -397,6 +397,7 @@ export class AgentRunner {
             changedFiles: result.changedFiles,
           }),
         });
+        pruneToolPayloads(requestMessages);
         if (result.status !== 'error' && result.status !== 'denied') roundFailed = false;
 
         // 工具刚被取消：不要等到下一轮才反应，立刻停下。
@@ -500,6 +501,53 @@ export class AgentRunner {
     });
     await options.callbacks.onToolsChanged(cloneExecutions(executions));
   }
+}
+
+/**
+ * 运行内只保留最近几次工具输出的全文，更早的压成一行。
+ *
+ * 真实数据（2026-11-06，用户存档）：一次运行 105 次工具调用，存档里工具文本
+ * 就有 12.07 MB；而 agent 每一轮都会把「本轮到目前为止的所有工具结果」重发一遍，
+ * 于是单轮 prompt 出现过 1.37M / 4.99M / 10.6M / **20.28M** tokens。
+ *
+ * 工具输出是**过程**，不是结论：任务树已经记下「做了什么、结果如何」，
+ * 细节随时可以用同样的工具再查一次（文件也还在磁盘上）。所以这里做的是
+ * 「最近的留全，早的留摘要」，和跨轮记忆采用同一条原则。
+ */
+const TOOL_PAYLOAD_KEEP = 6;
+
+export function pruneToolPayloads(messages: ChatRequestMessage[], keep = TOOL_PAYLOAD_KEEP): number {
+  const toolIndexes: number[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    if (messages[index]?.role === 'tool') toolIndexes.push(index);
+  }
+  const cutoff = toolIndexes.length - Math.max(0, keep);
+  if (cutoff <= 0) return 0;
+  let folded = 0;
+  for (let index = 0; index < cutoff; index += 1) {
+    const at = toolIndexes[index]!;
+    const message = messages[at];
+    if (!message || typeof message.content !== 'string') continue;
+    let payload: { status?: string; summary?: string; result?: unknown; changedFiles?: unknown; folded?: boolean };
+    try {
+      payload = JSON.parse(message.content) as typeof payload;
+    } catch {
+      continue;
+    }
+    if (payload.folded) continue;
+    messages[at] = {
+      ...message,
+      content: JSON.stringify({
+        status: payload.status,
+        summary: payload.summary,
+        folded: true,
+        result: '（早期工具输出已折叠：结论见任务树，需要原文请重新执行该工具）',
+        changedFiles: payload.changedFiles,
+      }),
+    };
+    folded += 1;
+  }
+  return folded;
 }
 
 function cloneExecutions(executions: ToolExecution[]): ToolExecution[] {

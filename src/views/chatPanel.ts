@@ -35,6 +35,8 @@ import { grantFromFollowUp } from '../agent/conversationScope';
 import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChangedFiles } from '../agent/workspacePaths';
 import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
+import { outcomeOf, renderWorkDigest, requestPayloadOf } from '../core/contextWindow';
+import { mergeTaskNodes, renderTaskMemory } from '../core/taskMemory';
 import { withInternetReference } from '../core/research';
 import { checkReuseLimits, planAttachmentReuse } from '../core/attachmentReuse';
 import {
@@ -419,6 +421,22 @@ const FILE_REFERENCE_CACHE_LIMIT = 500;
 const MODEL_LIST_TTL_MS = 10 * 60_000;
 const MODEL_LIST_RETRY_MS = 60_000;
 
+/**
+ * 逐条发给模型的历史预算（只算正文，不含图片字节）。
+ *
+ * 用户的要求（2026-11-06）：**对话记录照常保留，但不再是 agent 的记忆** ——
+ * 记忆由任务树 + 任务清单承担（见 `taskMemory.ts`），完整记录只在需要时按需检索。
+ * 所以这里只留「最近这一段」用于措辞与上下文衔接，更早的部分交给记忆块。
+ *
+ * 为什么不能沿用旧口径（原始 JSON 2 MB）：一条贴了两张截图的消息就是 2.7 MB，
+ * 会把用户当下的提问整个挤掉 —— 这正是「突然忘记项目 / 没有收到具体请求」的成因。
+ */
+const CONTEXT_WINDOW_BYTES = 1024 * 1024;
+/** 「最近原文」这一层保留多少条消息（约 10–12 轮问答）。 */
+const CONTEXT_WINDOW_MESSAGES = 24;
+/** 任务记忆写盘的去抖窗口。 */
+const TASK_MEMORY_DEBOUNCE_MS = 1500;
+
 export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable {
   static readonly viewType = 'hwchat.chatView';
   private view: vscode.WebviewView | undefined;
@@ -459,6 +477,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private readonly pendingSends = new Set<string>();
   /** 每个对话各自一条运行线程，互不阻塞。 */
   private readonly runs = new Map<string, ConversationRun>();
+  /** 任务记忆的写盘去抖：一次运行里任务树会变很多次，不必每次都写 manifest。 */
+  private readonly pendingTaskMemory = new Map<string, { timer: ReturnType<typeof setTimeout>; nodes: AgentTaskNode[] }>();
   /** 等待用户在面板里点「允许一次 / 拒绝」的工具授权。 */
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingDecisions = new Map<string, PendingDecision>();
@@ -1084,6 +1104,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 
   dispose(): void {
     for (const run of this.runs.values()) run.controller.abort();
+    // 关窗口前把还没落盘的任务记忆写掉：这是下一轮的记忆，不能只停在去抖计时器里。
+    for (const [conversationId, pending] of [...this.pendingTaskMemory]) {
+      clearTimeout(pending.timer);
+      this.pendingTaskMemory.delete(conversationId);
+      void this.storage.updateConversation(conversationId, { taskNodes: pending.nodes }).catch(() => undefined);
+    }
     this.settleAllApprovals();
     this.settleAllDecisions();
     for (const disposable of this.disposables) {
@@ -1481,8 +1507,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       role: 'user',
       content: content || tt('notice.processAttachments'),
       status: 'complete',
-      context,
-      attachments,
+      // 存档只留路径；`request` 仍用内存里那份（含图片字节），排队轮到它时才能看图。
+      context: await this.persistContext(conversationId, context),
+      attachments: await this.persistAttachments(conversationId, attachments),
       model: settings.model,
       // 排队消息：队列还没把它交给 agent，界面显示「还没执行」；取走执行时改成 running。
       executionStatus: 'pending',
@@ -1683,12 +1710,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       this.pendingContext = undefined;
       this.pendingAttachments = [];
       const sendTiming: { startedAt: number; visibleAt: number } = { startedAt: Date.now(), visibleAt: 0 };
+      // 存档里只留图片路径（见 `persistAttachments`）：这一条消息以前可能有 2.7 MB。
+      const storedContext = await this.persistContext(conversationId, context);
+      const storedAttachments = await this.persistAttachments(conversationId, attachments);
       const userMessage = await this.storage.appendMessage(conversationId, {
         role: 'user',
         content: content || tt('notice.processAttachments'),
         status: 'complete',
-        context,
-        attachments,
+        context: storedContext,
+        attachments: storedAttachments,
         model: settings.model,
         // 这条是发起本轮运行的消息：紧接着 agent 就会读它，所以直接算「执行中」。
         executionStatus: 'running',
@@ -1742,7 +1772,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         touchProjectRoot: (fsPath) => this.touchProjectRoot(conversationId!, fsPath),
       };
       const linkedConversation = await this.storage.getConversation(conversationId);
-      const historyTool = linkedConversation?.sourceConversationId ? conversationHistoryToolDefinition() : undefined;
+      // 历史检索**总是**可用：任务记忆只写结论，细节（报错原文、路径、早先说法）要能查回完整记录。
+      const historyTool = conversationHistoryToolDefinition();
       /*
        * 按任务类型**由宿主指定首选工具**（见 `toolPlaybooks.ts` 里的事故记录）。
        *
@@ -1775,6 +1806,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         preparedSkills.prompt,
         options?.resumedTodos === true,
         playbookDirective(playbooks),
+        // 本轮这句话用内存副本（含图片字节）；更早的历史只发文字。
+        { messageId: userMessage.id, content: userMessage.content, context, attachments },
       );
       const resumeScope = resolveResumeScope({
         text: content,
@@ -1866,6 +1899,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
             ...(imageProfileFor(settings, profile.id) ? [generateImageToolDefinition()] : []),
             this.skills.toolDefinition(preparedSkills.routableIds),
             historyTool,
+            messageDetailToolDefinition(),
             ...this.vscodeTools.definitions(),
           ].filter((tool): tool is NonNullable<typeof tool> => Boolean(tool)),
           executeExtraTool: async (call) => {
@@ -1885,6 +1919,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
             }
             if (call.function.name === 'search_conversation_history') {
               return { result: await this.searchLinkedConversationHistory(conversationId!, call, mode, settings, run) };
+            }
+            if (call.function.name === 'read_message_detail') {
+              return { result: await this.readMessageDetailTool(conversationId!, call, mode, settings, run) };
             }
             if (call.function.name === 'load_skill') {
               const loaded = await this.skills.executeLoad(call, preparedSkills.routableIds);
@@ -2041,6 +2078,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         // 成功 / 失败 / 被停止都走同一处结算：全绿才归档；没跑完的留给用户决定，
         // 但「正常跑完」与「被掐断」要分开标，不能一律说成中断。
         await this.settleTodosAfterRun(conversationId, runOutcome);
+        // 任务树就是下一轮的「记忆」：运行一结束立刻落库，不能等去抖计时器。
+        await this.flushTaskMemory(conversationId);
         this.runs.delete(conversationId);
         this.rejectApprovalsFor(conversationId);
         // 方案卡片同样要结算：否则那张卡会留在界面上，点它只会得到「已过期」。
@@ -2404,8 +2443,28 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
      * 优先级更高 —— 排在后面会被模型当成可选项。
      */
     playbookDirective = '',
+    /**
+     * 本轮刚发出去的那条用户消息（内存版）。
+     *
+     * 存档里的图片已经外置成文件（见 `persistAttachments`），而这一轮**必须**把
+     * 图片真正发给模型，所以最新那条用这里的内存副本（含 base64）重建；
+     * 更早的消息一律只发文字，不再重发图片字节。
+     */
+    current?: { messageId?: string; content: string; context?: MessageContext; attachments: MessageContext[] },
   ): Promise<ChatRequestMessage[]> {
-    const stored = await this.storage.getContextMessages(conversationId, settings.maxMessagesInContext);
+    /*
+     * 「最近这一段」的条数：用户显式设了上限就用它；设成 0（旧的「不限」）时
+     * 用 `CONTEXT_WINDOW_MESSAGES` —— 三层的设计里，更早的轮次由任务记忆承担，
+     * 再把它们逐条塞回来只会重新付一遍 token，还会把预算挤掉。
+     */
+    const maxMessages = settings.maxMessagesInContext > 0
+      ? settings.maxMessagesInContext
+      : CONTEXT_WINDOW_MESSAGES;
+    const window = await this.storage.getContextWindow(conversationId, {
+      maxMessages,
+      maxBytes: CONTEXT_WINDOW_BYTES,
+    });
+    const stored = window.messages;
     const conversation = await this.storage.getConversation(conversationId);
     const messages: ChatRequestMessage[] = [];
     const completeAssistantIds = new Set(stored
@@ -2443,6 +2502,35 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       interrupted: resumed || conversation?.todosInterrupted === true,
       incomplete: conversation?.todosIncomplete === true,
     });
+    /*
+     * 装不下的历史压成摘要，和清单一起进 system。
+     *
+     * 用户的原话（2026-11-06）：「能不能在超长对话中，让 ai 遗忘前读取任务树记录
+     * 和任务清单记录，来保持记忆，同时也能减少记忆缓存内容大小」。
+     * 摘要只写「谁要求了什么 → 做完了什么 → 用了哪些工具」，细节仍然让模型去查，
+     * 所以它既不会因为丢了原文而重复劳动，也不会把几十轮的工具输出重新灌一遍。
+     */
+    /*
+     * 记忆块：任务树 + 任务清单。
+     *
+     * 用户的要求（2026-11-06）：「对话记录已经不再是 agent 的记忆了，agent 只需要
+     * 读取任务树和任务清单（包括执行一半退出和执行完的），就能知道对话中的项目情况，
+     * 完整的对话记录，只在读取任务树和任务清单无法确定的情况下查找读取」。
+     * 所以这里注入的是**任务记忆**（每轮都给，不依赖窗口里还剩多少条消息）；
+     * 只有当这条对话还没有任务记忆（本次改动之前建的对话）时，才退回按消息配对的摘要。
+     */
+    const runTree = this.runs.get(conversationId)?.taskQueue.state();
+    const taskMemory = renderTaskMemory({
+      nodes: conversation?.taskNodes,
+      todos: conversation?.todos,
+      todoArchives: conversation?.todoArchives,
+      // 本轮一开始 run 还没注册，就用这句话本身当「当前任务」。
+      currentTitle: runTree?.nodes.find((node) => node.id === runTree.currentNodeId)?.title ?? current?.content,
+    });
+    const workDigest = taskMemory ? '' : renderWorkDigest(window.dropped, { todos: conversation?.todos });
+    if (window.dropped.length) {
+      this.log(`[context] 窗口内 ${stored.length} 条 / ${Math.round(window.bytes / 1024)} KB，窗口外 ${window.dropped.length} 条（${taskMemory ? '由任务树记忆承担' : '压成摘要'}）`);
+    }
     messages.push({
       role: 'system',
       content: [
@@ -2451,10 +2539,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         withInternetReference(this.agentSystemPrompt(mode, settings.systemPrompt, skillPrompt, historyPrompt, settings.imageModel), settings.internetReference),
         playbookDirective,
         todoContext,
+        taskMemory,
+        workDigest,
       ]
         .filter(Boolean)
         .join('\n\n'),
     });
+    const isCurrent = (message: ChatMessage): boolean => Boolean(current?.messageId && message.id === current.messageId);
     for (const message of stored) {
       if (message.role === 'system' || message.role === 'tool' || (message.role === 'assistant' && (!message.content || message.status === 'error'))) {
         continue;
@@ -2464,14 +2555,68 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       }
       if (message.role === 'assistant') {
         for (const update of consumedUpdates.get(message.id) ?? []) {
-          messages.push(this.requestMessageFromParts(update.content, update.context, update.attachments ?? []));
+          const payload = requestPayloadOf(update);
+          messages.push(this.requestMessageFromParts(payload.content, payload.context, payload.attachments ?? []));
         }
       }
+      if (isCurrent(message)) {
+        messages.push(this.requestMessageFromParts(current!.content, current!.context, current!.attachments));
+        continue;
+      }
+      const payload = requestPayloadOf(message);
       messages.push(message.role === 'user'
-        ? this.requestMessageFromParts(message.content, message.context, message.attachments ?? [])
+        ? this.requestMessageFromParts(payload.content, payload.context, payload.attachments ?? [])
         : { role: 'assistant', content: message.content });
     }
+    /*
+     * 最后一道闸：这一轮的用户发言**必须**在请求里。
+     *
+     * 「突然忘记项目 / 我这边没有收到具体请求」的整条链路就是它丢了 —— 历史可以
+     * 被压缩、可以被预算挡掉，但用户刚说的话不能用任何理由消失。真到了这里，
+     * 直接把内存里这份补上去，并记一行日志，方便以后再出问题时对时间线。
+     */
+    if (current && !messages.some((message) => message.role === 'user')) {
+      this.log(`[context] 历史窗口里没有本轮消息（${stored.length} 条 / ${Math.round(window.bytes / 1024)} KB），已直接补上本轮内容`);
+      messages.push(this.requestMessageFromParts(current.content, current.context, current.attachments));
+    }
     return messages;
+  }
+
+  /**
+   * 把粘贴进来的图片搬到会话目录，**存档里只留路径**。
+   *
+   * 以前 base64 直接写进消息 JSON：真实存档里一条 2747 KB，历史预算被它吃光，
+   * 模型于是「忘记项目」（见 `contextWindow.ts`）。返回的对象用于 `appendMessage`；
+   * 内存里那份（含 base64）继续给本轮的 `requestMessages` 用，所以这一轮模型
+   * 照样能看到图。
+   */
+  private async persistAttachments(conversationId: string, attachments: MessageContext[]): Promise<MessageContext[]> {
+    const stored: MessageContext[] = [];
+    for (const attachment of attachments) {
+      if (attachment.kind !== 'image' || !attachment.dataBase64) {
+        stored.push(attachment);
+        continue;
+      }
+      try {
+        const saved = await this.storage.saveConversationImage(conversationId, {
+          dataBase64: attachment.dataBase64,
+          mimeType: attachment.mimeType,
+          label: attachment.label,
+        });
+        stored.push({ ...saved, label: attachment.label, thumbnailDataUrl: attachment.thumbnailDataUrl });
+      } catch {
+        // 磁盘写不进去就按老样子整条存下来：宁可占地方，也不能把用户的图丢了。
+        stored.push(attachment);
+      }
+    }
+    return stored;
+  }
+
+  /** 选区同理：图片选区不该以 base64 常驻存档，落成文件后路径就够了。 */
+  private async persistContext(conversationId: string, context: MessageContext | undefined): Promise<MessageContext | undefined> {
+    if (!context) return undefined;
+    const [stored] = await this.persistAttachments(conversationId, [context]);
+    return stored;
   }
 
   private requestMessageFromParts(content: string, context: MessageContext | undefined, attachments: MessageContext[]): ChatRequestMessage {
@@ -3326,7 +3471,63 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async postTaskTree(queue: AgentTaskQueue, conversationId: string): Promise<void> {
-    await this.post({ type: 'taskTreeChanged', conversationId, taskTree: queue.state() });
+    const tree = this.taskTreeWithOutcomes(queue.state(), conversationId);
+    await this.post({ type: 'taskTreeChanged', conversationId, taskTree: tree });
+    this.persistTaskMemory(conversationId, tree.nodes);
+  }
+
+  /**
+   * 给任务树补上「做完之后的一句话结论」。
+   *
+   * 结论来自本轮回复正文（`run.responses`，与消息存档同源），摘法见 `outcomeOf`。
+   * 这是任务树能当记忆用的前提：只有标题的话，模型只记得「做过什么」，
+   * 不记得「做成了什么」。
+   */
+  private taskTreeWithOutcomes(tree: AgentTaskTreeState, conversationId: string): AgentTaskTreeState {
+    const responses = this.runs.get(conversationId)?.responses;
+    if (!responses) return tree;
+    return {
+      ...tree,
+      nodes: tree.nodes.map((node) => {
+        if (node.summary) return node;
+        const content = responses.get(node.id)?.content;
+        const summary = content ? outcomeOf(content) : '';
+        return summary ? { ...node, summary } : node;
+      }),
+    };
+  }
+
+  /**
+   * 把任务树写进对话存档（任务记忆）。
+   *
+   * 合并而不是替换：任务树每一轮都是新建的，直接覆盖会把上一轮做完的任务全丢掉。
+   * 写盘按对话去抖（一次运行里任务树会变很多次），并在运行结束时立刻落一次。
+   */
+  private persistTaskMemory(conversationId: string, nodes: readonly AgentTaskNode[]): void {
+    if (!nodes.length) return;
+    const pending = this.pendingTaskMemory.get(conversationId);
+    if (pending) clearTimeout(pending.timer);
+    const timer = setTimeout(() => {
+      this.pendingTaskMemory.delete(conversationId);
+      void this.flushTaskMemory(conversationId);
+    }, TASK_MEMORY_DEBOUNCE_MS);
+    timer.unref?.();
+    this.pendingTaskMemory.set(conversationId, { timer, nodes: nodes.map((node) => ({ ...node })) });
+  }
+
+  /** 立刻把任务记忆落库（运行收尾、窗口关闭时调用）。 */
+  private async flushTaskMemory(conversationId: string): Promise<void> {
+    const pending = this.pendingTaskMemory.get(conversationId);
+    const nodes = pending?.nodes;
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingTaskMemory.delete(conversationId);
+    }
+    if (!nodes?.length) return;
+    const conversation = await this.storage.getConversation(conversationId).catch(() => undefined);
+    const merged = mergeTaskNodes(conversation?.taskNodes, nodes);
+    if (!merged.length) return;
+    await this.storage.updateConversation(conversationId, { taskNodes: merged }).catch(() => undefined);
   }
 
   /**
@@ -4054,14 +4255,6 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     run: ConversationRun,
   ): Promise<ToolExecutionResult> {
     const conversation = await this.storage.getConversation(conversationId);
-    if (!conversation?.sourceConversationId) {
-      return {
-        status: 'denied',
-        summary: tt('chat.noHistorySummary'),
-        content: tt('chat.noHistoryContent'),
-        approval: 'not-required',
-      };
-    }
     const args = parseToolArguments(call.function.arguments);
     const query = typeof args.query === 'string' ? args.query.trim().slice(0, 500) : '';
     const limit = Math.min(30, Math.max(1, Math.floor(Number(args.limit) || 10)));
@@ -4072,11 +4265,30 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       'read',
       (request) => this.requestToolApproval(request.summary, request.detail, request.risk, run),
       query ? tt('chat.searchHistoryLabel', { query }) : tt('chat.readHistoryLatestLabel'),
-      tt('chat.historySourceDetail', { title: conversation.sourceConversationTitle || conversation.sourceConversationId, limit }),
+      tt('chat.historySourceDetail', { title: conversation?.sourceConversationTitle || conversation?.title || conversationId, limit }),
       async () => {
         const hits: Array<{ conversationId: string; conversationTitle: string; messageId: string; role: string; createdAt: string; excerpt: string }> = [];
         const visited = new Set<string>();
-        let sourceId: string | undefined = conversation.sourceConversationId;
+        /*
+         * 先查**当前**这条对话的完整记录，再顺着 `sourceConversationId` 查上游。
+         *
+         * 用户的要求（2026-11-06）：完整对话记录保留在磁盘上，但只在任务树与任务清单
+         * 说不清的时候才来读。所以这个工具从「只有续接对话才有」变成「每轮都在」，
+         * 并且第一条就查自己 —— 否则模型只能靠记忆块里的结论猜细节。
+         */
+        if (conversation) {
+          visited.add(conversation.id);
+          const own = await this.storage.searchConversationMessages(conversation.id, query, limit);
+          hits.push(...own.map((hit) => ({
+            conversationId: conversation.id,
+            conversationTitle: conversation.title,
+            messageId: hit.messageId,
+            role: hit.role,
+            createdAt: new Date(hit.createdAt).toISOString(),
+            excerpt: hit.excerpt,
+          })));
+        }
+        let sourceId: string | undefined = conversation?.sourceConversationId;
         while (sourceId && !visited.has(sourceId) && visited.size < 8 && hits.length < limit) {
           visited.add(sourceId);
           const source = await this.storage.getConversation(sourceId);
@@ -4101,6 +4313,73 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           approval: 'not-required',
         };
       },
+      { conversationId },
+    );
+  }
+
+  /**
+   * 按需还原一条消息的重字段。
+   *
+   * 三层记忆里最底层的那一层：任务树写结论、最近几轮留原文，其它细节留在磁盘上。
+   * 模型只有拿 `search_conversation_history` 返回的 `messageId` 才能读到这里 ——
+   * 也就是说「先证明需要，再取原文」，不会每轮白付一遍 token。
+   */
+  private async readMessageDetailTool(
+    conversationId: string,
+    call: ToolCall,
+    mode: ConversationMode,
+    settings: ChatSettings,
+    run: ConversationRun,
+  ): Promise<ToolExecutionResult> {
+    const args = parseToolArguments(call.function.arguments);
+    const messageId = typeof args.message_id === 'string' ? args.message_id.trim() : '';
+    if (!messageId) {
+      return { status: 'error', summary: tt('chat.messageDetailMissingId'), content: tt('chat.messageDetailMissingId'), approval: 'not-required' };
+    }
+    const { message, detail } = await this.storage.readMessageDetail(conversationId, messageId);
+    if (!message) {
+      return { status: 'error', summary: tt('chat.messageDetailMissing'), content: tt('chat.messageDetailMissing'), approval: 'not-required' };
+    }
+    const cap = 20_000;
+    const clip = (value: string | undefined): string | undefined => (value === undefined ? undefined : value.length > cap ? `${value.slice(0, cap)}\n…（已截断，原长 ${value.length} 字符）` : value);
+    const payload = {
+      messageId,
+      role: message.role,
+      createdAt: new Date(message.createdAt).toISOString(),
+      content: clip(message.content),
+      attachments: (message.attachments ?? []).map((attachment) => ({
+        label: attachment.label,
+        path: attachment.path,
+        mimeType: attachment.mimeType,
+        bytes: attachment.bytes,
+      })),
+      reasoning: clip(detail?.reasoning),
+      tools: (message.toolExecutions ?? []).map((tool, index) => {
+        const saved = detail?.tools?.find((entry) => entry.name === tool.name) ?? detail?.tools?.[index];
+        return {
+          name: tool.name,
+          status: tool.status,
+          summary: tool.summary,
+          output: clip(saved?.output ?? tool.output),
+          input: clip(saved?.input ?? tool.input),
+        };
+      }),
+      restoredFromArchive: Boolean(detail),
+    };
+    return this.toolExecutor.executeExternal(
+      call,
+      mode,
+      settings,
+      'read',
+      (request) => this.requestToolApproval(request.summary, request.detail, request.risk, run),
+      tt('chat.messageDetailLabel', { id: messageId }),
+      tt('chat.messageDetailApprovalDetail'),
+      async () => ({
+        status: 'success',
+        summary: tt('chat.messageDetailSummary', { count: payload.tools.length }),
+        content: JSON.stringify(payload, null, 2),
+        approval: 'not-required',
+      }),
       { conversationId },
     );
   }
@@ -4853,6 +5132,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     // 所以不能靠调它取名字）。
     names.add('load_skill');
     names.add('search_conversation_history');
+    // 按需还原一条消息的重字段（工具输出/附件正文）：记录保留在磁盘上，只在需要时读。
+    names.add('read_message_detail');
     if (imageProfileFor(settings)) names.add('generate_image');
     return [...names];
   }
@@ -5532,6 +5813,24 @@ function conversationHistoryToolDefinition(): ToolDefinition {
           query: { type: 'string', description: tt('tool.searchHistoryQueryParam') },
           limit: { type: 'integer', minimum: 1, maximum: 30, description: tt('tool.searchHistoryLimitParam') },
         },
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
+function messageDetailToolDefinition(): ToolDefinition {
+  return {
+    type: 'function',
+    function: {
+      name: 'read_message_detail',
+      description: tt('tool.readMessageDetailDescription'),
+      parameters: {
+        type: 'object',
+        properties: {
+          message_id: { type: 'string', description: tt('tool.readMessageDetailIdParam') },
+        },
+        required: ['message_id'],
         additionalProperties: false,
       },
     },

@@ -13,10 +13,13 @@ import {
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { imageExtensionFor } from '../agent/attachmentOpen';
+import { ContextWindowBuilder, ContextWindowResult, lightForDigest } from './contextWindow';
 import { isEmptyDraftConversation } from './conversationControls';
 import { createId, createOrderedId, previewText, shortTitle } from './ids';
 import { readJsonWithBackup, removeIfPresent, writeJsonAtomic } from './jsonFile';
 import {
+  AgentTaskNode,
+  AgentTaskStatus,
   ChatMessage,
   CleanupOptions,
   CleanupResult,
@@ -393,6 +396,28 @@ export class ConversationStorage {
     image: { dataBase64: string; mimeType?: string; label?: string; sourceUrl?: string },
   ): Promise<MessageContext> {
     await this.initialize();
+    const attachment = await this.saveConversationImage(conversationId, image);
+    const current = await this.getMessage(conversationId, messageId);
+    if (!current) throw new Error(tt('storage.messageMissing'));
+    // 同一张图重复生成时不要在同一条消息里挂两个一模一样的条目。
+    const attachments = [...(current.attachments ?? []).filter((item) => item.id !== attachment.id), attachment];
+    await this.updateMessage(conversationId, messageId, { attachments });
+    return { ...attachment };
+  }
+
+  /**
+   * 把一张图的字节落成会话目录下的文件，返回**只有路径**的附件。
+   *
+   * 用户粘贴的截图以前把 base64 直接存在消息 JSON 里：真实存档里一条就是
+   * 2747 KB，每轮请求都重新发一遍，而且会把上下文预算吃光 —— 这就是「多轮
+   * 对话后突然忘记项目」的成因（见 `contextWindow.ts` 顶部注释）。落成文件之后
+   * 消息只留 `path` + 缩略图，请求侧按需从路径读字节。
+   */
+  async saveConversationImage(
+    conversationId: string,
+    image: { dataBase64: string; mimeType?: string; label?: string; sourceUrl?: string },
+  ): Promise<MessageContext> {
+    await this.initialize();
     const raw = (image.dataBase64 ?? '').trim();
     const bytes = raw ? Buffer.from(raw, 'base64') : Buffer.alloc(0);
     if (!bytes.byteLength) throw new Error(tt('api.imageNoData'));
@@ -402,10 +427,7 @@ export class ConversationStorage {
     const path = join(directory, `${digest}.${imageExtensionFor(mimeType)}`);
     await mkdir(directory, { recursive: true });
     if (!existsSync(path)) await writeFile(path, bytes);
-
-    const current = await this.getMessage(conversationId, messageId);
-    if (!current) throw new Error(tt('storage.messageMissing'));
-    const attachment: MessageContext = {
+    return {
       id: `img-${digest.slice(0, 16)}`,
       label: (image.label ?? '').trim() || tt('chat.generatedImage'),
       kind: 'image',
@@ -414,10 +436,6 @@ export class ConversationStorage {
       mimeType,
       ...(image.sourceUrl ? { sourceUrl: image.sourceUrl } : {}),
     };
-    // 同一张图重复生成时不要在同一条消息里挂两个一模一样的条目。
-    const attachments = [...(current.attachments ?? []).filter((item) => item.id !== attachment.id), attachment];
-    await this.updateMessage(conversationId, messageId, { attachments });
-    return { ...attachment };
   }
 
   /**
@@ -559,27 +577,40 @@ export class ConversationStorage {
     maxMessages: number,
     maxBytes = 2 * 1024 * 1024,
   ): Promise<ChatMessage[]> {
+    const window = await this.getContextWindow(conversationId, { maxMessages, maxBytes });
+    return window.messages;
+  }
+
+  /**
+   * 取出「这一轮真正要发给模型的历史」，同时把窗口外的部分留给摘要。
+   *
+   * 旧实现的预算按**原始 JSON 字节**算，而粘贴的截图是直接以 base64 存在消息
+   * 里的（真实存档里一条 2747 KB）。于是「助手占位 2 KB 先进窗口、用户那条
+   * 2747 KB 再进来就超 2 MB」→ `break` → 用户这句话被整个丢掉，模型只收到
+   * system，回答「我这边没有收到具体请求」。详见 `contextWindow.ts` 顶部注释。
+   *
+   * 现在的口径：
+   *  - 预算只算模型真会看到的内容（正文/附件文本），图片字节不算；
+   *  - 最新那条用户消息必进窗口；
+   *  - 被挡下的消息立刻压成摘要用的轻副本，不再占着整份内容。
+   */
+  async getContextWindow(
+    conversationId: string,
+    budget: { maxMessages: number; maxBytes: number },
+  ): Promise<ContextWindowResult> {
     await this.initialize();
     this.requireSummary(conversationId);
+    // 从新到旧：`message_<时间戳>_<uuid>.json` 的字典序就是时间序。
     const files = (await this.messageFiles(conversationId)).sort((a, b) => b.localeCompare(a));
-    const messages: ChatMessage[] = [];
-    let bytes = 0;
+    const builder = new ContextWindowBuilder(budget);
+    const dropped: ChatMessage[] = [];
     for (const file of files) {
-      if (maxMessages > 0 && messages.length >= maxMessages) {
-        break;
-      }
       const message = await readJsonWithBackup<ChatMessage>(join(this.messageDirectory(conversationId), file));
-      if (!message) {
-        continue;
-      }
-      const messageBytes = Buffer.byteLength(JSON.stringify(message));
-      if (messages.length > 0 && bytes + messageBytes > maxBytes) {
-        break;
-      }
-      bytes += messageBytes;
-      messages.unshift(message);
+      if (!message) continue;
+      if (!builder.offer(message)) dropped.push(lightForDigest(message));
     }
-    return messages;
+    const window = builder.result();
+    return { ...window, dropped: dropped.reverse() };
   }
 
   /**
@@ -620,6 +651,73 @@ export class ConversationStorage {
     return { ...message };
   }
 
+  /** 重字段的旁挂文件：正文留在消息里，工具输出/附件正文搬到这里，可随时还原。 */
+  private payloadPath(conversationId: string, messageId: string): string {
+    return join(this.conversationDirectory(conversationId), 'payloads', `${messageId}.json`);
+  }
+
+  /**
+   * 把一条消息的重字段搬到旁挂文件（不删除任何内容）。
+   *
+   * 用户的要求（2026-11-06）：「我希望保留对话记录，除非用户主动清理」。所以清理
+   * 不再直接丢掉工具输出/附件正文，而是搬到 `<对话>/payloads/<messageId>.json`：
+   * 消息本体变小、读盘变快，而 `readMessageDetail` 仍能把这些内容原样取回。
+   */
+  async packMessagePayload(conversationId: string, message: ChatMessage): Promise<number> {
+    const heavy = {
+      reasoning: message.reasoning,
+      tools: (message.toolExecutions ?? []).map((tool, index) => ({
+        index,
+        name: tool.name,
+        summary: tool.summary,
+        input: tool.input,
+        output: tool.output,
+      })),
+      attachments: [message.context, ...(message.attachments ?? [])].filter(Boolean).map((item) => ({
+        label: item!.label,
+        path: item!.path,
+        content: item!.content,
+      })),
+    };
+    const hasHeavy = Boolean(heavy.reasoning)
+      || heavy.tools.some((tool) => tool.input !== undefined || tool.output !== undefined)
+      || heavy.attachments.some((item) => item.content !== undefined);
+    if (!hasHeavy) return 0;
+    const bytes = Buffer.byteLength(JSON.stringify(heavy));
+    const path = this.payloadPath(conversationId, message.id);
+    await mkdir(join(this.conversationDirectory(conversationId), 'payloads'), { recursive: true });
+    await writeJsonAtomic(path, heavy);
+    delete message.reasoning;
+    for (const tool of message.toolExecutions ?? []) {
+      delete tool.input;
+      delete tool.output;
+    }
+    for (const item of [message.context, ...(message.attachments ?? [])]) {
+      if (item) delete item.content;
+    }
+    return bytes;
+  }
+
+  /** 读回被搬到旁挂文件的内容（工具输出、附件正文、思考过程）。 */
+  async readMessageDetail(conversationId: string, messageId: string): Promise<{
+    message: ChatMessage | undefined;
+    detail: {
+      reasoning?: string;
+      tools?: Array<{ name?: string; summary?: string; input?: string; output?: string }>;
+      attachments?: Array<{ label?: string; path?: string; content?: string }>;
+    } | undefined;
+  }> {
+    await this.initialize();
+    if (!this.findSummary(conversationId)) return { message: undefined, detail: undefined };
+    const message = await this.readMessage(conversationId, messageId);
+    const detail = await readJsonWithBackup<{
+      reasoning?: string;
+      tools?: Array<{ name?: string; summary?: string; input?: string; output?: string }>;
+      attachments?: Array<{ label?: string; path?: string; content?: string }>;
+    }>(this.payloadPath(conversationId, messageId)).catch(() => undefined);
+    return { message, detail };
+  }
+
   async searchConversationMessages(conversationId: string, query = '', limit = 12): Promise<ConversationHistoryHit[]> {
     await this.initialize();
     this.requireSummary(conversationId);
@@ -642,6 +740,7 @@ export class ConversationStorage {
         role: message.role,
         createdAt: message.createdAt,
         excerpt: historyExcerpt(searchable, normalizedQuery, 1_200),
+        ...(existsSync(this.payloadPath(conversationId, message.id)) ? { hasDetail: true } : {}),
       });
       if (hits.length >= cappedLimit) break;
     }
@@ -701,6 +800,10 @@ export class ConversationStorage {
        * 原样放回队列继续执行（见 `AgentTaskQueue.seedPending`）。
        */
       pendingTaskIds?: string[] | null;
+      /**
+       * 这条对话累积的任务树（任务记忆）。整体替换：调用方给的一定是合并后的完整快照。
+       */
+      taskNodes?: AgentTaskNode[] | null;
     },
   ): Promise<ConversationSummary> {
     await this.initialize();
@@ -752,6 +855,14 @@ export class ConversationStorage {
           delete summary.todosIncomplete;
         } else {
           delete summary.todosInterrupted;
+        }
+      }
+      // 任务树记忆：整体替换（调用方已经按 id 合并过）；空数组表示清空。
+      if (patch.taskNodes !== undefined) {
+        if (patch.taskNodes && patch.taskNodes.length) {
+          summary.taskNodes = patch.taskNodes.map((node) => ({ ...node }));
+        } else {
+          delete summary.taskNodes;
         }
       }
       // 未执行消息清单：整体替换（调用方给的一定是当前队列的真实快照）；空数组表示清空。
@@ -1115,17 +1226,31 @@ export class ConversationStorage {
         hasStreamingMessage = true;
         continue;
       }
+      // 先把内联图片搬到磁盘（只要老存档里还有），再谈保留期压缩。
+      const externalized = await this.externalizeImagePayloads(id, path, message);
+      let freed = externalized;
       const age = now - message.updatedAt;
       if (plan.retentionMs === 0 || age >= plan.retentionMs) {
-        const heavyBytes = stripMessagePayload(message);
+        // 先搬进旁挂文件（可还原）；`stripMessagePayload` 随后只负责收尾
+        // （usage 只留总量、去掉缩略图、清掉搬剩下的边角），两边腾出的字节相加。
+        let heavyBytes = 0;
+        try {
+          heavyBytes = await this.packMessagePayload(id, message);
+        } catch {
+          heavyBytes = 0;
+        }
+        heavyBytes += stripMessagePayload(message);
         if (heavyBytes > 0) {
           message.updatedAt = now;
           await writeJsonAtomic(path, message);
           await removeIfPresent(`${path}.bak`);
-          plan.counters.compactedMessages += 1;
-          compactedHere += 1;
-          plan.counters.deletedMessageCacheBytes += heavyBytes;
+          freed += heavyBytes;
         }
+      }
+      if (freed > 0) {
+        plan.counters.compactedMessages += 1;
+        compactedHere += 1;
+        plan.counters.deletedMessageCacheBytes += freed;
       }
     }
     if (hasStreamingMessage) {
@@ -1690,6 +1815,47 @@ export class ConversationStorage {
     return message;
   }
 
+  /**
+   * 把老存档里「base64 直接存在消息里」的图片搬到会话目录，消息只留路径。
+   *
+   * 只对 `kind === 'image'` 且带 `dataBase64` 的附件生效，**不删除任何内容**：
+   * 字节原样写进 `<对话>/images/<sha256>.<ext>`（内容寻址，重复的图不会写两份），
+   * 再把 `dataBase64` 换成 `path`。归档过的老对话因此会从几十 MB 缩到几百 KB，
+   * 而面板里的图片照常显示（走 `asWebviewUri` 或缩略图）。
+   *
+   * 返回腾出的字节数（0 表示什么都没改）。
+   */
+  private async externalizeImagePayloads(conversationId: string, path: string, message: ChatMessage): Promise<number> {
+    const targets = [message.context, ...(message.attachments ?? [])].filter(
+      (item): item is MessageContext => Boolean(item && item.kind === 'image' && item.dataBase64),
+    );
+    if (!targets.length) return 0;
+    let freed = 0;
+    for (const target of targets) {
+      try {
+        const saved = await this.saveConversationImage(conversationId, {
+          dataBase64: target.dataBase64!,
+          mimeType: target.mimeType,
+          label: target.label,
+          sourceUrl: target.sourceUrl,
+        });
+        freed += Buffer.byteLength(target.dataBase64!);
+        target.dataBase64 = undefined;
+        target.path = saved.path;
+        target.bytes ??= saved.bytes;
+        target.id ??= saved.id;
+        if (!target.mimeType) target.mimeType = saved.mimeType;
+      } catch {
+        // 单张图写不出来（磁盘满、权限）就保留原样，不要因此让整条消息读不出来。
+      }
+    }
+    if (!freed) return 0;
+    message.updatedAt = Date.now();
+    await writeJsonAtomic(path, message);
+    await removeIfPresent(`${path}.bak`);
+    return freed;
+  }
+
   private async measureBytes(): Promise<number> {
     let total = 0;
     try {
@@ -1818,6 +1984,30 @@ function assignOptional<K extends keyof ConversationSummary>(
  * 「要么是明确合法值，要么干脆没有这个字段」，让运行时只需回落到默认值，
  * 不必到处判脏数据。
  */
+/** 任务记忆的落库形状：只留渲染需要的字段，脏值一律丢掉。 */
+function normalizeTaskNodes(value: unknown): AgentTaskNode[] {
+  if (!Array.isArray(value)) return [];
+  const nodes: AgentTaskNode[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as Partial<AgentTaskNode>;
+    if (typeof node.id !== 'string' || !node.id || typeof node.title !== 'string' || !node.title.trim()) continue;
+    nodes.push({
+      id: node.id,
+      parentId: typeof node.parentId === 'string' ? node.parentId : undefined,
+      title: node.title.trim(),
+      status: TASK_MEMORY_STATUSES.has(node.status as AgentTaskStatus) ? node.status as AgentTaskStatus : 'complete',
+      relation: node.relation ?? 'pending',
+      userMessageId: typeof node.userMessageId === 'string' ? node.userMessageId : undefined,
+      assistantMessageId: typeof node.assistantMessageId === 'string' ? node.assistantMessageId : undefined,
+      summary: typeof node.summary === 'string' && node.summary.trim() ? node.summary.trim().slice(0, 200) : undefined,
+    });
+  }
+  return nodes;
+}
+
+const TASK_MEMORY_STATUSES = new Set<AgentTaskStatus>(['routing', 'active', 'merged', 'queued', 'complete', 'cancelled', 'error']);
+
 function sanitizeSummary(item: ConversationSummary): ConversationSummary {
   const todoArchives = normalizeTodoArchives(item.todoArchives);
   const normalized: ConversationSummary = todoArchives.length
@@ -1840,6 +2030,12 @@ function sanitizeSummary(item: ConversationSummary): ConversationSummary {
       const { todosIncomplete: _staleIncomplete, ...withoutIncomplete } = withFlag;
       return withoutIncomplete as ConversationSummary;
     })();
+  // 任务记忆：只认结构完整的节点，别的字段一律忽略（存档被手改成脏值时不该让面板崩）。
+  {
+    const nodes = normalizeTaskNodes(withIncomplete.taskNodes);
+    if (nodes.length) withIncomplete.taskNodes = nodes;
+    else delete withIncomplete.taskNodes;
+  }
   applyOptional(withIncomplete, 'projectRoot', normalizeProjectRoot(withIncomplete.projectRoot));
   // 涉及的项目同样只认绝对路径的字符串数组，老存档没有这个字段时保持没有。
   {

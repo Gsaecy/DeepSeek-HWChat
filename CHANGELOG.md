@@ -2,7 +2,20 @@
 
 ## Unreleased
 
-- （下一版的内容写在这里）
+- **多轮对话后「突然忘记项目」：根因是上下文预算把用户当下这句话挤掉了**（用户原话：「hwchat 有时候会突然忘记项目」，贴回的现场是面板里出现「我的理解 / 我这边没有收到具体请求：当前对话里只有运行环境与工具说明」）。
+  - **实测复现**：拿用户真实存档 `conversation_fde3da6a…`（154 条消息、23.5 MB）跑一遍旧的 `getContextMessages()`，只回来 **1 条** 消息——而且是一条内容为空的助手占位。模型自己的 reasoning 写得很清楚：`The conversation starts with the system prompt only. Wait, there's no user message.` 那一轮 `promptTokens = 50,509`，正好只有 system + 工具定义。
+  - **机制**：旧预算按**原始 JSON 字节**从新到旧累加、上限 2 MB。用户贴了两张截图的那条消息有 **2747 KB**（图片 base64 直接存在消息里）：2 KB 的助手占位先进窗口，轮到用户消息时「2 KB + 2747 KB > 2 MB」→ `break`，用户这句话被整个丢掉；占位消息随后又因为「内容为空」被跳过 → 请求里只剩 system。
+  - **修法（`src/core/contextWindow.ts`）**：预算只算真正会发给模型的内容（正文/附件文本，**图片字节不计**）；最新那条用户消息以及它之后的占位**无条件保留**；`requestMessages()` 最后再加一道闸——窗口里没有本轮消息就直接补上并记一行 `[context]` 日志。**再也不会发出「只有 system」的请求。**
+- **记忆模型换成三层：任务树 + 最近原文 + 按需检索**（用户要求：「对话记录已经不再是 agent 的记忆了，agent 只需要读取任务树和任务清单（包括执行一半退出和执行完的），就能知道对话中的项目情况，完整的对话记录，只在读取任务树和任务清单无法确定的情况下查找读取」）。
+  - **长期记忆 = 任务树 + 清单**：任务树（含已完成、出错、取消、中断）随对话落库到 `ConversationSummary.taskNodes`，每个节点带一句本地摘出来的结论（取自回复的「结果」段）；每轮以 `<project_memory>` 注入 system，明确写「[x] 的不要重做」。未完成条目仍由 `renderTodoContext` 注入，已完成的条目进记忆块，两处不重复。
+  - **最近原文 = 约 24 条**：三层的中间层。用户设了 `maxMessagesInContext` 就按用户的；设成 0（旧的「不限」）时改用 24 条，更早的交给记忆块——再逐条塞回来只会重付 token 且把预算挤掉。
+  - **按需检索 = 完整记录**：`search_conversation_history` 从「只有续接对话才有」变成**每轮都在**，并**第一条就查当前对话**；新增 `read_message_detail(messageId)` 还原那条消息里被归档的工具输出/附件正文。检索结果带 `hasDetail` 标记。
+- **对话记录只搬不删**（用户要求：「我希望保留对话记录，除非用户主动清理」）。
+  - 贴图 base64 改为在发送时落成 `<对话>/images/<sha256>.<ext>`，消息里只留 `path`（实测那条 2747 KB → 几十 KB）；`requestMessageFromParts` 仍只用**本轮**的内存副本把图发给模型，更早的图片不再重发。
+  - 清理不再直接删重字段：`packMessagePayload()` 把它们搬进 `<对话>/payloads/<messageId>.json`，`readMessageDetail()` 随时原样取回；只有搬不动时才退回旧的 `stripMessagePayload()`。消息正文（`content`）永远留在消息本体里。
+  - 历史存档里的老数据在下次清理时自动迁移（图片先落盘、再瘦身）。
+- **一次运行内也不再重发全部工具输出**：`pruneToolPayloads()` 让最近 6 条工具结果保留全文、更早的压成一行摘要（保留 `tool_call_id` 与摘要，API 结构不变）。实测原存档里工具文本 12.07 MB，单轮 prompt 出现过 1.37M / 4.99M / 10.6M / **20.28M** tokens。
+- 守护：`src/test/contextWindow.test.ts`（12 条，含用真实事故大小复现）、`src/test/taskMemory.test.ts`（7 条）、`test/check-context-memory.mjs`（21 项，含真实 2.7 MB 形状的可执行断言）。全量：**1113 条单测 + 61 个 `check-*.mjs` 全绿**。
 
 ## 0.4.2
 

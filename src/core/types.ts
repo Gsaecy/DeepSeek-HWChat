@@ -169,6 +169,14 @@ export interface AgentTaskNode {
   editing?: boolean;
   /** agent 已经走到这条、正停着等用户改完。 */
   waitingForEdit?: boolean;
+  /**
+   * 这条任务做完之后的一句话结论（本地从回复里摘出来）。
+   *
+   * 用户的要求（2026-11-06）：「将历史执行完的记录总结成简单的过程」「agent 只需要
+   * 读取任务树和任务清单，就能知道对话中的项目情况」。完整聊天记录仍然留在磁盘上，
+   * 但不再逐轮发给模型；任务树里这一行就是它「记得自己做过什么」的唯一来源。
+   */
+  summary?: string;
 }
 
 export interface AgentTaskTreeState {
@@ -267,6 +275,12 @@ export interface ConversationSummary {
   sourceLinkedAt?: number;
   /** 本轮任务拆解出来的待办清单；随对话持久化，重开面板仍在。 */
   todos?: TodoItem[];
+  /**
+   * 这条对话累积下来的任务树（含已完成的）。
+   *
+   * 与 `todos` 同级的「项目记忆」：模型每轮读它而不是读整段聊天记录。
+   */
+  taskNodes?: AgentTaskNode[];
   /** 已完成并压缩成胶囊的历史任务清单，按时间从早到晚。 */
   todoArchives?: TodoArchive[];
   /**
@@ -297,6 +311,13 @@ export interface ConversationHistoryHit {
   role: MessageRole;
   createdAt: number;
   excerpt: string;
+  /**
+   * 这条消息的重字段（工具输出 / 附件正文）被搬进了同目录的 `payloads/`。
+   *
+   * 正文永远留在消息里；这里只是告诉模型「想看当时的完整输出，可以再读一次」——
+   * 用户在 2026-11-06 的要求：记录保留，但只在任务树/清单说不清时才查。
+   */
+  hasDetail?: boolean;
 }
 
 export interface ConversationExport {

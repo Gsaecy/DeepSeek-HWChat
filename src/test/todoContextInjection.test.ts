@@ -20,15 +20,19 @@ interface RequestMessage {
 
 /** 只实现 `requestMessages()` 真正用到的那几个成员。 */
 function fakePanel(conversation: Record<string, unknown>, stored: Record<string, unknown>[] = []): {
-  requestMessages: (resumed?: boolean) => Promise<RequestMessage[]>;
+  requestMessages: (resumed?: boolean, current?: { messageId?: string; content: string; attachments: unknown[] }) => Promise<RequestMessage[]>;
 } {
   const storage = {
-    getContextMessages: async () => (stored.length ? stored : [
-      { id: 'u1', role: 'user', content: '继续执行当前任务清单里未完成的条目。', consumedByAssistantId: 'a1' },
-      { id: 'a1', role: 'assistant', content: '好，接着做。', status: 'complete' },
-      // 真实运行时清单就在这里，但下面的循环会把它过滤掉——这正是故障来源。
-      { id: 't1', role: 'tool', content: '<task_list>8. [ ] 同步文档</task_list>' },
-    ]),
+    getContextWindow: async () => ({
+      messages: stored.length ? stored : [
+        { id: 'u1', role: 'user', content: '继续执行当前任务清单里未完成的条目。', consumedByAssistantId: 'a1' },
+        { id: 'a1', role: 'assistant', content: '好，接着做。', status: 'complete' },
+        // 真实运行时清单就在这里，但下面的循环会把它过滤掉——这正是故障来源。
+        { id: 't1', role: 'tool', content: '<task_list>8. [ ] 同步文档</task_list>' },
+      ],
+      dropped: [],
+      bytes: 0,
+    }),
     getConversation: async () => conversation,
   };
   const skills = {
@@ -42,11 +46,14 @@ function fakePanel(conversation: Record<string, unknown>, stored: Record<string,
     skills as never, {} as never, {} as never,
   );
   const call = panel as unknown as {
-    requestMessages: (id: string, settings: unknown, mode: string, skillPrompt: string, resumed?: boolean) => Promise<RequestMessage[]>;
+    requestMessages: (
+      id: string, settings: unknown, mode: string, skillPrompt: string, resumed: boolean, playbook: string,
+      current?: { messageId?: string; content: string; attachments: unknown[] },
+    ) => Promise<RequestMessage[]>;
   };
   return {
-    requestMessages: (resumed = false) =>
-      call.requestMessages('c1', { maxMessagesInContext: 40, systemPrompt: '', permissionPreset: 'ask' }, 'agent', '', resumed),
+    requestMessages: (resumed = false, current) =>
+      call.requestMessages('c1', { maxMessagesInContext: 40, systemPrompt: '', permissionPreset: 'ask' }, 'agent', '', resumed, '', current),
   };
 }
 
@@ -104,4 +111,41 @@ test('requestMessages：清单进 system，tool 消息仍被过滤', async () =>
   const messages = await fakePanel({ id: 'c1', todos: sixDone }).requestMessages(true);
   assert.equal(messages.some((message) => message.role === 'tool'), false, 'tool 消息不能进请求');
   assert.equal(messages.filter((message) => message.role === 'system').length, 1, '只能有一条 system 消息');
+});
+
+/** 任务树即记忆：有任务树时，system 里必须出现 <project_memory>。 */
+test('requestMessages：任务树进 system，已有结论与进行中的任务都在', async () => {
+  const [system] = await fakePanel({
+    id: 'c1',
+    taskNodes: [
+      { id: 't1', title: '改录制胶囊', status: 'complete', relation: 'root', summary: '挪到顶部栏' },
+      { id: 't2', title: '加 Esc 停止录制', status: 'active', relation: 'related' },
+    ],
+    todos: [{ content: '改胶囊', status: 'completed' }],
+  }).requestMessages(false);
+  assert.match(system!.content, /<project_memory>/);
+  assert.match(system!.content, /\[x\] 改录制胶囊 — 挪到顶部栏/);
+  assert.match(system!.content, /\[>\] 加 Esc 停止录制/);
+  assert.match(system!.content, /<completed_task_list>/);
+});
+
+/** 旧对话没有任务树：不注入记忆块（退回按消息摘要那条老路）。 */
+test('requestMessages：没有任务树时不注入记忆块', async () => {
+  const [system] = await fakePanel({ id: 'c1' }).requestMessages(false);
+  assert.doesNotMatch(system!.content, /<project_memory>/);
+});
+
+/** 「只有 system 的空请求」不允许再出现：历史窗口读空时也要把本轮补上。 */
+test('requestMessages：窗口读空时直接补上本轮内容，绝不发出只有 system 的请求', async () => {
+  const panel = fakePanel({ id: 'c1' }, [
+    { id: 'a0', role: 'assistant', content: '占位', status: 'streaming' },
+  ]);
+  const messages = await panel.requestMessages(false, {
+    messageId: 'u-new',
+    content: '录制状态和停止按钮胶囊，能显示在顶部栏吗？',
+    attachments: [],
+  });
+  const users = messages.filter((message) => message.role === 'user');
+  assert.equal(users.length, 1, '用户刚说的话必须出现在请求里');
+  assert.match(String(users[0]!.content), /录制状态和停止按钮胶囊/);
 });
