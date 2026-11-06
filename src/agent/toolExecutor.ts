@@ -21,7 +21,7 @@ import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './wo
 import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
 import { shouldAutoBackground } from './serverCommands';
 import { effectiveTimeoutSeconds, timeoutAdvice, timeoutClampNotice, timeoutClampSummary } from './commandTimeout';
-import { selfNestedCdHint, stripRedundantLeadingCd } from './commandHints';
+import { commandEnvironmentHint, selfNestedCdHint, stripRedundantLeadingCd } from './commandHints';
 import { diagnoseMissingOldText, findAlreadyApplied, renderMissingOldTextDiagnosis } from './replaceDiagnostics';
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
 import { gitWriteOperation, GIT_VERBS_WITHOUT_INTENT } from './conversationScope';
@@ -1244,6 +1244,12 @@ export class ToolExecutor implements vscode.Disposable {
     const nestedCdHint = nestedCd
       ? tt('tool.runCommand.alreadyThere', { dir: nestedCd, cwd: resolvedCwd.relativePath })
       : undefined;
+    /*
+     * 环境类失败（macOS 没有 `timeout`、`screencapture` 缺屏幕录制权限）：
+     * 命令没错，是环境缺东西。直接把事实与做法说出来，别让模型换写法再撞一次。
+     */
+    const environment = result.code === 0 ? undefined : commandEnvironmentHint(effectiveCommand, output);
+    const environmentHint = environment ? tt(environment.key, environment.values) : undefined;
     const strippedNote = strippedCd.removed
       ? tt('tool.runCommand.cdStripped', { dir: strippedCd.removed, cwd: resolvedCwd.relativePath })
       : undefined;
@@ -1258,7 +1264,7 @@ export class ToolExecutor implements vscode.Disposable {
       status: result.code === 0 && !result.timedOut ? 'success' : 'error',
       summary: `${commandSummary(effectiveCommand, result, timeout, Date.now() - commandStartedAt)}${clampSummary}`,
       content: truncate(
-        redact([strippedNote, clampNotice, output || tt('tool.noOutput'), nestedCdHint, advice].filter(Boolean).join('\n\n')),
+        redact([strippedNote, clampNotice, output || tt('tool.noOutput'), nestedCdHint, environmentHint, advice].filter(Boolean).join('\n\n')),
         settings.maxToolOutputBytes,
       ),
       approval: 'approved',
@@ -1795,7 +1801,7 @@ function success(summary: string, content: string): ToolExecutionResult {
  * 做法：把最外层的临时目录（`/tmp`、`$TMPDIR`、`~/…`）替换成工作区内的 `tmp/`。
  * 其它情况返回空串（不瞎猜）。
  */
-function pathRewriteSuggestion(command: string, roots: readonly string[], preferredRoot?: string): string {
+export function pathRewriteSuggestion(command: string, roots: readonly string[], preferredRoot?: string): string {
   const root = preferredRoot && roots.includes(preferredRoot) ? preferredRoot : roots[0];
   if (!root) return '';
   const directory = join(root, 'tmp');
@@ -1804,12 +1810,33 @@ function pathRewriteSuggestion(command: string, roots: readonly string[], prefer
    * 第一版把它吞掉了，于是 `tar czf /tmp/x.tgz` 被建议成 `tar czf/var/…/x.tgz` ——
    * 一条敲下去会更糟的命令，比不给建议还差。
    */
-  const pattern = /(^|[\s"'=])((?:\/tmp|\/var\/tmp|\$TMPDIR|~)(?:\/[^\s"']*)?)/;
-  const match = command.match(pattern);
-  if (!match) return '';
-  const [whole, prefix, path] = match;
-  const tail = (path ?? '').replace(/^(?:\/tmp|\/var\/tmp|\$TMPDIR|~)/, '');
-  const rewritten = command.replace(whole, `${prefix}${directory}${tail}`);
+  /*
+   * **替换所有出现的位置**，不是第一个。
+   *
+   * 真实故障（用户 2026-11-05 贴回的原样输出）：命令里 `/tmp` 出现两次
+   * （`cd /tmp` 和 `2>/tmp/pws-t.err`），建议只改了第一处：
+   *
+   *     cd <工作区>/tmp && … 2>/tmp/pws-t.err
+   *
+   * 照着敲仍然会被拦 —— 一条「改了但没用」的建议比不给建议更浪费时间。
+   */
+  // 前缀字符里必须带 `>`：`2>/tmp/x.err` 的 `/tmp` 前面是重定向符，漏掉它就会
+  // 出现「错误流仍写 /tmp」的半截建议（真实故障，2026-11-05）。
+  const pattern = /(^|[\s"'=>(])((?:\/tmp|\/var\/tmp|\$TMPDIR|~)(?:\/[^\s"']*)?)/g;
+  let rewritten = '';
+  let lastIndex = 0;
+  let replaced = 0;
+  for (const match of command.matchAll(pattern)) {
+    const [whole, prefix, path] = match;
+    const index = match.index ?? 0;
+    rewritten += command.slice(lastIndex, index);
+    const tail = (path ?? '').replace(/^(?:\/tmp|\/var\/tmp|\$TMPDIR|~)/, '');
+    rewritten += `${prefix}${directory}${tail}`;
+    lastIndex = index + whole.length;
+    replaced += 1;
+  }
+  if (!replaced) return '';
+  rewritten += command.slice(lastIndex);
   if (rewritten === command) return '';
   return tt('path.blockedSuggestion', { command: rewritten, directory });
 }

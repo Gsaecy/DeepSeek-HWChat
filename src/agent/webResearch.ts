@@ -22,6 +22,7 @@ import {
   ResearchHit,
 } from '../core/research';
 import { extractReadableContent } from './webExtract';
+import { KEYLESS_SOURCES, mergeHits, relaxedQueries, sourceQueries } from './searchFallbacks';
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
 const FETCH_TIMEOUT_MS = 20_000;
@@ -141,27 +142,99 @@ export async function fetchUrl(rawUrl: string, maxChars = MAX_TEXT_CHARS): Promi
 }
 
 /** 通用网页检索：Bing 的 RSS 输出（可解析、无需抓页面）。 */
+/**
+ * 网页检索：**多个来源并行**，合并去重。
+ *
+ * 旧实现只有一个后端（Bing 的 `format=rss`），而实测（2026-11-06）那个口子已经
+ * 不返回结果了：HTTP 200，但 channel 里**一个 `<item>` 都没有** —— 于是它对任何查询
+ * 都回「没有结果」，用户看到的是「网页检索没有结果」，其实工具坏了。
+ *
+ * 现在同时查：
+ *  - Bing RSS（历史来源，可能空；万一恢复就自动用上）
+ *  - Stack Overflow（`api.stackexchange.com`，无 key，技术问答命中最准）
+ *  - Hacker News（`hn.algolia.com`，无 key，用来找成熟实现与讨论）
+ * 任一来源失败不影响其它来源；全都空才回「没结果」，并说明**每个来源各自的情况**，
+ * 让模型知道该换哪条路，而不是盲目改查询。
+ */
 export async function searchWeb(query: string, limit = 8): Promise<WebFetchOutcome> {
   const text = String(query ?? '').trim();
   if (!text) return { ok: false, summary: '查询为空', content: 'query 不能为空。' };
-  const url = `https://www.bing.com/search?q=${encodeURIComponent(text)}&format=rss&count=${Math.min(Math.max(limit, 1), 20)}`;
-  try {
-    const response = await request(url, { headers: { 'user-agent': USER_AGENT, accept: 'application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.5' } }, SEARCH_TIMEOUT_MS);
-    if (!response.ok) {
-      return { ok: false, summary: describeHttpError(response.status), content: `检索失败：${describeHttpError(response.status)}。改用 search_github_repos 或直接 fetch_url 官方文档。` };
+  const capped = Math.min(Math.max(limit, 1), 20);
+  const notes: string[] = [];
+
+  const bing = (async () => {
+    const url = `https://www.bing.com/search?q=${encodeURIComponent(text)}&format=rss&count=${capped}`;
+    try {
+      const response = await request(url, { headers: { 'user-agent': USER_AGENT, accept: 'application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.5' } }, SEARCH_TIMEOUT_MS);
+      if (!response.ok) {
+        notes.push(`Bing RSS：${describeHttpError(response.status)}`);
+        return [];
+      }
+      const hits = parseFeedItems(await readCapped(response), capped).map((hit) => ({ ...hit, source: 'Web' }));
+      if (!hits.length) notes.push('Bing RSS：HTTP 200 但没有返回任何条目（这个接口已不产出结果）');
+      return hits;
+    } catch (error) {
+      notes.push(`Bing RSS：${error instanceof Error ? error.message : String(error)}`);
+      return [];
     }
-    const hits = parseFeedItems(await readCapped(response), limit);
+  })();
+
+  const queries = sourceQueries(text);
+  const others = KEYLESS_SOURCES.map(async (source) => {
+    /*
+     * 每个来源最多两次请求：原查询 → 最放宽的一档。
+     * 这两个来源和 GitHub 一样是**多词 AND** 语义（实测 HN 上
+     * `ScreenCaptureKit AVAssetWriter` 0 条、`ScreenCaptureKit` 16 条），
+     * 只试一次就会把「词太多」误报成「没有资料」。
+     */
+    for (const query of queries) {
+      const url = source.url(query, capped);
+      if (!url) continue;
+      try {
+        const response = await request(url, { headers: { 'user-agent': USER_AGENT, accept: 'application/json' } }, SEARCH_TIMEOUT_MS);
+        if (!response.ok) {
+          notes.push(`${source.label}：${describeHttpError(response.status)}`);
+          return [];
+        }
+        const hits = source.parse(await readCapped(response), capped).map((hit) => ({ ...hit, source: source.label }));
+        if (hits.length) return hits;
+      } catch (error) {
+        notes.push(`${source.label}：${error instanceof Error ? error.message : String(error)}`);
+        return [];
+      }
+    }
+    notes.push(`${source.label}：没有匹配（原查询与放宽查询都没有）`);
+    return [];
+  });
+
+  const lists = await Promise.all([bing, ...others]);
+  const hits = mergeHits(lists, capped);
+  if (!hits.length) {
     return {
-      ok: hits.length > 0,
-      summary: hits.length ? `网页检索：${hits.length} 条线索` : '网页检索没有结果',
-      content: hits.length
-        ? `${formatHits(hits, `网页检索「${text}」`)}\n\n提示：这些是**线索**。要下结论，请用 fetch_url 读官方文档或参考实现的原文。`
-        : `网页检索「${text}」没有返回结果。换个说法（含英文技术词）再试，或直接用 search_github_repos 找成熟项目。`,
+      ok: false,
+      summary: '网页检索没有结果',
+      content: [
+        `网页检索「${text}」在所有来源上都没有命中：`,
+        ...notes.map((note) => `- ${note}`),
+        '',
+        '不要再用同一句话重试。改走这几条路：先用 `search_github_repos` 找成熟实现（它会自动放宽关键词），',
+        '或者直接把官方文档/参考实现的 URL 交给 `fetch_url` 读原文。',
+      ].join('\n'),
     };
-  } catch (error) {
-    const message = error instanceof Error && error.name === 'AbortError' ? '超时' : error instanceof Error ? error.message : String(error);
-    return { ok: false, summary: '检索失败', content: `网页检索失败：${message}。改用 search_github_repos 或直接 fetch_url。` };
   }
+  const bySource = new Map<string, number>();
+  for (const hit of hits) bySource.set(hit.source, (bySource.get(hit.source) ?? 0) + 1);
+  const mix = [...bySource.entries()].map(([source, count]) => `${source} ${count}`).join(' · ');
+  return {
+    ok: true,
+    summary: `网页检索：${hits.length} 条线索（${mix}）`,
+    content: [
+      formatHits(hits.map((hit) => ({ ...hit, title: `[${hit.source}] ${hit.title}` })), `网页检索「${text}」`),
+      '',
+      '提示：这些是**线索**。要下结论，请用 `fetch_url` 读官方文档或参考实现的原文；问答帖只用来确认「别人也遇到这个」。',
+      notes.length ? `\n来源状态：\n${notes.map((note) => `- ${note}`).join('\n')}` : '',
+    ].filter(Boolean).join('\n'),
+  };
 }
 
 /** 找成熟项目：GitHub 仓库搜索（按星数排序）。 */
@@ -185,19 +258,54 @@ export async function searchGitHubRepos(query: string, options: { language?: str
     if (!response.ok) {
       return { ok: false, summary: describeHttpError(response.status), content: `GitHub 检索失败：${describeHttpError(response.status)}。` };
     }
-    const parsed = JSON.parse(await readCapped(response)) as unknown;
-    const hits: ResearchHit[] = parseGitHubRepos(parsed, limit);
-    const total = (parsed as { total_count?: unknown })?.total_count;
-    return {
-      ok: hits.length > 0,
-      summary: hits.length ? `相关项目：${hits.length} 个` : '没有匹配的项目',
-      content: hits.length
-        ? [
+    /*
+     * 命中 0 个时**自动放宽**关键词，而不是把「没结果」丢回给模型。
+     *
+     * GitHub 的仓库搜索对多个词是 AND 语义：六七个词全中的仓库几乎不存在。
+     * 实测（2026-11-06）`macOS screen recorder ScreenCaptureKit SCStream AVAssetWriter`
+     * → `total_count: 0`；而 `ScreenCaptureKit AVAssetWriter` 有 1 个、
+     * `ScreenCaptureKit` 有 780 个。也就是说放宽一次就有结果 —— 这一步不该让模型猜。
+     */
+    const attempts = relaxedQueries(text);
+    for (const attempt of attempts) {
+      const attemptQualifiers = [attempt.query];
+      if (options.language?.trim()) attemptQualifiers.push(`language:${options.language.trim()}`);
+      const attemptUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(attemptQualifiers.join(' '))}${sortParam}&per_page=${limit}`;
+      const attemptResponse = attempt === attempts[0]
+        ? response
+        : await request(attemptUrl, {
+          headers: {
+            'user-agent': USER_AGENT,
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28',
+          },
+        }, SEARCH_TIMEOUT_MS);
+      if (!attemptResponse.ok) {
+        return { ok: false, summary: describeHttpError(attemptResponse.status), content: `GitHub 检索失败：${describeHttpError(attemptResponse.status)}。` };
+      }
+      const parsed = JSON.parse(attempt === attempts[0] ? await readCapped(response) : await readCapped(attemptResponse)) as unknown;
+      const hits: ResearchHit[] = parseGitHubRepos(parsed, limit);
+      if (!hits.length) continue;
+      const total = (parsed as { total_count?: unknown })?.total_count;
+      const relaxed = attempt === attempts[0] ? '' : `\n（完整关键词「${text}」没有任何匹配，已自动放宽为「${attempt.query}」，${attempt.label}）`;
+      return {
+        ok: true,
+        summary: `相关项目：${hits.length} 个`,
+        content: [
           `${formatHits(hits, `GitHub 上与本任务相关的成熟项目（按${sort === 'updated' ? '最近更新' : '星数'}排序，共 ${typeof total === 'number' ? total : '?'} 个匹配）`)}`,
+          relaxed,
           '',
           '下一步：挑 1-2 个最贴近的，用 fetch_url 读它的 README（把 /blob/main/ 换成 raw.githubusercontent.com，或直接取仓库主页）看它实际的架构与取舍，再决定借什么。',
-        ].join('\n')
-        : `GitHub 上没有匹配「${qualifiers.join(' ')}」的项目。放宽关键词（去掉过细的限定词）再试。`,
+        ].filter(Boolean).join('\n'),
+      };
+    }
+    return {
+      ok: false,
+      summary: '没有匹配的项目',
+      content: [
+        `GitHub 上没有匹配「${text}」的项目，放宽到「${attempts[attempts.length - 1]?.query ?? text}」也没有。`,
+        '这说明该方向在 GitHub 上多半没有现成仓库，而不是关键词写错：改用 `search_web` 找讨论贴/问答，或直接 `fetch_url` 读官方文档。',
+      ].join('\n'),
     };
   } catch (error) {
     const message = error instanceof Error && error.name === 'AbortError' ? '超时' : error instanceof Error ? error.message : String(error);

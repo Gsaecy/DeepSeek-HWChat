@@ -71,3 +71,40 @@ export function stripRedundantLeadingCd(
   if (!last || last !== basename(resolve(cwd))) return { command };
   return { command: rest.trim(), removed: target };
 }
+
+/**
+ * 环境类失败的确定性提示：**命令没错，环境缺东西**。
+ *
+ * 现场（用户 2026-11-05，连着两条）：
+ *
+ *     /bin/sh: timeout: command not found          （macOS 自带没有 GNU timeout）
+ *     screencapture: capture error 这项操作无法完成  （屏幕录制没有授权）
+ *
+ * 这两条都不是「命令写错了」，但工具只把 stderr 原样还回去，模型只能换个写法再撞一次。
+ * 环境事实是静态可判的，直接说出来能省掉好几轮。
+ */
+export interface EnvironmentHint {
+  /** i18n 键，只描述**事实与做法**。 */
+  key: string;
+  values?: Record<string, string | number>;
+}
+
+/** macOS / Linux 的 `timeout` 存在性差异（只看命令文本，不探测系统路径）。 */
+export function commandEnvironmentHint(command: string, output: string, platform: string = process.platform): EnvironmentHint | undefined {
+  const text = `${command}\n${output}`;
+  // `timeout: command not found` / `timeout：未找到命令`：GNU coreutils 在 macOS 上默认不存在。
+  if (/(?:^|\s)timeout[:：]\s*(?:command not found|未找到命令|not found)/i.test(text)
+    || /\btimeout: command not found\b/i.test(text)) {
+    if (platform === 'darwin') return { key: 'tool.runCommand.noTimeoutMac' };
+    return { key: 'tool.runCommand.noTimeout' };
+  }
+  /*
+   * `screencapture -v` 失败几乎只有一个原因：运行它的进程没有「屏幕录制」权限。
+   * 实测（2026-11-05，macOS 15）未授权时输出 `screencapture: capture error 这项操作无法完成`，
+   * 而且**不会**自动弹权限请求 —— 必须手动到「系统设置 → 隐私与安全性 → 屏幕录制」勾选。
+   */
+  if (/screencapture\b/.test(command) && /capture error|无法完成|could not create image/i.test(output)) {
+    return { key: 'tool.runCommand.screenCapturePermission' };
+  }
+  return undefined;
+}

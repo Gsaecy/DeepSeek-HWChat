@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { commandPathViolation } from '../agent/commandPaths';
+import { pathRewriteSuggestion } from '../agent/toolExecutor';
 
 const roots = [
   '/Users/test/AI projects/DeepSeek-HWChat',
@@ -333,4 +334,29 @@ test('cd with a command substitution does not move the base (cannot be resolved 
 test('cd chain: each segment uses the cwd in effect at that point', () => {
   const command = `cd "${osRoot}" && cd src-tauri && cat ../tmp/ok.txt`;
   assert.equal(commandPathViolation(command, [osRoot], osRoot), undefined);
+});
+
+// ── 路径改写建议必须改**全部**出现的位置（2026-11-05 真实故障）──────────────
+/*
+ * 用户贴回的原样输出：命令里 `/tmp` 出现两次（`cd /tmp` 与 `2>/tmp/pws-t.err`），
+ * 建议只改了第一处 —— 照着敲仍然被拦，比不给建议更浪费时间。
+ */
+test('the rewrite suggestion fixes every temp path, not just the first', () => {
+  const command = 'cd /tmp && rm -f pws-t.mov && screencapture -v pws-t.mov 2>/tmp/pws-t.err; cat /tmp/pws-t.err';
+  // 先确认隔离确实拦下了它（否则测试会变成「改写一个本来就能跑的命令」）
+  assert.match(String(commandPathViolation(command, [osRoot], osRoot)), /不在当前工作区内/);
+  const suggestion = pathRewriteSuggestion(command, [osRoot]);
+  assert.match(suggestion, /Personal Workstation OS\/tmp/);
+  /*
+   * 建议里**每一个** `/tmp` 都必须属于工作区内那个临时目录 —— 只要还剩一处裸 `/tmp`，
+   * 照着敲仍然会被拦（这正是用户遇到的「改了但没用」）。
+   */
+  const tempMentions = (suggestion.match(/\/tmp\b/g) ?? []).length;
+  const insideWorkspace = (suggestion.match(/Personal Workstation OS\/tmp/g) ?? []).length;
+  assert.ok(tempMentions >= 3, suggestion);
+  assert.equal(insideWorkspace, tempMentions, `每一处 /tmp 都必须在工作区内：${suggestion}`);
+});
+
+test('a single temp path is still rewritten once', () => {
+  assert.match(pathRewriteSuggestion('cat /tmp/x.log', [osRoot]), /Personal Workstation OS\/tmp\/x\.log/);
 });

@@ -17,6 +17,7 @@ import { SkillRegistry, type PreparedSkillContext } from '../agent/skillRegistry
 import { classifyTaskRelation } from '../agent/taskRouter';
 import { reviewQueuedTasks } from '../agent/taskReview';
 import { AgentTaskQueue, type AgentTaskBinding, type AgentTaskUpdate, type TaskRelation } from '../agent/taskQueue';
+import { classifyAbort, isAbortLikeError } from '../agent/abortReason';
 import { resolveResumeScope } from '../agent/resumeScope';
 import { ToolExecutor, type ToolExecutionScope } from '../agent/toolExecutor';
 import { VscodeToolBridge } from '../agent/vscodeTools';
@@ -1959,7 +1960,21 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         }
       } catch (error) {
         await run.checkpointTail;
-        const cancelled = error instanceof RequestCancelledError || controller.signal.aborted;
+        /*
+         * 中止也算「停下」，不算失败（用户 2026-11-06 看到的是 `请求失败：aborted`）。
+         *
+         * 以前只认 `RequestCancelledError` 与 `signal.aborted`，其它 abort 形状
+         * （fetch 的 AbortError、我们等待辅助函数 reject 的 `Error('aborted')`、
+         * 以及 `AbortController.abort('aborted')` 传出去的字符串）都会落进「失败」分支，
+         * 把原始字符串直接拼到界面上。现在统一按 `isAbortLikeError` 判定，
+         * 并在日志里留下**原始**错误名与消息，事后可复盘。
+         */
+        const abortLike = isAbortLikeError(error);
+        const cancelled = error instanceof RequestCancelledError || controller.signal.aborted || abortLike;
+        if (abortLike && !(error instanceof RequestCancelledError)) {
+          const cause = classifyAbort(error, controller.signal.aborted);
+          this.log(`[abort] 运行中止（${cause}）：${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`);
+        }
         runOutcome = cancelled ? 'stopped' : 'failed';
         await taskQueue.finish(cancelled ? 'cancelled' : 'error', (state) => this.post({ type: 'taskTreeChanged', conversationId, taskTree: state }));
         const rootResponse = run.responses.get(rootTaskId);
@@ -1969,9 +1984,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         const retained = await this.retainPendingTasks(run);
         for (const response of run.responses.values()) {
           if (response.completed || retained.has(response.assistantMessageId)) continue;
+          /*
+           * 中止的说明按来源分开：超时该调大超时、网络该看代理、用户停止就是停止。
+           * 一律说「请求失败：aborted」等于什么都没说。
+           */
+          const abortNotice = abortLike ? tt(`chat.aborted.${classifyAbort(error, controller.signal.aborted)}`) : undefined;
           const fallback = response.activated
-            ? cancelled ? tt('chat.stopped') : tt('chat.requestFailed', { error: errorText })
-            : cancelled ? tt('chat.stoppedBeforeRun') : tt('chat.taskNotRun', { error: errorText });
+            ? (cancelled ? abortNotice ?? tt('chat.stopped') : tt('chat.requestFailed', { error: errorText }))
+            : (cancelled ? abortNotice ?? tt('chat.stoppedBeforeRun') : tt('chat.taskNotRun', { error: errorText }));
           await this.completeResponse(run, response, cancelled ? 'complete' : 'error', fallback);
         }
         if (!cancelled) {

@@ -2,7 +2,14 @@
 
 ## Unreleased
 
-- （下一版的内容写在这里）
+- **检索不再「明明有资料却说没有」，路径建议不再只改一半，环境缺口与中止都说清了**（用户 2026-11-05/06 连着贴回四段失败）。
+  - **① `search_web` 的后端已经死了**：它只查 Bing 的 `format=rss`，实测 HTTP 200 但 channel 里**一个 `<item>` 都没有** —— 于是对任何查询都回「网页检索没有结果」。现在同时查三个来源并合并去重：Bing RSS（万一恢复就自动用上）+ **Stack Overflow**（`api.stackexchange.com`，无 key）+ **Hacker News**（`hn.algolia.com`，无 key）。命中会标出来源（`[Stack Overflow] …`），全空时**逐个来源列出原因**并给出下一步，而不是一句「没结果」。
+    实测同一个查询 `ScreenCaptureKit AVAssetWriter`：Stack Overflow 4 条、HN 用放宽查询 5 条（正是「怎么用 SCStream + AVAssetWriter 录屏」需要的资料）。
+  - **② `search_github_repos` 命中 0 时自动放宽**：GitHub 仓库搜索是多词 **AND**。实测用户那条六词查询 `total_count: 0`，而 `ScreenCaptureKit AVAssetWriter` 有 1 个、`ScreenCaptureKit` 有 780 个。现在按「特异性」逐级放宽（API 名 / 含数字 / 大写缩写 / 标识符优先，普通英文词先丢），并在结果里写明「完整关键词 0 匹配，已放宽为 …」。两个无 key 来源也套用同一套放宽（HN 上原查询 0 条、放宽后 5 条）。
+  - **③ 路径改写建议改不全**：命令里 `/tmp` 出现两次（`cd /tmp` 与 `2>/tmp/pws-t.err`）时只改了第一处 —— 照着敲**仍然被拦**，比不给建议更浪费时间。现在遍历所有匹配；并把重定向前缀 `>` 纳入识别（`2>/tmp/x` 以前根本不匹配）。实测那条命令三处 `/tmp` 全部落到工作区 `tmp/`。
+  - **④ 环境类失败直接说清**：`timeout: command not found`（macOS 自带没有 GNU `timeout`）→ 指向 `brew install coreutils` / `gtimeout` / 后台跑 + 轮询；`screencapture: capture error` → **屏幕录制权限**没给（macOS 不会自动弹窗，勾选后还要重启进程）。这两条都不是「命令写错」，让模型换写法重试只会白跑。
+  - **⑤ `请求失败：aborted` 不再出现**：以前只把 `RequestCancelledError` 和 `signal.aborted` 当「停下」，其它 abort 形状（fetch 的 `AbortError`、等待辅助函数 reject 的 `Error('aborted')`、`abort('aborted')` 传出去的字符串）都落进失败分支，把原始字符串直接拼到界面上，日志里那一刻**一行都没有**。现在 `isAbortLikeError()` 统一判定（只看明确的取消信号，不误伤「消息里带 abort 字样」的业务报错），`classifyAbort()` 分出 timeout / network / user 三种来源分别给说法，并把**原始错误名与消息**写进日志。
+  - 守护：`searchFallbacks.test.ts` **13 条**、`abortReason.test.ts` **9 条**、`commandEnvironment.test.ts` **5 条**、`commandPaths.test.ts` 新增 **2 条**（全量改写 + 单处改写）；`check-search-and-env.mjs` **18 项**，其中两项**真的打网络**（Stack Overflow / HN 各验一次，离线时明确跳过而不是判红）。
 
 ## 0.4.1
 
