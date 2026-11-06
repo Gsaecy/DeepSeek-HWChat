@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { constraintsOf, mergeTaskNodes, renderTaskMemory, taskMark } from '../core/taskMemory';
+import { constraintsOf, mergeTaskNodes, newlyCompletedTodos, renderTaskMemory, taskMark, todoBaseline } from '../core/taskMemory';
 import { pruneToolPayloads } from '../agent/agentRunner';
 import type { AgentTaskNode, ChatRequestMessage } from '../core/types';
 
@@ -184,4 +184,37 @@ test('记忆块：未结束任务过多时也要有上限', () => {
   assert.match(memory, /排队任务 29/, '最近的任务要在');
   assert.ok(!/排队任务 0\b/.test(memory), '最早的那批要折叠');
   assert.match(memory, /older open task\(s\) not listed/);
+});
+
+/* ── 清单归属：按节点时间窗取差集 ─────────────────────────────────── */
+
+test('清单归属：节点期间新完成的条目才算它的变动', () => {
+  const baseline = todoBaseline([
+    { content: '读代码', status: 'completed' },
+    { content: '改代码', status: 'pending' },
+  ]);
+  assert.deepEqual(baseline, ['读代码']);
+  const done = newlyCompletedTodos(baseline, [
+    { content: '读代码', status: 'completed' },
+    { content: '改代码', status: 'completed' },
+    { content: '补测试', status: 'completed' },
+    { content: '同步文档', status: 'pending' },
+  ]);
+  assert.deepEqual(done.map((todo) => todo.content), ['改代码', '补测试']);
+});
+
+test('清单归属：同一条目不会同时算给两个节点', () => {
+  const todos = [
+    { content: '读代码', status: 'completed' as const },
+    { content: '改代码', status: 'completed' as const },
+  ];
+  const first = newlyCompletedTodos([], todos);
+  // 第二个节点开始时，前面做完的已经进了基线。
+  const second = newlyCompletedTodos(todoBaseline(todos), todos);
+  assert.deepEqual(first.map((todo) => todo.content), ['读代码', '改代码']);
+  assert.deepEqual(second, [], '已经归属过的条目不能再算一次');
+});
+
+test('清单归属：只有一行结论、没有清单时不硬造条目', () => {
+  assert.deepEqual(newlyCompletedTodos([], []), []);
 });

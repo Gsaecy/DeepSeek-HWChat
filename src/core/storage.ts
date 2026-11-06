@@ -14,6 +14,7 @@ import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { imageExtensionFor } from '../agent/attachmentOpen';
 import { ContextWindowBuilder, ContextWindowResult, lightForDigest } from './contextWindow';
+import { excerptAround, matchTokens, normalizeSearchText, recallTokens } from './searchText';
 import { isEmptyDraftConversation } from './conversationControls';
 import { createId, createOrderedId, previewText, shortTitle } from './ids';
 import { readJsonWithBackup, removeIfPresent, writeJsonAtomic } from './jsonFile';
@@ -28,6 +29,7 @@ import {
   ConversationSummary,
   ConversationMode,
   MessageContext,
+  RecallHit,
   MessageExecutionStatus,
   StorageStats,
   TodoArchive,
@@ -596,21 +598,87 @@ export class ConversationStorage {
    */
   async getContextWindow(
     conversationId: string,
-    budget: { maxMessages: number; maxBytes: number },
-  ): Promise<ContextWindowResult> {
+    budget: {
+      maxMessages: number;
+      maxBytes: number;
+      /**
+       * 这一轮要自动检索的关键词（来自用户刚说的那句话）。
+       *
+       * 用户的要求（2026-11-07）：「检索仍要靠模型主动调用，这个可以让 agent 自动执行」。
+       * 于是窗口外的记录在这里**顺手**打分，一次遍历就能捞出相关片段，
+       * 不必等模型想起来调工具，也不用把整段历史再读一遍。
+       */
+      recall?: { tokens: readonly string[]; limit?: number };
+    },
+  ): Promise<ContextWindowResult & { recall: RecallHit[] }> {
     await this.initialize();
     this.requireSummary(conversationId);
     // 从新到旧：`message_<时间戳>_<uuid>.json` 的字典序就是时间序。
     const files = (await this.messageFiles(conversationId)).sort((a, b) => b.localeCompare(a));
     const builder = new ContextWindowBuilder(budget);
     const dropped: ChatMessage[] = [];
+    const tokens = budget.recall?.tokens ?? [];
+    const limit = Math.max(1, budget.recall?.limit ?? 4);
+    const scored: RecallHit[] = [];
+    const sidecarCandidates: Array<{ id: string; role: ChatMessage['role']; createdAt: number }> = [];
     for (const file of files) {
       const message = await readJsonWithBackup<ChatMessage>(join(this.messageDirectory(conversationId), file));
       if (!message) continue;
-      if (!builder.offer(message)) dropped.push(lightForDigest(message));
+      if (builder.offer(message)) continue;
+      dropped.push(lightForDigest(message));
+      if (!tokens.length) continue;
+      const haystack = [
+        message.content,
+        ...(message.toolExecutions ?? []).flatMap((tool) => [tool.summary, tool.output]),
+        ...(message.attachments ?? []).map((attachment) => attachment.content),
+        message.context?.content,
+      ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\n');
+      const match = matchTokens(haystack, tokens);
+      if (match.score > 0) {
+        scored.push({
+          messageId: message.id,
+          role: message.role,
+          createdAt: message.createdAt,
+          excerpt: excerptAround(haystack, match.hits),
+          score: match.score,
+          hits: match.hits,
+          ...(existsSync(this.payloadPath(conversationId, message.id)) ? { hasDetail: true as const } : {}),
+        });
+      } else if (existsSync(this.payloadPath(conversationId, message.id))) {
+        // 正文没命中但重字段被归档过：错误原文往往就在这里面，留几个候选取一次。
+        sidecarCandidates.push({ id: message.id, role: message.role, createdAt: message.createdAt });
+      }
     }
+    if (tokens.length && scored.length < limit && sidecarCandidates.length) {
+      for (const candidate of sidecarCandidates.slice(0, 5)) {
+        const detail = await readJsonWithBackup<{
+          tools?: Array<{ summary?: string; input?: string; output?: string }>;
+          attachments?: Array<{ content?: string }>;
+        }>(this.payloadPath(conversationId, candidate.id));
+        if (!detail) continue;
+        const haystack = [
+          ...(detail.tools ?? []).flatMap((tool) => [tool.summary, tool.input, tool.output]),
+          ...(detail.attachments ?? []).map((item) => item.content),
+        ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\n');
+        const match = matchTokens(haystack, tokens);
+        if (match.score > 0) {
+          scored.push({
+            messageId: candidate.id,
+            role: candidate.role,
+            createdAt: candidate.createdAt,
+            excerpt: excerptAround(haystack, match.hits),
+            score: match.score,
+            hits: match.hits,
+            hasDetail: true,
+          });
+        }
+      }
+    }
+    const recall = scored
+      .sort((left, right) => (right.score - left.score) || (right.createdAt - left.createdAt))
+      .slice(0, limit);
     const window = builder.result();
-    return { ...window, dropped: dropped.reverse() };
+    return { ...window, dropped: dropped.reverse(), recall };
   }
 
   /**
@@ -721,7 +789,8 @@ export class ConversationStorage {
   async searchConversationMessages(conversationId: string, query = '', limit = 12): Promise<ConversationHistoryHit[]> {
     await this.initialize();
     this.requireSummary(conversationId);
-    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const rawQuery = query.trim();
+    const normalizedQuery = normalizeSearchText(rawQuery);
     const cappedLimit = Math.min(30, Math.max(1, Math.floor(limit) || 12));
     const files = (await this.messageFiles(conversationId)).sort((a, b) => b.localeCompare(a));
     const hits: ConversationHistoryHit[] = [];
@@ -734,7 +803,16 @@ export class ConversationStorage {
         ...(message.toolExecutions ?? []).flatMap((tool) => [tool.summary, tool.output, ...(tool.changedFiles ?? [])]),
         ...(message.usedSkills ?? []).flatMap((skill) => [skill.name, skill.relativePath]),
       ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\n');
-      let matched = !normalizedQuery || searchable.toLocaleLowerCase().includes(normalizedQuery);
+      /*
+       * 关键词做成模糊匹配（用户 2026-11-07 的要求）：先按整串命中，
+       * 不行再按取词打分——用户问「胶囊」，记录里写「录制条胶囊状态」也要能中。
+       */
+      const queryTokens = normalizedQuery ? recallTokens(rawQuery, 12) : [];
+      const fuzzy = (text: string): boolean => {
+        if (normalizeSearchText(text).includes(normalizedQuery)) return true;
+        return queryTokens.length > 0 && matchTokens(text, queryTokens).score >= 0.5;
+      };
+      let matched = !normalizedQuery || fuzzy(searchable);
       /*
        * 正文没有命中时，再翻一下 `payloads/`（清理时搬走的工具输出/附件正文）。
        * 不翻这一步的话，「那轮到底报了什么错」这种只有工具输出里才有的关键词
@@ -752,7 +830,7 @@ export class ConversationStorage {
             ...(detail.tools ?? []).flatMap((tool) => [tool.summary, tool.input, tool.output]),
             ...(detail.attachments ?? []).map((item) => item.content),
           ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\n');
-          matched = !normalizedQuery || archiveText.toLocaleLowerCase().includes(normalizedQuery);
+          matched = !normalizedQuery || fuzzy(archiveText);
         }
       }
       if (!matched) continue;
@@ -2022,6 +2100,11 @@ function normalizeTaskNodes(value: unknown): AgentTaskNode[] {
       userMessageId: typeof node.userMessageId === 'string' ? node.userMessageId : undefined,
       assistantMessageId: typeof node.assistantMessageId === 'string' ? node.assistantMessageId : undefined,
       summary: typeof node.summary === 'string' && node.summary.trim() ? node.summary.trim().slice(0, 200) : undefined,
+      todos: Array.isArray(node.todos)
+        ? node.todos.filter((item) => item && typeof item.content === 'string' && item.content.trim())
+          .slice(0, 20)
+          .map((item) => ({ content: item.content.trim().slice(0, 120), status: item.status }))
+        : undefined,
       constraints: Array.isArray(node.constraints)
         ? node.constraints.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => item.trim().slice(0, 120)).slice(0, 3)
         : undefined,

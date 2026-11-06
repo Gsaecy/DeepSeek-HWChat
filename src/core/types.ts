@@ -185,6 +185,14 @@ export interface AgentTaskNode {
    * 这是「记忆只剩结果」最典型的翻车方式，所以约束要单独摘、单独渲染。
    */
   constraints?: string[];
+  /**
+   * 这条任务完成时清单里已经做完的条目 —— 相当于「对这条任务的回复」。
+   *
+   * 用户的说法（2026-11-07）：「任务树里包含约束，任务清单执行的就相当于是结果
+   * 结论或者变动总结，就是对任务树的回复」。所以结论除了从回复里摘一句，
+   * 也会记下清单实际执行了哪几项。
+   */
+  todos?: TodoItem[];
 }
 
 export interface AgentTaskTreeState {
@@ -312,6 +320,25 @@ export interface ConversationSummary {
    * 下一轮开始时按原顺序放回任务队列继续执行，直到全部读过为止。
    */
   pendingTaskIds?: string[];
+}
+
+/**
+ * 自动检索命中：宿主在切窗口时顺手把「和本轮相关」的旧记录捞出来。
+ *
+ * 用户的要求（2026-11-07）：「检索仍要靠模型主动调用，这个可以让 agent 自动执行」。
+ */
+export interface RecallHit {
+  messageId: string;
+  role: MessageRole;
+  createdAt: number;
+  /** 命中位置附近的一小段原文。 */
+  excerpt: string;
+  /** 0–1，命中的检索词占多少（长词加权）。 */
+  score: number;
+  /** 具体命中了哪些词，便于在提示里说明「为什么捞它」。 */
+  hits: string[];
+  /** 这条消息的重字段在 `payloads/` 里，可再用 read_message_detail 展开。 */
+  hasDetail?: boolean;
 }
 
 export interface ConversationHistoryHit {

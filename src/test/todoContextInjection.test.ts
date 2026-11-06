@@ -19,7 +19,11 @@ interface RequestMessage {
 }
 
 /** 只实现 `requestMessages()` 真正用到的那几个成员。 */
-function fakePanel(conversation: Record<string, unknown>, stored: Record<string, unknown>[] = []): {
+function fakePanel(
+  conversation: Record<string, unknown>,
+  stored: Record<string, unknown>[] = [],
+  recall: Array<Record<string, unknown>> = [],
+): {
   requestMessages: (resumed?: boolean, current?: { messageId?: string; content: string; attachments: unknown[] }) => Promise<RequestMessage[]>;
 } {
   const storage = {
@@ -32,6 +36,7 @@ function fakePanel(conversation: Record<string, unknown>, stored: Record<string,
       ],
       dropped: [],
       bytes: 0,
+      recall,
     }),
     getConversation: async () => conversation,
   };
@@ -161,4 +166,54 @@ test('requestMessages：窗口读空时直接补上本轮内容，绝不发出�
   const users = messages.filter((message) => message.role === 'user');
   assert.equal(users.length, 1, '用户刚说的话必须出现在请求里');
   assert.match(String(users[0]!.content), /录制状态和停止按钮胶囊/);
+});
+
+/** 自动检索：宿主自己把旧记录捞出来，不等模型调工具。 */
+test('requestMessages：自动检索到的旧片段进 system', async () => {
+  const [system] = await fakePanel(
+    { id: 'c1' },
+    [],
+    [{
+      messageId: 'message_1793980095744_old',
+      role: 'user',
+      createdAt: Date.UTC(2026, 10, 6, 23, 48),
+      excerpt: '录制胶囊的停止按钮不见了，报错 SCStreamError -3801',
+      score: 0.8,
+      hits: ['胶囊', 'scstream'],
+      hasDetail: true,
+    }],
+  ).requestMessages(true, { messageId: 'u-new', content: '胶囊那个报错是什么', attachments: [] });
+  assert.match(system!.content, /<auto_recall>/);
+  assert.match(system!.content, /SCStreamError -3801/);
+  assert.match(system!.content, /message_1793980095744_old/);
+  assert.match(system!.content, /read_message_detail/);
+});
+
+/** 多义：一句话对上多条任务时，要求模型先问用户怎么称呼。 */
+test('requestMessages：术语冲突时要求先问用户', async () => {
+  const [system] = await fakePanel({
+    id: 'c1',
+    taskNodes: [
+      { id: 't1', title: '改录制胶囊', status: 'complete', relation: 'root' },
+      { id: 't2', title: '拖动区域胶囊', status: 'complete', relation: 'root' },
+    ],
+  }).requestMessages(true, { messageId: 'u-new', content: '把胶囊挪一下', attachments: [] });
+  assert.match(system!.content, /<term_conflict>/);
+  assert.match(system!.content, /改录制胶囊 \/ 拖动区域胶囊|拖动区域胶囊 \/ 改录制胶囊/);
+  assert.match(system!.content, /Ask the user which one they mean/);
+});
+
+/** 多义但有限定词：不要打断用户，说明假设后继续。 */
+test('requestMessages：能区分时说明假设而不是反问', async () => {
+  const [system] = await fakePanel({
+    id: 'c1',
+    taskNodes: [
+      { id: 't1', title: '改录制胶囊', status: 'complete', relation: 'root' },
+      { id: 't2', title: '拖动区域胶囊', status: 'complete', relation: 'root' },
+    ],
+  }).requestMessages(true, { messageId: 'u-new', content: '拖动区域胶囊那个还要再改一下', attachments: [] });
+  assert.match(system!.content, /<term_assumption>/);
+  assert.match(system!.content, /最可能指「拖动区域胶囊」/);
+  assert.match(system!.content, /say which one you took/);
+  assert.doesNotMatch(system!.content, /<term_conflict>/);
 });

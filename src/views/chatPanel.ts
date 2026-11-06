@@ -36,7 +36,8 @@ import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChange
 import { hasApiKey } from '../core/apiKeys';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
 import { outcomeOf, renderWorkDigest, requestPayloadOf } from '../core/contextWindow';
-import { constraintsOf, mergeTaskNodes, renderTaskMemory } from '../core/taskMemory';
+import { constraintsOf, mergeTaskNodes, newlyCompletedTodos, renderTaskMemory, todoBaseline } from '../core/taskMemory';
+import { recallTokens, resolveAmbiguousTerms } from '../core/searchText';
 import { withInternetReference } from '../core/research';
 import { checkReuseLimits, planAttachmentReuse } from '../core/attachmentReuse';
 import {
@@ -479,6 +480,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   private readonly runs = new Map<string, ConversationRun>();
   /** 任务记忆的写盘去抖：一次运行里任务树会变很多次，不必每次都写 manifest。 */
   private readonly pendingTaskMemory = new Map<string, { timer: ReturnType<typeof setTimeout>; nodes: AgentTaskNode[] }>();
+  /**
+   * 每个任务节点开始时的清单快照（对话 id → 节点 id → 已完成的条目内容）。
+   * 结束时取差集，才知道**这条任务**到底做了哪几项，而不是把整份清单挂给所有节点。
+   */
+  private readonly todoBaselines = new Map<string, Map<string, string[]>>();
   /** 等待用户在面板里点「允许一次 / 拒绝」的工具授权。 */
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingDecisions = new Map<string, PendingDecision>();
@@ -2459,9 +2465,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const maxMessages = settings.maxMessagesInContext > 0
       ? settings.maxMessagesInContext
       : CONTEXT_WINDOW_MESSAGES;
+    /*
+     * 自动检索：关键词直接取自用户这一轮的原话，由宿主自己搜，不等模型调工具。
+     * 用户 2026-11-07 的要求：「检索仍要靠模型主动调用，这个可以让 agent 自动执行」。
+     */
+    const recallTokensForTurn = recallTokens(current?.content ?? '', 12);
     const window = await this.storage.getContextWindow(conversationId, {
       maxMessages,
       maxBytes: CONTEXT_WINDOW_BYTES,
+      recall: { tokens: recallTokensForTurn, limit: 4 },
     });
     const stored = window.messages;
     const conversation = await this.storage.getConversation(conversationId);
@@ -2518,6 +2530,50 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
      * 所以这里注入的是**任务记忆**（每轮都给，不依赖窗口里还剩多少条消息）；
      * 只有当这条对话还没有任务记忆（本次改动之前建的对话）时，才退回按消息配对的摘要。
      */
+    /*
+     * 记忆 <-> 原文之间的一层：这一轮自动捞出来的旧片段。
+     *
+     * 只放片段和 messageId，细节让模型按需 `read_message_detail` 展开 ——
+     * 自动检索的目的是「别忘了曾经做过」，不是把全文再灌一遍。
+     */
+    const autoRecall = (window.recall ?? []).length
+      ? [
+        '<auto_recall>',
+        `The host searched the full record automatically for this turn (terms: ${recallTokensForTurn.slice(0, 6).join(' / ')}). These earlier excerpts look relevant:`,
+        ...(window.recall ?? []).map((hit) => `- [${new Date(hit.createdAt).toISOString().slice(0, 16).replace('T', ' ')}] ${hit.role}: ${hit.excerpt}（messageId: ${hit.messageId}${hit.hasDetail ? '，可用 read_message_detail 展开工具输出' : ''}）`),
+        'Use them as evidence of what was already done. Open one with read_message_detail only when the exact wording or tool output matters.',
+        '</auto_recall>',
+      ].join('\n')
+      : '';
+    /*
+     * 同名不同事：用户说「胶囊」，对话里可能既有「录制胶囊」也有「拖动区域胶囊」。
+     * 用户的要求是「需要让用户确定称呼，agent 可以主动问来确定」，所以这里把冲突
+     * 明确列出来，并要求先问再动手。
+     */
+    const resolutions = resolveAmbiguousTerms(
+      recallTokensForTurn,
+      (conversation?.taskNodes ?? []).map((node) => node.title),
+    ).filter((item) => item.term.length >= 2).slice(0, 2);
+    const asks = resolutions.filter((item) => item.mode === 'ask');
+    const assumptions = resolutions.filter((item) => item.mode === 'assume');
+    const termConflict = [
+      asks.length
+        ? [
+          '<term_conflict>',
+          ...asks.map((item) => `「${item.term}」在这条对话里对应多条同样相关的任务：${item.candidates.join(' / ')}（命中限定词 ${item.scores.join(' / ')} 个）。`),
+          'Ask the user which one they mean before changing code — do not guess.',
+          '</term_conflict>',
+        ].join('\n')
+        : '',
+      assumptions.length
+        ? [
+          '<term_assumption>',
+          ...assumptions.map((item) => `「${item.term}」最可能指「${item.chosen}」（命中限定词 ${item.scores.join(' / ')} 个）。`),
+          'Proceed on that reading, but say which one you took in your reply so the user can correct you without a round trip.',
+          '</term_assumption>',
+        ].join('\n')
+        : '',
+    ].filter(Boolean).join('\n');
     const runTree = this.runs.get(conversationId)?.taskQueue.state();
     const taskMemory = renderTaskMemory({
       nodes: conversation?.taskNodes,
@@ -2539,6 +2595,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         playbookDirective,
         todoContext,
         taskMemory,
+        autoRecall,
+        termConflict,
         workDigest,
       ]
         .filter(Boolean)
@@ -3470,7 +3528,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async postTaskTree(queue: AgentTaskQueue, conversationId: string): Promise<void> {
-    const tree = this.taskTreeWithOutcomes(queue.state(), conversationId);
+    const conversation = await this.storage.getConversation(conversationId).catch(() => undefined);
+    const tree = this.taskTreeWithOutcomes(queue.state(), conversationId, conversation?.todos ?? []);
     await this.post({ type: 'taskTreeChanged', conversationId, taskTree: tree });
     this.persistTaskMemory(conversationId, tree.nodes);
   }
@@ -3482,13 +3541,35 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 这是任务树能当记忆用的前提：只有标题的话，模型只记得「做过什么」，
    * 不记得「做成了什么」。
    */
-  private taskTreeWithOutcomes(tree: AgentTaskTreeState, conversationId: string): AgentTaskTreeState {
+  private taskTreeWithOutcomes(
+    tree: AgentTaskTreeState,
+    conversationId: string,
+    todos: readonly TodoItem[] = [],
+  ): AgentTaskTreeState {
     const responses = this.runs.get(conversationId)?.responses;
-    if (!responses) return tree;
+    /*
+     * 清单是**对话级**的，多个任务节点共用同一份；把整份清单挂到每个节点上会让
+     * 记忆里每个任务都写着同一串条目（又长又假）。正确做法是按节点时间窗取差集：
+     * 节点开始时拍一份基线，结束时只记「这段时间里新完成的条目」。
+     */
+    const baselines = this.todoBaselines.get(conversationId) ?? new Map<string, string[]>();
+    this.todoBaselines.set(conversationId, baselines);
+    const isDone = (status: AgentTaskNode['status']): boolean => status === 'complete' || status === 'error' || status === 'cancelled';
+    const todosFor = (nodeId: string): TodoItem[] | undefined => {
+      const baseline = baselines.get(nodeId);
+      if (!baseline) return undefined;
+      const done = newlyCompletedTodos(baseline, todos);
+      return done.length ? done : undefined;
+    };
+    for (const node of tree.nodes) {
+      if (isDone(node.status)) continue;
+      if (!baselines.has(node.id)) baselines.set(node.id, todoBaseline(todos));
+    }
+    if (!responses && tree.nodes.length === 0) return tree;
     return {
       ...tree,
       nodes: tree.nodes.map((node) => {
-        const content = responses.get(node.id)?.content;
+        const content = responses?.get(node.id)?.content;
         const summary = node.summary || (content ? outcomeOf(content) : '');
         /*
          * 约束优先从**用户原话**里摘（节点标题就是那句请求），回复里的约束作补充。
@@ -3497,12 +3578,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         const constraints = node.constraints?.length
           ? node.constraints
           : constraintsOf([node.title, content]);
+        const attached = node.todos?.length ? undefined : todosFor(node.id);
         const next = {
           ...node,
           ...(summary ? { summary } : {}),
           ...(constraints.length ? { constraints } : {}),
+          ...(attached ? { todos: attached } : {}),
         };
-        return summary || constraints.length ? next : node;
+        return summary || constraints.length || attached ? next : node;
       }),
     };
   }
@@ -3537,6 +3620,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const conversation = await this.storage.getConversation(conversationId).catch(() => undefined);
     const merged = mergeTaskNodes(conversation?.taskNodes, nodes);
     if (!merged.length) return;
+    // 每个节点的清单变动在 `taskTreeWithOutcomes` 里按时间窗算好，这里不再广播整份清单。
     await this.storage.updateConversation(conversationId, { taskNodes: merged }).catch(() => undefined);
   }
 

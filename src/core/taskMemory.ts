@@ -67,6 +67,28 @@ export function constraintsOf(texts: readonly (string | undefined)[], limit = CO
   return found;
 }
 
+/**
+ * 清单变动：这条任务期间**新完成**的条目。
+ *
+ * 清单是对话级的，几个任务会共用同一份；直接把整份挂到每个节点上，记忆里
+ * 每个任务都会写着同一串条目（又长又假）。所以按节点时间窗取差集：
+ * `baseline` 是节点开始时已经完成的条目内容。
+ */
+export function newlyCompletedTodos(
+  baseline: readonly string[],
+  todos: readonly TodoItem[],
+): TodoItem[] {
+  const seen = new Set(baseline.map((item) => item.trim()));
+  return (todos ?? [])
+    .filter((todo) => todo?.content?.trim() && todo.status === 'completed' && !seen.has(todo.content.trim()))
+    .map((todo) => ({ ...todo }));
+}
+
+/** 节点开始时的清单基线（只要已完成的条目内容）。 */
+export function todoBaseline(todos: readonly TodoItem[]): string[] {
+  return (todos ?? []).filter((todo) => todo?.status === 'completed').map((todo) => todo.content.trim());
+}
+
 /** 任务状态 → 记忆里那一行的标记。 */
 export function taskMark(status: AgentTaskNode['status']): string {
   switch (status) {
@@ -102,6 +124,7 @@ export function mergeTaskNodes(
         ...node,
         summary: node.summary ?? previous.summary,
         constraints: node.constraints?.length ? node.constraints : previous.constraints,
+        todos: node.todos?.length ? node.todos : previous.todos,
         userMessageId: node.userMessageId ?? previous.userMessageId,
         assistantMessageId: node.assistantMessageId ?? previous.assistantMessageId,
       });
@@ -155,10 +178,23 @@ export function renderTaskMemory(input: TaskMemoryInput): string {
   const constraintText = (node: AgentTaskNode): string => (node.constraints?.length
     ? ` ｜ 约束：${node.constraints.map((item) => oneLine(item, 70)).join('；')}`
     : '');
+  /*
+   * 清单执行结果就是这条任务的「变动总结」：把做完的条目列出来，
+   * 比只写一句「已修复」更能让下一轮知道到底动了哪些地方。
+   */
+  const todoText = (node: AgentTaskNode): string => {
+    const items = (node.todos ?? []).filter((todo) => todo?.content?.trim());
+    if (!items.length) return '';
+    const done = items.filter((todo) => todo.status === 'completed');
+    if (!done.length) return '';
+    const names = done.slice(0, 4).map((todo) => oneLine(todo.content, 40)).join('、');
+    const more = done.length > 4 ? ` 等 ${done.length} 项` : '';
+    return ` ｜ 清单：${names}${more}（${done.length}/${items.length} 完成）`;
+  };
   const finishedLines = shownFinished.map((node) => {
     const mark = taskMark(node.status);
     const outcome = node.summary?.trim() ? ` — ${oneLine(node.summary)}` : '';
-    return `- ${mark} ${oneLine(node.title)}${outcome}${constraintText(node)}`;
+    return `- ${mark} ${oneLine(node.title)}${outcome}${constraintText(node)}${todoText(node)}`;
   });
   const shownOpen = open.slice(-OPEN_LIMIT);
   const hiddenOpen = open.length - shownOpen.length;

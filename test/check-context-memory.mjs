@@ -144,6 +144,39 @@ check(
   /searchConversationMessages\(conversation\.id, query, limit\)/.test(PANEL),
 );
 check(
+  '自动检索：窗口外的旧记录由宿主自己捞（不等模型调工具）',
+  /recall\?: \{ tokens: readonly string\[\]; limit\?: number \}/.test(STORAGE)
+    && /recallTokensForTurn/.test(PANEL)
+    && /<auto_recall>/.test(PANEL),
+);
+check(
+  '自动检索会翻 payloads/（报错原文常只在工具输出里）',
+  /sidecarCandidates/.test(STORAGE),
+);
+check(
+  '关键词模糊匹配（换说法也能命中）',
+  /export function matchTokens/.test(read('src/core/searchText.ts'))
+    && /matchTokens\(text, queryTokens\)\.score >= 0\.5/.test(STORAGE),
+);
+check(
+  '多义术语：分不清就问，分得清就说明假设（不打断用户）',
+  /export function resolveAmbiguousTerms/.test(read('src/core/searchText.ts'))
+    && /<term_conflict>/.test(PANEL)
+    && /<term_assumption>/.test(PANEL),
+);
+check(
+  '清单归属按节点时间窗取差集（不再广播整份清单）',
+  /export function newlyCompletedTodos/.test(MEMORY)
+    && /const baselines = this\.todoBaselines/.test(PANEL)
+    && !/doneTodos/.test(PANEL),
+);
+check(
+  '清单执行结果当成任务的变动总结',
+  /todos\?: TodoItem\[\]/.test(read('src/core/types.ts'))
+    && /清单：/.test(MEMORY)
+    && /newlyCompletedTodos\(baseline, todos\)/.test(PANEL),
+);
+check(
   '记忆块明确告诉模型「记不清就查原文」',
   /search_conversation_history/.test(MEMORY),
 );
