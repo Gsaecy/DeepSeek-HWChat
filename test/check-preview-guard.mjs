@@ -151,6 +151,12 @@ try {
   check('真实 python 静态服务上重复探测仍然可达', again.reachable === true);
 } finally {
   if (server.pid) {
+    // 等进程真的退出再继续：SIGKILL 只是「已投递」，端口可能还开着几毫秒到几百毫秒。
+    // 以前不等就直接轮询 3 秒，机器一忙就会偶发把「端口还开着」判成失败（实测出现过）。
+    const exited = new Promise((resolve) => {
+      server.once('exit', resolve);
+      setTimeout(resolve, 5_000);
+    });
     try {
       process.kill(-server.pid, 'SIGKILL');
     } catch {
@@ -160,13 +166,14 @@ try {
         /* 已经退出 */
       }
     }
+    await exited;
   }
 }
 
-// 进程刚被 SIGKILL 时端口关掉需要几毫秒，轮询到「真的没人监听」再断言。
+// 再轮询到「真的没人监听」：进程退出与 socket 真正关闭之间还有极短的时间差。
 let down = await probePreviewEndpoint(`http://127.0.0.1:${port}/`, 800);
-for (let attempt = 0; attempt < 25 && down.reachable; attempt += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 120));
+for (let attempt = 0; attempt < 40 && down.reachable; attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 150));
   down = await probePreviewEndpoint(`http://127.0.0.1:${port}/`, 800);
 }
 check(`服务停掉后探针报「没有服务」（${down.code ?? 'reachable'}）`, down.reachable === false && down.code === 'ECONNREFUSED');

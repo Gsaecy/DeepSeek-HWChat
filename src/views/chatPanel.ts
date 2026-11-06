@@ -1220,7 +1220,40 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
             break;
           }
           this.pendingDecisions.delete(message.requestId);
-          pending.resolve(Number.isInteger(message.chosenIndex) ? message.chosenIndex! : -1);
+          const chosenIndex = Number.isInteger(message.chosenIndex) ? message.chosenIndex! : -1;
+          /*
+           * 选了某个方案也要在对话里留下一条气泡（用户 2026-11-06：「我的回答也需要显示成消息气泡」）。
+           * 顺手把这一刻还挂在输入框里的附件一并带上 —— 用户「边选边贴图」时那些图不能丢。
+           */
+          const chosen = pending.request.options[chosenIndex];
+          if (chosen) {
+            const attachments = this.pendingAttachments.map((item) => ({ ...item }));
+            const context = this.pendingContext;
+            this.pendingAttachments = [];
+            this.pendingContext = undefined;
+            const manifest: string[] = [];
+            for (const attachment of attachments) {
+              try {
+                if (attachment.kind === 'image' && attachment.dataBase64) {
+                  const file = await this.attachmentCacheUri(attachment, attachment.dataBase64);
+                  manifest.push(`- 图片「${attachment.label}」已保存到：${file.fsPath}`);
+                  continue;
+                }
+                if (attachment.path) manifest.push(`- 文件「${attachment.label}」：${attachment.path}`);
+              } catch {
+                manifest.push(`- 附件「${attachment.label}」保存失败`);
+              }
+            }
+            const label = tt('decision.choiceMessage', { title: chosen.title });
+            await this.recordDecisionAnswer(pending.conversationId, {
+              content: label,
+              context,
+              attachments,
+              answer: [label, ...manifest].join('\n'),
+            });
+            await this.post({ type: 'attachments', attachments: this.pendingAttachmentsForWebview() });
+          }
+          pending.resolve(chosenIndex);
           await this.post({ type: 'decisionResolved', requestId: message.requestId });
           break;
         }
@@ -1420,11 +1453,18 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
      * 不会来。不拦截的话，用户"我自己想了个方案"只会安静地排进队列，看起来就是
      * agent 卡死。
      */
-    if (content && run && this.answerDecisionWithText(run.conversationId, content)) {
-      this.pendingContext = undefined;
-      this.pendingAttachments = [];
-      await this.post({ type: 'attachments', attachments: this.pendingAttachmentsForWebview() });
-      return;
+    /*
+     * 有方案卡片等着拍板时，这句话就是答案。
+     *
+     * **附件也要一起进去**（真实反馈 2026-11-06：「hwchat 让我选择方案的时候我发的附件，
+     * 存在哪里了」）—— 旧实现只把文本交给决策，然后把 `pendingAttachments` 直接清空：
+     * 附件既没进消息存档、也没写进任何文件，等于凭空消失。用户还以为 agent 能看到那张图。
+     * 现在：附件先落到真实路径（粘贴的图片写进 `attachment-cache`，磁盘文件用原路径），
+     * 把清单写进答案正文，用户消息也照常落库，于是「图在哪 / 模型看到了什么」都可查。
+     */
+    if (run && (content || this.pendingAttachments.length)) {
+      const answered = await this.answerDecisionWithAttachments(run.conversationId, content);
+      if (answered) return;
     }
     if (!run || !run.taskQueue.isAccepting()) {
       if (content) await this.post({ type: 'toast', tone: 'warning', text: tt('notice.agentFinishing') });
@@ -4968,12 +5008,84 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    *
    * 返回 `true` 表示这句话已经被当成方案答案吃掉了（不要再排队成新任务）。
    */
-  private answerDecisionWithText(conversationId: string, text: string): boolean {
+  private async answerDecisionWithAttachments(conversationId: string, text: string): Promise<boolean> {
     const pending = [...this.pendingDecisions.values()].find((item) => item.conversationId === conversationId);
     if (!pending) return false;
+    const context = this.pendingContext;
+    const attachments = this.pendingAttachments.map((item) => ({ ...item }));
+    this.pendingContext = undefined;
+    this.pendingAttachments = [];
+    /*
+     * 先把附件变成**真实路径**，再把清单拼进答案。
+     *
+     * 决策卡片的返回是工具结果（纯文本），图片没法直接塞进去；但把它落成文件、把路径
+     * 告诉模型，模型就能用 `read_file` / 命令去看 —— 而用户也能在对话里点开同一条消息。
+     * 磁盘上选的文件不复制（用原路径），于是不会凭空多出一份副本。
+     */
+    const manifest: string[] = [];
+    for (const attachment of attachments) {
+      try {
+        if (attachment.kind === 'image' && attachment.dataBase64) {
+          const file = await this.attachmentCacheUri(attachment, attachment.dataBase64);
+          manifest.push(`- 图片「${attachment.label}」已保存到：${file.fsPath}`);
+          continue;
+        }
+        if (attachment.path) {
+          manifest.push(`- 文件「${attachment.label}」：${attachment.path}`);
+          continue;
+        }
+        if (typeof attachment.content === 'string' && attachment.content) {
+          manifest.push(`- 文本「${attachment.label}」（${attachment.bytes ?? attachment.content.length} 字节）：${attachment.content.slice(0, 2_000)}`);
+        }
+      } catch (error) {
+        manifest.push(`- 附件「${attachment.label}」保存失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const answer = manifest.length
+      ? [text, '', '用户同时附上了这些内容（用来回答上面的问题）：', ...manifest].filter(Boolean).join('\n')
+      : text;
+    // 用户这句话本身也要成为一条气泡（不能让「我的回答」只在工具结果里出现）。
+    await this.recordDecisionAnswer(conversationId, {
+      content: text || tt('notice.processAttachments'),
+      context,
+      attachments,
+      answer,
+    });
     void this.post({ type: 'decisionResolved', requestId: pending.request.requestId });
-    pending.resolve(-1, text);
+    pending.resolve(-1, answer);
     return true;
+  }
+
+  /**
+   * 把「用户对方案卡片的回答」记成一条真正的用户消息。
+   *
+   * 用户要求（2026-11-06）：「选择方案的时候，我的回答也需要显示成消息气泡，不能消失，包括附件」。
+   *
+   * 以前两种回答方式都只在工具结果里留痕：自己写做法 → 文本进了 `ask_user_choice` 的返回值；
+   * 点某个方案 → 连痕迹都没有。对话里看起来就是「我问了、agent 接着干」，中间那句回答凭空消失，
+   * 事后想回看「当时我选的是哪个方案」根本查不到。
+   *
+   * 这里统一落一条 `executionStatus: 'done'` 的用户消息：文本 + 附件都在，附件照常可点开。
+   */
+  private async recordDecisionAnswer(
+    conversationId: string,
+    entry: { content: string; context?: MessageContext; attachments: MessageContext[]; answer: string },
+  ): Promise<void> {
+    try {
+      const message = await this.storage.appendMessage(conversationId, {
+        role: 'user',
+        content: entry.content,
+        status: 'complete',
+        context: entry.context,
+        attachments: entry.attachments,
+        model: this.runs.get(conversationId)?.settings.model ?? this.viewedRun?.settings.model,
+        executionStatus: 'done',
+      });
+      await this.post({ type: 'messageAdded', conversationId, message: this.forWebview(message), pendingAttachments: [] });
+      this.callbacks.onHistoryChanged();
+    } catch {
+      // 落库失败不影响这次回答：答案正文里已经带着同样的信息。
+    }
   }
 
   /** 把某条对话里挂着的决策卡片结算掉（停止 / 出错 / 换对话时）。 */

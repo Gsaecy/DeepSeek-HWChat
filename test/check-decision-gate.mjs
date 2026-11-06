@@ -69,7 +69,9 @@ check('收起状态按 requestId 记（不会被每 70ms 的状态重发冲回�
   '用布尔会在第一帧就被重置，用户永远收不起来');
 
 check('用户可以直接用一句话代替选项（自己想的做法）',
-  /answerDecisionWithText/.test(PANEL) && /formatCustomDecisionAnswer/.test(PANEL),
+  // 方法在 0.4.1 更名为 answerDecisionWithAttachments（要一并带上附件）；
+  // 判据看「这条分支确实把文本交给决策」而不是某个历史函数名。
+  /answerDecisionWithAttachments\(/.test(PANEL) && /formatCustomDecisionAnswer/.test(PANEL),
   '不接这条路，用户"自己想的方案"只会安静排队，而 agent 卡在工具里永远读不到');
 
 check('自己写的做法会原样回给模型，且禁止套成预设方案',

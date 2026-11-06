@@ -78,6 +78,7 @@ const DICTIONARY: Record<string, Entry> = {
   'decision.note': { zh: '选之前可以先问我细节；选定后我会按它继续，不会自己换方案。', en: 'Ask me for details before choosing if you need to; once you pick, I follow it and will not switch on my own.' },
   'decision.invalid': { zh: '方案的写法不完整', en: 'The options were incomplete' },
   'decision.customChosen': { zh: '已按你自己的做法继续', en: 'Continuing with your own approach' },
+  'decision.choiceMessage': { zh: '选择方案：{title}', en: 'Chose option: {title}' },
   'decision.chosen': { zh: '已按你选的方案继续：{title}', en: 'Continuing with your choice: {title}' },
   'decision.cancelled': { zh: '方案选择已取消', en: 'The choice was cancelled' },
   'decision.expired': { zh: '这张方案卡片已经失效了', en: 'That option card has already expired' },
