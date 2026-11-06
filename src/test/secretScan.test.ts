@@ -241,3 +241,56 @@ test('kinds 必须包含隐私类，供界面翻译类型名', () => {
     assert.ok(kinds.includes(kind), `kinds 必须包含 ${kind}`);
   }
 });
+
+// ── 「引用」不是「明文」（2026-11-06 真实误报）────────────────────────────
+/*
+ * 用户贴入的终端输出里有一条建库脚本：
+ *
+ *     password: process.env.DB_PASSWORD
+ *
+ * 界面上弹了红色警告「检测到 password 字段的明文值（23 个字符）」——
+ * 23 正好是 `process.env.DB_PASSWORD` 的长度，而那段文本里**一个密码都没有**。
+ */
+test('环境变量引用不算明文凭据（用户那次误报）', () => {
+  const code = `const c = await mysql.createConnection({
+    host: process.env.DB_HOST || "127.0.0.1",
+    port: Number(process.env.DB_PORT || 3306),
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+  });`;
+  assert.equal(kindsOf(code).join(','), '', 'process.env.X 是指向别处，不是密钥本身');
+});
+
+test('各种「值在别处」的写法都不报', () => {
+  const safe = [
+    'password: DB_PASSWORD',
+    'password: config.db.password',
+    'password: opts.secret',
+    'password: ${DB_PASSWORD}',
+    'password: $DB_PASSWORD',
+    'password: %DB_PASSWORD%',
+    'api_key: undefined',
+    'api_key: null',
+    'token = os.getenv("TOKEN")',
+    'secret: getenv("SECRET")',
+    'password: os.environ["DB_PASSWORD"]',
+  ];
+  for (const text of safe) {
+    assert.equal(kindsOf(text).join(','), '', `不该触发：${text}`);
+  }
+});
+
+test('但真的贴了密码/密钥照样要报（放宽不能放宽到这里）', () => {
+  const real = [
+    'password: hunter2ABC',
+    'password="Tr0ub4dor&3"',
+    'api_key: sk-live-9f8a7b6c5d4e3f2a1b',
+    'DB_PASSWORD=Pa55w0rd!x',
+    // 真实 PAT 是 36 位；这里用足长度的假值，验证「有名格式」这条路仍然生效。
+    'token: ghp_1234567890abcdefghijklmnopqrstuvwx',
+  ];
+  for (const text of real) {
+    assert.notEqual(kindsOf(text).join(','), '', `必须报：${text}`);
+  }
+});

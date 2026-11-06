@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`password: process.env.DB_PASSWORD` 不再被当成「明文密码」报警**（用户原话：「这段里面有明文密码吗？为什么会报警告」，配图是红色警告「检测到 password 字段的明文值（23 个字符）」）。
+  - **那段文本里一个密码都没有**：建库脚本写的是 `password: process.env.DB_PASSWORD`，值指向环境变量。而 `process.env.DB_PASSWORD` 正好 **23 个字符** —— 和警告里的数字完全对得上，这就是误报的来路：`ASSIGNMENT_RULE` 只看到「`password:` 后面跟了一串 ≥8 字符」，没判断那串是**引用**还是**字面量**。
+  - **修法**：新增 `isReference()`，只排除**明确写着「值在别处」**的写法 —— `process.env.X` / `import.meta.env.X` / `Deno.env` / `os.environ[...]` / `os.getenv(...)` / `${X}` / `$X` / `%X%` / 带下划线的全大写变量名（`DB_PASSWORD`）/ 属性链（`config.db.password`）/ `undefined` `null` `true` `false`。
+  - **放宽的边界守住了**：① 只作用于「字段=值」这一路；固定格式密钥（`AKIA…`、`sk-…`、`ghp_…`）仍由前缀规则判定，不会被「看起来像变量名」放过（`AKIAIOSFODNN7EXAMPLE` 照样报）。② 全大写变量名**必须带下划线**才认 —— 否则那个 AWS key 会被误当变量名。
+  - **顺带补上一个真实缺口**：`.env` 粘贴里的 `DB_PASSWORD=<真实密码>` 以前**根本不报**（字段名规则用的是 `\bpassword\b`，`_PASSWORD` 前面是 `_`，没有词边界）。现在环境变量式的字段名也被识别（`DB_PASSWORD=Pa55w0rd!x` → 报「凭据」），而 `DB_PASSWORD=DB_PASSWORD` 这种自引用仍然不报。
+  - 守护：`secretScan.test.ts` 新增 **3 条**（用户那次误报的原样回放、11 种「值在别处」写法、5 种真实密码/密钥必须仍然报）；`check-secret-warning.mjs` 增加 2 项（含「真的写了密码仍然会报」的对照断言）。
+
 - **点任务树里的一行，直接落到那条任务的输出光标上**（用户原话：「我需要点击任务树正在执行的条目窗口跳转到正在执行的输出光标的位置，因为有时候合并执行的话，后来发的消息先执行完，再执行中间的，会导致输出光标不在最底下，我需要能快捷达到当下执行输出的位置」）。
   - **为什么以前做不到**：任务树节点只有 `userMessageId`，点了只能定位到用户自己那句话；而「输出」在**回复**气泡里。合并执行时后发的先跑完、接着才轮到中间那条，光标停在列表中部，用户只能自己翻。
   - **① 节点带上回复消息 id**：`AgentTaskNode.assistantMessageId`，`state()` 从 bindings 里取；运行结束后重建的「恢复待办」树也按 `replyToMessageId` 反查补上。

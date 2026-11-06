@@ -260,6 +260,29 @@ const OPENAI_KEY = 'sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz';
   }
 }
 
+/* ── 真实回放：用户 2026-11-06 那段终端输出（曾被误报「23 个字符的明文 password」）── */
+{
+  const sandbox = { globalThis: null };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(readFileSync('media/secret-scan.js', 'utf8'), sandbox);
+  const api = sandbox.HWChatSecretScan;
+  const pasted = [
+    'cd /www/wwwroot/instindex-server && node -e \'',
+    '  await import("./src/env.js");',
+    '  const c = await mysql.createConnection({',
+    '    host: process.env.DB_HOST || "127.0.0.1",',
+    '    port: Number(process.env.DB_PORT || 3306),',
+    '    user: process.env.DB_USER,',
+    '    password: process.env.DB_PASSWORD,',
+    '    database: process.env.DB_NAME,',
+    '  });',
+    '\'',
+  ].join('\n');
+  check('真实回放：process.env.DB_PASSWORD 不再被当成明文密码', api.scanSecrets(pasted).length === 0, JSON.stringify(api.scanSecrets(pasted)));
+  check('对照：真的写了密码仍然会报', api.scanSecrets('password: Pa55w0rd!x').length === 1);
+}
+
 console.log('');
 if (failures === 0) {
   console.log(`全部通过（${checks} 项）`);

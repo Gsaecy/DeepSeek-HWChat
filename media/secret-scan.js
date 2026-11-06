@@ -125,7 +125,13 @@
   const ASSIGNMENT_RULE = {
     kind: 'credentialAssignment',
     pattern:
-      /\b(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret[_-]?key|client[_-]?secret|private[_-]?key|password|passwd|pwd)\b\s*[:=]\s*["'`]?([^\s"'`,;)}]{8,})["'`]?/gi,
+      /*
+       * 字段名两种写法都认：
+       *  - 小写 / 驼峰（`password`、`api_key`、`clientSecret`）；
+       *  - 环境变量式全大写（`DB_PASSWORD=…`）—— `.env` 粘贴是最常见的泄漏场景。
+       * 第一种用 `\b` 边界，第二种必须带下划线，避免把 `MYPASSWORD` 这种也当凭据。
+       */
+      /\b(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret[_-]?key|client[_-]?secret|private[_-]?key|password|passwd|pwd)\b\s*[:=]\s*["'`]?([^\s"'`,;)}]{8,})["'`]?|([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_KEY))\s*[:=]\s*["'`]?([^\s"'`,;)}]{8,})["'`]?/gi,
   };
 
   /**
@@ -143,12 +149,56 @@
   /** 凭据值的可见长度下限：短于这个长度的赋值大概率是变量名或单位，不是密钥。 */
   const MIN_VALUE_LENGTH = 8;
 
+  /**
+   * 「这个值是对别处的引用，不是密钥本身」。
+   *
+   * 现场（用户 2026-11-06，界面上弹出红色警告「检测到 password 字段的明文值（23 个字符）」）：
+   *
+   *     const c = await mysql.createConnection({ … password: process.env.DB_PASSWORD … });
+   *
+   * 那句里**没有任何密码**，但 `password:` 后面的 `process.env.DB_PASSWORD` 正好 23 个字符，
+   * 被当成了明文密钥 —— 这是一次误报。误报的代价不只是烦：它会把注意力从「真的贴了 key」
+   * 引开，用户下次就不信这个提醒了。
+   *
+   * 只排除**明确写着「值在别处」**的写法，宁可漏掉极少数真实密钥，也不误报（真实密钥几乎
+   * 不可能长成 `process.env.X` 或 `config.db.password` 这种形状）：
+   */
+  const REFERENCE_PATTERNS = [
+    // 环境变量：`process.env.X`、`import.meta.env.X`、`Deno.env.get(...)`、`os.environ[...]`。
+    /^(?:process\.env|import\.meta\.env|Deno\.env|os\.environ|os\.getenv|env|getenv)\b/i,
+    // 模板 / shell / Windows 变量：`${X}`、`$X`、`%X%`。
+    /^(?:\$\{|\$[A-Za-z_]|%[A-Za-z_][\w]*%$)/,
+    // 环境变量名式的全大写标识符（`DB_PASSWORD`）：在配置映射里指向别处的常量。
+    // **必须带下划线**才认 —— 否则 `AKIAIOSFODNN7EXAMPLE` 这种固定格式密钥会被误当成变量名。
+    /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/,
+    // 属性链（`config.db.password`、`opts.secret`）：取值在别处，且不含数字/符号熵。
+    /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/,
+    // 语言层面的空值 / 布尔。
+    /^(?:undefined|null|true|false)$/i,
+  ];
+
+  function isReference(value) {
+    const text = String(value == null ? '' : value);
+    if (!text) return true;
+    return REFERENCE_PATTERNS.some((pattern) => pattern.test(text));
+  }
+
   /** 判断一个候选值是不是占位符。 */
   function isPlaceholder(value) {
     const text = String(value == null ? '' : value);
     if (text.length < MIN_VALUE_LENGTH) return true;
     if (REPEATED.test(text)) return true;
     return PLACEHOLDER.test(text);
+  }
+
+  /**
+   * 判断一个「字段=值」的候选值是不是**引用**（值在别处）。
+   *
+   * 只在这条路径上用：固定格式密钥（`AKIA…`、`sk-…`）由前缀规则判定，
+   * 它们本身就是密钥形状，绝不能被「看起来像变量名」放过。
+   */
+  function isReferenceValue(value) {
+    return isReference(value);
   }
 
   /**
@@ -205,11 +255,12 @@
     ASSIGNMENT_RULE.pattern.lastIndex = 0;
     let match = ASSIGNMENT_RULE.pattern.exec(source);
     while (match) {
-      const field = match[1];
-      const value = match[2] || '';
+      // 两条分支：普通字段名在 group 1/2，环境变量式字段名在 group 3/4。
+      const field = match[1] ?? match[3] ?? '';
+      const value = match[2] || match[4] || '';
       // 值总在匹配串末尾（前面是字段名、分隔符与可选引号），用它定位值本身。
       const valueStart = match.index + match[0].lastIndexOf(value);
-      if (value && claim(valueStart, valueStart + value.length) && !isPlaceholder(value)) {
+      if (value && !isReferenceValue(value) && claim(valueStart, valueStart + value.length) && !isPlaceholder(value)) {
         findings.push({
           kind: ASSIGNMENT_RULE.kind,
           field: String(field).toLowerCase(),
