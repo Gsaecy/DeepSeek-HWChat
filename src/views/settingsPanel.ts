@@ -256,6 +256,11 @@ export class SettingsPanel implements vscode.Disposable {
         endpoint: embeddingsEndpoint(baseUrl),
         apiKey,
         candidates: embeddingCandidatesFor(baseUrl, merged.embeddingModel),
+        // 出「欠费/余额不足」时用它反推：同一个 Key 打一次最便宜的聊天请求，
+        // 能过就说明账号有钱，被拒的只是向量这条产品线。
+        accountCheck: profile.models?.[0]
+          ? { chatUrl: `${baseUrl.replace(/\/+$/, '')}/chat/completions`, model: profile.models[0] }
+          : undefined,
       });
       await this.post({
         type: 'embeddingProbe',

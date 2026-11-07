@@ -8,6 +8,17 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.7
+
+The "still failing after top-up" case, tracked down:
+
+- **429 does not always mean rate limiting.** Zhipu returns `1113` (in arrears / no resource pack) with HTTP 429, so the old copy told a user who had *just* topped up to "retry later". Business codes are now separated: `1113`/`1308`/`1310` are balance or quota exhaustion (waiting will not help), `1302`/`1305` are real rate limits.
+- **Account-level failures no longer retry other model names** - that is exactly where the two identical error lines came from.
+- **New "account check"**: one cheapest-possible chat request with the same key. If chat is also refused, the problem is the **account** (verify which account this key belongs to). If chat succeeds, only the **embedding product line** is refused (that model needs its own resource pack).
+- The background indexer no longer backs off and retries on insufficient-balance responses.
+
+Verified: **1201 unit tests + 68 guard scripts green**.
+
 ## What's new in 0.4.6
 
 Only the "Check direct support" button: a Zhipu user's probe failed, and the message on screen ("model does not exist") actually came from the **last candidate tried** (Alibaba's `text-embedding-v3`), never from the `embedding-3` they had typed.

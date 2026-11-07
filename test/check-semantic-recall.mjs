@@ -110,7 +110,21 @@ check(
 );
 check(
   '429 / 5xx 等待后重试一次（限流不白丢一批）',
-  /EMBEDDING_RETRIES = 1/.test(CLIENT) && /response\.status === 429 \|\| response\.status >= 500/.test(CLIENT),
+  /EMBEDDING_RETRIES = 1/.test(CLIENT) && /retryable\(response\.status, raw\)/.test(CLIENT),
+);
+check(
+  '但「账户没钱」的 429（智谱 1113）不退避重试',
+  // 对着「欠费」等 800ms 再撞一次，既等不到结果，还让人以为是偶发抖动。
+  /1113/.test(CLIENT) && /function retryable\(/.test(CLIENT),
+);
+check('欠费 / 限流分开说（429 不都是限流）', /不是频率限制/.test(PROBE));
+check(
+  '出现账号级错误就不再换模型名去撞',
+  /if \(isAccountLevelFailure\(failed\)\) break;/.test(PROBE),
+);
+check(
+  '能反推「账号没钱」还是「只有向量要资源包」',
+  /accountCheck/.test(PROBE) && /向量模型这条产品线/.test(PROBE),
 );
 
 check(

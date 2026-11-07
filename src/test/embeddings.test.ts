@@ -251,6 +251,52 @@ test('探针：智谱各类错误码分别说清（1212 选错模型类型 / 122
   assert.match(planKey.summary, /按量计费/, '要告诉他换成按量计费的 Key');
 });
 
+test('探针：1113 欠费属于账号级错误，不该再拿下一个模型名去撞（用户截图是两行一模一样的报错）', async () => {
+  const asked: string[] = [];
+  const fetchImpl = async (_url: string, init: RequestInit) => {
+    asked.push((JSON.parse(String(init.body)) as { model: string }).model);
+    return new Response(JSON.stringify({ error: { code: '1113', message: '余额不足或无可用资源包,请充值。' } }), { status: 429 });
+  };
+  const result = await probeEmbeddingCapability({
+    endpoint: 'https://open.bigmodel.cn/api/paas/v4/embeddings',
+    apiKey: 'k',
+    candidates: ['embedding-3', 'embedding-2'],
+    fetchImpl: fetchImpl as never,
+  });
+  assert.deepEqual(asked, ['embedding-3'], '第一个就是账号级错误，停');
+  assert.equal(result.attempts.length, 1);
+  assert.match(result.summary, /1113/);
+  assert.match(result.summary, /不是频率限制/, '不能让人以为等一会儿就好');
+});
+
+test('探针：1113 时用同一个 Key 打一次最便宜的聊天请求，区分「账号没钱」和「只有向量要资源包」', async () => {
+  const chatSucceeds = async (url: string) => url.endsWith('/chat/completions')
+    ? new Response(JSON.stringify({ choices: [{ message: { content: '' } }] }), { status: 200 })
+    : new Response(JSON.stringify({ error: { code: '1113', message: '余额不足或无可用资源包,请充值。' } }), { status: 429 });
+
+  const accountWide = await probeEmbeddingCapability({
+    endpoint: 'https://open.bigmodel.cn/api/paas/v4/embeddings',
+    apiKey: 'k',
+    candidates: ['embedding-3'],
+    accountCheck: { chatUrl: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: 'glm-5.3' },
+    fetchImpl: (async (url: string) => url.endsWith('/chat/completions')
+      ? new Response(JSON.stringify({ error: { code: '1113', message: '余额不足或无可用资源包,请充值。' } }), { status: 429 })
+      : new Response(JSON.stringify({ error: { code: '1113', message: '余额不足或无可用资源包,请充值。' } }), { status: 429 })) as never,
+  });
+  assert.match(accountWide.summary, /问题在\*\*账号\*\*/, '聊天也欠费 → 账号问题');
+  assert.match(accountWide.summary, /不跨账号共享/);
+
+  const onlyEmbedding = await probeEmbeddingCapability({
+    endpoint: 'https://open.bigmodel.cn/api/paas/v4/embeddings',
+    apiKey: 'k',
+    candidates: ['embedding-3'],
+    accountCheck: { chatUrl: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: 'glm-5.3' },
+    fetchImpl: chatSucceeds as never,
+  });
+  assert.match(onlyEmbedding.summary, /向量模型这条产品线/, '聊天能过 → 被拒的只是向量');
+  assert.match(onlyEmbedding.summary, /资源包/);
+});
+
 test('探针：地址认得出是哪家时，不去试别人家的模型名', async () => {
   const asked: string[] = [];
   const fetchImpl = async (_url: string, init: RequestInit) => {
@@ -301,6 +347,19 @@ test('服务商回 base64 向量时也能解析（格式差异不该让整批作
   const fetchImpl = async () => new Response(JSON.stringify({ data: [{ embedding: base64 }] }), { status: 200 });
   const vectors = await embedTexts({ baseUrl: 'https://x.test/v1', model: 'm' }, 'k', ['x'], { fetchImpl: fetchImpl as never });
   assert.deepEqual(vectors, [[0.5, -0.25, 0.125]]);
+});
+
+test('429 但业务码是 1113（欠费）→ 不退避重试，直接报余额不足', async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ error: { code: '1113', message: '余额不足或无可用资源包,请充值。' } }), { status: 429 });
+  };
+  await assert.rejects(
+    embedTexts({ baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'embedding-3' }, 'k', ['x'], { fetchImpl: fetchImpl as never }),
+    /1113|余额不足/,
+  );
+  assert.equal(calls, 1, '对着「账号没钱」等 800ms 再撞一次没有意义');
 });
 
 test('429 限流：后台索引会等待后重试一次（不白丢一批）', async () => {

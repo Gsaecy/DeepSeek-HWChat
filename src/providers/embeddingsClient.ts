@@ -111,14 +111,15 @@ export async function embedTexts(
      * 帮服务端放大压力。
      */
     let response = await send();
-    for (let attempt = 0; attempt < EMBEDDING_RETRIES && (response.status === 429 || response.status >= 500); attempt += 1) {
+    let raw = await response.text();
+    for (let attempt = 0; attempt < EMBEDDING_RETRIES && retryable(response.status, raw); attempt += 1) {
       const retryAfter = Number(response.headers?.get('retry-after') ?? '');
       const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(3_000, retryAfter * 1_000) : 800 * (attempt + 1);
       await new Promise((resolve) => setTimeout(resolve, waitMs));
       if (signal.aborted) throw new Error('向量请求已取消');
       response = await send();
+      raw = await response.text();
     }
-    const raw = await response.text();
     if (!response.ok) {
       throw new Error(`向量接口请求失败（${response.status}）：${raw.slice(0, 300)}`);
     }
@@ -155,6 +156,18 @@ function normalizeVector(value: number[] | string | undefined): number[] {
   if (Array.isArray(value)) return value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item));
   if (typeof value === 'string' && value) return Array.from(decodeVector(value));
   return [];
+}
+
+/**
+ * 这次失败值不值得再等一次。
+ *
+ * `429` 不都是限流：智谱的 `1113`（欠费/没资源包）也用 429 返回。对着一个
+ * 「账户没钱」的响应退避重试一次，既等不到结果，还会让人以为是偶发抖动。
+ */
+function retryable(status: number, raw: string): boolean {
+  if (status >= 500) return true;
+  if (status !== 429) return false;
+  return !/"code"\s*:\s*"(1113|1308|1309|1310|1315|1316|1317|1318|1319|1320|1321)"/.test(raw);
 }
 
 function sanitizeHeaders(headers: Record<string, string> | undefined): Record<string, string> {
