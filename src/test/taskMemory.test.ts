@@ -243,3 +243,27 @@ test('合并：节点再多也不会无限增长（硬上限）', () => {
   assert.ok(merged.length <= 40, `硬上限没生效：${merged.length}`);
   assert.equal(merged.at(-1)?.id, 'q-59', '最近的留着');
 });
+
+/* ── 清单基线必须能跨重载 ─────────────────────────────────────────── */
+
+test('基线随节点落库：重载后仍能算出这条任务的清单变动', () => {
+  const baseline = ['读代码'];
+  const nodeWithBaseline = node({
+    id: 't1',
+    title: '改代码',
+    status: 'active',
+    baseline,
+  });
+  // 模拟「重载窗口后」：内存里没有基线，只能靠节点自己带的。
+  const restored = nodeWithBaseline.baseline ?? [];
+  const done = newlyCompletedTodos(restored, [
+    { content: '读代码', status: 'completed' },
+    { content: '改代码', status: 'completed' },
+  ]);
+  assert.deepEqual(done.map((todo) => todo.content), ['改代码']);
+});
+
+test('没有基线时不硬算（宁可空，也不要乱归因）', () => {
+  const nodeWithoutBaseline = node({ id: 't2', title: '旧任务', status: 'complete' });
+  assert.equal(nodeWithoutBaseline.baseline, undefined);
+});

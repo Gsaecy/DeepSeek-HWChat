@@ -150,6 +150,15 @@ export interface ExternalExecutionOptions {
   forceApproval?: boolean;
   /** true 表示把授权交给外部系统（VS Code 工具自己的确认 UI），HWChat 不再弹窗。 */
   delegateApproval?: boolean;
+  /**
+   * 这是**HWChat 自己的数据**（对话存档、审计日志），不是工作区文件。
+   *
+   * 为什么单独区分（用户 2026-11-07 追问的缺口之一）：`read_message_detail` 走的是
+   * `fileReadPolicy`，用户把它设成 `ask` 之后，每展开一条历史工具输出都要点一次确认 ——
+   * 而读的是我们自己刚存下来的记录，与「能不能读你的代码」无关。改成不弹窗、只审计：
+   * 既不打断用户，也仍然留痕。
+   */
+  internal?: boolean;
 }
 
 interface ResolvedPath {
@@ -554,8 +563,9 @@ export class ToolExecutor implements vscode.Disposable {
     invoke: () => Promise<ToolExecutionResult>,
     options: ExternalExecutionOptions = {},
   ): Promise<ToolExecutionResult> {
-    const { conversationId, forceApproval = false, delegateApproval = false } = options;
-    const policy = policyFor(risk, settings, risk === 'command' ? 'standard' : undefined);
+    const { conversationId, forceApproval = false, delegateApproval = false, internal = false } = options;
+    // 内部数据（自己的存档）不参与文件策略：它既不是工作区读取，也不该打断用户。
+    const policy = internal ? 'allow' : policyFor(risk, settings, risk === 'command' ? 'standard' : undefined);
     if (!delegateApproval && policy === 'deny') {
       const result = deniedResult(tt('tool.policyDenied', { kind: risk === 'read' ? tt('tool.policyKind.read') : risk === 'write' ? tt('tool.policyKind.write') : tt('tool.policyKind.command') }));
       await this.auditResult(call, result, conversationId);
@@ -573,7 +583,8 @@ export class ToolExecutor implements vscode.Disposable {
     }
     // delegateApproval：VS Code 扩展工具是否弹窗由 VS Code 自己（prepareInvocation）决定，
     // HWChat 只负责记录审计，不再叠加一层确认。
-    const approvalRequired = !delegateApproval
+    const approvalRequired = !internal
+      && !delegateApproval
       && (policy === 'ask' || (forceApproval && !isAutonomousPreset(settings)));
     if (approvalRequired && !await requestApproval({
       callId: call.id,

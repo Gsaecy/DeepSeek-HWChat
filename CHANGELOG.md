@@ -4,6 +4,22 @@
 
 - （下一版的内容写在这里）
 
+## 0.4.7
+
+用户追问「过程中你说有漏洞，修复了没有」。当时列的是 4 条边界 + 1 条按你的决定关闭的，现在逐条落地：
+
+- **读自己的对话存档不再受「文件读取」权限约束**（原缺口：`read_message_detail` 走 `fileReadPolicy`，设成 `ask` 后每展开一条历史工具输出都要点一次确认）。
+  - 新增 `executeExternal({ internal: true })`：这类调用是**HWChat 自己的数据**（对话存档、审计记录），既不是工作区读取，也不该打断用户；跳过策略与弹窗，**仍然写审计**。
+- **清单基线跨重载不丢**（原缺口：基线只存在面板内存里，重载窗口后那条任务的「清单变动」永远算不出来）。
+  - `AgentTaskNode.baseline` 随任务记忆一起落库，`taskTreeWithOutcomes()` 在内存没有基线时优先从节点恢复；写回时一并带上。
+- **运行中途的线索也会自动回查**（原缺口：「检索仍要靠模型主动调用」——开局那次检索看不到运行中才出现的报错）。
+  - `AgentRunner` 新增 `recallForFailure` 钩子：工具返回 error 时，按报错正文取词回查完整记录，命中片段**并进同一条 tool 结果**（不新增 system/user 消息，既不改对话角色结构，也不破坏上下文缓存前缀）。
+  - 每轮运行最多用 3 次，防止一个反复失败的工具把上下文灌满；每轮开始时清零。
+- 仍未关的一条（诚实记账）：**纯词面匹配没有同义扩展**。「悬浮条」↔「胶囊」这类完全不同的词根仍可能漏；做真正的语义检索需要向量索引，属于另一个量级的改动，没有半成品方案就先不做（多义时的「问清楚」已经能兜住一部分）。
+- 守护：新增 `test/check-gap-closure.mjs`（10 项，把上面每条缺口变成可执行断言）、`src/test/taskMemory.test.ts` +2、`src/test/contextWindow.test.ts` +1、`src/test/agentRunner.test.ts` +1。全量：**1169 条单测 + 66 个 `check-*.mjs` 全绿**。
+
+- （下一版的内容写在这里）
+
 ## 0.4.6
 
 - **半个 emoji 让整份请求 JSON 解析失败**（用户原话，连报两次）：`接口请求失败（400）：Failed to parse the request body as JSON: messages[0].content: lone leading surrogate in hex escape at line 1 column 39266`。

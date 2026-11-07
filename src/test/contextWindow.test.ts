@@ -287,3 +287,20 @@ test('存储：正文永远保留，工具输出搬进 payloads 且能按需还�
     assert.match(archivedHits[0]!.excerpt, /tool-output-xyz/);
   });
 });
+
+test('存储：任务节点的 baseline 能落库并被读回（重载后算得出清单变动）', async () => {
+  await withStorage(async (storage) => {
+    const conversation = await storage.createConversation('基线');
+    await storage.updateConversation(conversation.id, {
+      taskNodes: [{
+        id: 't1',
+        title: '改代码',
+        status: 'active',
+        relation: 'root',
+        baseline: ['读代码', '看文档'],
+      }],
+    });
+    const stored = await storage.getConversation(conversation.id);
+    assert.deepEqual(stored?.taskNodes?.[0]?.baseline, ['读代码', '看文档']);
+  });
+});

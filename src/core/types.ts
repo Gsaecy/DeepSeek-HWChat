@@ -193,6 +193,14 @@ export interface AgentTaskNode {
    * 也会记下清单实际执行了哪几项。
    */
   todos?: TodoItem[];
+  /**
+   * 这条任务开始时，清单里**已经完成**的条目（用于算差集）。
+   *
+   * 为什么要落库（用户 2026-11-07 追问的缺口之一）：基线原本只存在面板内存里，
+   * 重载窗口后就没了 —— 那条任务的「清单变动」再也算不出来，记忆里只剩一句结论。
+   * 存进节点之后，重载、切窗口、跨天继续都还在。
+   */
+  baseline?: string[];
 }
 
 export interface AgentTaskTreeState {

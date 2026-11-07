@@ -360,3 +360,62 @@ test('does not stack extra blank lines when the model already ended with one', a
 
   assert.equal(result.content, '先读配置文件。\n\n结论如下。');
 });
+
+/* ── 运行中途的线索也要能自动回查 ─────────────────────────────────── */
+
+test('工具失败时把自动回查结果并进 tool 结果（不新增对话角色）', async () => {
+  const calls: Array<{ name: string; errorText: string }> = [];
+  /** 第二轮实际收到的消息：用来断言回查片段确实进了 tool 结果。 */
+  let secondRound: ChatRequestMessage[] = [];
+  let rounds = 0;
+  const client = {
+    async streamChat(_settings: ChatSettings, messages: ChatRequestMessage[]) {
+      rounds += 1;
+      if (rounds === 2) secondRound = structuredClone(messages);
+      if (rounds === 1) {
+        return {
+          content: '', reasoning: '', usage: undefined, finishReason: 'tool_calls',
+          toolCalls: [{ id: 'call_1', type: 'function' as const, function: { name: 'read_file', arguments: '{"path":"x"}' } }],
+        };
+      }
+      return { content: '按旧记录修好了。', reasoning: '', toolCalls: [], usage: undefined, finishReason: 'stop' };
+    },
+  };
+  const tools = {
+    definitions: () => [],
+    isWorkspaceTrusted: () => true,
+    execute: async () => ({
+      status: 'error',
+      summary: '读文件失败',
+      content: 'ENOENT: no such file or directory, open x',
+      approval: 'not-required',
+    }),
+  };
+  const runner = new AgentRunner(client as never, tools as never);
+  await runner.run({
+    settings,
+    messages: [{ role: 'user', content: '修一下' }],
+    mode: 'agent',
+    signal: new AbortController().signal,
+    conversationId: 'c1',
+    callbacks: {
+      onDelta: () => undefined,
+      onToolsChanged: () => undefined,
+      onTaskUpdate: () => undefined,
+    } as never,
+    recallForFailure: async (name: string, errorText: string) => {
+      calls.push({ name, errorText });
+      return '<auto_recall>\n- user: 以前这个文件在 web/assets/x\n</auto_recall>';
+    },
+  });
+
+  assert.equal(calls.length, 1, '失败时应当回查一次');
+  assert.equal(calls[0]!.name, 'read_file');
+  assert.match(calls[0]!.errorText, /ENOENT/);
+  const toolMessage = secondRound.find((message) => message.role === 'tool');
+  assert.ok(toolMessage, '第二轮应当能看到工具结果');
+  const content = String(toolMessage.content);
+  assert.match(content, /ENOENT/, '原始报错要留着');
+  assert.match(content, /<auto_recall>/, '回查片段要并进同一个 tool 结果');
+  assert.equal(secondRound.filter((message) => message.role === 'system').length, 0, '不要在运行中途插 system 消息');
+});

@@ -2119,6 +2119,9 @@ function normalizeTaskNodes(value: unknown): AgentTaskNode[] {
       userMessageId: typeof node.userMessageId === 'string' ? node.userMessageId : undefined,
       assistantMessageId: typeof node.assistantMessageId === 'string' ? node.assistantMessageId : undefined,
       summary: typeof node.summary === 'string' && node.summary.trim() ? clipText(node.summary.trim(), 200) : undefined,
+      baseline: Array.isArray(node.baseline)
+        ? node.baseline.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => clipText(item.trim(), 120)).slice(0, 20)
+        : undefined,
       todos: Array.isArray(node.todos)
         ? node.todos.filter((item) => item && typeof item.content === 'string' && item.content.trim())
           .slice(0, 20)

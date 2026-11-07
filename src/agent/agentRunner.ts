@@ -159,6 +159,16 @@ export class AgentRunner {
      * 续跑同一条消息的 Agent 需要它（见下方 `while` 循环顶部）。
      */
     hasPendingTasks?: () => boolean | Promise<boolean>;
+    /**
+     * 工具**失败**时，按这段报错的原文去完整记录里回查相关旧片段。
+     *
+     * 用户 2026-11-07 追问的缺口：「检索仍要靠模型主动调用」。开局那次自动检索看不到
+     * 运行中途才出现的线索 —— 比如某个命令刚报出一个以前踩过的错。这里在失败结果后面
+     * 顺手补一段 `<auto_recall>`，模型不必自己想起来去查。
+     *
+     * 返回空串表示没有相关记录，调用方不会多写任何东西。
+     */
+    recallForFailure?: (toolName: string, errorText: string) => Promise<string>;
   }): Promise<AgentRunResult> {
     const requestMessages = [...options.messages];
     const executions: ToolExecution[] = [];
@@ -386,6 +396,15 @@ export class AgentRunner {
         execution.stallHint = undefined;
         execution.finishedAt = Date.now();
         await options.callbacks.onToolsChanged(cloneExecutions(executions));
+        /*
+         * 失败的工具结果先回查一次旧记录，再把结论一起交给模型。
+         *
+         * 放在 tool 消息内部而不是新加一条 user/system 消息：不改变对话角色结构
+         * （部分服务端不接受中途插 system），也不影响上下文缓存的前缀。
+         */
+        const recall = result.status === 'error' && options.recallForFailure
+          ? await options.recallForFailure(call.function.name, result.content).catch(() => '')
+          : '';
         requestMessages.push({
           role: 'tool',
           tool_call_id: call.id,
@@ -393,7 +412,7 @@ export class AgentRunner {
           content: JSON.stringify({
             status: result.status,
             summary: result.summary,
-            result: result.content,
+            result: recall ? `${result.content}\n\n${recall}` : result.content,
             changedFiles: result.changedFiles,
           }),
         });

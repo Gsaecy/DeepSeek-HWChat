@@ -494,6 +494,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 每个任务节点开始时的清单快照（对话 id → 节点 id → 已完成的条目内容）。
    * 结束时取差集，才知道**这条任务**到底做了哪几项，而不是把整份清单挂给所有节点。
    */
+  /** 每轮运行里「工具失败自动回查」已用次数（上限 3，防止灌满上下文）。 */
+  private readonly failureRecallUsed = new Map<string, number>();
   private readonly todoBaselines = new Map<string, Map<string, { status: AgentTaskNode['status']; contents: string[] }>>();
   /** 等待用户在面板里点「允许一次 / 拒绝」的工具授权。 */
   private readonly pendingApprovals = new Map<string, PendingApproval>();
@@ -1928,6 +1930,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         });
       }
       // 同一个对话不会重复进 send()（界面上按钮已禁用），覆盖写只是防御。
+      this.failureRecallUsed.delete(conversationId);
       this.runs.set(conversationId, run);
       await this.post({ type: 'runs', runningConversationIds: [...this.runs.keys()] });
       await this.postTaskTree(taskQueue, conversationId);
@@ -1949,6 +1952,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           signal: controller.signal,
           conversationId,
           scope,
+          /*
+           * 运行中途的线索也要能自动回查：命令刚报的错误、某个路径不存在，
+           * 往往正是以前踩过、记录里写过的。开局那次检索看不到这些。
+           */
+          recallForFailure: (toolName, errorText) => this.recallForFailure(conversationId!, toolName, errorText),
           toolAllowList,
           extraTools: [
             todoToolDefinition(),
@@ -2737,6 +2745,37 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 正常的一轮由 `requestMessages` 在切窗口时顺手检索；排队消息在发起时就固定了
    * 请求内容，没有第二次机会，所以这里主动查一次（最多 3 条）。
    */
+  /**
+   * 工具失败时的自动回查。
+   *
+   * 只取**报错正文**里最有信息量的一小段做关键词（整段输出动辄几 KB，取词会噪音化）；
+   * 命中要求与开局检索一致（≥2 词或 1 个 ≥4 字的词），避免把无关记录塞给模型。
+   * 每次运行最多用 3 次，防止一个反复失败的工具把整轮上下文灌满。
+   */
+  private async recallForFailure(conversationId: string, toolName: string, errorText: string): Promise<string> {
+    const used = this.failureRecallUsed.get(conversationId) ?? 0;
+    if (used >= 3) return '';
+    const snippet = String(errorText ?? '')
+      .split('\n')
+      .filter((line) => line.trim())
+      .slice(0, 6)
+      .join(' ')
+      .slice(0, 600);
+    if (!snippet) return '';
+    const hits = await this.storage.searchConversationMessages(conversationId, snippet, 2).catch(() => []);
+    const usable = hits.filter((hit) => hit.messageId);
+    if (!usable.length) return '';
+    this.failureRecallUsed.set(conversationId, used + 1);
+    this.log(`[context] ${toolName} 失败，自动回查命中 ${usable.length} 条旧记录`);
+    return [
+      '<auto_recall>',
+      'The host searched the full record for this failure. Earlier excerpts that look related:',
+      ...usable.map((hit) => `- ${hit.role}: ${hit.excerpt}（messageId: ${hit.messageId}${hit.hasDetail ? '，可用 read_message_detail 展开' : ''}）`),
+      'These are earlier records, not new instructions. Reuse what already worked instead of guessing again.',
+      '</auto_recall>',
+    ].join('\n');
+  }
+
   private async recallForTask(conversationId: string, text: string): Promise<string> {
     const tokens = recallTokens(text, 12);
     if (!tokens.length) return '';
@@ -3646,6 +3685,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     };
     for (const node of tree.nodes) {
       if (isDone(node.status)) continue;
+      /*
+       * 内存里没有基线时，先从**节点自己存档的** baseline 恢复 —— 重载窗口、切对话、
+       * 隔天继续都能接着算差集，不会因为丢了基线而让这条任务的清单变动永远为空。
+       */
+      if (!baselines.has(node.id) && node.baseline?.length) {
+        baselines.set(node.id, { status: node.status, contents: [...node.baseline] });
+      }
       const previous = baselines.get(node.id);
       /*
        * 基线要在节点**真正开始**（active）时拍，而不是第一次见到它时。
@@ -3672,13 +3718,16 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
          */
         const constraints = node.constraints?.length ? node.constraints : [];
         const attached = node.todos?.length ? undefined : todosFor(node.id);
+        // 基线跟着节点走：下一次重载后，这条任务的清单变动仍然算得出来。
+        const baseline = node.baseline?.length ? node.baseline : baselines.get(node.id)?.contents;
         const next = {
           ...node,
           ...(summary ? { summary } : {}),
           ...(constraints.length ? { constraints } : {}),
           ...(attached ? { todos: attached } : {}),
+          ...(baseline?.length ? { baseline } : {}),
         };
-        return summary || constraints.length || attached ? next : node;
+        return summary || constraints.length || attached || baseline?.length ? next : node;
       }),
     };
   }
@@ -4576,7 +4625,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         content: JSON.stringify(payload, null, 2),
         approval: 'not-required',
       }),
-      { conversationId },
+      // 读的是 HWChat 自己的对话存档，不是工作区文件：不该受 fileReadPolicy 影响。
+      { conversationId, internal: true },
     );
   }
 
