@@ -4,6 +4,19 @@
 
 - （下一版的内容写在这里）
 
+## 0.4.10
+
+用户要求：「将配制方法写进 hwchat 设置页面对应区域」，并问「holysheep 的 Key，不是 DeepSeek 的 API key 吗」。
+
+- **设置页内嵌「怎么填（照抄即可）」**（语义检索那一段下面，新增 `.setting-note` 样式块），把四件事写在用户看得见的地方，不用再翻文档：
+  1. 服务商自带 `/embeddings` 时直接复用它的配置档 —— 智谱 `embedding-3` + `https://open.bigmodel.cn/api/paas/v4`（**不是**编码用的 `/api/coding/paas/v4`）、Minimax `embo-01`（地址留空）、holysheep `deepseek-embed-v4`（地址留空）；
+  2. **DeepSeek 官方没有 embeddings**，必须另配一个服务商，并给出 holysheep 的完整路径（注册 → 新增配置档 `https://api.holysheep.cn/v1` → 回到本区选它）；
+  3. **点明 Key 的归属**：holysheep 的 Key 是**它自己账号的 Key，不是 DeepSeek 的 Key**；填 DeepSeek 的 Key 会 401；
+  4. 点「检测能否直接调用」判结果（404 = 没接口，401 = Key 不对），以及「开启后对话片段会发给该服务商」。
+- 守护：`test/check-semantic-recall.mjs` 27 → 30 项（设置页内嵌步骤、Key 归属措辞、三个可复制地址）。全量：**1192 条单测 + 67 个 `check-*.mjs` 全绿**。
+
+- （下一版的内容写在这里）
+
 ## 0.4.9
 
 用户追问：「hwchat 配置模型的 API 能通用 embeddings 接口吗？能就直接调用，不能就让用户另外配置」。

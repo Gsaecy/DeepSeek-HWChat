@@ -8,6 +8,11 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.10
+
+- **The setup recipe now lives in the settings page** (under the semantic-search block, "How to fill this in"): the embedding model and URL for Zhipu / Minimax / holysheep, why DeepSeek cannot be used, and how to read the check result (404 = no endpoint, 401 = wrong key).
+- One commonly confused point is spelled out: **a holysheep key is that account's own key, not your DeepSeek API key**; putting a DeepSeek key into a holysheep profile returns 401. DeepSeek itself has no embeddings endpoint, so "embedding with the DeepSeek key" is not a thing that exists.
+
 ## What's new in 0.4.9
 
 - **HWChat now checks whether your configured API can serve embeddings.** A new "Check direct support" button in settings tries each candidate model once for real:

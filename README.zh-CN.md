@@ -10,6 +10,11 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 
 完整改动见 [CHANGELOG](CHANGELOG.md)。
 
+## 0.4.10 更新了什么
+
+- **配置方法直接写在设置页里**（语义检索那一段下面有「怎么填（照抄即可）」），包括：智谱 / Minimax / holysheep 三家的向量模型与地址、DeepSeek 为什么不行、以及检测结果怎么读（404 = 没接口，401 = Key 不对）。
+- 特别写明一件容易搞混的事：**holysheep 的 Key 是它自己账号的 Key，不是 DeepSeek 的 API Key**；把 DeepSeek 的 Key 填进 holysheep 的配置档会 401。反过来说，DeepSeek 官方也没有 embeddings，所以「用 DeepSeek 的 Key 算向量」这条路本身不存在。
+
 ## 0.4.9 更新了什么
 
 - **能不能直接用你配置的 API 算向量？HWChat 现在自己检测**：设置页新增「检测能否直接调用」按钮，按候选模型逐个真实试一次。

@@ -98,6 +98,22 @@ check(
   /EMBEDDING_RETRIES = 1/.test(CLIENT) && /response\.status === 429 \|\| response\.status >= 500/.test(CLIENT),
 );
 
+check(
+  '设置页内嵌配置步骤（不用去翻文档）',
+  /id="embeddingHowto"|settings\.embeddingHowto/.test(read('src/views/settingsPanel.ts'))
+    && /setting-note/.test(read('src/views/settingsPanel.ts')),
+);
+check(
+  '步骤里点明 holysheep 的 Key 不是 DeepSeek 的 Key',
+  /不是\*\*DeepSeek 的 Key|NOT your DeepSeek key/.test(I18N),
+);
+check(
+  '步骤里给出三个可直接复制的地址（智谱 / Minimax / holysheep）',
+  /open\.bigmodel\.cn\/api\/paas\/v4/.test(I18N)
+    && /embo-01/.test(I18N)
+    && /api\.holysheep\.cn\/v1/.test(I18N),
+);
+
 /* ── 2. 绝不能拖住对话 ───────────────────────────────────────────── */
 check(
   '语义检索失败一律退回词面结果（不抛给上层）',

@@ -447,6 +447,7 @@ export class SettingsPanel implements vscode.Disposable {
             <label class="setting-row"><span><strong>${t(lang, 'settings.embeddingProfile.label')}</strong><small>${t(lang, 'settings.embeddingProfile.hint')}</small></span><select id="embeddingProfileId" class="control"></select></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.embeddingModel.label')}</strong><small>${t(lang, 'settings.embeddingModel.hint')}</small></span><span class="profile-control"><input id="embeddingModel" class="control mono" type="text" spellcheck="false" placeholder="embedding-3"><button id="probeEmbeddingButton" type="button">${t(lang, 'settings.embeddingProbe.action')}</button></span></label>
             <div class="setting-row setting-row-stack"><span><small id="embeddingProbeResult"></small></span></div>
+            <div class="setting-row setting-row-stack"><div class="setting-note">${t(lang, 'settings.embeddingHowto')}</div></div>
             <label class="setting-row"><span><strong>${t(lang, 'settings.embeddingBaseUrl.label')}</strong><small>${t(lang, 'settings.embeddingBaseUrl.hint')}</small></span><input id="embeddingBaseUrl" class="control mono" type="text" spellcheck="false" placeholder="https://open.bigmodel.cn/api/paas/v4"></label>
           </div>
         </section>
