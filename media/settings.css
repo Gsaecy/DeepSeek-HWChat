@@ -96,6 +96,22 @@ nav button.active { color: var(--nav-active-fg); background: var(--nav-active-bg
  */
 .setting-row:has(> span > #embeddingProbeResult:empty) { display: none; }
 #embeddingProbeResult { font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+/* 「保存并启用」：检测成功才露出来，宽度按文字走（别套方形图标栅格）。 */
+#applyEmbeddingButton {
+  justify-self: start;
+  width: auto;
+  height: 30px;
+  padding: 0 12px;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--surface-fg);
+  background: var(--surface);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#applyEmbeddingButton:hover { background: color-mix(in srgb, var(--surface) 70%, var(--surface-fg) 8%); }
 #embeddingProbeResult.ok { color: var(--success); }
 #embeddingProbeResult.bad { color: var(--danger); }
 

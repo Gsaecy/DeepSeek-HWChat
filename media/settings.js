@@ -60,6 +60,7 @@
     embeddingApiKey: document.getElementById('embeddingApiKey'),
     clearEmbeddingKeyButton: document.getElementById('clearEmbeddingKeyButton'),
     embeddingProbeResult: document.getElementById('embeddingProbeResult'),
+    applyEmbeddingButton: document.getElementById('applyEmbeddingButton'),
     addProfileButton: document.getElementById('addProfileButton'),
     deleteProfileButton: document.getElementById('deleteProfileButton'),
   };
@@ -239,6 +240,7 @@
     fields.embeddingApiKey.value = '';
     fields.embeddingApiKey.placeholder = embeddingKeySaved ? t('settings.embeddingKey.saved') : 'sk-…';
     elements.embeddingProbeResult.textContent = '';
+    if (elements.applyEmbeddingButton) elements.applyEmbeddingButton.hidden = true;
     fields.searchExclude.value = Array.isArray(settings.searchExclude) ? settings.searchExclude.join(', ') : '';
     fields.temperature.value = settings.temperature;
     fields.maxTokens.value = settings.maxTokens;
@@ -343,19 +345,29 @@
     post('save', { settings: { language: fields.language.value } });
   });
 
-  elements.saveButton.addEventListener('click', () => withForm((settings) => {
-    const embeddingProfileId = fields.embeddingProfileId.value;
-    if (fields.embeddingApiKey.value.trim() && embeddingProfileId) {
-      pendingEmbeddingKeys[embeddingProfileId] = fields.embeddingApiKey.value.trim();
-    }
-    post('save', {
-      settings,
-      apiKeys: { ...pendingApiKeys },
-      clearApiKeyIds: [...clearApiKeyIds],
-      embeddingApiKeys: { ...pendingEmbeddingKeys },
-      clearEmbeddingKeyIds: [...clearEmbeddingKeyIds],
+  /**
+   * 提交整份表单。
+   *
+   * 「保存」与「保存并启用」走同一条路 —— 后者只是检测成功后才露出来的同一个动作，
+   * 免得用户以为检测通过就等于已经生效（向量索引读的是**已保存**的配置）。
+   */
+  function saveAll() {
+    withForm((settings) => {
+      const embeddingProfileId = fields.embeddingProfileId.value;
+      if (fields.embeddingApiKey.value.trim() && embeddingProfileId) {
+        pendingEmbeddingKeys[embeddingProfileId] = fields.embeddingApiKey.value.trim();
+      }
+      post('save', {
+        settings,
+        apiKeys: { ...pendingApiKeys },
+        clearApiKeyIds: [...clearApiKeyIds],
+        embeddingApiKeys: { ...pendingEmbeddingKeys },
+        clearEmbeddingKeyIds: [...clearEmbeddingKeyIds],
+      });
     });
-  }));
+  }
+  elements.saveButton.addEventListener('click', saveAll);
+  elements.applyEmbeddingButton?.addEventListener('click', saveAll);
   elements.testButton.addEventListener('click', () => withForm((settings) => {
     post('test', { settings, apiKey: fields.apiKey.value });
   }));
@@ -380,6 +392,7 @@
     // 换配置档就清空上次的检测结论与输入：Avoid 把 A 档的 Key 存到 B 档名下。
     fields.embeddingApiKey.value = '';
     elements.embeddingProbeResult.textContent = '';
+    if (elements.applyEmbeddingButton) elements.applyEmbeddingButton.hidden = true;
     markDirty();
   });
 
@@ -524,6 +537,7 @@
         const result = message;
         if (result.pending) {
           elements.probeEmbeddingButton.disabled = true;
+          if (elements.applyEmbeddingButton) elements.applyEmbeddingButton.hidden = true;
           elements.embeddingProbeResult.textContent = result.summary || '';
           break;
         }
@@ -532,6 +546,8 @@
         elements.embeddingProbeResult.classList.toggle('ok', Boolean(result.usable));
         elements.embeddingProbeResult.classList.toggle('bad', !result.usable);
         if (result.usable && result.model) fields.embeddingModel.value = result.model;
+        // 只在成功时露出「保存并启用」：失败时先让用户把问题解决掉。
+        if (elements.applyEmbeddingButton) elements.applyEmbeddingButton.hidden = !result.usable;
         break;
       }
     }

@@ -8,6 +8,12 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.8
+
+Continuing the thread: the key is right and the check passes, but **a passing check is not the same as being in effect** - the vector index reads the **saved** settings and key, while the check only validates what you typed. A successful check now reveals a "Save and enable" button that persists both in one click; close settings without pressing it and the index still uses the old key (and fails silently).
+
+Verified: **1201 unit tests + 68 guard scripts green**.
+
 ## What's new in 0.4.7
 
 The "still failing after top-up" case, tracked down:

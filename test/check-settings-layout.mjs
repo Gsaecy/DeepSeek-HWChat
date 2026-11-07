@@ -112,6 +112,27 @@ check(
   'Key 只应经 apiKeys / embeddingApiKeys 通道进 SecretStorage',
 );
 
+/* ── 3c. 「检测通过」不等于「已保存」 ───────────────────────────── */
+/*
+ * 向量索引读的是**已保存**的 settings（embeddingProfileId / Model / BaseUrl）
+ * 与**已保存**的 Key。检测只验证屏幕上这套能用，不落库。所以检测成功后如果
+ * 用户没点保存，索引仍会用旧 Key —— 表现就是「明明测通了，正式用还是不行」。
+ */
+check(
+  '检测成功后露出「保存并启用」',
+  /id="applyEmbeddingButton"/.test(PANEL) && /settings\.embeddingApply/.test(I18N),
+);
+check(
+  '「保存」与「保存并启用」共用同一条提交路径',
+  /function saveAll\(\)/.test(JS)
+    && /saveButton\.addEventListener\('click', saveAll\)/.test(JS)
+    && /applyEmbeddingButton\?\.addEventListener\('click', saveAll\)/.test(JS),
+);
+check(
+  '检测失败 / 检测中都不显示它（先把问题解决）',
+  /applyEmbeddingButton\.hidden = !result\.usable/.test(JS),
+);
+
 /* ── 4. 点了要有反馈 ───────────────────────────────────────────── */
 check(
   '检测结论为空时整行不占位（不空出一块）',

@@ -636,6 +636,8 @@ const DICTIONARY: Record<string, Entry> = {
   'settings.embeddingProfile.hint': { zh: '用哪个配置档的密钥去算向量（DeepSeek 没有向量接口，需选智谱 / Minimax 等）。选「关闭」即只用关键词检索。', en: 'Which profile key is used for embeddings (DeepSeek has no embeddings API; pick Zhipu / Minimax). Choose "off" to use keyword search only.' },
   'settings.embeddingModel.label': { zh: '向量模型', en: 'Embedding model' },
   'settings.embeddingModel.hint': { zh: '例如智谱的 embedding-3、Minimax 的 embo-01。留空即关闭。', en: 'e.g. embedding-3 for Zhipu, embo-01 for Minimax. Empty disables it.' },
+  // 检测通过 ≠ 已保存。向量索引读的是**已保存**的配置，不点保存就还是旧 Key（静默失败）。
+  'settings.embeddingApply': { zh: '保存并启用', en: 'Save and enable' },
   'settings.embeddingKey.saved': { zh: '已保存（留空则不修改）', en: 'Saved (leave empty to keep)' },
   'settings.embeddingKey.label': { zh: '向量接口 Key', en: 'Embedding API key' },
   'settings.embeddingKey.hint': { zh: '留空则用所选配置档自己的 Key（智谱这类同一个 Key 就够）。聊天与向量不是同一个账号时填这里，例如 holysheep 的 Key —— 它不是 DeepSeek 的 Key。', en: 'Empty uses the selected profile\'s own key (enough for providers like Zhipu). Fill this when chat and embeddings use different accounts, e.g. a holysheep key — which is not your DeepSeek key.' },
