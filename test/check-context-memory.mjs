@@ -111,7 +111,7 @@ check(
 );
 check(
   '运行内工具输出只留最近几条全文',
-  /pruneToolPayloads\(requestMessages\)/.test(RUNNER) && /const TOOL_PAYLOAD_KEEP = 6;/.test(RUNNER),
+  /pruneToolPayloads\(requestMessages\)/.test(RUNNER) && /const TOOL_PAYLOAD_KEEP = 3;/.test(RUNNER),
 );
 
 /* ── 3. 全文保留：base64 落盘、工具输出搬进 payloads ──────────────── */

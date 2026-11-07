@@ -90,6 +90,7 @@ export function readSettings(): ChatSettings {
     requestHeaders: activeProfile.requestHeaders,
     requestTimeoutSeconds: clamp(configuration.get<number>('requestTimeoutSeconds', 120), 10, 900),
     proxy: String(configuration.get<string>('proxy', '') ?? '').trim(),
+    proxyBypassHosts: normalizeHostList(configuration.get<unknown>('proxyBypassHosts', ['api.deepseek.com'])),
     searchExclude: readSearchExclude(),
     defaultMode: resolveConversationMode(configuration.get<unknown>('defaultMode'), 'agent'),
     agentMaxSteps: DEFAULT_AGENT_MAX_STEPS,
@@ -121,6 +122,7 @@ export async function updateSettings(values: Partial<ChatSettings>): Promise<voi
     ['taskCacheRetentionHours', values.taskCacheRetentionHours],
     ['cacheBudgetMB', values.cacheBudgetMB],
     ['cleanupIntervalMinutes', values.cleanupIntervalMinutes],
+    ['proxyBypassHosts', values.proxyBypassHosts],
     ['maxMessagesInContext', values.maxMessagesInContext],
     ['requestHeaders', values.requestHeaders],
     ['requestTimeoutSeconds', values.requestTimeoutSeconds],
@@ -394,4 +396,26 @@ function stringRecord(value: unknown): Record<string, string> {
 
 function clamp(value: number, min: number, max: number): number {
   return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : min;
+}
+
+/**
+ * 「走代理时直连的主机」归一化：允许数组或逗号/换行分隔的字符串。
+ *
+ * 只留主机名（去掉协议、端口、路径），统一小写；空项丢掉。默认放行 api.deepseek.com。
+ */
+export function normalizeHostList(value: unknown): string[] {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === 'string' ? value.split(/[,\n;]/) : [];
+  const hosts: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    let host = item.trim().toLowerCase();
+    if (!host) continue;
+    host = host.replace(/^[a-z]+:\/\//, '').replace(/\/.*$/, '');
+    host = host.replace(/:\d+$/, '');
+    if (!host || !/^[a-z0-9.-]+$/.test(host)) continue;
+    if (!hosts.includes(host)) hosts.push(host);
+  }
+  return hosts.length ? hosts : ['api.deepseek.com'];
 }

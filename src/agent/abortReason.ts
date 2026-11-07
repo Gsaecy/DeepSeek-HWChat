@@ -53,18 +53,33 @@ export function isAbortLikeError(error: unknown): boolean {
   });
 }
 
-/** 中止的三种真实来源 —— 说法不同，能做的事也不同。 */
-export type AbortCause = 'timeout' | 'network' | 'user';
+/**
+ * 中止的真实来源 —— 说法不同，能做的事也不同。
+ *
+ * `stalled` 与 `timeout` 必须分开：`timeout` 是「连不上 / 等不到响应头」，
+ * `stalled` 是「连上了，但 N 秒没有新数据」。前者要查网络与代理，后者多半只要
+ * 调大超时或给该域名直连 —— 混成一个说法，用户只能瞎试。
+ */
+export type AbortCause = 'timeout' | 'stalled' | 'network' | 'user';
 
 /**
  * 判断是哪一种中止。
  *
  * - `user`：用户点了停止 / 切换了对话（`signal.aborted` 为真，但没有超时或网络特征）；
+ * - `stalled`：连上了，但 N 秒没有新数据（我们自己的空闲判定）；
  * - `timeout`：明确的超时错误（`TimeoutError` 或消息里带超时）；
  * - `network`：其余情况都按「连接被外部断开」处理（代理断线、服务端关连接）。
  */
 export function classifyAbort(error: unknown, signalAborted: boolean): AbortCause {
   const chain = errorChain(error);
+  /*
+   * 我们自己的空闲判定（`StreamStalledError`）优先于其它判断：
+   * 它的 `name` 不含 timeout，混进下面的正则会被误判成 network（也就是用户看到的
+   * 「网络失败」）。signal 被用户取消时仍然是 user。
+   */
+  if (!signalAborted && chain.some((item) => item instanceof Error && item.name === 'StreamStalledError')) {
+    return 'stalled';
+  }
   const text = chain
     .map((item) => (item instanceof Error ? `${item.name} ${item.message}` : String(item)))
     .join(' ')

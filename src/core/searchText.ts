@@ -13,6 +13,8 @@
  */
 
 /** 归一化：全角转半角、大小写、空白与标点。中英文混排时不丢信息。 */
+import { safeSlice } from './textSafety.js';
+
 export function normalizeSearchText(value: unknown): string {
   if (typeof value !== 'string') return '';
   return value
@@ -120,12 +122,12 @@ export function excerptAround(text: string, tokens: readonly string[], size = 24
     const index = normalized.indexOf(token);
     if (index >= 0 && (at < 0 || index < at)) at = index;
   }
-  if (at < 0) return flat.slice(0, size);
+  if (at < 0) return safeSlice(flat, 0, size);
   // 归一化会改变长度（全角/标点），按比例折算回原文位置，够用即可。
   const ratio = flat.length / Math.max(1, normalized.length);
   const center = Math.min(flat.length, Math.round(at * ratio));
   const start = Math.max(0, center - Math.floor(size / 3));
-  return `${start > 0 ? '…' : ''}${flat.slice(start, start + size)}${start + size < flat.length ? '…' : ''}`;
+  return `${start > 0 ? '…' : ''}${safeSlice(flat, start, start + size)}${start + size < flat.length ? '…' : ''}`;
 }
 
 export interface AmbiguousTerm {

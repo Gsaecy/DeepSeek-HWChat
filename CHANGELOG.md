@@ -4,6 +4,20 @@
 
 - （下一版的内容写在这里）
 
+## 0.4.6
+
+- **半个 emoji 让整份请求 JSON 解析失败**（用户原话，连报两次）：`接口请求失败（400）：Failed to parse the request body as JSON: messages[0].content: lone leading surrogate in hex escape at line 1 column 39266`。
+  - **定位**：`messages[0]` 是 system 消息，内容是任务记忆 + 历史摘要 + 自动检索片段，全部由 `slice(0, N)` 截断而成。一个 emoji 在 UTF-16 里占两个码元，截在中间就留下半个代理项，`JSON.stringify` 写成 `\ud83d`，服务端解析 JSON 直接 400。实测复现：`"前"×10 + "😀" + "后"×10` 取 `slice(0, 11)` → `{"content":"…\ud83d"}`。另扫了全部 246 个消息存档：**没有**孤立代理项，所以不是存进去的坏数据，而是拼请求时现场切坏的。
+  - **修法两层**：新增 `src/core/textSafety.ts`（`safeSlice` / `clipText` / `stripLoneSurrogates` / `sanitizeJsonStrings`），把 9 处会进入提示词的截断全部换掉；并在**出站口**统一 `encodeBody()` 清洗一遍 + 记一行日志 —— 上游再漏也不会把坏字符发出去。
+- **「卡住」不再报成「网络失败」**（用户追问：「为什么 hwchat 和 copilot 都是用的 DeepSeek，hwchat 经常出现这种连不上的情况」）。
+  - 真实日志（同日 20:03:50）：`[net] 请求失败 …｜网络失败（ABORT_ERR）：经代理请求失败`。那一刻既没断网也没有服务报错 —— 是我们自己「120 秒没收到任何字节」的空闲判定触发了 abort，经代理层包装成 `ABORT_ERR`，于是报成网络失败，用户据此查网络，方向从一开始就错了。
+  - 新增 `StreamStalledError`（带阶段、秒数、请求体大小、是否走代理），等响应头与流中途两处都会标记；`classifyAbort()` 多了 `stalled` 一类并排在 `network` 之前；界面文案直说「N 秒没有新数据」并给出两条可执行做法（调大超时 / 把域名加进直连名单）。
+- **DeepSeek 走直连，其它流量照旧**：新增设置 `hwchat.proxyBypassHosts`（默认 `api.deepseek.com`，设置页有输入框）。命中名单的请求直连，网页检索与图片下载仍走代理。**只影响 HWChat 自己发出的请求** —— `git push/pull`、`npm` 等子进程走它们自己的代理配置，完全不受影响。
+- **请求体更小**，直接降低首字节超时概率：最近原文 24 → 12 条、字节预算 1 MB → 768 KB、运行内工具输出全文 6 → 3 条。超过 512 KB 时输出面板记一行真实体积。
+- 守护：`src/test/textSafety.test.ts`（9 条）、`src/test/abortReason.test.ts` +3 条、`test/check-text-safety.mjs`（17 项，含 2000+ 个截断点逐个验证）、`test/check-network-honesty.mjs`（16 项）。全量：**1165 条单测 + 65 个 `check-*.mjs` 全绿**。
+
+- （下一版的内容写在这里）
+
 ## 0.4.5
 
 - **调用 VS Code 的 `copilot_multiReplaceString` / `copilot_replaceString` 只会得到一句 `Invalid input`，模型于是反复换写法重试**（用户原话：调用 VS Code 工具：`copilot_multiReplaceString` 失败 → 返回结果 `Invalid input`）。

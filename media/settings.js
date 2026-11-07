@@ -20,7 +20,7 @@
   }
 
   const fieldIds = [
-    'apiKey', 'profileName', 'profileModels', 'profileImageModel', 'baseUrl', 'model', 'requestHeaders', 'requestTimeoutSeconds', 'proxy',
+    'apiKey', 'profileName', 'profileModels', 'profileImageModel', 'baseUrl', 'model', 'requestHeaders', 'requestTimeoutSeconds', 'proxy', 'proxyBypassHosts',
     'temperature', 'maxTokens', 'maxMessagesInContext', 'sendOnEnter',
     'systemPrompt', 'historyRetentionDays', 'taskCacheRetentionHours',
     'cacheBudgetMB', 'cleanupIntervalMinutes', 'defaultMode',
@@ -106,6 +106,7 @@
       requestHeaders,
       requestTimeoutSeconds: numberValue(fields.requestTimeoutSeconds, 120),
       proxy: fields.proxy.value.trim(),
+      proxyBypassHosts: fields.proxyBypassHosts.value.split(/[,\n;]/).map((item) => item.trim()).filter(Boolean),
       temperature: numberValue(fields.temperature, 1),
       maxTokens: numberValue(fields.maxTokens, 0),
       maxMessagesInContext: numberValue(fields.maxMessagesInContext, 20),
@@ -209,6 +210,7 @@
     fields.apiKey.placeholder = apiKeyConfigured ? t('settings.apiKey.savedPlaceholder') : 'sk-…';
     fields.requestTimeoutSeconds.value = settings.requestTimeoutSeconds;
     fields.proxy.value = settings.proxy || '';
+    fields.proxyBypassHosts.value = (settings.proxyBypassHosts || []).join(', ');
     fields.searchExclude.value = Array.isArray(settings.searchExclude) ? settings.searchExclude.join(', ') : '';
     fields.temperature.value = settings.temperature;
     fields.maxTokens.value = settings.maxTokens;

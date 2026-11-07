@@ -96,19 +96,19 @@ function toolMessage(index: number, size = 1000): ChatRequestMessage {
   } as ChatRequestMessage;
 }
 
-test('运行内：最近 6 条工具输出留全文，更早的压成一行', () => {
+test('运行内：最近 3 条工具输出留全文，更早的压成一行', () => {
   const messages: ChatRequestMessage[] = [
     { role: 'system', content: 'sys' },
     { role: 'user', content: '做点事' },
   ];
   for (let index = 0; index < 10; index += 1) messages.push(toolMessage(index));
   const folded = pruneToolPayloads(messages);
-  assert.equal(folded, 4);
+  assert.equal(folded, 7);
   const tools = messages.filter((message) => message.role === 'tool') as Array<{ content: string; tool_call_id?: string }>;
   assert.equal(tools.length, 10, '只折叠内容，不删除消息（tool_call_id 必须配对）');
   for (const [index, tool] of tools.entries()) {
     const payload = JSON.parse(tool.content) as { result: string; summary?: string; folded?: boolean };
-    if (index < 4) {
+    if (index < 7) {
       assert.ok(payload.folded, `第 ${index} 条应当被折叠`);
       assert.match(payload.result, /已折叠/);
       assert.equal(payload.summary, `第 ${index} 次调用`, '摘要要留着，任务树才对得上');

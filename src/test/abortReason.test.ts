@@ -58,3 +58,23 @@ test('循环 cause 不会把判定卡死', () => {
   (a as { cause?: unknown }).cause = a;
   assert.equal(isAbortLikeError(a), false);
 });
+
+/* ── 「卡住」必须和「断网」分开 ───────────────────────────────────── */
+
+test('StreamStalledError 判成 stalled（不是 network）', () => {
+  const error = Object.assign(new Error('stalled:awaiting-response:120'), {
+    name: 'StreamStalledError',
+    seconds: 120,
+  });
+  assert.equal(classifyAbort(error, false), 'stalled');
+});
+
+test('用户主动停止仍然是 user（即使错误形状像卡住）', () => {
+  const error = Object.assign(new Error('stalled:mid-stream:120'), { name: 'StreamStalledError' });
+  assert.equal(classifyAbort(error, true), 'user');
+});
+
+test('普通网络错误不会被误判成 stalled', () => {
+  const error = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' });
+  assert.equal(classifyAbort(error, false), 'network');
+});

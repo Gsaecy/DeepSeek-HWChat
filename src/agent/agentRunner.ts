@@ -514,7 +514,7 @@ export class AgentRunner {
  * 细节随时可以用同样的工具再查一次（文件也还在磁盘上）。所以这里做的是
  * 「最近的留全，早的留摘要」，和跨轮记忆采用同一条原则。
  */
-const TOOL_PAYLOAD_KEEP = 6;
+const TOOL_PAYLOAD_KEEP = 3;
 
 export function pruneToolPayloads(messages: ChatRequestMessage[], keep = TOOL_PAYLOAD_KEEP): number {
   const toolIndexes: number[] = [];

@@ -31,6 +31,7 @@ const settings: ChatSettings = {
   requestHeaders: {},
   requestTimeoutSeconds: 30,
   proxy: '',
+  proxyBypassHosts: ['api.deepseek.com'],
   defaultMode: 'agent',
   agentMaxSteps: 12,
   reasoningEffort: 'default',

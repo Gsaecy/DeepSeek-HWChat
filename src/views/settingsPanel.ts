@@ -384,6 +384,7 @@ export class SettingsPanel implements vscode.Disposable {
             <label class="setting-row setting-row-stack"><span><strong>${t(lang, 'settings.headers.label')}</strong><small>${t(lang, 'settings.headers.hint')}</small></span><textarea id="requestHeaders" class="control mono" rows="4" spellcheck="false"></textarea></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.timeout.label')}</strong><small>${t(lang, 'settings.timeout.hint')}</small></span><span class="stepper"><input id="requestTimeoutSeconds" type="number" min="10" max="900"><span>${t(lang, 'common.seconds')}</span></span></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.proxy.label')}</strong><small>${t(lang, 'settings.proxy.hint')}</small></span><input id="proxy" class="control mono" type="text" spellcheck="false" placeholder="http://127.0.0.1:8080"></label>
+            <label class="setting-row"><span><strong>${t(lang, 'settings.proxyBypassHosts.label')}</strong><small>${t(lang, 'settings.proxyBypassHosts.hint')}</small></span><input id="proxyBypassHosts" class="control mono" type="text" spellcheck="false" placeholder="api.deepseek.com"></label>
           </div>
         </section>
         <section id="generation" class="settings-section">

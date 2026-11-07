@@ -42,6 +42,8 @@ const BLOCKED_HOSTS = new Set(['localhost', 'localhost.localdomain', 'ip6-localh
  * `http://localhost:3000`（它以为在探测项目）或内网地址，那既取不到东西，
  * 还会把开发服务器的日志刷满。
  */
+import { safeSlice } from './textSafety';
+
 export function checkFetchableUrl(raw: string): { ok: true; url: string } | { ok: false; reason: 'scheme' | 'host' | 'credentials' | 'invalid' } {
   const text = String(raw ?? '').trim();
   if (!text) return { ok: false, reason: 'invalid' };
@@ -145,7 +147,7 @@ export function htmlToText(html: string, maxChars = 20_000): string {
   const restored = text.replace(/\u0000PRE(\d+)\u0000/g, (_match, index: string) => blocks[Number(index)] ?? '');
   const trimmed = restored.trim();
   if (trimmed.length <= maxChars) return trimmed;
-  return `${trimmed.slice(0, maxChars)}\n\n…（内容过长，已截断到 ${maxChars} 字符）`;
+  return `${safeSlice(trimmed, 0, maxChars)}\n\n…（内容过长，已截断到 ${maxChars} 字符）`;
 }
 
 /** RSS / Atom 里的 `<item>` / `<entry>`（Bing 的 `format=rss` 走这条）。 */

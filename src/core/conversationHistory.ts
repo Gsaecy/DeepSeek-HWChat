@@ -1,6 +1,8 @@
 import { ChatMessage, ConversationSummary } from './types';
 import { previewText } from './ids';
 
+import { safeSlice } from './textSafety';
+
 export function buildConversationHistoryDigest(
   conversation: ConversationSummary,
   messages: ChatMessage[],
@@ -65,5 +67,5 @@ function formatSection(title: string, values: string[]): string {
 function truncateDigest(value: string, maxChars: number): string {
   const limit = Math.max(2_000, maxChars);
   if (value.length <= limit) return value;
-  return `${value.slice(0, limit - 80).trimEnd()}\n\n[任务历史摘要已截断；可使用只读历史检索工具查询细节]`;
+  return `${safeSlice(value, 0, limit - 80).trimEnd()}\n\n[任务历史摘要已截断；可使用只读历史检索工具查询细节]`;
 }

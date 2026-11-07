@@ -17,6 +17,7 @@ import {
 } from '../core/types';
 import { AuditLog, redact } from './auditLog';
 import { commandPathViolation, maskPatternFlagArguments, missingPathsInCommandOutput } from './commandPaths';
+import { safeSlice } from '../core/textSafety';
 import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './workspacePaths';
 import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
 import { shouldAutoBackground } from './serverCommands';
@@ -2233,8 +2234,9 @@ export function renderBoundedText(buffer: BoundedText): string {
 
 function truncate(value: string, maxBytes: number): string {
   if (Buffer.byteLength(value) <= maxBytes) return value;
-  let result = value.slice(0, Math.max(1, Math.floor(maxBytes * 0.75)));
-  while (Buffer.byteLength(result) > maxBytes - 80) result = result.slice(0, -256);
+  // 按码元截断会切开 emoji（半个代理项 → 请求 JSON 直接 400），所以走 safeSlice。
+  let result = safeSlice(value, 0, Math.max(1, Math.floor(maxBytes * 0.75)));
+  while (Buffer.byteLength(result) > maxBytes - 80) result = safeSlice(result, 0, Math.max(0, result.length - 256));
   return tt('tool.outputTruncated', { result, bytes: Buffer.byteLength(value).toLocaleString() });
 }
 

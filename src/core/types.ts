@@ -449,6 +449,18 @@ export interface ChatSettings {
    * 可用（直连）的请求弄坏。
    */
   proxy: string;
+  /**
+   * 走代理时要**直连**的主机（后缀匹配，逗号分隔也可以写多行）。
+   *
+   * 用途（用户 2026-11-07 的要求）：「给 DeepSeek 直连，但是不要影响 GitHub 提交拉取等连接」。
+   * 经代理上传几 MB 的请求体时，代理缓冲会让「首字节」等很久，被 120 秒空闲判定掐掉；
+   * 而 api.deepseek.com 在国内通常可以直连。默认只放行它，其它域名（网页检索、图片下载）
+   * 仍按 `proxy` 走。
+   *
+   * 注意：这里只管 **HWChat 自己发出的请求**。`git push/pull`、`npm` 等由 `run_command`
+   * 起的子进程走它们自己的代理配置（环境变量 / git config），完全不受本项影响。
+   */
+  proxyBypassHosts?: string[];
   defaultMode: ConversationMode;
   agentMaxSteps: number;
   reasoningEffort: ReasoningEffort;

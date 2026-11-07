@@ -9,6 +9,7 @@ import {
 } from '../core/types';
 import { tt } from '../core/i18n';
 import { hasImageParts, isTextOnlyContentRejection, stripImageParts } from './visionFallback';
+import { sanitizeJsonStrings } from '../core/textSafety';
 import { fetchWithNetworkRetry, type RetryEvent } from './netDiagnostics';
 import { fetchViaProxy, type ResponseLike } from './proxyFetch';
 
@@ -96,6 +97,59 @@ interface OpenAIErrorResponse {
   };
 }
 
+/**
+ * 请求体的最终编码：先清掉孤立代理项，再序列化。
+ *
+ * 真实故障（用户 2026-11-07，连报两次）：
+ *
+ *     请求失败：接口请求失败（400）：Failed to parse the request body as JSON:
+ *     messages[0].content: lone leading surrogate in hex escape at line 1 column 39266
+ *
+ * 一个 emoji 在 UTF-16 里占两个码元，任何 `slice(0, N)` 截断都可能把它切成半个；
+ * `JSON.stringify` 会把那半个写成 `\ud83d`，服务端解析 JSON 直接 400 —— 而这个 400
+ * 与「网络连不上」在界面上长得一样，用户完全无从判断。
+ *
+ * 上游的截断点已经全部改成 `safeSlice`（见 `src/core/textSafety.ts`）。这里再做一次
+ * **出站兜底**：无论哪一处漏了，都不能把坏字符发出去 —— 丢掉半个字符，远好过整轮失败。
+ * 只在真的发现坏字符时才多走一遍 walk，正常路径没有额外开销。
+ */
+function encodeRequestBody(body: Record<string, unknown>): { text: string; repaired: boolean } {
+  const sanitized = sanitizeJsonStrings(body);
+  return { text: JSON.stringify(sanitized), repaired: sanitized !== body };
+}
+
+/**
+ * 「我们自己把请求掐了」——不是网络故障，是等太久。
+ *
+ * 真实故障（用户 2026-11-07，输出面板原话）：
+ *
+ *     [net] 请求失败 …｜网络失败（ABORT_ERR）：经代理请求失败：ABORT_ERR / 网络错误
+ *
+ * 那一刻既没有断网也没有服务报错：是我们自己的「120 秒没收到任何字节」判定触发了
+ * abort，而这个 abort 经代理层包装后变成一个 code 为 ABORT_ERR 的网络错误，于是被
+ * 报成「网络失败」。用户看到的「经常连不上」，很多时候其实是这一类。
+ *
+ * 这个类型把「等了多久、请求体多大、卡在哪一阶段」带出来，界面才能说清该改什么
+ * （调大超时 / 给该域名直连 / 换代理）。
+ */
+export class StreamStalledError extends Error {
+  constructor(
+    readonly phase: 'awaiting-response' | 'mid-stream',
+    readonly seconds: number,
+    readonly payloadBytes: number,
+    readonly proxied: boolean,
+  ) {
+    // 文案里保留「超时」二字：日志与旧断言都靠它认出这是等待超限，而不是连接失败。
+    super(phase === 'mid-stream'
+      ? `等待 ${seconds} 秒没有收到新数据（空闲超时 / stalled:mid-stream）`
+      : `等待 ${seconds} 秒没有收到响应（空闲超时 / stalled:awaiting-response）`);
+    this.name = 'StreamStalledError';
+  }
+}
+
+/** 超过这个体积就记一行：它决定「首字节等待」有多容易被判成超时。 */
+const LARGE_PAYLOAD_CHARS = 512 * 1024;
+
 export class DeepSeekClient {
   /**
    * 图片被降级时的通知（界面上用它弹一条说明）。
@@ -129,12 +183,35 @@ export class DeepSeekClient {
     if (!proxy) {
       return ((input: string, init: RequestInit) => fetch(input, init)) as (input: string, init: RequestInit) => Promise<ResponseLike>;
     }
-    return (input: string, init: RequestInit) => fetchViaProxy(input, {
-      method: init.method,
-      headers: init.headers instanceof Headers ? init.headers : undefined,
-      body: typeof init.body === 'string' ? init.body : undefined,
-      signal: init.signal ?? undefined,
-    }, proxy, settings.requestTimeoutSeconds * 1000);
+    /*
+     * 直连名单（`proxyBypassHosts`，默认 `api.deepseek.com`）。
+     *
+     * 用户 2026-11-07 的要求：「给 DeepSeek 直连，但是不要影响 GitHub 提交拉取等连接」。
+     * 经代理上传几 MB 请求体时，代理缓冲会把「首字节」拖到 120 秒以外，被我们自己的
+     * 空闲判定掐掉（日志里表现为 `ABORT_ERR`）。DeepSeek 在国内可直连，所以默认放行它；
+     * 网页检索、图片下载等仍走代理。
+     *
+     * 只影响 **HWChat 自己发出的请求**：`git push/pull` 等子进程走自己的代理配置
+     * （环境变量 / git config），完全不受这一项影响。
+     */
+    const bypass = (settings.proxyBypassHosts ?? ['api.deepseek.com']).map((item) => item.toLowerCase());
+    const bypassed = (input: string): boolean => {
+      let host = '';
+      try { host = new URL(input).hostname.toLowerCase(); } catch { return false; }
+      return bypass.some((item) => host === item || host.endsWith(`.${item}`));
+    };
+    return (input: string, init: RequestInit) => {
+      if (bypassed(input)) {
+        this.logNetwork(`[net] ${input.split('?')[0]} 在直连名单里，跳过代理`);
+        return fetch(input, init) as unknown as Promise<ResponseLike>;
+      }
+      return fetchViaProxy(input, {
+        method: init.method,
+        headers: init.headers instanceof Headers ? init.headers : undefined,
+        body: typeof init.body === 'string' ? init.body : undefined,
+        signal: init.signal ?? undefined,
+      }, proxy, settings.requestTimeoutSeconds * 1000);
+    };
   }
 
   /** 把一次重试写进输出面板（主机名 + 错误码 + 等待时长，不含正文与凭据）。 */
@@ -149,6 +226,22 @@ export class DeepSeekClient {
   }
 
   /** 服务端过载导致的重试也写一行，和网络错误的重试分开标注。 */
+  /** 统一的请求体编码入口（含孤立代理项兜底与体积日志）。 */
+  private encodeBody(body: Record<string, unknown>, endpoint: string): string {
+    const { text, repaired } = encodeRequestBody(body);
+    if (repaired) {
+      this.logNetwork(`[payload] ${endpoint.split('?')[0]} 请求体里有半个 emoji（孤立代理项），已按 UTF-16 边界修正后发送`);
+    }
+    /*
+     * 体积只记一行，且只在异常大时记：它直接决定上传耗时与「120 秒没有字节」的概率，
+     * 出问题时最先要看的就是这个数字。
+     */
+    if (text.length > LARGE_PAYLOAD_CHARS) {
+      this.logNetwork(`[payload] 请求体 ${(text.length / 1024 / 1024).toFixed(2)} MB（${body.messages ? (body.messages as unknown[]).length : 0} 条消息）：体积越大，经代理上传与首字节等待越容易超时`);
+    }
+    return text;
+  }
+
   private reportStatusRetry(endpoint: string, status: number, attempt: number, waitMs: number, detail: string): void {
     const host = (() => {
       try { return new URL(endpoint).hostname; } catch { return endpoint; }
@@ -269,12 +362,19 @@ export class DeepSeekClient {
     const transport = this.transport(settings);
     while (true) {
       const current = newAttempt();
+      /*
+       * `stalledByUs`：这次 abort 是**我们自己**的空闲判定触发的，不是用户取消，
+       * 也不是网络故障。区分开之后，界面才能给出可执行的建议（调大超时 / 直连 / 换代理），
+       * 而不是笼统一句「请求失败」。
+       */
+      let stalledByUs = false;
+      const requestText = this.encodeBody(body, endpoint);
       try {
         response = await withDeadline(
           fetchWithNetworkRetry(endpoint, {
             method: 'POST',
             headers,
-            body: JSON.stringify(body),
+            body: requestText,
             signal: current.signal,
           }, {
             signal: current.signal,
@@ -282,9 +382,12 @@ export class DeepSeekClient {
           }, transport),
           idleMs,
           timeoutMessage,
-          current.abort,
+          () => { stalledByUs = true; current.abort(); },
         );
       } catch (error) {
+        if (stalledByUs && !options.signal?.aborted) {
+          throw new StreamStalledError('awaiting-response', Math.round(idleMs / 1000), requestText.length, Boolean(settings.proxy?.trim()));
+        }
         if (isAbortError(error) && options.signal?.aborted) {
           throw new RequestCancelledError();
         }
@@ -393,7 +496,7 @@ export class DeepSeekClient {
               Authorization: `Bearer ${apiKey}`,
               ...sanitizeHeaders(settings.requestHeaders),
             }),
-            body: JSON.stringify(body),
+            body: this.encodeBody(body, endpoint),
             signal,
           }, {
             signal,
@@ -1017,6 +1120,8 @@ async function parseSse(
   const decoder = new TextDecoder();
   let buffer = '';
   const result: StreamChatResult = { content: '', reasoning: '', toolCalls: [] };
+  /** 本次「没有数据」是不是我们自己的空闲判定触发的（区别于连接被断开）。 */
+  let stalledMidStream = false;
   try {
     while (true) {
       if (signal?.aborted) {
@@ -1031,7 +1136,11 @@ async function parseSse(
        * 这里直接给 read() 设上限，超时同时取消 reader，连接不会留在那里。
        */
       const chunk = idleMs > 0
-        ? await withDeadline(reader.read(), idleMs, timeoutMessage, () => { void reader.cancel().catch(() => undefined); })
+        ? await withDeadline(reader.read(), idleMs, timeoutMessage, () => {
+          // 流中途没有数据：同样是我们自己的空闲判定，要能和「连接被断开」分开报。
+          stalledMidStream = true;
+          void reader.cancel().catch(() => undefined);
+        })
         : await reader.read();
       const { done, value } = chunk;
       buffer += decoder.decode(value, { stream: !done });
@@ -1049,6 +1158,17 @@ async function parseSse(
         return result;
       }
     }
+  } catch (error) {
+    /*
+     * 流停在半路：把我们自己的空闲判定和真正的连接断开分开。
+     *
+     * 旧实现把这种情况一律报成「网络失败（ABORT_ERR）」，于是用户无法判断是
+     * 「模型还在想」还是「代理断了」—— 前者只要调大超时就好，后者才需要查代理。
+     */
+    if (stalledMidStream && !signal?.aborted) {
+      throw new StreamStalledError('mid-stream', Math.round(idleMs / 1000), 0, false);
+    }
+    throw error;
   } finally {
     // 超时那一刻我们取消了 reader：此时可能还有挂起的 read，`releaseLock()` 会抛
     // TypeError 并把真正的超时错误盖掉，所以吞掉它 —— 锁随流一起释放，没有泄漏。

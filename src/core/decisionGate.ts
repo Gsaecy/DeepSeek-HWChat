@@ -47,7 +47,7 @@ export interface NormalizedDecision {
 const FIELD_LIMITS = { title: 80, achieves: 200, extent: 200, cost: 200, question: 200, why: 240 } as const;
 
 function text(value: unknown, limit: number): string {
-  return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, limit);
+  return clipText(String(value ?? '').replace(/\s+/g, ' ').trim(), limit);
 }
 
 /**
@@ -57,6 +57,8 @@ function text(value: unknown, limit: number): string {
  * 少了「做到什么地步」的方案会让用户以为它全做完了 —— 这正是用户抱怨的
  * 「做出一堆不能用的东西」的来源之一。所以缺字段时返回 `error`，让模型补。
  */
+import { clipText } from './textSafety';
+
 export function normalizeDecision(raw: unknown): NormalizedDecision | { error: string } {
   const record = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const question = text(record.question, FIELD_LIMITS.question);

@@ -10,6 +10,13 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 
 完整改动见 [CHANGELOG](CHANGELOG.md)。
 
+## 0.4.6 更新了什么
+
+- **半个 emoji 不再让整份请求失败**：一个 😀 在 UTF-16 里占两个码元，任何按长度截断都可能把它切成半个；`JSON.stringify` 会把那半个写成 `\ud83d`，服务端解析 JSON 直接 400（`lone leading surrogate in hex escape`），而它看起来和「连不上」一模一样。现在所有会进入提示词的截断都不切开代理对，出站前还有一道清洗兜底。
+- **「卡住」和「连不上」分开说**：以前两者都显示「网络失败（ABORT_ERR）」——其实多数是「已经连上，但 N 秒没收到新数据」，只要调大超时或给该域名直连。现在会明确说是卡住、等了多久，并给出这两条做法。真正断网时仍然报网络错误。
+- **DeepSeek 默认直连**：新增「代理直连名单」（默认 `api.deepseek.com`）。经代理上传大请求体时首字节很容易被拖过超时，直连更稳；网页检索、图片下载仍走代理。**只影响 HWChat 自己的请求，`git push/pull` 不受影响。**
+- **请求体更小**：最近原文 24 → 12 条、运行内工具输出全文 6 → 3 条，降低大请求卡在代理里的概率。
+
 ## 0.4.5 更新了什么
 
 - **不再向模型提供「注定调不通」的 Copilot 编辑工具**：`copilot_multiReplaceString` / `copilot_replaceString` 需要 VS Code 聊天请求的上下文（`promptContext`），而 `lm.invokeTool` 传不了它 —— 它们只会回一句 `Invalid input`，让模型反复换写法重试。现在这类工具不下发；万一被硬调，会返回「为什么不行 + 用 `replace_in_file` / `write_file` 代替 + 不要重试」的确定性说明。

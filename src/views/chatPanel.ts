@@ -436,9 +436,15 @@ const MODEL_LIST_RETRY_MS = 60_000;
  * 为什么不能沿用旧口径（原始 JSON 2 MB）：一条贴了两张截图的消息就是 2.7 MB，
  * 会把用户当下的提问整个挤掉 —— 这正是「突然忘记项目 / 没有收到具体请求」的成因。
  */
-const CONTEXT_WINDOW_BYTES = 1024 * 1024;
-/** 「最近原文」这一层保留多少条消息（约 10–12 轮问答）。 */
-const CONTEXT_WINDOW_MESSAGES = 24;
+const CONTEXT_WINDOW_BYTES = 768 * 1024;
+/**
+ * 「最近原文」这一层保留多少条消息（约 6 轮问答）。
+ *
+ * 从 24 下调到 12 的依据（用户 2026-11-07 的实测）：请求体越大，经代理上传 +
+ * 等首字节越容易超过空闲超时；而更早的轮次已经由任务记忆 + 自动检索承担，
+ * 逐条重发的边际价值很低。
+ */
+const CONTEXT_WINDOW_MESSAGES = 12;
 /** 任务记忆写盘的去抖窗口。 */
 const TASK_MEMORY_DEBOUNCE_MS = 1500;
 
@@ -2117,7 +2123,16 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
            * 中止的说明按来源分开：超时该调大超时、网络该看代理、用户停止就是停止。
            * 一律说「请求失败：aborted」等于什么都没说。
            */
-          const abortNotice = abortLike ? tt(`chat.aborted.${classifyAbort(error, controller.signal.aborted)}`) : undefined;
+          const abortCause = abortLike ? classifyAbort(error, controller.signal.aborted) : undefined;
+          /*
+           * 「卡住」要把秒数与请求体大小说出来：用户据此才知道该调超时、该直连、
+           * 还是该换代理。只留一句「网络失败」等于让人瞎试。
+           */
+          const abortNotice = abortCause === 'stalled'
+            ? tt('chat.aborted.stalled', { seconds: error instanceof Error && error.name === 'StreamStalledError'
+              ? (error as { seconds?: number }).seconds ?? settings.requestTimeoutSeconds
+              : settings.requestTimeoutSeconds })
+            : abortCause ? tt(`chat.aborted.${abortCause}`) : undefined;
           const fallback = response.activated
             ? (cancelled ? abortNotice ?? tt('chat.stopped') : tt('chat.requestFailed', { error: errorText }))
             : (cancelled ? abortNotice ?? tt('chat.stoppedBeforeRun') : tt('chat.taskNotRun', { error: errorText }));

@@ -1,4 +1,5 @@
 import type { AgentTaskNode, TodoArchive, TodoItem } from './types.js';
+import { clipText } from './textSafety.js';
 
 /**
  * 任务树 / 任务清单 = agent 的项目记忆。
@@ -28,7 +29,7 @@ const LINE_LIMIT = 100;
 
 function oneLine(text: string, limit = LINE_LIMIT): string {
   const flat = (text ?? '').replace(/\s+/g, ' ').trim();
-  return flat.length <= limit ? flat : `${flat.slice(0, limit - 1)}…`;
+  return flat.length <= limit ? flat : `${clipText(flat, limit - 1)}…`;
 }
 
 /**

@@ -1,4 +1,5 @@
 import type { ChatMessage, MessageContext, TodoItem } from './types.js';
+import { clipText } from './textSafety.js';
 
 /**
  * 上下文窗口：决定「哪些历史还发给模型、被丢掉的怎么不丢记忆」。
@@ -156,7 +157,7 @@ export class ContextWindowBuilder {
 export function lightForDigest(message: ChatMessage): ChatMessage {
   return {
     ...message,
-    content: (message.content ?? '').slice(0, 600),
+    content: clipText(message.content ?? '', 600),
     reasoning: undefined,
     context: undefined,
     attachments: undefined,
@@ -167,10 +168,11 @@ export function lightForDigest(message: ChatMessage): ChatMessage {
 /** 摘要里一行最多多少字（防止某条超长回复把摘要撑爆）。 */
 const DIGEST_LINE_LIMIT = 120;
 
-function oneLine(text: string, limit = DIGEST_LINE_LIMIT): string {
+export function oneLine(text: string, limit = DIGEST_LINE_LIMIT): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (flat.length <= limit) return flat;
-  return `${flat.slice(0, limit - 1)}…`;
+  // 截断不能切开 emoji：半个代理项会让整份请求 JSON 解析失败（详见 textSafety.ts）。
+  return `${clipText(flat, limit - 1)}…`;
 }
 
 /**

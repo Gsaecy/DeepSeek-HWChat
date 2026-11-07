@@ -43,6 +43,7 @@ const EDITING = {
   'hwchat.requestHeaders': 'profile',
   'hwchat.requestTimeoutSeconds': 'input',
   'hwchat.proxy': 'input',
+  'hwchat.proxyBypassHosts': 'input',
   'hwchat.temperature': 'input',
   'hwchat.maxTokens': 'input',
   'hwchat.systemPrompt': 'input',

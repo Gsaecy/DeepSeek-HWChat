@@ -14,6 +14,7 @@ import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { imageExtensionFor } from '../agent/attachmentOpen';
 import { ContextWindowBuilder, ContextWindowResult, lightForDigest } from './contextWindow';
+import { clipText, safeSlice } from './textSafety';
 import { excerptAround, matchTokens, normalizeSearchText, recallTokens } from './searchText';
 
 /** 自动检索时单条消息参与匹配的最大字符数（头 3/4 + 尾 1/4）。 */
@@ -643,7 +644,7 @@ export class ConversationStorage {
        * 整段归一化的开销没必要付。
        */
       const bounded = haystack.length > RECALL_HAYSTACK_LIMIT
-        ? `${haystack.slice(0, RECALL_HAYSTACK_LIMIT * 0.75)}\n${haystack.slice(-RECALL_HAYSTACK_LIMIT * 0.25)}`
+        ? `${safeSlice(haystack, 0, RECALL_HAYSTACK_LIMIT * 0.75)}\n${safeSlice(haystack, -RECALL_HAYSTACK_LIMIT * 0.25)}`
         : haystack;
       const match = matchTokens(bounded, tokens);
       const strong = match.hits.length >= 2 || match.hits.some((hit) => hit.length >= 4);
@@ -673,7 +674,7 @@ export class ConversationStorage {
           ...(detail.tools ?? []).flatMap((tool) => [tool.summary, tool.input, tool.output]),
           ...(detail.attachments ?? []).map((item) => item.content),
         ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\n');
-        const bounded = haystack.length > RECALL_HAYSTACK_LIMIT ? haystack.slice(0, RECALL_HAYSTACK_LIMIT) : haystack;
+        const bounded = haystack.length > RECALL_HAYSTACK_LIMIT ? clipText(haystack, RECALL_HAYSTACK_LIMIT) : haystack;
         const match = matchTokens(bounded, tokens);
         const strong = match.hits.length >= 2 || match.hits.some((hit) => hit.length >= 4);
         if (match.score >= 0.2 && strong) {
@@ -2072,9 +2073,9 @@ function stripMessagePayload(message: ChatMessage): number {
 function historyExcerpt(value: string, query: string, maxChars: number): string {
   const normalized = value.replace(/\s+/g, ' ').trim();
   if (normalized.length <= maxChars) return normalized;
-  if (!query) return `${normalized.slice(0, maxChars - 1)}…`;
+  if (!query) return `${clipText(normalized, maxChars - 1)}…`;
   const matchIndex = normalized.toLocaleLowerCase().indexOf(query);
-  if (matchIndex < 0) return `${normalized.slice(0, maxChars - 1)}…`;
+  if (matchIndex < 0) return `${clipText(normalized, maxChars - 1)}…`;
   const context = Math.max(0, Math.floor((maxChars - query.length) / 2));
   const start = Math.max(0, matchIndex - context);
   const end = Math.min(normalized.length, start + maxChars);
@@ -2117,11 +2118,11 @@ function normalizeTaskNodes(value: unknown): AgentTaskNode[] {
       relation: node.relation ?? 'pending',
       userMessageId: typeof node.userMessageId === 'string' ? node.userMessageId : undefined,
       assistantMessageId: typeof node.assistantMessageId === 'string' ? node.assistantMessageId : undefined,
-      summary: typeof node.summary === 'string' && node.summary.trim() ? node.summary.trim().slice(0, 200) : undefined,
+      summary: typeof node.summary === 'string' && node.summary.trim() ? clipText(node.summary.trim(), 200) : undefined,
       todos: Array.isArray(node.todos)
         ? node.todos.filter((item) => item && typeof item.content === 'string' && item.content.trim())
           .slice(0, 20)
-          .map((item) => ({ content: item.content.trim().slice(0, 120), status: item.status }))
+          .map((item) => ({ content: clipText(item.content.trim(), 120), status: item.status }))
         : undefined,
       constraints: Array.isArray(node.constraints)
         ? node.constraints.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => item.trim().slice(0, 120)).slice(0, 3)
