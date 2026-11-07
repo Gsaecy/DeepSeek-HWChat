@@ -8,45 +8,22 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
-## What's new in 0.4.8
+## What's new in 0.4.5
 
-Continuing the thread: the key is right and the check passes, but **a passing check is not the same as being in effect** - the vector index reads the **saved** settings and key, while the check only validates what you typed. A successful check now reveals a "Save and enable" button that persists both in one click; close settings without pressing it and the index still uses the old key (and fails silently).
+All of it on the **semantic retrieval** path: whether the settings page responds, whether the check says the right thing, and whether a passing check actually takes effect.
 
-Verified: **1201 unit tests + 68 guard scripts green**.
-
-## What's new in 0.4.7
-
-The "still failing after top-up" case, tracked down:
-
-- **429 does not always mean rate limiting.** Zhipu returns `1113` (in arrears / no resource pack) with HTTP 429, so the old copy told a user who had *just* topped up to "retry later". Business codes are now separated: `1113`/`1308`/`1310` are balance or quota exhaustion (waiting will not help), `1302`/`1305` are real rate limits.
-- **Account-level failures no longer retry other model names** - that is exactly where the two identical error lines came from.
-- **New "account check"**: one cheapest-possible chat request with the same key. If chat is also refused, the problem is the **account** (verify which account this key belongs to). If chat succeeds, only the **embedding product line** is refused (that model needs its own resource pack).
-- The background indexer no longer backs off and retries on insufficient-balance responses.
-
-Verified: **1201 unit tests + 68 guard scripts green**.
-
-## What's new in 0.4.6
-
-Only the "Check direct support" button: a Zhipu user's probe failed, and the message on screen ("model does not exist") actually came from the **last candidate tried** (Alibaba's `text-embedding-v3`), never from the `embedding-3` they had typed.
-
-- **Candidates are now scoped to the provider**: on `bigmodel.cn` / `z.ai` we only try `embedding-3` / `embedding-2`; DeepSeek has no embeddings endpoint, so we no longer fire other vendors' model names at it.
-- **The verdict names your model**, and every attempt is listed with the provider's own message plus HTTP/business code.
-- **`encoding_format` is no longer sent**: Zhipu's schema has only `model` / `input` / `dimensions`, and the OpenAI default is already float — sending an unknown field only produced a more confusing error.
-- **Zhipu error codes are explained**: 1211 wrong model name, 1212 a chat model was selected, 1222 this address has no embeddings endpoint, 1315 a plan key used against pay-as-you-go.
-- A key typed but not yet saved is now forwarded when you press Check.
-
-Verified: **1198 unit tests + 68 guard scripts green**. 0.4.5 was never published; its contents are folded into this release.
-
-## What's new in 0.4.5 (unpublished, folded into 0.4.6)
-
-Settings page only — the four things that surfaced right after 0.4.4 was installed:
-
-- **"Check direct support" did nothing when clicked**: the handler called a function that does not exist, so it threw immediately. It now shows "checking…" and disables the button, then restores it once the verdict arrives.
-- **Text buttons were squeezed into squares, stacking Chinese one character per line** ("Test image", "Check direct support"): they were placed in a grid meant for square `＋` / `−` icon buttons.
+- **"Check direct support" did nothing when clicked** - the handler called a function that does not exist. It now shows "checking..." and disables the button.
+- **Text buttons were squeezed into squares, stacking Chinese one character per line** ("Test image", "Check direct support"): they sat in a grid meant for square `+` / `-` icon buttons.
 - **Literal `**` asterisks leaked into the instructions**: that block is plain text and does not render markdown.
-- **New "Embedding API key" field**, stored per profile — you can finally keep the chat key (DeepSeek) and the embedding key (holysheep) separate; a saved key shows "Saved (leave empty to keep)". A leftover field that would have written the **plaintext key into settings.json** was removed at the same time.
+- **New "Embedding API key" field**, stored per profile - keep the chat key (DeepSeek) and the embedding key (holysheep) separate; a saved key shows "Saved (leave empty to keep)". A leftover field that would have written the **plaintext key into settings.json** was removed too.
+- **The verdict no longer blames the wrong model**: it used to try every vendor's model name and report only the **last** candidate (so a user who typed `embedding-3` saw Alibaba's "model does not exist"). Candidates are now scoped to the provider, the verdict **names the model you typed**, and every attempt is listed with the provider's own message plus HTTP/business code.
+- **`encoding_format` is no longer sent**: Zhipu's schema has only `model` / `input` / `dimensions`, and the OpenAI default is already float.
+- **Error codes are explained**: `1211` wrong model name, `1212` a chat model was selected, `1222` this address has no embeddings endpoint, `1113` account in arrears or out of balance, `1315` a plan key used against pay-as-you-go.
+- **429 does not always mean rate limiting**: Zhipu returns `1113` with HTTP 429, and the old copy told someone who had *just* topped up to "retry later". Arrears and real rate limits are now separated, and arrears no longer retries other model names.
+- **New "account check"**: one cheapest-possible chat request with the same key. If chat is also refused, the problem is the **account** (verify which account this key belongs to - balances are not shared). If chat succeeds, only the **embedding product line** is refused (that model needs its own resource pack). That is exactly how this was diagnosed: **a key from the right account passed**.
+- **A passing check is not the same as being in effect**: the vector index reads the **saved** settings and key while the check only validates what you typed. A successful check now reveals a "Save and enable" button; close settings without pressing it and the index still uses the old key (and fails silently).
 
-Verified: **1192 unit tests + 68 guard scripts green** (the new `check-settings-layout` measures button geometry, clicks the button, and checks the copy is not raw keys in real Chromium).
+Verified: **1201 unit tests + 68 guard scripts green** (12 of those drive real Chromium: measuring button geometry, actually clicking the check, and walking "check passes -> button appears -> click it -> key lands in SecretStorage").
 
 ## What's new in 0.4.4
 
