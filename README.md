@@ -8,6 +8,15 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.9
+
+- **HWChat now checks whether your configured API can serve embeddings.** A new "Check direct support" button in settings tries each candidate model once for real:
+  - on success it fills in the model and shows the dimension — meaning that profile's key and URL work for embeddings, no extra configuration needed;
+  - on failure it distinguishes "this provider has no embeddings endpoint (404)" from "the key is not accepted (401/403)" and points at providers that do.
+  - Bottom line: **DeepSeek has no embeddings API** (verified in its docs), while Zhipu / Minimax / holysheep do, and all of them can reuse the same profile.
+- **Protocol details taken from holysheep's official example**: requests now send `encoding_format: "float"`, and **429 / 5xx wait and retry once** (free tier: 1000 requests/minute), honouring `Retry-After`.
+- **holysheep setup (copy this)**: add a profile with base URL `https://api.holysheep.cn/v1` and its key; in settings pick that profile under "semantic search profile", set the embedding model to `deepseek-embed-v4`, leave the embedding base URL empty (its `/v1` already serves `/embeddings`), then press "Check direct support".
+
 ## What's new in 0.4.8
 
 - **Semantic recall (vector index)** — covers synonyms keyword search cannot reach ("floating bar" vs "capsule").

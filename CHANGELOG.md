@@ -4,6 +4,24 @@
 
 - （下一版的内容写在这里）
 
+## 0.4.9
+
+用户追问：「hwchat 配置模型的 API 能通用 embeddings 接口吗？能就直接调用，不能就让用户另外配置」。
+
+- **结论（查证后）**：**DeepSeek 不能** —— 官方文档里没有 embeddings 条目（`/guides/embeddings` 回落到首页）。但**同一个配置档能不能直接算向量，取决于该服务商**：智谱、Minimax、holysheep 都用同一套 OpenAI 兼容协议，只要它的 baseUrl 同时服务 `/embeddings`，就能直接复用该配置档的密钥与地址。
+- **加「检测能否直接调用」按钮**：`src/providers/embeddingsProbe.ts` 按候选模型逐个真实发一次 `input: "ping"` 的请求，第一个成功的就是证据 —— 成功自动回填模型名并显示维度；失败按原因分开说：
+  - 全部 404 → 「这个配置档没有向量接口」，并指出该另外配哪个服务；
+  - 全部 401/403 → 「密钥不被向量接口接受」，与「没接口」完全不同；
+  - HTTP 200 但业务报错（Minimax 的 `base_resp`）→ 继续试下一个候选。
+  - 候选含智谱 `embedding-3`、holysheep `deepseek-embed-v4`、OpenAI `text-embedding-3-*`、Minimax `embo-01` 等。
+- **按 holysheep 参考文档补齐协议细节**（`https://www.holysheep.cn/articles/vi-deepseek-v4-embeddingxiangliangapishiyong-2026-06-14-0003.html`）：
+  - 请求体带 `encoding_format: "float"`（探针与正式请求都带）；
+  - **429 / 5xx 退避重试一次**（免费档 1000 请求/分钟，超限就 429；索引在后台跑，等 1 秒不打扰用户，但只重试一次，不帮服务端放大压力），并支持 `Retry-After`。
+  - 配置方法（可直接照抄）：新增一个配置档 baseUrl `https://api.holysheep.cn/v1` + 填入 holysheep 的 Key；设置页「语义检索配置档」选它、「向量模型」填 `deepseek-embed-v4`、「向量接口地址」留空即可（它的 `/v1` 本身就服务 `/embeddings`）。
+- 守护：`src/test/embeddings.test.ts` 15 → 23 条（新增探针 5 条、`encoding_format` 1 条、429 重试 2 条）、`test/check-semantic-recall.mjs` 20 → 27 项。全量：**1192 条单测 + 67 个 `check-*.mjs` 全绿**。
+
+- （下一版的内容写在这里）
+
 ## 0.4.8
 
 **语义检索（向量索引）**（用户选择：「向量索引」，用来补上词面匹配够不着的同义说法，例如「悬浮条」↔「胶囊」）。

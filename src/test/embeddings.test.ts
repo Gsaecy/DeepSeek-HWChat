@@ -141,3 +141,112 @@ test('批量请求：没有 Key 直接报错，不发请求', async () => {
   await assert.rejects(embedTexts({ baseUrl: 'https://x.test/v1', model: 'm' }, '  ', ['a'], { fetchImpl: fetchImpl as never }));
   assert.equal(called, false);
 });
+
+/* ── 「能不能直接调用」探针 ───────────────────────────────────────── */
+
+import { EMBEDDING_MODEL_CANDIDATES, probeEmbeddingCapability } from '../providers/embeddingsProbe';
+
+test('探针：配置档的地址能算向量 → 判定可直接调用，并给出模型与维度', async () => {
+  const asked: string[] = [];
+  const fetchImpl = async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)) as { model: string };
+    asked.push(body.model);
+    if (body.model === 'deepseek-embed-v4') {
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }), { status: 200 });
+    }
+    return new Response('{"error":{"message":"model not found"}}', { status: 404 });
+  };
+  const result = await probeEmbeddingCapability({
+    endpoint: 'https://api.holysheep.cn/v1/embeddings',
+    apiKey: 'k',
+    candidates: ['deepseek-embed-v4', ...EMBEDDING_MODEL_CANDIDATES],
+    fetchImpl: fetchImpl as never,
+  });
+  assert.equal(result.usable, true);
+  assert.equal(result.model, 'deepseek-embed-v4');
+  assert.equal(result.dim, 3);
+  assert.deepEqual(asked, ['deepseek-embed-v4'], '第一个候选就成功，不该继续试');
+});
+
+test('探针：全部 404 → 明确说「这个配置档没有向量接口」', async () => {
+  const fetchImpl = async () => new Response('{}', { status: 404 });
+  const result = await probeEmbeddingCapability({
+    endpoint: 'https://api.deepseek.com/embeddings',
+    apiKey: 'k',
+    candidates: ['embedding-3'],
+    fetchImpl: fetchImpl as never,
+  });
+  assert.equal(result.usable, false);
+  assert.match(result.summary, /没有向量接口/);
+});
+
+test('探针：401 → 说的是「密钥不被接受」，不是「没有接口」', async () => {
+  const fetchImpl = async () => new Response('{"error":{"message":"bad key"}}', { status: 401 });
+  const result = await probeEmbeddingCapability({
+    endpoint: 'https://x.test/v1/embeddings',
+    apiKey: 'k',
+    candidates: ['embedding-3'],
+    fetchImpl: fetchImpl as never,
+  });
+  assert.equal(result.usable, false);
+  assert.match(result.summary, /密钥/);
+});
+
+test('探针：HTTP 200 但业务报错（Minimax base_resp）→ 继续试下一个候选', async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    if (calls === 1) return new Response(JSON.stringify({ base_resp: { status_msg: 'login fail' } }), { status: 200 });
+    return new Response(JSON.stringify({ data: [{ embedding: [1, 2] }] }), { status: 200 });
+  };
+  const result = await probeEmbeddingCapability({
+    endpoint: 'https://api.minimax.cn/v1/embeddings',
+    apiKey: 'k',
+    candidates: ['wrong-model', 'embo-01'],
+    fetchImpl: fetchImpl as never,
+  });
+  assert.equal(result.usable, true);
+  assert.equal(result.model, 'embo-01');
+  assert.equal(result.attempts.length, 2);
+});
+
+test('探针：没有候选模型时给出可照做的提示', async () => {
+  const result = await probeEmbeddingCapability({ endpoint: 'https://x.test/v1/embeddings', apiKey: 'k', candidates: [] });
+  assert.equal(result.usable, false);
+  assert.match(result.summary, /向量模型/);
+});
+
+test('请求体带 encoding_format: float（holysheep 示例明确要求）', async () => {
+  let body: { encoding_format?: string } = {};
+  const fetchImpl = async (_url: string, init: RequestInit) => {
+    body = JSON.parse(String(init.body)) as typeof body;
+    return new Response(JSON.stringify({ data: [{ embedding: [1] }] }), { status: 200 });
+  };
+  await embedTexts({ baseUrl: 'https://api.holysheep.cn/v1', model: 'deepseek-embed-v4' }, 'k', ['x'], { fetchImpl: fetchImpl as never });
+  assert.equal(body.encoding_format, 'float');
+});
+
+test('429 限流：后台索引会等待后重试一次（不白丢一批）', async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    if (calls === 1) return new Response('{"error":{"message":"Rate limit exceeded"}}', { status: 429 });
+    return new Response(JSON.stringify({ data: [{ embedding: [0.5, 0.5] }] }), { status: 200 });
+  };
+  const vectors = await embedTexts({ baseUrl: 'https://api.holysheep.cn/v1', model: 'deepseek-embed-v4' }, 'k', ['x'], { fetchImpl: fetchImpl as never });
+  assert.deepEqual(vectors, [[0.5, 0.5]]);
+  assert.equal(calls, 2);
+});
+
+test('429 重试一次仍失败 → 明确报错，由调用方静默退回关键词', async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return new Response('{"error":{"message":"Rate limit exceeded"}}', { status: 429 });
+  };
+  await assert.rejects(
+    embedTexts({ baseUrl: 'https://api.holysheep.cn/v1', model: 'deepseek-embed-v4' }, 'k', ['x'], { fetchImpl: fetchImpl as never }),
+    /429/,
+  );
+  assert.equal(calls, 2, '只重试一次，不放大压力');
+});

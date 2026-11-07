@@ -64,6 +64,40 @@ check(
   /export function embeddingsEndpoint/.test(CLIENT) && /向量接口地址（可选）/.test(I18N) && /paas\/v4/.test(I18N),
 );
 
+/* ── 1b. 能不能直接复用聊天配置档：靠探针判断，不让用户猜 ────────── */
+const PROBE = read('src/providers/embeddingsProbe.ts');
+check(
+  '探针按候选模型逐个真实试一次',
+  /export async function probeEmbeddingCapability/.test(PROBE) && /for \(const model of candidates\)/.test(PROBE),
+);
+check(
+  '候选里包含 holysheep 的 deepseek-embed-v4 与智谱 embedding-3',
+  /'deepseek-embed-v4'/.test(PROBE) && /'embedding-3'/.test(PROBE),
+);
+check(
+  '404 与 401 给出不同结论（缺接口 vs 密钥不对）',
+  /没有向量接口/.test(PROBE) && /密钥不被向量接口接受/.test(PROBE),
+);
+check(
+  'HTTP 200 但业务报错也继续试下一个',
+  /parsed\.base_resp\?\.status_msg \|\| parsed\.error\?\.message/.test(PROBE),
+);
+check(
+  '设置页有「检测」按钮并会回填可用模型',
+  /id="probeEmbeddingButton"/.test(read('src/views/settingsPanel.ts'))
+    && /probeEmbeddings/.test(read('media/settings.js'))
+    && /fields\.embeddingModel\.value = result\.model/.test(read('media/settings.js')),
+);
+
+check(
+  '请求体带 encoding_format: float（holysheep 示例要求）',
+  /encoding_format: 'float'/.test(CLIENT) && /encoding_format: 'float'/.test(PROBE),
+);
+check(
+  '429 / 5xx 等待后重试一次（限流不白丢一批）',
+  /EMBEDDING_RETRIES = 1/.test(CLIENT) && /response\.status === 429 \|\| response\.status >= 500/.test(CLIENT),
+);
+
 /* ── 2. 绝不能拖住对话 ───────────────────────────────────────────── */
 check(
   '语义检索失败一律退回词面结果（不抛给上层）',

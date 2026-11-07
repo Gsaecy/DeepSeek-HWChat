@@ -30,6 +30,8 @@ export type EmbeddingFetch = (input: string, init: RequestInit) => Promise<Respo
 
 /** 队列里一次最多几条：太少浪费往返，太多容易触发服务端的单请求上限。 */
 export const EMBEDDING_BATCH_SIZE = 8;
+/** 429 / 5xx 时最多再试几次（后台任务，等得起；但不要帮服务端放大压力）。 */
+export const EMBEDDING_RETRIES = 1;
 
 /** 从 settings 里解析出「向量接口」的配置；没配就返回 undefined（功能关闭）。 */
 export function embeddingConfigFrom(settings: ChatSettings): { profileId: string; model: string; baseUrl?: string } | undefined {
@@ -85,16 +87,32 @@ export async function embedTexts(
       : controller.signal
     : controller.signal;
   try {
-    const response = await doFetch(endpoint, {
+    const send = () => doFetch(endpoint, {
       method: 'POST',
       headers: new Headers({
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
         ...sanitizeHeaders(config.requestHeaders),
       }),
-      body: JSON.stringify({ model: config.model, input: texts }),
+      // `encoding_format: float` 是 OpenAI 兼容协议的标准字段；holysheep 的示例明确带它。
+      body: JSON.stringify({ model: config.model, input: texts, encoding_format: 'float' }),
       signal,
     });
+    /*
+     * 限流与临时故障退避重试一次。
+     *
+     * holysheep 免费档是 1000 请求/分钟，超过就回 429；这类是可以等一等的，
+     * 而索引本身在后台跑，多等 1 秒完全不打扰用户。只重试一次：再多就是在
+     * 帮服务端放大压力。
+     */
+    let response = await send();
+    for (let attempt = 0; attempt < EMBEDDING_RETRIES && (response.status === 429 || response.status >= 500); attempt += 1) {
+      const retryAfter = Number(response.headers?.get('retry-after') ?? '');
+      const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(3_000, retryAfter * 1_000) : 800 * (attempt + 1);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      if (signal.aborted) throw new Error('向量请求已取消');
+      response = await send();
+    }
     const raw = await response.text();
     if (!response.ok) {
       throw new Error(`向量接口请求失败（${response.status}）：${raw.slice(0, 300)}`);

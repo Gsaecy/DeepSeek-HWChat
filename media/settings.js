@@ -56,6 +56,8 @@
     toast: document.getElementById('toast'),
     profileSelect: document.getElementById('profileSelect'),
     embeddingProfileId: document.getElementById('embeddingProfileId'),
+    probeEmbeddingButton: document.getElementById('probeEmbeddingButton'),
+    embeddingProbeResult: document.getElementById('embeddingProbeResult'),
     addProfileButton: document.getElementById('addProfileButton'),
     deleteProfileButton: document.getElementById('deleteProfileButton'),
   };
@@ -348,6 +350,12 @@
     clearApiKeyIds.add(activeProfileId);
     markDirty();
   });
+  elements.probeEmbeddingButton.addEventListener('click', () => {
+    elements.embeddingProbeResult.textContent = '…';
+    // 还没保存的输入也要带上：用户可能刚打完 Key 就点检测。
+    post('probeEmbeddings', { settings: collectSettings(), apiKeys: { ...pendingApiKeys } });
+  });
+
   elements.profileSelect.addEventListener('change', () => {
     try {
       commitProfileEditor();
@@ -464,6 +472,15 @@
       case 'toast':
         showToast(message.text, message.tone);
         break;
+      case 'embeddingProbe': {
+        // 「能不能直接调用」的结论就显示在按钮下面：能就直接回填模型，不能就说清为什么。
+        const result = message;
+        elements.embeddingProbeResult.textContent = result.summary || '';
+        elements.embeddingProbeResult.classList.toggle('ok', Boolean(result.usable));
+        elements.embeddingProbeResult.classList.toggle('bad', !result.usable);
+        if (result.usable && result.model) fields.embeddingModel.value = result.model;
+        break;
+      }
     }
   });
 
