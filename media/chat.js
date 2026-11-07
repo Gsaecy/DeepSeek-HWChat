@@ -3450,6 +3450,82 @@
     });
   }
 
+  /**
+   * 图片加载失败的两级兜底。
+   *
+   * 真实故障（用户 2026-11-07）：「粘贴的附件图片，显示不了」——已发送的图片附件
+   * 显示成破图。附件本身是好的（磁盘上的 PNG 能打开、缩略图也能用），所以问题
+   * 只可能出在 webview 拿不到那个 `asWebviewUri` 地址（资源根、session 变化、
+   * 面板重建都会让旧地址失效）。
+   *
+   * 做法：
+   *  1. 先请宿主**重新解析**一次地址（它手上还有 messageId → 附件 → 文件路径），
+   *     地址确实过期时这一步就能把图救回来，而且是原图；
+   *  2. 再失败就退回 `thumbnailDataUrl`（缩略图就在消息里，永远可用），
+   *     宁可小一点，也不能留一个破图框；
+   *  3. 两件事都记进宿主日志，下次再出问题能直接看到真实地址，不用再猜。
+   */
+  /** 每个图片节点的缩略图地址（宿主解析失败时用它退回）。 */
+  const imageFallbacks = new WeakMap();
+
+  function attachImageRecovery(image, attachment) {
+    const id = attachment.id;
+    const fallback = attachment.thumbnailDataUrl;
+    if (fallback) imageFallbacks.set(image, fallback);
+    /*
+     * `recovery` 记的是「已经试到第几级」：first → host-retried → thumb。
+     * 关键点：宿主回地址时**不能**把它重置回 first，否则第二次失败又会去问宿主，
+     * 无限循环，永远走不到缩略图那一级（第一版就是这么错的，守护脚本当场抓到）。
+     */
+    image.dataset.recovery = 'first';
+    image.addEventListener('error', () => {
+      const stage = image.dataset.recovery;
+      if (stage === 'first' && id) {
+        image.dataset.recovery = 'waiting-host';
+        post('resolveAttachmentSrc', { attachmentId: id });
+        return;
+      }
+      if (stage === 'thumb' || stage === 'waiting-host') {
+        if (stage === 'waiting-host') image.dataset.recovery = 'host-retried';
+        if (stage === 'thumb') return;
+      }
+      post('imageLoadFailed', { src: image.getAttribute('src') || '', label: attachment.label || '' });
+      const current = image.getAttribute('src') || '';
+      if (fallback && current !== fallback) {
+        image.dataset.recovery = 'thumb';
+        image.src = fallback;
+        image.classList.add('image-is-thumbnail');
+      }
+    });
+  }
+
+  /** 宿主重新解析后送回来的地址：换上去，顺带清掉失败状态。 */
+  function applyAttachmentSrc(message) {
+    const id = message.attachmentId;
+    if (!id) return;
+    const src = message.src || '';
+    const images = Array.from(document.querySelectorAll('.message-attachments img, .attachment-chip img'));
+    for (const image of images) {
+      const owner = image.closest('.message-image-attachment');
+      const attachmentId = owner && owner.dataset.attachmentId;
+      if (attachmentId !== id) continue;
+      if (!src) {
+        // 宿主也解析不出来：直接换上缩略图，不要再等一次加载失败。
+        const thumb = imageFallbacks.get(image);
+        post('imageLoadFailed', { src: image.getAttribute('src') || '', label: '' });
+        image.dataset.recovery = 'thumb';
+        if (thumb && image.getAttribute('src') !== thumb) {
+          image.src = thumb;
+          image.classList.add('image-is-thumbnail');
+        }
+        continue;
+      }
+      image.dataset.recovery = 'host-retried';
+      image.src = src;
+      image.classList.remove('image-is-thumbnail');
+    }
+  }
+
   function renderMessageAttachments(attachments) {
     const row = document.createElement('div'); row.className = 'message-attachments';
     for (const attachment of attachments) {
@@ -3458,7 +3534,9 @@
       const imageSrc = attachment.webviewSrc || attachment.thumbnailDataUrl;
       if (attachment.kind === 'image' && imageSrc) {
         const figure = document.createElement('figure'); figure.className = 'message-image-attachment';
+        if (attachment.id) figure.dataset.attachmentId = attachment.id;
         const image = document.createElement('img'); image.src = imageSrc; image.alt = attachment.label;
+        attachImageRecovery(image, attachment);
         // 图片可以拖回输入框变成新附件：`img` 默认就是可拖的（浏览器会拖出图片本身），
         // 但那样松手只能落到「拖出 webview」，落不进输入框。关掉原生拖拽、改由 figure
         // 承担，才能走我们自己的 dragstart/drop 通道（见 makeAttachmentDraggable）。
@@ -5643,6 +5721,7 @@
       // 扩展要一份布局诊断（面板「右边被切 / 显示不全」时用来取证）。
       case 'layoutReportRequest': post('layoutReport', { report: collectLayoutReport() }); break;
       case 'clipboardWriteResult': finishClipboardWrite(message.requestId, Boolean(message.ok), message.error); break;
+      case 'attachmentSrc': applyAttachmentSrc(message); break;
       case 'attachmentData': finishAttachmentData(message); break;
       case 'imageData': finishImageData(message); break;
       case 'clipboardText':

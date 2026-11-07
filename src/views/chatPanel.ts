@@ -368,6 +368,10 @@ type IncomingMessage =
    * 只回标识不回内容的老约定在这里反过来用：界面明确开口要，才给。
    */
   | { type: 'requestAttachmentData'; requestId: string; id?: string }
+  /** 图片在 webview 里加载失败：请宿主重新解析一次地址（地址过期时能救回原图）。 */
+  | { type: 'resolveAttachmentSrc'; attachmentId?: string }
+  /** 两级兜底都失败了：只记日志，界面已经退回缩略图。 */
+  | { type: 'imageLoadFailed'; label?: string; src?: string }
   /**
    * 正文里 markdown 图片的操作（复制 / 保存 / 打开）。
    *
@@ -898,6 +902,25 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     return restored;
   }
 
+  /**
+   * 前端图片加载失败时，重新给它一个地址。
+   *
+   * 为什么需要：`asWebviewUri` 的地址在资源根变化、面板重建、session 变化之后都会失效，
+   * 而消息一旦渲染就是一直用那个旧地址。用户 2026-11-07 报的「粘贴的附件图片显示
+   * 不了」正是这一类。宿主手上还有 `messageId → 附件 → 文件路径`，重新生成一次
+   * 就能把原图救回来；真救不回来，前端会退回消息里现成的缩略图。
+   */
+  private async resolveAttachmentSrc(message: { attachmentId?: string }): Promise<void> {
+    const id = (message.attachmentId ?? '').trim();
+    if (!id) return;
+    const known = await this.resolveAttachment(id);
+    const src = known?.kind === 'image' ? this.imageSrcFor(known.path) : undefined;
+    if (!src) {
+      this.log(`[image] 重新解析地址失败：${id}（${known?.path ?? '没有路径'}）`);
+    }
+    await this.post({ type: 'attachmentSrc', attachmentId: id, src: src ?? '' });
+  }
+
   private async provideAttachmentData(message: { requestId: string; id?: string }): Promise<void> {
     const known = await this.resolveAttachment(message.id);
     // 落成文件的图片（生成图）没有 dataBase64：直接从文件读回来，否则「复制图片 /
@@ -1352,6 +1375,16 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         case 'removeAttachment':
           this.pendingAttachments.splice(message.index, 1);
           await this.post({ type: 'attachments', attachments: this.pendingAttachmentsForWebview() });
+          break;
+        case 'resolveAttachmentSrc':
+          await this.resolveAttachmentSrc(message);
+          break;
+        case 'imageLoadFailed':
+          /*
+           * 前端两级兜底都试过了：这个地址确实取不到。
+           * 记一行（含真实地址），下次再出现不用靠猜是哪一环出了问题。
+           */
+          this.log(`[image] webview 取不到图片：${message.label || '(无标签)'}｜${message.src || '(空地址)'}`);
           break;
         case 'openAttachment':
           await this.openAttachment(message);

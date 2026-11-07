@@ -52,6 +52,8 @@ const imageFunctions = [
   slice('  function appendPlainText(parent, text) {', '  /**\n   * markdown 图片的地址白名单', 'appendPlainText'),
   slice('  function appendRichText(container, text, streaming = false) {', '\n  /**', 'appendRichText'),
   slice('  function renderMessageAttachments(attachments) {', '  /**\n   * 让已经发出去的附件可以', 'renderMessageAttachments'),
+  // 图片加载失败的两级兜底（宿主重新解析 → 缩略图）跟着附件卡片一起装配。
+  slice('  /** 每个图片节点的缩略图地址', '  function renderMessageAttachments(attachments) {', 'attachImageRecovery'),
   'function textElement(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; node.textContent = text; return node; }',
 ].join('\n');
 
@@ -69,6 +71,8 @@ function makeDocument() {
       href: '',
       type: '',
       draggable: true,
+      // 附件图片的失败兜底会读写 `dataset`（recovery / attachmentId），最小 DOM 也要有。
+      dataset: {},
       children: [],
       classList: {
         add(...names) { for (const name of names) classes.add(name); },
