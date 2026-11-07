@@ -20,7 +20,7 @@
   }
 
   const fieldIds = [
-    'apiKey', 'profileName', 'profileModels', 'profileImageModel', 'baseUrl', 'model', 'requestHeaders', 'requestTimeoutSeconds', 'proxy', 'proxyBypassHosts', 'embeddingProfileId', 'embeddingModel', 'embeddingBaseUrl',
+    'apiKey', 'profileName', 'profileModels', 'profileImageModel', 'baseUrl', 'model', 'requestHeaders', 'requestTimeoutSeconds', 'proxy', 'proxyBypassHosts', 'embeddingProfileId', 'embeddingModel', 'embeddingBaseUrl', 'embeddingApiKey',
     'temperature', 'maxTokens', 'maxMessagesInContext', 'sendOnEnter',
     'systemPrompt', 'historyRetentionDays', 'taskCacheRetentionHours',
     'cacheBudgetMB', 'cleanupIntervalMinutes', 'defaultMode',
@@ -57,6 +57,8 @@
     profileSelect: document.getElementById('profileSelect'),
     embeddingProfileId: document.getElementById('embeddingProfileId'),
     probeEmbeddingButton: document.getElementById('probeEmbeddingButton'),
+    embeddingApiKey: document.getElementById('embeddingApiKey'),
+    clearEmbeddingKeyButton: document.getElementById('clearEmbeddingKeyButton'),
     embeddingProbeResult: document.getElementById('embeddingProbeResult'),
     addProfileButton: document.getElementById('addProfileButton'),
     deleteProfileButton: document.getElementById('deleteProfileButton'),
@@ -66,6 +68,9 @@
   let apiKeyConfiguredByProfile = {};
   const clearApiKeyIds = new Set();
   const pendingApiKeys = {};
+  /** 向量 Key 与聊天 Key 分开提交：聊天用 DeepSeek、向量用 holysheep 时互不干扰。 */
+  const clearEmbeddingKeyIds = new Set();
+  const pendingEmbeddingKeys = {};
 
   function post(type, payload = {}) {
     vscode.postMessage({ type, ...payload });
@@ -113,6 +118,8 @@
       embeddingProfileId: fields.embeddingProfileId.value,
       embeddingModel: fields.embeddingModel.value.trim(),
       embeddingBaseUrl: fields.embeddingBaseUrl.value.trim(),
+      // 向量 Key 不走 settings：validateSettings 是直通合并，写在这里会以明文落到 settings.json。
+      // 它只经 apiKeys / embeddingApiKeys 通道进 SecretStorage。
       temperature: numberValue(fields.temperature, 1),
       maxTokens: numberValue(fields.maxTokens, 0),
       maxMessagesInContext: numberValue(fields.maxMessagesInContext, 20),
@@ -202,7 +209,7 @@
 
   // 与 src/core/permissions.ts 的 PERMISSION_PRESET_PROFILES 保持一致：
   // [读取, 写入, 只读命令, 正常命令, 危险命令, 敏感文件]
-  function populate(settings, apiKeyConfigured, stats, skills, workspaceTrusted, workspaceFolderCount, keyMap, trash) {
+  function populate(settings, apiKeyConfigured, stats, skills, workspaceTrusted, workspaceFolderCount, keyMap, trash, embeddingKeyMap) {
     profiles = Array.isArray(settings.apiProfiles) && settings.apiProfiles.length ? settings.apiProfiles.map((item) => ({ ...item, models: [...(item.models || [])], excludedModels: [...(item.excludedModels || [])], requestHeaders: { ...(item.requestHeaders || {}) } })) : [{ id: 'default', name: 'DeepSeek', baseUrl: settings.baseUrl, models: [settings.model], excludedModels: [], requestHeaders: settings.requestHeaders || {} }];
     activeProfileId = settings.activeApiProfileId || profiles[0].id;
     fields.model.value = settings.model || profiles.find((profile) => profile.id === activeProfileId)?.models?.[0] || '';
@@ -225,6 +232,13 @@
     elements.embeddingProfileId.value = settings.embeddingProfileId || '';
     fields.embeddingModel.value = settings.embeddingModel || '';
     fields.embeddingBaseUrl.value = settings.embeddingBaseUrl || '';
+    const howto = document.querySelector('.setting-note');
+    if (howto) howto.textContent = t('settings.embeddingHowto');
+    const embeddingProfile = settings.embeddingProfileId || '';
+    const embeddingKeySaved = Boolean((embeddingKeyMap || {})[embeddingProfile]);
+    fields.embeddingApiKey.value = '';
+    fields.embeddingApiKey.placeholder = embeddingKeySaved ? t('settings.embeddingKey.saved') : 'sk-…';
+    elements.embeddingProbeResult.textContent = '';
     fields.searchExclude.value = Array.isArray(settings.searchExclude) ? settings.searchExclude.join(', ') : '';
     fields.temperature.value = settings.temperature;
     fields.maxTokens.value = settings.maxTokens;
@@ -330,10 +344,16 @@
   });
 
   elements.saveButton.addEventListener('click', () => withForm((settings) => {
+    const embeddingProfileId = fields.embeddingProfileId.value;
+    if (fields.embeddingApiKey.value.trim() && embeddingProfileId) {
+      pendingEmbeddingKeys[embeddingProfileId] = fields.embeddingApiKey.value.trim();
+    }
     post('save', {
       settings,
       apiKeys: { ...pendingApiKeys },
       clearApiKeyIds: [...clearApiKeyIds],
+      embeddingApiKeys: { ...pendingEmbeddingKeys },
+      clearEmbeddingKeyIds: [...clearEmbeddingKeyIds],
     });
   }));
   elements.testButton.addEventListener('click', () => withForm((settings) => {
@@ -350,11 +370,31 @@
     clearApiKeyIds.add(activeProfileId);
     markDirty();
   });
-  elements.probeEmbeddingButton.addEventListener('click', () => {
-    elements.embeddingProbeResult.textContent = '…';
-    // 还没保存的输入也要带上：用户可能刚打完 Key 就点检测。
-    post('probeEmbeddings', { settings: collectSettings(), apiKeys: { ...pendingApiKeys } });
+  elements.clearEmbeddingKeyButton.addEventListener('click', () => {
+    fields.embeddingApiKey.value = '';
+    clearEmbeddingKeyIds.add(fields.embeddingProfileId.value || activeProfileId);
+    elements.embeddingProbeResult.textContent = '';
   });
+
+  elements.embeddingProfileId.addEventListener('change', () => {
+    // 换配置档就清空上次的检测结论与输入：Avoid 把 A 档的 Key 存到 B 档名下。
+    fields.embeddingApiKey.value = '';
+    elements.embeddingProbeResult.textContent = '';
+    markDirty();
+  });
+
+  // 走 withForm 与「保存」同一条取值/校验路径：这里曾写成不存在的 collectSettings()，
+  // 一点就抛 ReferenceError —— 用户看到的就是「点检测没反应」。
+  elements.probeEmbeddingButton.addEventListener('click', () => withForm((settings) => {
+    elements.embeddingProbeResult.textContent = t('settings.embeddingProbeRunning');
+    elements.probeEmbeddingButton.disabled = true;
+    // 还没保存的输入也要带上：用户可能刚打完 Key 就点检测。
+    post('probeEmbeddings', {
+      settings,
+      apiKeys: { ...pendingApiKeys },
+      embeddingApiKey: fields.embeddingApiKey.value.trim(),
+    });
+  }));
 
   elements.profileSelect.addEventListener('change', () => {
     try {
@@ -463,7 +503,7 @@
     const message = event.data;
     switch (message.type) {
       case 'state':
-        populate(message.settings, message.apiKeyConfigured, message.stats, message.skills, message.workspaceTrusted, message.workspaceFolderCount, message.apiKeyConfiguredByProfile, message.trash);
+        populate(message.settings, message.apiKeyConfigured, message.stats, message.skills, message.workspaceTrusted, message.workspaceFolderCount, message.apiKeyConfiguredByProfile, message.trash, message.embeddingKeyConfiguredByProfile);
         break;
       case 'testing':
         elements.testButton.disabled = message.active;
@@ -475,6 +515,12 @@
       case 'embeddingProbe': {
         // 「能不能直接调用」的结论就显示在按钮下面：能就直接回填模型，不能就说清为什么。
         const result = message;
+        if (result.pending) {
+          elements.probeEmbeddingButton.disabled = true;
+          elements.embeddingProbeResult.textContent = result.summary || '';
+          break;
+        }
+        elements.probeEmbeddingButton.disabled = false;
         elements.embeddingProbeResult.textContent = result.summary || '';
         elements.embeddingProbeResult.classList.toggle('ok', Boolean(result.usable));
         elements.embeddingProbeResult.classList.toggle('bad', !result.usable);

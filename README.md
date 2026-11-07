@@ -8,6 +8,17 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.5
+
+Settings page only — the four things that surfaced right after 0.4.4 was installed:
+
+- **"Check direct support" did nothing when clicked**: the handler called a function that does not exist, so it threw immediately. It now shows "checking…" and disables the button, then restores it once the verdict arrives.
+- **Text buttons were squeezed into squares, stacking Chinese one character per line** ("Test image", "Check direct support"): they were placed in a grid meant for square `＋` / `−` icon buttons.
+- **Literal `**` asterisks leaked into the instructions**: that block is plain text and does not render markdown.
+- **New "Embedding API key" field**, stored per profile — you can finally keep the chat key (DeepSeek) and the embedding key (holysheep) separate; a saved key shows "Saved (leave empty to keep)". A leftover field that would have written the **plaintext key into settings.json** was removed at the same time.
+
+Verified: **1192 unit tests + 68 guard scripts green** (the new `check-settings-layout` measures button geometry, clicks the button, and checks the copy is not raw keys in real Chromium).
+
 ## What's new in 0.4.4
 
 Three things: **the agent stops forgetting the project**, **images and commands stop failing for no reason**, and **retrieval goes from keywords to vectors**.

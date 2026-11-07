@@ -100,12 +100,15 @@ check(
 
 check(
   '设置页内嵌配置步骤（不用去翻文档）',
-  /id="embeddingHowto"|settings\.embeddingHowto/.test(read('src/views/settingsPanel.ts'))
-    && /setting-note/.test(read('src/views/settingsPanel.ts')),
+  // 说明块在 HTML 里留空容器，由 settings.js 用 textContent 注入纯文本（避免 `**` 原样显示）。
+  /setting-note/.test(read('src/views/settingsPanel.ts'))
+    && /t\('settings\.embeddingHowto'\)/.test(read('media/settings.js')),
 );
 check(
   '步骤里点明 holysheep 的 Key 不是 DeepSeek 的 Key',
-  /不是\*\*DeepSeek 的 Key|NOT your DeepSeek key/.test(I18N),
+  // 纯文本渲染，不能写 markdown 粗体；断言直接盯正文措辞。
+  /不是 DeepSeek 的 Key|NOT your DeepSeek key/.test(I18N)
+    && !/\*\*/.test(/settings\.embeddingHowto':[\s\S]*?\n  '/.exec(I18N)?.[0] ?? ''),
 );
 check(
   '步骤里给出三个可直接复制的地址（智谱 / Minimax / holysheep）',

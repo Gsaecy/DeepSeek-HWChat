@@ -33,7 +33,7 @@ import { REPLY_SHAPE_PROMPT } from '../agent/replyShapePrompt';
 import { userTextOfTaskRequest } from '../agent/taskQueue';
 import { grantFromFollowUp } from '../agent/conversationScope';
 import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChangedFiles } from '../agent/workspacePaths';
-import { getApiKey, hasApiKey } from '../core/apiKeys';
+import { hasApiKey, resolveEmbeddingKey } from '../core/apiKeys';
 import { fetchViaProxy } from '../providers/proxyFetch';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
 import { outcomeOf, renderWorkDigest, requestPayloadOf } from '../core/contextWindow';
@@ -2818,7 +2818,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const index = await this.storage.readEmbeddingIndex(conversationId).catch(() => undefined);
     const records = reusableRecords(index, config.model);
     if (!records.length) return [];
-    const apiKey = await getApiKey(this.secrets, config.profileId, config.profileId === 'default').catch(() => undefined);
+    const apiKey = await resolveEmbeddingKey(this.secrets, config.profileId).catch(() => undefined);
     if (!apiKey?.trim()) return [];
     const profile = (settings.apiProfiles ?? []).find((item) => item.id === config.profileId);
     const baseUrl = config.baseUrl ?? profile?.baseUrl ?? settings.baseUrl;
@@ -2878,7 +2878,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       const settings = readSettings();
       const config = embeddingConfigFrom(settings);
       if (!config) return;
-      const apiKey = await getApiKey(this.secrets, config.profileId, config.profileId === 'default').catch(() => undefined);
+      const apiKey = await resolveEmbeddingKey(this.secrets, config.profileId).catch(() => undefined);
       if (!apiKey?.trim()) return;
       const profile = (settings.apiProfiles ?? []).find((item) => item.id === config.profileId);
       const baseUrl = config.baseUrl ?? profile?.baseUrl ?? settings.baseUrl;

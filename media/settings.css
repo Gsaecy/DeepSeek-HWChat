@@ -89,6 +89,16 @@ nav button.active { color: var(--nav-active-fg); background: var(--nav-active-bg
 }
 .setting-note strong { font-weight: 600; }
 
+/*
+ * 「检测能否直接调用」的结论。
+ * 空着时整行不占位：否则「向量模型」和下面的说明块之间会空出一大块。
+ * 成功/失败给颜色，用户扫一眼就知道是不是能直接用。
+ */
+.setting-row:has(> span > #embeddingProbeResult:empty) { display: none; }
+#embeddingProbeResult { font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+#embeddingProbeResult.ok { color: var(--success); }
+#embeddingProbeResult.bad { color: var(--danger); }
+
 .control, .stepper, .range-control { width: 100%; }
 input.control, textarea.control, select.control, .api-key-control { border: 1px solid var(--border); border-radius: 6px; color: var(--surface-fg); background: var(--surface); }
 input.control, select.control { height: 32px; padding: 0 9px; }
@@ -106,6 +116,25 @@ input::placeholder, textarea::placeholder { color: var(--vscode-input-placeholde
 .profile-control button { width: 32px; height: 32px; padding: 0; border: 1px solid var(--border); border-radius: 6px; color: var(--fg); background: var(--surface); font-size: 17px; }
 .profile-control button:hover { color: var(--surface-hover-fg); background: var(--surface-hover); }
 .profile-control button:disabled { opacity: .35; cursor: default; }
+
+/* 带文字的按钮（例如「检测能否直接调用」）：不能复用 32px 方形按钮的宽度。 */
+.inline-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.inline-control button {
+  width: auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  background: var(--surface);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.inline-control button:hover { color: var(--surface-hover-fg); background: var(--surface-hover); }
+.inline-control button:disabled { opacity: .35; cursor: default; }
 
 .stepper { display: flex; justify-content: flex-end; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; }
 .stepper input { width: 92px; height: 32px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--surface-fg); background: var(--surface); text-align: right; }

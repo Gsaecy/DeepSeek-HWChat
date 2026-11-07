@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { SkillRegistry } from '../agent/skillRegistry';
-import { deleteApiKey, getApiKey, hasApiKey, storeApiKey } from '../core/apiKeys';
+import { deleteApiKey, getApiKey, hasApiKey, hasEmbeddingKey, resolveEmbeddingKey, storeApiKey, storeEmbeddingKey } from '../core/apiKeys';
 import { embeddingsEndpoint } from '../providers/embeddingsClient';
 import { EMBEDDING_MODEL_CANDIDATES, probeEmbeddingCapability } from '../providers/embeddingsProbe';
 import { PERMISSION_PRESET_IDS, DEFAULT_PERMISSION_PRESET, permissionPresetDetail, permissionPresetDetails } from '../core/permissions';
@@ -21,14 +21,14 @@ interface SettingsPanelCallbacks {
 
 type IncomingMessage =
   | { type: 'ready' }
-  | { type: 'save'; settings: Partial<ChatSettings>; apiKeys?: Record<string, string>; clearApiKeyIds?: string[] }
+  | { type: 'save'; settings: Partial<ChatSettings>; apiKeys?: Record<string, string>; clearApiKeyIds?: string[]; embeddingApiKeys?: Record<string, string>; clearEmbeddingKeyIds?: string[] }
   | { type: 'test'; settings: Partial<ChatSettings>; apiKey?: string }
   | { type: 'testImage'; settings: Partial<ChatSettings> }
   /**
    * 「这个配置档能不能直接算向量？」——用户 2026-11-07 的要求：
    * 「能就直接调用，不能就让用户另外配置」。带 settings 是因为可能还没保存。
    */
-  | { type: 'probeEmbeddings'; settings: Partial<ChatSettings>; apiKeys?: Record<string, string> }
+  | { type: 'probeEmbeddings'; settings: Partial<ChatSettings>; apiKeys?: Record<string, string>; embeddingApiKey?: string }
   | { type: 'cleanup' }
   | { type: 'exportAll' }
   | { type: 'rescanSkills' }
@@ -119,7 +119,7 @@ export class SettingsPanel implements vscode.Disposable {
           await this.testImage(message.settings);
           break;
         case 'probeEmbeddings':
-          await this.probeEmbeddings(message.settings, message.apiKeys);
+          await this.probeEmbeddings(message.settings, message.apiKeys, message.embeddingApiKey);
           break;
         case 'cleanup':
           await this.cleanup();
@@ -173,6 +173,19 @@ export class SettingsPanel implements vscode.Disposable {
     for (const [profileId, apiKey] of Object.entries(message.apiKeys ?? {})) {
       if (nextIds.has(profileId) && apiKey.trim()) await storeApiKey(this.secrets, profileId, apiKey.trim());
     }
+    /*
+     * 向量 Key 单独存（`hwchat.embeddingKey.<profileId>`）。
+     *
+     * 用户反馈「也没看到向量 key 输入框」：聊天用 DeepSeek（没有 embeddings）、
+     * 向量用 holysheep 时，两把 Key 必须能分开填；挤在同一个配置档里做不到。
+     */
+    for (const profileId of message.clearEmbeddingKeyIds ?? []) {
+      if (nextIds.has(profileId)) await storeEmbeddingKey(this.secrets, profileId, '');
+    }
+    for (const [profileId, key] of Object.entries(message.embeddingApiKeys ?? {})) {
+      if (!nextIds.has(profileId)) continue;
+      if (key.trim()) await storeEmbeddingKey(this.secrets, profileId, key.trim());
+    }
     this.callbacks.onChanged();
     await this.post({ type: 'toast', tone: 'success', text: tt('settings.savedToast') });
     await this.sendState();
@@ -214,7 +227,11 @@ export class SettingsPanel implements vscode.Disposable {
    * 先用用户填的模型试一次，其余候选兜底；成功就把模型名回填到界面，
    * 失败就带上该服务商的原始错误（404 与 401 的处理方式完全不同）。
    */
-  private async probeEmbeddings(values: Partial<ChatSettings>, apiKeys?: Record<string, string>): Promise<void> {
+  private async probeEmbeddings(
+    values: Partial<ChatSettings>,
+    apiKeys?: Record<string, string>,
+    typedEmbeddingKey?: string,
+  ): Promise<void> {
     const merged = { ...readSettings(), ...validateSettings(values) };
     const profileId = String(merged.embeddingProfileId ?? '').trim();
     const profile = (merged.apiProfiles ?? []).find((item) => item.id === profileId);
@@ -222,8 +239,9 @@ export class SettingsPanel implements vscode.Disposable {
       await this.post({ type: 'embeddingProbe', usable: false, attempts: [], summary: tt('settings.embeddingProbeNoProfile') });
       return;
     }
-    const typedKey = apiKeys?.[profile.id]?.trim();
-    const apiKey = typedKey || await getApiKey(this.secrets, profile.id, profile.id === 'default').catch(() => undefined);
+    const apiKey = typedEmbeddingKey?.trim()
+      || (await resolveEmbeddingKey(this.secrets, profile.id).catch(() => undefined))
+      || apiKeys?.[profile.id]?.trim();
     if (!apiKey?.trim()) {
       await this.post({ type: 'embeddingProbe', usable: false, attempts: [], summary: tt('settings.embeddingProbeNoKey', { profile: profile.name }) });
       return;
@@ -231,6 +249,8 @@ export class SettingsPanel implements vscode.Disposable {
     const baseOverride = String(merged.embeddingBaseUrl ?? '').trim();
     const baseUrl = baseOverride || profile.baseUrl;
     await this.post({ type: 'testing', active: true });
+    // 界面先给一句「正在检测」：请求可能要十几秒，按钮点了没有任何反馈会被当成坏了。
+    await this.post({ type: 'embeddingProbe', usable: false, attempts: [], pending: true, summary: tt('settings.embeddingProbeRunning') });
     try {
       const result = await probeEmbeddingCapability({
         endpoint: embeddingsEndpoint(baseUrl),
@@ -365,11 +385,17 @@ export class SettingsPanel implements vscode.Disposable {
       profile.id,
       await hasApiKey(this.secrets, profile.id, profile.id === 'default'),
     ])));
+    // 向量 Key 单独标记：界面据此显示「已保存 / 未填写」，否则用户不知道到底存没存进去。
+    const embeddingKeyConfiguredByProfile = Object.fromEntries(await Promise.all(settings.apiProfiles.map(async (profile) => [
+      profile.id,
+      await hasEmbeddingKey(this.secrets, profile.id),
+    ])));
     await this.post({
       type: 'state',
       settings,
       apiKeyConfigured: Boolean(apiKeyConfiguredByProfile[settings.activeApiProfileId]),
       apiKeyConfiguredByProfile,
+      embeddingKeyConfiguredByProfile,
       stats,
       trash: await this.storage.trashStats(),
       skills: this.skills.list(),
@@ -439,16 +465,17 @@ export class SettingsPanel implements vscode.Disposable {
             <label class="setting-row"><span><strong>${t(lang, 'settings.baseUrl.label')}</strong><small>${t(lang, 'settings.baseUrl.hint')}</small></span><input id="baseUrl" class="control" type="url" spellcheck="false"></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.model.label')}</strong><small>${t(lang, 'settings.model.hint')}</small></span><input id="model" class="control mono" list="settingsModelPresets" spellcheck="false"><datalist id="settingsModelPresets"><option value="deepseek-flash"></option><option value="deepseek-v4-pro"></option></datalist></label>
             <label class="setting-row setting-row-stack"><span><strong>${t(lang, 'settings.models.label')}</strong><small>${t(lang, 'settings.models.hint')}</small></span><textarea id="profileModels" class="control mono" rows="4" spellcheck="false"></textarea></label>
-            <label class="setting-row"><span><strong>${t(lang, 'settings.imageModel.label')}</strong><small>${t(lang, 'settings.imageModel.hint')}</small></span><span class="profile-control"><input id="profileImageModel" class="control mono" type="text" spellcheck="false" maxlength="120" placeholder="gpt-image-1"><button id="testImageButton" type="button">${t(lang, 'settings.imageModel.test')}</button></span></label>
+            <label class="setting-row"><span><strong>${t(lang, 'settings.imageModel.label')}</strong><small>${t(lang, 'settings.imageModel.hint')}</small></span><span class="inline-control"><input id="profileImageModel" class="control mono" type="text" spellcheck="false" maxlength="120" placeholder="gpt-image-1"><button id="testImageButton" type="button">${t(lang, 'settings.imageModel.test')}</button></span></label>
             <label class="setting-row setting-row-stack"><span><strong>${t(lang, 'settings.headers.label')}</strong><small>${t(lang, 'settings.headers.hint')}</small></span><textarea id="requestHeaders" class="control mono" rows="4" spellcheck="false"></textarea></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.timeout.label')}</strong><small>${t(lang, 'settings.timeout.hint')}</small></span><span class="stepper"><input id="requestTimeoutSeconds" type="number" min="10" max="900"><span>${t(lang, 'common.seconds')}</span></span></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.proxy.label')}</strong><small>${t(lang, 'settings.proxy.hint')}</small></span><input id="proxy" class="control mono" type="text" spellcheck="false" placeholder="http://127.0.0.1:8080"></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.proxyBypassHosts.label')}</strong><small>${t(lang, 'settings.proxyBypassHosts.hint')}</small></span><input id="proxyBypassHosts" class="control mono" type="text" spellcheck="false" placeholder="api.deepseek.com"></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.embeddingProfile.label')}</strong><small>${t(lang, 'settings.embeddingProfile.hint')}</small></span><select id="embeddingProfileId" class="control"></select></label>
-            <label class="setting-row"><span><strong>${t(lang, 'settings.embeddingModel.label')}</strong><small>${t(lang, 'settings.embeddingModel.hint')}</small></span><span class="profile-control"><input id="embeddingModel" class="control mono" type="text" spellcheck="false" placeholder="embedding-3"><button id="probeEmbeddingButton" type="button">${t(lang, 'settings.embeddingProbe.action')}</button></span></label>
+            <label class="setting-row"><span><strong>${t(lang, 'settings.embeddingModel.label')}</strong><small>${t(lang, 'settings.embeddingModel.hint')}</small></span><span class="inline-control"><input id="embeddingModel" class="control mono" type="text" spellcheck="false" placeholder="embedding-3"><button id="probeEmbeddingButton" type="button">${t(lang, 'settings.embeddingProbe.action')}</button></span></label>
             <div class="setting-row setting-row-stack"><span><small id="embeddingProbeResult"></small></span></div>
-            <div class="setting-row setting-row-stack"><div class="setting-note">${t(lang, 'settings.embeddingHowto')}</div></div>
+            <div class="setting-row setting-row-stack"><div class="setting-note"></div></div>
             <label class="setting-row"><span><strong>${t(lang, 'settings.embeddingBaseUrl.label')}</strong><small>${t(lang, 'settings.embeddingBaseUrl.hint')}</small></span><input id="embeddingBaseUrl" class="control mono" type="text" spellcheck="false" placeholder="https://open.bigmodel.cn/api/paas/v4"></label>
+            <label class="setting-row"><span><strong>${t(lang, 'settings.embeddingKey.label')}</strong><small>${t(lang, 'settings.embeddingKey.hint')}</small></span><span class="control api-key-control"><input id="embeddingApiKey" type="password" autocomplete="new-password" placeholder="sk-…"><button id="clearEmbeddingKeyButton" type="button">${t(lang, 'settings.apiKey.clear')}</button></span></label>
           </div>
         </section>
         <section id="generation" class="settings-section">
