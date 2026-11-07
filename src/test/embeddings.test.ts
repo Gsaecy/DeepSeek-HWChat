@@ -144,7 +144,7 @@ test('批量请求：没有 Key 直接报错，不发请求', async () => {
 
 /* ── 「能不能直接调用」探针 ───────────────────────────────────────── */
 
-import { EMBEDDING_MODEL_CANDIDATES, probeEmbeddingCapability } from '../providers/embeddingsProbe';
+import { EMBEDDING_MODEL_CANDIDATES, embeddingCandidatesFor, probeEmbeddingCapability } from '../providers/embeddingsProbe';
 
 test('探针：配置档的地址能算向量 → 判定可直接调用，并给出模型与维度', async () => {
   const asked: string[] = [];
@@ -210,20 +210,97 @@ test('探针：HTTP 200 但业务报错（Minimax base_resp）→ 继续试下�
   assert.equal(result.attempts.length, 2);
 });
 
+test('探针：智谱报「模型不存在」时，说的是你填的那个模型，不是最后一个候选', async () => {
+  // 复现用户 2026-11-07 的现场：智谱返回 1211「模型不存在，请检查模型代码」。
+  const fetchImpl = async () => new Response(
+    JSON.stringify({ error: { code: '1211', message: '模型不存在，请检查模型代码' } }),
+    { status: 400 },
+  );
+  const result = await probeEmbeddingCapability({
+    endpoint: 'https://open.bigmodel.cn/api/paas/v4/embeddings',
+    apiKey: 'k',
+    candidates: ['embedding-3', 'embedding-2'],
+    fetchImpl: fetchImpl as never,
+  });
+  assert.equal(result.usable, false);
+  assert.match(result.summary, /embedding-3/, '必须点名用户填的模型');
+  assert.match(result.summary, /模型名不对/);
+  assert.match(result.summary, /地址和密钥都通过了/, '不是 401/404，就该说清是模型名的问题');
+  assert.equal(result.lines.length, 2, '每个候选一行');
+  assert.match(result.lines[0] ?? '', /^✗ embedding-3：/);
+  assert.match(result.lines[0] ?? '', /1211/, '业务码要带上，1211/1213/1214 含义完全不同');
+});
+
+test('探针：智谱各类错误码分别说清（1212 选错模型类型 / 1222 没有接口 / 1315 套餐 Key）', async () => {
+  const run = async (code: string, message: string, status = 400) => probeEmbeddingCapability({
+    endpoint: 'https://open.bigmodel.cn/api/paas/v4/embeddings',
+    apiKey: 'k',
+    candidates: ['glm-5.3'],
+    fetchImpl: (async () => new Response(JSON.stringify({ error: { code, message } }), { status })) as never,
+  });
+
+  const wrongMethod = await run('1212', '当前模型不支持 `embeddings` 调用方式');
+  assert.equal(wrongMethod.usable, false);
+  assert.match(wrongMethod.summary, /不支持 embeddings 调用/);
+
+  const noEndpoint = await run('1222', 'API `embeddings` 不存在');
+  assert.match(noEndpoint.summary, /没有向量接口/, '智谱用 1222 而不是 404 表达「没有这个 API」');
+
+  const planKey = await run('1315', '该 API Key 仅限企业编程套餐场景使用，请到官网更换对应产品类型的 API Key', 429);
+  assert.match(planKey.summary, /密钥的类型不对/);
+  assert.match(planKey.summary, /按量计费/, '要告诉他换成按量计费的 Key');
+});
+
+test('探针：地址认得出是哪家时，不去试别人家的模型名', async () => {
+  const asked: string[] = [];
+  const fetchImpl = async (_url: string, init: RequestInit) => {
+    asked.push((JSON.parse(String(init.body)) as { model: string }).model);
+    return new Response('{"error":{"message":"模型不存在"}}', { status: 400 });
+  };
+  await probeEmbeddingCapability({
+    endpoint: 'https://open.bigmodel.cn/api/paas/v4/embeddings',
+    apiKey: 'k',
+    candidates: embeddingCandidatesFor('https://open.bigmodel.cn/api/paas/v4', 'embedding-3'),
+    fetchImpl: fetchImpl as never,
+  });
+  assert.deepEqual(asked, ['embedding-3', 'embedding-2'], '智谱官方枚举只有这两个');
+});
+
+test('探针：DeepSeek 官方没有向量接口，不拿别人的模型名去打它', () => {
+  assert.deepEqual(embeddingCandidatesFor('https://api.deepseek.com', 'deepseek-chat'), ['deepseek-chat']);
+  assert.deepEqual(embeddingCandidatesFor('https://api.deepseek.com', ''), []);
+});
+
+test('探针：认不出的地址仍用通用候选兜底，且用户填的排第一', () => {
+  const candidates = embeddingCandidatesFor('https://some-relay.example.com/v1', 'my-embed');
+  assert.equal(candidates[0], 'my-embed');
+  assert.ok(candidates.includes('embedding-3'));
+  assert.equal(new Set(candidates).size, candidates.length, '不许重复');
+});
+
 test('探针：没有候选模型时给出可照做的提示', async () => {
   const result = await probeEmbeddingCapability({ endpoint: 'https://x.test/v1/embeddings', apiKey: 'k', candidates: [] });
   assert.equal(result.usable, false);
   assert.match(result.summary, /向量模型/);
 });
 
-test('请求体带 encoding_format: float（holysheep 示例明确要求）', async () => {
-  let body: { encoding_format?: string } = {};
+test('请求体不带 encoding_format（默认就是 float；智谱的 schema 里没有这个字段）', async () => {
+  let body: Record<string, unknown> = {};
   const fetchImpl = async (_url: string, init: RequestInit) => {
-    body = JSON.parse(String(init.body)) as typeof body;
+    body = JSON.parse(String(init.body)) as Record<string, unknown>;
     return new Response(JSON.stringify({ data: [{ embedding: [1] }] }), { status: 200 });
   };
-  await embedTexts({ baseUrl: 'https://api.holysheep.cn/v1', model: 'deepseek-embed-v4' }, 'k', ['x'], { fetchImpl: fetchImpl as never });
-  assert.equal(body.encoding_format, 'float');
+  await embedTexts({ baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'embedding-3' }, 'k', ['x'], { fetchImpl: fetchImpl as never });
+  assert.equal('encoding_format' in body, false, '多带服务商不认识的字段只会换来更难懂的报错');
+  assert.equal(body.model, 'embedding-3');
+  assert.deepEqual(body.input, ['x']);
+});
+
+test('服务商回 base64 向量时也能解析（格式差异不该让整批作废）', async () => {
+  const base64 = encodeVector([0.5, -0.25, 0.125]);
+  const fetchImpl = async () => new Response(JSON.stringify({ data: [{ embedding: base64 }] }), { status: 200 });
+  const vectors = await embedTexts({ baseUrl: 'https://x.test/v1', model: 'm' }, 'k', ['x'], { fetchImpl: fetchImpl as never });
+  assert.deepEqual(vectors, [[0.5, -0.25, 0.125]]);
 });
 
 test('429 限流：后台索引会等待后重试一次（不白丢一批）', async () => {

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SkillRegistry } from '../agent/skillRegistry';
 import { deleteApiKey, getApiKey, hasApiKey, hasEmbeddingKey, resolveEmbeddingKey, storeApiKey, storeEmbeddingKey } from '../core/apiKeys';
 import { embeddingsEndpoint } from '../providers/embeddingsClient';
-import { EMBEDDING_MODEL_CANDIDATES, probeEmbeddingCapability } from '../providers/embeddingsProbe';
+import { embeddingCandidatesFor, probeEmbeddingCapability } from '../providers/embeddingsProbe';
 import { PERMISSION_PRESET_IDS, DEFAULT_PERMISSION_PRESET, permissionPresetDetail, permissionPresetDetails } from '../core/permissions';
 import { currentLanguage, messageScriptTag, t, tt, type Language } from '../core/i18n';
 import { isConversationMode } from '../core/modes';
@@ -255,7 +255,7 @@ export class SettingsPanel implements vscode.Disposable {
       const result = await probeEmbeddingCapability({
         endpoint: embeddingsEndpoint(baseUrl),
         apiKey,
-        candidates: [merged.embeddingModel ?? '', ...EMBEDDING_MODEL_CANDIDATES],
+        candidates: embeddingCandidatesFor(baseUrl, merged.embeddingModel),
       });
       await this.post({
         type: 'embeddingProbe',

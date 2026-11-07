@@ -1,5 +1,5 @@
 import type { ChatSettings } from '../core/types';
-import { embeddingInput } from '../core/embeddings';
+import { decodeVector, embeddingInput } from '../core/embeddings';
 
 /**
  * OpenAI 兼容的向量接口客户端。
@@ -58,7 +58,7 @@ export function embeddingsEndpoint(baseUrl: string): string {
 
 /** 服务端返回体的最小形状（只认用得到的字段）。 */
 interface EmbeddingResponse {
-  data?: Array<{ embedding?: number[]; index?: number }>;
+  data?: Array<{ embedding?: number[] | string; index?: number }>;
   error?: { message?: string; code?: string };
   base_resp?: { status_msg?: string };
 }
@@ -94,8 +94,13 @@ export async function embedTexts(
         Authorization: `Bearer ${apiKey}`,
         ...sanitizeHeaders(config.requestHeaders),
       }),
-      // `encoding_format: float` 是 OpenAI 兼容协议的标准字段；holysheep 的示例明确带它。
-      body: JSON.stringify({ model: config.model, input: texts, encoding_format: 'float' }),
+      /*
+       * 不带 `encoding_format`：OpenAI 规范里它默认就是 float，而智谱官方 OpenAPI
+       * 的 schema 只有 model / input / dimensions。多发一个服务商不认识的字段，
+       * 只会让「能不能直接用」这件事变得更难判断（用户 2026-11-07 实测踩到）。
+       * 若服务商仍回了 base64 向量，下面用 decodeVector 兜住。
+       */
+      body: JSON.stringify({ model: config.model, input: texts }),
       signal,
     });
     /*
@@ -127,7 +132,7 @@ export async function embedTexts(
     const businessError = parsed.base_resp?.status_msg;
     if (businessError) throw new Error(`向量接口返回错误：${businessError}`);
     if (parsed.error?.message) throw new Error(`向量接口返回错误：${parsed.error.message}`);
-    const vectors = (parsed.data ?? []).map((item) => item.embedding ?? []);
+    const vectors = (parsed.data ?? []).map((item) => normalizeVector(item.embedding));
     if (vectors.length !== texts.length) {
       throw new Error(`向量接口返回条数不符：期望 ${texts.length}，实际 ${vectors.length}`);
     }
@@ -138,6 +143,18 @@ export async function embedTexts(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 把一条 `embedding` 归一成 `number[]`。
+ *
+ * 正常是数字数组；但有的服务商（或客户端显式要求时）会回 base64 字符串。
+ * 两种情况都认，免得「向量格式」这种细节把整个索引干掉。
+ */
+function normalizeVector(value: number[] | string | undefined): number[] {
+  if (Array.isArray(value)) return value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item));
+  if (typeof value === 'string' && value) return Array.from(decodeVector(value));
+  return [];
 }
 
 function sanitizeHeaders(headers: Record<string, string> | undefined): Record<string, string> {

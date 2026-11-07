@@ -86,6 +86,10 @@ check(
     && /clearEmbeddingKeyIds: \[\.\.\.clearEmbeddingKeyIds\]/.test(JS),
 );
 check(
+  '检测时把「刚填还没保存」的聊天 Key 也带上（只限同一档）',
+  /typedChatKey && embeddingProfileId && embeddingProfileId === activeProfileId/.test(JS),
+);
+check(
   '检测时优先用刚填的向量 Key',
   /typedEmbeddingKey\?\.trim\(\)/.test(PANEL) && /embeddingApiKey: fields\.embeddingApiKey\.value\.trim\(\)/.test(JS),
 );

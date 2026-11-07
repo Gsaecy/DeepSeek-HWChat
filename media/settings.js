@@ -389,9 +389,16 @@
     elements.embeddingProbeResult.textContent = t('settings.embeddingProbeRunning');
     elements.probeEmbeddingButton.disabled = true;
     // 还没保存的输入也要带上：用户可能刚打完 Key 就点检测。
+    const typedKeys = { ...pendingApiKeys };
+    const typedChatKey = fields.apiKey.value.trim();
+    const embeddingProfileId = fields.embeddingProfileId.value;
+    if (typedChatKey && embeddingProfileId && embeddingProfileId === activeProfileId) {
+      // 只在这一档刚填的聊天 Key 上生效：A 档的 Key 不能拿去测 B 档。
+      typedKeys[embeddingProfileId] = typedChatKey;
+    }
     post('probeEmbeddings', {
       settings,
-      apiKeys: { ...pendingApiKeys },
+      apiKeys: typedKeys,
       embeddingApiKey: fields.embeddingApiKey.value.trim(),
     });
   }));

@@ -8,7 +8,19 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
-## What's new in 0.4.5
+## What's new in 0.4.6
+
+Only the "Check direct support" button: a Zhipu user's probe failed, and the message on screen ("model does not exist") actually came from the **last candidate tried** (Alibaba's `text-embedding-v3`), never from the `embedding-3` they had typed.
+
+- **Candidates are now scoped to the provider**: on `bigmodel.cn` / `z.ai` we only try `embedding-3` / `embedding-2`; DeepSeek has no embeddings endpoint, so we no longer fire other vendors' model names at it.
+- **The verdict names your model**, and every attempt is listed with the provider's own message plus HTTP/business code.
+- **`encoding_format` is no longer sent**: Zhipu's schema has only `model` / `input` / `dimensions`, and the OpenAI default is already float — sending an unknown field only produced a more confusing error.
+- **Zhipu error codes are explained**: 1211 wrong model name, 1212 a chat model was selected, 1222 this address has no embeddings endpoint, 1315 a plan key used against pay-as-you-go.
+- A key typed but not yet saved is now forwarded when you press Check.
+
+Verified: **1198 unit tests + 68 guard scripts green**. 0.4.5 was never published; its contents are folded into this release.
+
+## What's new in 0.4.5 (unpublished, folded into 0.4.6)
 
 Settings page only — the four things that surfaced right after 0.4.4 was installed:
 

@@ -90,8 +90,23 @@ check(
 );
 
 check(
-  '请求体带 encoding_format: float（holysheep 示例要求）',
-  /encoding_format: 'float'/.test(CLIENT) && /encoding_format: 'float'/.test(PROBE),
+  '请求体不发 encoding_format（默认就是 float；智谱的 schema 里没有这个字段）',
+  // 用户 2026-11-07 实测：智谱 + embedding-3 检测失败。官方 OpenAPI 只有
+  // model / input / dimensions，多带不认识的字段只会换来更难懂的报错。
+  !/JSON\.stringify\(\{[^}]*encoding_format/.test(CLIENT)
+    && !/JSON\.stringify\(\{[^}]*encoding_format/.test(PROBE),
+);
+check(
+  '按服务商收敛候选模型（智谱只试它自己的 embedding-3 / embedding-2）',
+  /export function embeddingCandidatesFor/.test(PROBE) && /bigmodel\.cn/.test(PROBE),
+);
+check(
+  '结论点名用户自己填的那个模型（不是最后一个候选）',
+  /const primary = attempts\[0\]/.test(PROBE),
+);
+check(
+  '智谱错误码分开解释（1211 模型 / 1212 调用方式 / 1222 无接口 / 1315 套餐 Key）',
+  /1211/.test(PROBE) && /1212/.test(PROBE) && /1222/.test(PROBE) && /1315/.test(PROBE),
 );
 check(
   '429 / 5xx 等待后重试一次（限流不白丢一批）',
