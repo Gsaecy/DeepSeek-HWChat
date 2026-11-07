@@ -450,3 +450,53 @@ function isGrouping(text: string): boolean {
   return /^[({]+$/.test(text);
 }
 
+/**
+ * 从命令输出里捞出「报错说找不到的那些路径」。
+ *
+ * 真实反馈（用户 2026-11-07，贴回原始输出）：
+ *
+ *     grep: src/app/pet/ChatBubble.tsx: No such file or directory
+ *     sed: can't read src/app/pet/ChatBubble.tsx: No such file or directory
+ *
+ * 只回这一句时，模型只能再猜一次路径；而它猜的方向（文件被改名 / 挪进子目录）
+ * 恰好是可以直接查出来的。这里只负责**取出候选**，真实结构由调用方用
+ * `pathHintFor` 补齐 —— 纯函数、不碰磁盘，便于单测。
+ *
+ * 认的形状（都来自 coreutils / binutils 的真实措辞）：
+ *  - `grep: <path>: No such file or directory`
+ *  - `cat: <path>: No such file or directory`
+ *  - `sed: can't read <path>: No such file or directory`
+ *  - `ls: cannot access '<path>': No such file or directory`
+ *  - `/bin/sh: line 0: cd: <path>: No such file or directory`
+ */
+export function missingPathsInCommandOutput(output: string, limit = 2): string[] {
+  const found: string[] = [];
+  for (const raw of (output ?? '').split('\n')) {
+    const line = raw.trim();
+    if (!line || !/no such file or directory|cannot access|can't read/i.test(line)) continue;
+    /*
+     * 从**句尾**往前剥，不要从开头剥。
+     *
+     * 旧写法用 `^[^:]*:` 去掉「谁在报错」，结果把 `some/other/path.ts: no such file…`
+     * 里的路径本身当成前缀吃掉了（自己的单测抓到）。句尾的
+     * `: no such file or directory` 是稳定的，先切它。
+     */
+    const body = line
+      .replace(/:\s*no such file or directory.*$/i, '')
+      .replace(/\bno such file or directory.*$/i, '')
+      .trim();
+    // 程序名前缀：`grep:`、`sed:`、`/bin/sh: line 0: cd:`。只认「短名 + 冒号」，
+    // 所以 `some/other/path.ts` 这种带斜杠/点号的路径不会被误剥。
+    const withoutProgram = body
+      .replace(/^(?:\/[^\s:]+|[a-z][a-z0-9_-]{0,12}):\s*(?:line\s+\d+:\s*)?/i, '')
+      .replace(/^(?:cannot access|can't read|cd:)\s*/i, '')
+      .replace(/^['"`]|['"`]$/g, '')
+      .trim();
+    // 只要像路径的东西：带分隔符或扩展名。
+    if (!withoutProgram || withoutProgram.length > 300) continue;
+    if (!/[/\\.]/.test(withoutProgram)) continue;
+    if (!found.includes(withoutProgram)) found.push(withoutProgram);
+    if (found.length >= limit) break;
+  }
+  return found;
+}

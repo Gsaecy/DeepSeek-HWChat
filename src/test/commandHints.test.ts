@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { selfNestedCdHint } from '../agent/commandHints';
+import { missingPathsInCommandOutput } from '../agent/commandPaths';
 
 const CWD = '/Users/me/AI projects/Personal Workstation OS';
 const FAIL = '/bin/sh: line 0: cd: Personal Workstation OS: No such file or directory';
@@ -83,4 +84,25 @@ test('没有后续命令（只是 cd）时不碰', () => {
 test('含变量/命令替换时不动（静态算不出目标）', () => {
   const result = stripRedundantLeadingCd('cd "$(dirname x)" && ls', CWD, noDirs);
   assert.equal(result.removed, undefined);
+});
+
+/* ── 命令输出里的「找不到这个文件」──────────────────────────────────── */
+
+test('从 grep/sed/ls/cd 的报错里取出缺失路径', () => {
+  const output = [
+    'grep: src/app/pet/ChatBubble.tsx: No such file or directory',
+    "sed: can't read src/app/pet/ChatBubble.tsx: No such file or directory",
+    "ls: cannot access 'web/assets/i18n.js': No such file or directory",
+  ].join('\n');
+  assert.deepEqual(missingPathsInCommandOutput(output, 4), ['src/app/pet/ChatBubble.tsx', 'web/assets/i18n.js']);
+});
+
+test('没有分隔符的提示词不会被当成路径（避免给出无意义的建议）', () => {
+  assert.deepEqual(missingPathsInCommandOutput('cd: Personal Workstation OS: No such file or directory'), []);
+  assert.deepEqual(missingPathsInCommandOutput('ok'), []);
+});
+
+test('只在「找不到文件」那一行取路径，其它输出不参与', () => {
+  const output = 'src/app/index.ts:12: error TS2322\nsome/other/path.ts: No such file or directory'.replace('No such file', 'no such file');
+  assert.deepEqual(missingPathsInCommandOutput(output), ['some/other/path.ts']);
 });

@@ -16,7 +16,7 @@ import {
   ToolExecutionResult,
 } from '../core/types';
 import { AuditLog, redact } from './auditLog';
-import { commandPathViolation, maskPatternFlagArguments } from './commandPaths';
+import { commandPathViolation, maskPatternFlagArguments, missingPathsInCommandOutput } from './commandPaths';
 import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './workspacePaths';
 import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
 import { shouldAutoBackground } from './serverCommands';
@@ -1248,6 +1248,17 @@ export class ToolExecutor implements vscode.Disposable {
      * 环境类失败（macOS 没有 `timeout`、`screencapture` 缺屏幕录制权限）：
      * 命令没错，是环境缺东西。直接把事实与做法说出来，别让模型换写法再撞一次。
      */
+    /*
+     * 「文件不存在」的路径提示。
+     *
+     * 真实反馈（用户 2026-11-07）：`grep … src/app/pet/ChatBubble.tsx` 只回
+     * `grep: …: No such file or directory`，模型接着又是 `sed` 同一个路径，两轮白烧。
+     * 报错行里就带着真实路径，直接补上「最近存在的目录长什么样」即可。
+     * 相对路径按**这条命令自己的 cwd** 解析，不能按对话项目根猜。
+     */
+    const missingPath = result.code === 0
+      ? undefined
+      : await this.commandMissingPathHint(output, resolvedCwd.fsPath, scope);
     const environment = result.code === 0 ? undefined : commandEnvironmentHint(effectiveCommand, output);
     const environmentHint = environment ? tt(environment.key, environment.values) : undefined;
     const strippedNote = strippedCd.removed
@@ -1264,7 +1275,7 @@ export class ToolExecutor implements vscode.Disposable {
       status: result.code === 0 && !result.timedOut ? 'success' : 'error',
       summary: `${commandSummary(effectiveCommand, result, timeout, Date.now() - commandStartedAt)}${clampSummary}`,
       content: truncate(
-        redact([strippedNote, clampNotice, output || tt('tool.noOutput'), nestedCdHint, environmentHint, advice].filter(Boolean).join('\n\n')),
+        redact([strippedNote, clampNotice, output || tt('tool.noOutput'), nestedCdHint, missingPath, environmentHint, advice].filter(Boolean).join('\n\n')),
         settings.maxToolOutputBytes,
       ),
       approval: 'approved',
@@ -1499,10 +1510,45 @@ export class ToolExecutor implements vscode.Disposable {
     for (const key of ['path', 'file', 'from', 'to']) {
       const value = args[key];
       if (typeof value !== 'string' || !value.trim()) continue;
-      const requested = value.trim();
+      const hint = await this.pathHintFor(value.trim(), scope);
+      if (hint) return hint;
+    }
+    return undefined;
+  }
+
+  /**
+   * 命令失败时，从输出里认出「它说找不到的那些路径」，给出真实结构。
+   *
+   * 相对路径按命令自己的 `cwd` 折算成绝对路径再查 —— 命令可能 `cd` 过，
+   * 按对话项目根解释会指到另一个文件上。
+   */
+  private async commandMissingPathHint(
+    output: string,
+    commandCwd: string,
+    scope?: ToolExecutionScope,
+  ): Promise<string | undefined> {
+    for (const candidate of missingPathsInCommandOutput(output, 2)) {
+      const absolute = candidate.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(candidate)
+        ? candidate
+        : join(commandCwd, candidate);
+      const hint = await this.pathHintFor(absolute, scope);
+      if (hint) return hint;
+    }
+    return undefined;
+  }
+
+  /**
+   * 给**一个**不存在路径的「真实结构」提示。
+   *
+   * 抽出来是因为 `run_command` 也要用：`grep src/app/x.ts` 的报错是
+   * `grep: src/app/x.ts: No such file or directory`，只回这一句，模型只能再猜一次路径
+   * （用户 2026-11-07 贴回的现场就是这个）。
+   */
+  private async pathHintFor(requested: string, scope?: ToolExecutionScope): Promise<string | undefined> {
+    {
       try {
         const resolved = await this.resolvePath(requested, scope);
-        if (existsSync(resolved.fsPath)) continue;
+        if (existsSync(resolved.fsPath)) return undefined;
         const nearest = nearestExistingDirectory(resolved.fsPath, resolved.folder.uri.fsPath, existsSync);
         let entries: DirectoryEntryHint[] = [];
         let hiddenCount = 0;
@@ -1537,8 +1583,8 @@ export class ToolExecutor implements vscode.Disposable {
       } catch {
         // 解析失败（越界 / 歧义）时静默跳过：原始错误信息比半截提示更准确。
       }
+      return undefined;
     }
-    return undefined;
   }
 
   private async resolvePath(input: string, scope?: ToolExecutionScope): Promise<ResolvedPath> {

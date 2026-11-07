@@ -4,6 +4,28 @@
 
 - （下一版的内容写在这里）
 
+## 0.4.5
+
+- **调用 VS Code 的 `copilot_multiReplaceString` / `copilot_replaceString` 只会得到一句 `Invalid input`，模型于是反复换写法重试**（用户原话：调用 VS Code 工具：`copilot_multiReplaceString` 失败 → 返回结果 `Invalid input`）。
+  - **根因（实读 VS Code 自带 `extensions/copilot/dist/extension.js` 确认，不是猜）**：
+    ```js
+    async resolveInput(e, n) { return this._promptContext = n, e }
+    async _prepareEditsForFile(e, n) {
+      if (!n.filePath || n.oldString === void 0 || n.newString === void 0 || !this._promptContext)
+        throw …, new Error('Invalid input');
+    ```
+    `_promptContext` 由 `resolveInput` 的第二个参数赋值，也就是**聊天请求上下文**；而 `lm.invokeTool` 的公开参数只有 `{ input, toolInvocationToken }`，传不了它。所以这两个工具在 HWChat 里**永远**只会回那一句 —— 参数本身是对的（`explanation` + `replacements[]` 完全符合它的 `inputSchema`）。
+  - **修法**：把这两个工具列进 `KNOWN_NEEDS_CHAT_CONTEXT`（与 `run_in_terminal` 同一机制）——**不再下发**，模型连选错的机会都没有；万一凭记忆硬调，返回**确定性说明**并记进本次会话的不可用集合。
+  - **说明书要能照着做**：编辑类工具的替代方案是原生 `replace_in_file`（一处一次，改 N 处就按顺序调 N 次）或 `write_file`（整份重写），**不是** `run_command` —— 给编辑工具推终端命令只会把模型带偏。原来那句说明里只有终端建议，现在按工具族分开。
+  - **裸 `Invalid input` 只在已知工具上判成「缺上下文」**：别的工具回同一句话可能是真实参数错误，必须原样上报，不能被吞成「不可用」白丢能力。
+- **`run_command` 报「文件不存在」时给出真实目录结构**（用户原话贴回的原始输出：`grep: src/app/pet/ChatBubble.tsx: No such file or directory`，紧接着又是 `sed` 同一个路径）。
+  - 报错行里**就带着真实路径**，宿主完全查得到它在哪：新增纯函数 `missingPathsInCommandOutput()`，认 `grep:` / `cat:` / `sed: can't read` / `ls: cannot access` / `/bin/sh: line 0: cd:` 五种措辞，然后复用已有的「最近存在的目录 + 同名文件」提示。
+  - 相对路径按**这条命令自己的 cwd** 折算 —— 命令可能 `cd` 过，按对话项目根猜会指到另一个文件上。
+  - 只在命令失败时补；成功时一个字都不加。解析器从**句尾**往前剥（早期写成从开头剥 `^[^:]*:`，会把路径本身当程序名吃掉，自己的单测当场抓到）。
+- 守护：`src/test/bridgedChatContext.test.ts`（7 条）、`src/test/commandHints.test.ts` 新增 3 条、`test/check-command-path-hint.mjs`（12 项，含把用户那条原始输出当输入）、`test/check-bridged-tools.mjs` +4 项。全量：**1153 条单测 + 63 个 `check-*.mjs` 全绿**。
+
+- （下一版的内容写在这里）
+
 ## 0.4.4
 
 - **已发送消息里的图片附件不再留破图**（用户原话：「粘贴的附件图片，显示不了」，附了一张 `image.png` 破图框的截图）。

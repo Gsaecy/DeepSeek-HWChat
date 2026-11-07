@@ -195,7 +195,7 @@ export class VscodeToolBridge {
        * 记进不可用集合（之后不再下发），并返回说明 + 替代方案 —— 否则模型会以为是
        * 参数问题，换个写法再撞一次，凑满三轮就整轮停机。
        */
-      if (isMissingChatContextError(message)) {
+      if (isMissingChatContextError(message, tool.name)) {
         this.unusableExternalTools.add(tool.name);
         return denied(missingChatContextNotice(tool.name));
       }

@@ -48,7 +48,8 @@ check(
 );
 check(
   '只在解析成功、文件真的不存在时才查（越界/歧义直接放行原始错误）',
-  /if \(existsSync\(resolved\.fsPath\)\) continue;/.test(EXECUTOR),
+  // 抽成 `pathHintFor` 之后这里是 `return undefined`：语义不变（解析成功且文件存在 → 不给提示）。
+  /if \(existsSync\(resolved\.fsPath\)\) return undefined;/.test(EXECUTOR),
 );
 check(
   '同名文件只在工作区根内找，且排除 node_modules',

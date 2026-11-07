@@ -34,9 +34,10 @@ const I18N = read('src/core/i18n.ts');
 
 /* ── 1. 已知调不通的工具：识别 + 不下发 + 运行期学习 ─────────────────── */
 check(
-  '已知名单里有 run_in_terminal',
-  /KNOWN_NEEDS_CHAT_CONTEXT[^=]*=\s*\['run_in_terminal'\]/.test(BRIDGED),
-  '那是唯一一个在 Workbench 里检查 toolSpecificData + context 的工具',
+  '已知名单里有 run_in_terminal 与 Copilot 的编辑类工具',
+  /KNOWN_NEEDS_CHAT_CONTEXT[^=]*=\s*\[[\s\S]{0,300}'run_in_terminal'/.test(BRIDGED)
+    && /KNOWN_NEEDS_CHAT_CONTEXT[^=]*=\s*\[[\s\S]{0,300}'copilot_multiReplaceString'/.test(BRIDGED),
+  'run_in_terminal 检查 toolSpecificData + context；replace/multiReplace 在缺 promptContext 时抛 Invalid input',
 );
 check(
   '识别 VS Code 的真实错误文案（两句都要认）',
@@ -50,12 +51,12 @@ check(
 );
 check(
   '执行时撞上上下文错误 → 记入会话级不可用集合',
-  /isMissingChatContextError\(message\)[\s\S]{0,200}this\.unusableExternalTools\.add\(tool\.name\)/.test(TOOLS),
+  /isMissingChatContextError\(message, tool\.name\)[\s\S]{0,240}this\.unusableExternalTools\.add\(tool\.name\)/.test(TOOLS),
   '运行期学到的也要挡住，否则模型下次还会被同一个工具骗一轮',
 );
 check(
   '确定性失败返回 denied（不计入「连续失败」的 error）',
-  /isMissingChatContextError\(message\)[\s\S]{0,240}return denied\(missingChatContextNotice/.test(TOOLS),
+  /isMissingChatContextError\(message, tool\.name\)[\s\S]{0,280}return denied\(missingChatContextNotice/.test(TOOLS),
   '这类失败重试一万次也一样，不该消耗模型的无进展预算',
 );
 
@@ -66,6 +67,29 @@ check(
   '不写这句，模型会去改参数、换路径，把三轮预算耗光',
 );
 check('说明里写清「不要重试」', /不要重试/.test(BRIDGED));
+
+/* ── Copilot 编辑类工具：注定回 `Invalid input`（用户 2026-11-07 的真实报错）──── */
+check(
+  'copilot_multiReplaceString / replaceString 列进「需要 chat 上下文」',
+  /'copilot_multiReplaceString',/.test(BRIDGED) && /'copilot_replaceString',/.test(BRIDGED),
+  '实读 VS Code 自带 copilot/dist/extension.js：_prepareEditsForFile 在 !this._promptContext 时抛 Invalid input，'
+  + '而 _promptContext 来自 resolveInput 的第二个参数（聊天请求上下文），lm.invokeTool 传不了',
+);
+check(
+  '裸 `Invalid input` 只在已知工具上判成缺上下文',
+  /isMissingChatContextError\(message: string, toolName\?: string\)/.test(BRIDGED)
+    && /toolName && needsChatContext\(toolName\) && \/\^invalid input/.test(BRIDGED),
+  '否则别的工具的真实参数错误会被吞成「不可用」，白丢能力',
+);
+check(
+  '调用点把工具名传进判定',
+  /isMissingChatContextError\(message, tool\.name\)/.test(TOOLS),
+);
+check(
+  '编辑类的替代方案是 replace_in_file / write_file',
+  /replace_in_file/.test(BRIDGED) && /write_file/.test(BRIDGED) && /isEditTool\(toolName\)/.test(BRIDGED),
+  '给编辑工具推 run_command 会把模型带偏',
+);
 check(
   '说明里给出替代方案（run_command / open_web_preview）',
   /run_command/.test(BRIDGED) && /open_web_preview/.test(BRIDGED),

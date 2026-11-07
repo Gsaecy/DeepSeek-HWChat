@@ -10,6 +10,12 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 
 完整改动见 [CHANGELOG](CHANGELOG.md)。
 
+## 0.4.5 更新了什么
+
+- **不再向模型提供「注定调不通」的 Copilot 编辑工具**：`copilot_multiReplaceString` / `copilot_replaceString` 需要 VS Code 聊天请求的上下文（`promptContext`），而 `lm.invokeTool` 传不了它 —— 它们只会回一句 `Invalid input`，让模型反复换写法重试。现在这类工具不下发；万一被硬调，会返回「为什么不行 + 用 `replace_in_file` / `write_file` 代替 + 不要重试」的确定性说明。
+- **命令报「找不到文件」时给出真实结构**：`grep: src/app/x.ts: No such file or directory` 不再只是一句话，后面会附上最近存在的目录、它下面的条目、以及整个工作区里的同名文件 —— 相对路径按这条命令自己的 cwd 折算。
+- 0.4.4 的图片附件修复、0.4.3 的记忆模型保持不变。
+
 ## 0.4.4 更新了什么
 
 - **已发送消息里的图片附件不再显示成破图**：粘贴的截图、agent 生成的图，加载失败时先请宿主**重新解析地址**（绝大多数情况只是 `asWebviewUri` 的地址过期，重新生成就能显示**原图**），仍失败才退回消息里现成的缩略图，两级都失败才写一行日志（带真实地址）。图片本体一直是以文件形式保存的，这条修复不影响存档。
