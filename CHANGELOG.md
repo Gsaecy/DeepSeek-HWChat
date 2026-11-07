@@ -4,113 +4,58 @@
 
 - （下一版的内容写在这里）
 
-## 0.4.10
-
-用户要求：「将配制方法写进 hwchat 设置页面对应区域」，并问「holysheep 的 Key，不是 DeepSeek 的 API key 吗」。
-
-- **设置页内嵌「怎么填（照抄即可）」**（语义检索那一段下面，新增 `.setting-note` 样式块），把四件事写在用户看得见的地方，不用再翻文档：
-  1. 服务商自带 `/embeddings` 时直接复用它的配置档 —— 智谱 `embedding-3` + `https://open.bigmodel.cn/api/paas/v4`（**不是**编码用的 `/api/coding/paas/v4`）、Minimax `embo-01`（地址留空）、holysheep `deepseek-embed-v4`（地址留空）；
-  2. **DeepSeek 官方没有 embeddings**，必须另配一个服务商，并给出 holysheep 的完整路径（注册 → 新增配置档 `https://api.holysheep.cn/v1` → 回到本区选它）；
-  3. **点明 Key 的归属**：holysheep 的 Key 是**它自己账号的 Key，不是 DeepSeek 的 Key**；填 DeepSeek 的 Key 会 401；
-  4. 点「检测能否直接调用」判结果（404 = 没接口，401 = Key 不对），以及「开启后对话片段会发给该服务商」。
-- 守护：`test/check-semantic-recall.mjs` 27 → 30 项（设置页内嵌步骤、Key 归属措辞、三个可复制地址）。全量：**1192 条单测 + 67 个 `check-*.mjs` 全绿**。
-
-- （下一版的内容写在这里）
-
-## 0.4.9
-
-用户追问：「hwchat 配置模型的 API 能通用 embeddings 接口吗？能就直接调用，不能就让用户另外配置」。
-
-- **结论（查证后）**：**DeepSeek 不能** —— 官方文档里没有 embeddings 条目（`/guides/embeddings` 回落到首页）。但**同一个配置档能不能直接算向量，取决于该服务商**：智谱、Minimax、holysheep 都用同一套 OpenAI 兼容协议，只要它的 baseUrl 同时服务 `/embeddings`，就能直接复用该配置档的密钥与地址。
-- **加「检测能否直接调用」按钮**：`src/providers/embeddingsProbe.ts` 按候选模型逐个真实发一次 `input: "ping"` 的请求，第一个成功的就是证据 —— 成功自动回填模型名并显示维度；失败按原因分开说：
-  - 全部 404 → 「这个配置档没有向量接口」，并指出该另外配哪个服务；
-  - 全部 401/403 → 「密钥不被向量接口接受」，与「没接口」完全不同；
-  - HTTP 200 但业务报错（Minimax 的 `base_resp`）→ 继续试下一个候选。
-  - 候选含智谱 `embedding-3`、holysheep `deepseek-embed-v4`、OpenAI `text-embedding-3-*`、Minimax `embo-01` 等。
-- **按 holysheep 参考文档补齐协议细节**（`https://www.holysheep.cn/articles/vi-deepseek-v4-embeddingxiangliangapishiyong-2026-06-14-0003.html`）：
-  - 请求体带 `encoding_format: "float"`（探针与正式请求都带）；
-  - **429 / 5xx 退避重试一次**（免费档 1000 请求/分钟，超限就 429；索引在后台跑，等 1 秒不打扰用户，但只重试一次，不帮服务端放大压力），并支持 `Retry-After`。
-  - 配置方法（可直接照抄）：新增一个配置档 baseUrl `https://api.holysheep.cn/v1` + 填入 holysheep 的 Key；设置页「语义检索配置档」选它、「向量模型」填 `deepseek-embed-v4`、「向量接口地址」留空即可（它的 `/v1` 本身就服务 `/embeddings`）。
-- 守护：`src/test/embeddings.test.ts` 15 → 23 条（新增探针 5 条、`encoding_format` 1 条、429 重试 2 条）、`test/check-semantic-recall.mjs` 20 → 27 项。全量：**1192 条单测 + 67 个 `check-*.mjs` 全绿**。
-
-- （下一版的内容写在这里）
-
-## 0.4.8
-
-**语义检索（向量索引）**（用户选择：「向量索引」，用来补上词面匹配够不着的同义说法，例如「悬浮条」↔「胶囊」）。
-
-- **先查证再动手**：DeepSeek 官方文档里**没有** embeddings 条目（`/guides/embeddings` 回落到首页），所以不能拿它算向量。实测用户已有的两个配置档都有 OpenAI 兼容接口：智谱 `https://open.bigmodel.cn/api/paas/v4/embeddings`（裸请求 401，路由存在）、Minimax `https://api.minimax.cn/v1/embeddings`（HTTP 200 + 业务错误 `login fail`）。于是做成**通用 OpenAI 兼容 embedder**，不绑定厂商。
-- **默认关闭、必须显式开启**：新增三项设置 —— `hwchat.embeddingProfileId`（用哪个配置档的密钥）、`hwchat.embeddingModel`（如 `embedding-3` / `embo-01`）、`hwchat.embeddingBaseUrl`（地址覆盖；智谱编码端点是 `/api/coding/paas/v4`，向量要 `/api/paas/v4`），设置页有三个控件。之所以默认关：索引会把对话片段发给该服务商，这必须是用户的选择。
-- **绝不拖住对话**：未配置 / 没有 Key / 请求失败 / 超时，一律静默退回关键词检索；查询向量请求 15 秒上限；索引是运行结束后的 fire-and-forget，失败只记一行日志。
-- **省钱且不重复**：按内容哈希判断是否需要重算；每轮最多补 24 条（每批 8 条）；索引上限 600 条按最近裁剪；**换模型整份索引作废**（不同语义空间的向量混用会给出假高分）。
-- **与关键词结果并存**：`<auto_recall>` 先放语义命中、再接词面命中，按 `messageId` 去重，总数仍限 6 条；语义命中的旧消息同样标 `hasDetail`，可再用 `read_message_detail` 展开。
-- 索引文件随对话目录走：`<对话>/embeddings.json`（向量用 base64 Float32 存，比 JSON 数字数组小 3–4 倍），删除对话/进回收站一起处理。
-- 守护：`src/test/embeddings.test.ts`（15 条：编解码往返、余弦、排序阈值、合并裁剪、换模型作废、批量条数校验、Minimax 业务错误、无 Key 不发请求）、`test/check-semantic-recall.mjs`（20 项：默认关闭、不阻塞、省钱、合并不互相顶掉 + 真实余弦断言）。全量：**1184 条单测 + 67 个 `check-*.mjs` 全绿**。
-
-- （下一版的内容写在这里）
-
-## 0.4.7
-
-用户追问「过程中你说有漏洞，修复了没有」。当时列的是 4 条边界 + 1 条按你的决定关闭的，现在逐条落地：
-
-- **读自己的对话存档不再受「文件读取」权限约束**（原缺口：`read_message_detail` 走 `fileReadPolicy`，设成 `ask` 后每展开一条历史工具输出都要点一次确认）。
-  - 新增 `executeExternal({ internal: true })`：这类调用是**HWChat 自己的数据**（对话存档、审计记录），既不是工作区读取，也不该打断用户；跳过策略与弹窗，**仍然写审计**。
-- **清单基线跨重载不丢**（原缺口：基线只存在面板内存里，重载窗口后那条任务的「清单变动」永远算不出来）。
-  - `AgentTaskNode.baseline` 随任务记忆一起落库，`taskTreeWithOutcomes()` 在内存没有基线时优先从节点恢复；写回时一并带上。
-- **运行中途的线索也会自动回查**（原缺口：「检索仍要靠模型主动调用」——开局那次检索看不到运行中才出现的报错）。
-  - `AgentRunner` 新增 `recallForFailure` 钩子：工具返回 error 时，按报错正文取词回查完整记录，命中片段**并进同一条 tool 结果**（不新增 system/user 消息，既不改对话角色结构，也不破坏上下文缓存前缀）。
-  - 每轮运行最多用 3 次，防止一个反复失败的工具把上下文灌满；每轮开始时清零。
-- 仍未关的一条（诚实记账）：**纯词面匹配没有同义扩展**。「悬浮条」↔「胶囊」这类完全不同的词根仍可能漏；做真正的语义检索需要向量索引，属于另一个量级的改动，没有半成品方案就先不做（多义时的「问清楚」已经能兜住一部分）。
-- 守护：新增 `test/check-gap-closure.mjs`（10 项，把上面每条缺口变成可执行断言）、`src/test/taskMemory.test.ts` +2、`src/test/contextWindow.test.ts` +1、`src/test/agentRunner.test.ts` +1。全量：**1169 条单测 + 66 个 `check-*.mjs` 全绿**。
-
-- （下一版的内容写在这里）
-
-## 0.4.6
-
-- **半个 emoji 让整份请求 JSON 解析失败**（用户原话，连报两次）：`接口请求失败（400）：Failed to parse the request body as JSON: messages[0].content: lone leading surrogate in hex escape at line 1 column 39266`。
-  - **定位**：`messages[0]` 是 system 消息，内容是任务记忆 + 历史摘要 + 自动检索片段，全部由 `slice(0, N)` 截断而成。一个 emoji 在 UTF-16 里占两个码元，截在中间就留下半个代理项，`JSON.stringify` 写成 `\ud83d`，服务端解析 JSON 直接 400。实测复现：`"前"×10 + "😀" + "后"×10` 取 `slice(0, 11)` → `{"content":"…\ud83d"}`。另扫了全部 246 个消息存档：**没有**孤立代理项，所以不是存进去的坏数据，而是拼请求时现场切坏的。
-  - **修法两层**：新增 `src/core/textSafety.ts`（`safeSlice` / `clipText` / `stripLoneSurrogates` / `sanitizeJsonStrings`），把 9 处会进入提示词的截断全部换掉；并在**出站口**统一 `encodeBody()` 清洗一遍 + 记一行日志 —— 上游再漏也不会把坏字符发出去。
-- **「卡住」不再报成「网络失败」**（用户追问：「为什么 hwchat 和 copilot 都是用的 DeepSeek，hwchat 经常出现这种连不上的情况」）。
-  - 真实日志（同日 20:03:50）：`[net] 请求失败 …｜网络失败（ABORT_ERR）：经代理请求失败`。那一刻既没断网也没有服务报错 —— 是我们自己「120 秒没收到任何字节」的空闲判定触发了 abort，经代理层包装成 `ABORT_ERR`，于是报成网络失败，用户据此查网络，方向从一开始就错了。
-  - 新增 `StreamStalledError`（带阶段、秒数、请求体大小、是否走代理），等响应头与流中途两处都会标记；`classifyAbort()` 多了 `stalled` 一类并排在 `network` 之前；界面文案直说「N 秒没有新数据」并给出两条可执行做法（调大超时 / 把域名加进直连名单）。
-- **DeepSeek 走直连，其它流量照旧**：新增设置 `hwchat.proxyBypassHosts`（默认 `api.deepseek.com`，设置页有输入框）。命中名单的请求直连，网页检索与图片下载仍走代理。**只影响 HWChat 自己发出的请求** —— `git push/pull`、`npm` 等子进程走它们自己的代理配置，完全不受影响。
-- **请求体更小**，直接降低首字节超时概率：最近原文 24 → 12 条、字节预算 1 MB → 768 KB、运行内工具输出全文 6 → 3 条。超过 512 KB 时输出面板记一行真实体积。
-- 守护：`src/test/textSafety.test.ts`（9 条）、`src/test/abortReason.test.ts` +3 条、`test/check-text-safety.mjs`（17 项，含 2000+ 个截断点逐个验证）、`test/check-network-honesty.mjs`（16 项）。全量：**1165 条单测 + 65 个 `check-*.mjs` 全绿**。
-
-- （下一版的内容写在这里）
-
-## 0.4.5
-
-- **调用 VS Code 的 `copilot_multiReplaceString` / `copilot_replaceString` 只会得到一句 `Invalid input`，模型于是反复换写法重试**（用户原话：调用 VS Code 工具：`copilot_multiReplaceString` 失败 → 返回结果 `Invalid input`）。
-  - **根因（实读 VS Code 自带 `extensions/copilot/dist/extension.js` 确认，不是猜）**：
-    ```js
-    async resolveInput(e, n) { return this._promptContext = n, e }
-    async _prepareEditsForFile(e, n) {
-      if (!n.filePath || n.oldString === void 0 || n.newString === void 0 || !this._promptContext)
-        throw …, new Error('Invalid input');
-    ```
-    `_promptContext` 由 `resolveInput` 的第二个参数赋值，也就是**聊天请求上下文**；而 `lm.invokeTool` 的公开参数只有 `{ input, toolInvocationToken }`，传不了它。所以这两个工具在 HWChat 里**永远**只会回那一句 —— 参数本身是对的（`explanation` + `replacements[]` 完全符合它的 `inputSchema`）。
-  - **修法**：把这两个工具列进 `KNOWN_NEEDS_CHAT_CONTEXT`（与 `run_in_terminal` 同一机制）——**不再下发**，模型连选错的机会都没有；万一凭记忆硬调，返回**确定性说明**并记进本次会话的不可用集合。
-  - **说明书要能照着做**：编辑类工具的替代方案是原生 `replace_in_file`（一处一次，改 N 处就按顺序调 N 次）或 `write_file`（整份重写），**不是** `run_command` —— 给编辑工具推终端命令只会把模型带偏。原来那句说明里只有终端建议，现在按工具族分开。
-  - **裸 `Invalid input` 只在已知工具上判成「缺上下文」**：别的工具回同一句话可能是真实参数错误，必须原样上报，不能被吞成「不可用」白丢能力。
-- **`run_command` 报「文件不存在」时给出真实目录结构**（用户原话贴回的原始输出：`grep: src/app/pet/ChatBubble.tsx: No such file or directory`，紧接着又是 `sed` 同一个路径）。
-  - 报错行里**就带着真实路径**，宿主完全查得到它在哪：新增纯函数 `missingPathsInCommandOutput()`，认 `grep:` / `cat:` / `sed: can't read` / `ls: cannot access` / `/bin/sh: line 0: cd:` 五种措辞，然后复用已有的「最近存在的目录 + 同名文件」提示。
-  - 相对路径按**这条命令自己的 cwd** 折算 —— 命令可能 `cd` 过，按对话项目根猜会指到另一个文件上。
-  - 只在命令失败时补；成功时一个字都不加。解析器从**句尾**往前剥（早期写成从开头剥 `^[^:]*:`，会把路径本身当程序名吃掉，自己的单测当场抓到）。
-- 守护：`src/test/bridgedChatContext.test.ts`（7 条）、`src/test/commandHints.test.ts` 新增 3 条、`test/check-command-path-hint.mjs`（12 项，含把用户那条原始输出当输入）、`test/check-bridged-tools.mjs` +4 项。全量：**1153 条单测 + 63 个 `check-*.mjs` 全绿**。
-
-- （下一版的内容写在这里）
-
 ## 0.4.4
 
-- **已发送消息里的图片附件不再留破图**（用户原话：「粘贴的附件图片，显示不了」，附了一张 `image.png` 破图框的截图）。
-  - **先核对事实**：那条消息的存档是对的 —— 附件有 `path`，指向 `<对话>/images/db53cf….png`，文件是**合法的 544437 字节 PNG（1280×860）**；`thumbnailDataUrl` 也是一张合法的 160×108 JPEG。所以不是图丢了，而是 **webview 没把那个地址取下来**：`asWebviewUri` 的地址在资源根变化、面板重建、session 变化之后都可能失效，而消息一旦渲染就一直在用那个旧地址；旧实现在这种情况下把 `<img>` 留在破图状态，什么也不做。
-  - **修法（两级兜底）**：加载失败时先请宿主 `resolveAttachmentSrc` **重新解析地址**（宿主手上还有 `messageId → 附件 → 文件路径`，地址只是过期时这一步就能把**原图**救回来）；宿主也解析不出来，才退回消息里现成的 `thumbnailDataUrl`。两级都失败才写日志（`[image] webview 取不到图片：<标签>｜<真实地址>`），下次再出问题不用靠猜。
-  - **为什么不能只加 onerror**：直接把图换成缩略图等于永远放弃原图（544 KB → 5 KB），而绝大多数情况只是地址过期、重新生成就好。所以顺序是「先救原图，再退缩略图」。
-  - 顺带修掉一个自己写出来的状态机死循环：宿主回地址时把 recovery 重置成 `first`，第二次失败会再去问宿主，永远走不到缩略图那一级 —— 守护脚本当场抓到（场景 B）。
-- 守护：`test/check-image-attachment.mjs`（19 项，其中 7 项在真实 headless Chromium 里跑真实 `media/chat.js`：附件卡片渲染、失败即请求重新解析、带附件 id、宿主给可用地址后显示原图、宿主解析失败退回缩略图且缩略图**真的解码出来**、只回退一次不抖动、失败上报一次）。全量：**1143 条单测 + 62 个 `check-*.mjs` 全绿**。
+这一版把三件事合在一起：**agent 不再忘记项目**、**图片与命令不再无谓失败**、**检索从关键词升级到向量**。起点是用户那句「hwchat 有时候会突然忘记项目」，终点是「同一句话换个说法也能找回来」。
 
-- （下一版的内容写在这里）
+### 一、记忆模型：记录是档案，任务树是记忆
+
+- **「突然忘记项目」的根因**（用户原话：「hwchat 有时候会突然忘记项目」，现场是面板显示「我这边没有收到具体请求：当前对话里只有运行环境与工具说明」）。
+  - 用真实存档 `conversation_fde3da6a…`（154 条 / 23.5 MB）复现：旧 `getContextMessages()` 只回来 **1 条**消息，而且是一条**内容为空**的助手占位。模型自己的 reasoning 写着 `The conversation starts with the system prompt only. Wait, there's no user message.`，那一轮 `promptTokens = 50,509`，正好只有 system + 工具定义。
+  - **机制**：旧预算按**原始 JSON 字节**从新到旧累加、上限 2 MB。用户贴两张截图的那条消息有 **2747 KB**（图片 base64 内联）：2 KB 的助手占位先进窗口，轮到用户消息时「2 KB + 2747 KB > 2 MB」→ `break`，用户这句话被整个丢掉；占位随后又因「内容为空」被跳过。
+  - **修法**（`src/core/contextWindow.ts`）：预算只算真正会发给模型的内容（正文/附件文本，**图片字节不计**）；最新那条用户消息及其后的占位**无条件保留**；`requestMessages()` 末尾再加一道闸 —— 窗口里没有本轮消息就直接补上并记 `[context]` 日志。**不会再出现「只有 system」的请求。**
+- **三层记忆**（用户要求：「对话记录已经不再是 agent 的记忆了，agent 只需要读取任务树和任务清单（包括执行一半退出和执行完的）……完整的对话记录，只在读取任务树和任务清单无法确定的情况下查找读取」）。
+  - 长期记忆 = 任务树 + 清单：落库到 `ConversationSummary.taskNodes`，每个节点带一句结论、用户硬约束、以及「清单实际完成了哪几项」；每轮以 `<project_memory>` 注入 system，并明确写「[x] 的不要重做」。
+  - 最近原文 = 12 条（用户显式设了 `maxMessagesInContext` 就按用户的）。
+  - 按需检索 = 完整记录：`search_conversation_history` 每轮都在且**先查当前对话**；新增 `read_message_detail(messageId)` 还原被归档的工具输出/附件正文。
+- **结论之外还记约束**（用户追问：「只保存结果不保存约束」）：`constraintsOf()` 从**用户原话**摘「不要 / 必须 / 保持 / 禁止」这类硬规则，存进 `AgentTaskNode.constraints` 并随记忆块渲染（`｜ 约束：…`）；同一 id 再下发时旧约束不会被抹掉。
+- **清单按节点时间窗归属**（用户口径：「任务清单执行的就相当于是结果结论或者变动总结，就是对任务树的回复」）：节点**真正开始**时拍基线，结束时取差集，条目只归一个任务；基线随节点落库，重载窗口后仍算得出。
+- **自审找到并修掉的真 bug**：关窗口时覆盖写任务树会抹掉上一轮已完成任务（改走合并）；排队节点的基线在入队时就拍会导致条目重复归因（改为 active 时拍）；`outcomeOf` 把「需要你做的」当成结论；未结束任务没有条数上限；`read_message_detail` 受 `fileReadPolicy` 约束（每次弹确认，后改为 internal：跳过策略但仍写审计）。
+
+### 二、检索：关键词 + 向量，且自动执行
+
+- **检索不用等模型想起来**（用户要求：「检索仍要靠模型主动调用，这个可以让 agent 自动执行」）：切窗口的同一次遍历里给窗口外消息打分，命中以 `<auto_recall>` 注入；正文没命中时最多再翻 5 个 `payloads/`；**工具失败时**也按报错原文回查一次（每轮最多 3 次），片段并进同一条 tool 结果，不插 system/user、不破坏缓存前缀。
+- **模糊匹配 + 有条件的确认**：归一化（全角/大小写/标点）+ 取词（中文二元片段、标识符及子词）+ 长词加权；一个说法对上多条任务时，**分得清就说明假设继续**（`<term_assumption>`），**分不清才回头问**（`<term_conflict>`），判据是「限定词命中个数」而不是比例（避免被语气词稀释）。
+- **语义检索（向量索引）**：解决「悬浮条」↔「胶囊」这类没有共同片段的同义说法。
+  - DeepSeek **没有** embeddings（查官方文档确认，`/guides/embeddings` 回落到首页），所以做成**通用 OpenAI 兼容 embedder**，复用你已有的配置档（智谱 / Minimax / holysheep 都行）。
+  - **默认关闭**（索引会把对话片段发给该服务商），设置页三项：语义检索配置档 / 向量模型 / 向量接口地址。
+  - 未配置、没 Key、请求失败或超时一律**静默退回关键词检索**；索引在运行结束后后台补（每轮 ≤24 条，内容哈希没变不重算，上限 600 条，换模型整份作废）。
+  - **「检测能否直接调用」按钮**：按候选模型逐个真实试一次 —— 成功回填模型并显示维度；404 = 该服务商没有向量接口，401 = Key 不对。
+  - 按 holysheep 官方示例补齐协议细节：请求带 `encoding_format: "float"`；**429/5xx 退避重试一次**并尊重 `Retry-After`（免费档 1000 请求/分钟）。
+  - **设置页内嵌「怎么填（照抄即可）」**，并点明一件容易混的事：**holysheep 的 Key 是它自己账号的 Key，不是 DeepSeek 的 API Key**，填错会 401。
+
+### 三、图片与附件：不再留破图，也不再撑爆存档
+
+- **已发送消息里的图片附件不再显示成破图**（用户原话：「粘贴的附件图片，显示不了」）。核对后确认附件本身是好的（存档里的 PNG 544437 字节、1280×860，缩略图也合法），坏的是 `asWebviewUri` 的地址会过期。修法是**两级兜底**：加载失败先请宿主**重新解析地址**（多数情况能把原图救回来），仍失败才退回缩略图，两级都失败才写日志（带真实地址）。
+- **贴图落成文件**：`<对话>/images/<sha256>.<ext>`，消息里只留路径（那条 2747 KB → 几十 KB）；本轮仍用内存副本把图真正发给模型，更早的图片不再重发。
+- **记录只搬不删**（用户要求：「保留对话记录，除非用户主动清理」）：工具输出按保留期搬进 `<对话>/payloads/<messageId>.json`，`read_message_detail` 随时原样取回；消息正文永远留在本体里。
+
+### 四、网络与失败：说清是哪一种
+
+- **半个 emoji 不再毁掉整份请求**（用户连报两次）：`Failed to parse the request body as JSON: messages[0].content: lone leading surrogate in hex escape`。一个 😀 占两个 UTF-16 码元，`slice` 截在中间就留下半个代理项，`JSON.stringify` 写成 `\ud83d`，服务端直接 400。修法：9 处进提示词的截断全部改成 `safeSlice`/`clipText`（`src/core/textSafety.ts`），并在**出站口**统一 `encodeBody()` 清洗 + 记日志。
+- **「卡住」不再报成「网络失败」**（用户追问「为什么 hwchat 和 copilot 都是用的 DeepSeek，hwchat 经常出现这种连不上的情况」）：真实日志里 `网络失败（ABORT_ERR）` 其实是我们自己「120 秒没收到任何字节」的空闲判定 abort 后经代理包装的结果。新增 `StreamStalledError`（阶段/秒数/请求体大小/是否走代理），界面直说「N 秒没有新数据」并给出「调大超时 / 加直连」两条做法。
+- **DeepSeek 走直连，其它流量照旧**：新增 `hwchat.proxyBypassHosts`（默认 `api.deepseek.com`，设置页有输入框）。**只影响 HWChat 自己的请求**，`git push/pull` 等子进程走自己的代理配置。
+- **请求体更小**：最近原文 24 → 12、字节预算 1 MB → 768 KB、运行内工具输出全文 6 → 3；超过 512 KB 记一行真实体积。
+
+### 五、工具：注定失败的不再摆出来，失败时给出真实结构
+
+- **`copilot_multiReplaceString` / `copilot_replaceString` 只会回一句 `Invalid input`**（用户贴回的真实报错）。实读 VS Code 自带的 `extensions/copilot/dist/extension.js` 确认根因：`_prepareEditsForFile` 在 `!this._promptContext` 时抛 `Invalid input`，而 `_promptContext` 是聊天请求上下文，`lm.invokeTool` 传不了 —— 参数本身完全符合它的 `inputSchema`。修法：列进 `KNOWN_NEEDS_CHAT_CONTEXT`（不再下发），硬调时返回确定性说明，编辑类替代方案指向 `replace_in_file` / `write_file`。
+- **命令报「找不到文件」时给出真实结构**（用户贴回：`grep: src/app/pet/ChatBubble.tsx: No such file or directory`，接着又用 `sed` 猜同一个路径）：新增 `missingPathsInCommandOutput()`，认 `grep/cat/sed/ls/sh-cd` 五种措辞，复用「最近存在的目录 + 同名文件」提示；相对路径按**命令自己的 cwd** 折算，只在失败时补。
+
+### 版本说明
+
+- 这一版包含此前分别以 0.4.5–0.4.10 迭代、但**从未上架**的全部改动，统一以 **0.4.4** 发布（0.4.4 这个号此前只在本机构建过，未发布到 Marketplace）。0.4.3 同样是内部构建、未上架，其内容（上下文预算根因与任务树记忆的第一版）已并入本节，下文的 0.4.3 段落仅作为开发记录保留。
+- 全量验证：**1192 条单测 + 67 个 `check-*.mjs` 全绿**。其中 `check-text-safety` 用 2000+ 个截断点逐个验证、`check-image-attachment` 在真实 headless Chromium 里跑真实 `media/chat.js`、`check-context-memory` 用真实 2747 KB 事故形状做可执行断言。
 
 ## 0.4.3
 

@@ -8,64 +8,21 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
-## What's new in 0.4.10
-
-- **The setup recipe now lives in the settings page** (under the semantic-search block, "How to fill this in"): the embedding model and URL for Zhipu / Minimax / holysheep, why DeepSeek cannot be used, and how to read the check result (404 = no endpoint, 401 = wrong key).
-- One commonly confused point is spelled out: **a holysheep key is that account's own key, not your DeepSeek API key**; putting a DeepSeek key into a holysheep profile returns 401. DeepSeek itself has no embeddings endpoint, so "embedding with the DeepSeek key" is not a thing that exists.
-
-## What's new in 0.4.9
-
-- **HWChat now checks whether your configured API can serve embeddings.** A new "Check direct support" button in settings tries each candidate model once for real:
-  - on success it fills in the model and shows the dimension — meaning that profile's key and URL work for embeddings, no extra configuration needed;
-  - on failure it distinguishes "this provider has no embeddings endpoint (404)" from "the key is not accepted (401/403)" and points at providers that do.
-  - Bottom line: **DeepSeek has no embeddings API** (verified in its docs), while Zhipu / Minimax / holysheep do, and all of them can reuse the same profile.
-- **Protocol details taken from holysheep's official example**: requests now send `encoding_format: "float"`, and **429 / 5xx wait and retry once** (free tier: 1000 requests/minute), honouring `Retry-After`.
-- **holysheep setup (copy this)**: add a profile with base URL `https://api.holysheep.cn/v1` and its key; in settings pick that profile under "semantic search profile", set the embedding model to `deepseek-embed-v4`, leave the embedding base URL empty (its `/v1` already serves `/embeddings`), then press "Check direct support".
-
-## What's new in 0.4.8
-
-- **Semantic recall (vector index)** — covers synonyms keyword search cannot reach ("floating bar" vs "capsule").
-  - DeepSeek has **no** embeddings API (verified in its docs), so this reuses a provider you already configured (Zhipu / Minimax): pick a **semantic search profile** and an **embedding model** in settings (Zhipu example: profile 智谱, model `embedding-3`, base URL `https://open.bigmodel.cn/api/paas/v4`).
-  - **Off by default**: enabling it sends conversation excerpts to that provider for embedding, so it is your explicit choice; with it off, behaviour is exactly the previous keyword search.
-  - **Never blocks a turn**: missing config, missing key, request failure or timeout all fall back to keyword search silently; indexing runs in the background after each run and only logs on failure.
-  - **Cheap**: unchanged content is never re-embedded, at most 24 messages per run, index capped at 600 entries, and switching models rebuilds the index.
-  - Semantic and keyword hits **coexist** (deduplicated, up to 6); a recalled message can still be expanded with `read_message_detail`.
-
-## What's new in 0.4.7
-
-- **Reading HWChat's own archive no longer asks for permission.** `read_message_detail` used to go through the file-read policy, so with "ask" every expansion of an archived tool output prompted — even though it only reads records HWChat itself stored. Internal data now skips the policy and still writes an audit entry.
-- **A task's checklist delta survives a window reload.** The "items already completed when this task started" baseline is stored with the task memory, so the delta can still be computed after a reload, a conversation switch, or the next day.
-- **Failures mid-run also trigger an automatic recall.** Previously only the start of a run searched the record; now a failing tool's error text is used to look up related earlier excerpts, appended to that same tool result (no extra system/user message, no cache-prefix break), at most three times per run.
-- Still not done: matching is lexical, with no synonym expansion ("floating bar" vs "capsule"), which would need a vector index and is out of scope here.
-
-## What's new in 0.4.6
-
-- **Half an emoji no longer kills the whole request.** A single 😀 takes two UTF-16 code units, so any length-based truncation can cut it in half; `JSON.stringify` then emits `\ud83d` and the server rejects the body with `lone leading surrogate in hex escape` — which looks exactly like "cannot connect". Every truncation that feeds the prompt now respects surrogate pairs, and the outbound body is sanitised as a last resort.
-- **"Stalled" and "disconnected" are reported separately.** Both used to surface as "network failure (ABORT_ERR)"; most of the time the request had connected and simply received no data for N seconds, which only needs a larger timeout or a direct connection. The panel now says it stalled, for how long, and offers those two fixes; a real network drop is still reported as one.
-- **DeepSeek connects directly by default** via the new proxy bypass list (`api.deepseek.com` out of the box). Uploading multi-MB bodies through a proxy easily pushes time-to-first-byte past the idle timeout; web search and image downloads still use the proxy. **This only affects HWChat's own requests — `git push/pull` keeps its own configuration.**
-- **Smaller request bodies**: recent raw turns 24 → 12, verbatim tool output inside a run 6 → 3.
-
-## What's new in 0.4.5
-
-- **Tools that can never work are no longer offered to the model.** `copilot_multiReplaceString` and `copilot_replaceString` need the VS Code chat request context (`promptContext`), which `lm.invokeTool` cannot supply — they only ever answer `Invalid input`, so the model kept rewording and retrying. They are now filtered out, and a forced call returns a deterministic explanation: why it fails, use `replace_in_file` / `write_file` instead, do not retry.
-- **A command that reports "No such file or directory" now comes with the real directory structure**: `grep: src/app/x.ts: No such file or directory` is followed by the nearest existing directory, its entries and same-name files across the workspace — relative paths resolved against that command's own cwd.
-- The 0.4.4 image-attachment fix and the 0.4.3 memory model are unchanged.
-
 ## What's new in 0.4.4
 
-- **Image attachments in sent messages no longer show up as a broken image.** When a pasted screenshot or a generated image fails to load, the webview first asks the host to **re-resolve the address** — in almost every case the `asWebviewUri` URL has simply gone stale, and regenerating it brings back the **full image**; only if that also fails does it fall back to the thumbnail already stored in the message, and both failures write one log line with the real URL. The image itself was always stored as a file, so this fix does not touch the archive.
-- The 0.4.3 memory model (task tree + constraints + checklist + automatic retrieval) is unchanged and described in the next section.
+Three things: **the agent stops forgetting the project**, **images and commands stop failing for no reason**, and **retrieval goes from keywords to vectors**.
 
-## What's new in 0.4.3
+- **The "suddenly forgets the project" root cause is fixed.** The context budget was measured in **raw JSON bytes**, so one message with two screenshots (2747 KB) could eat the whole 2 MB and push the sentence you had just written out of the request — the panel then answered "I did not receive a specific request". The budget now counts only what the model actually receives, the newest user message is always kept, and a final guard re-adds the current turn: **a system-only request can no longer happen**.
+- **Memory = task tree + constraints + checklist.** Every turn injects `<project_memory>`: finished tasks carry a one-line outcome, the hard constraints the user gave ("don't touch the capsule style") and which checklist items actually completed. Items are attributed by each task's own time window, so one list is never copied onto every task. Older turns are no longer replayed word by word, but **the full record stays on disk** and is searched on demand (archived tool output included).
+- **Retrieval is automatic, and can be semantic.** Each turn the host searches the older record with keywords from your message (a failing tool also triggers a lookup with its error text); keyword matching is fuzzy; an optional **vector index** covers synonyms such as "floating bar" vs "capsule". When a term maps to several tasks it proceeds with the closest match and states the assumption, and only asks when they are genuinely tied.
+- **Images and records are never lost.** A failing image re-resolves its address first (usually the full image comes back) and only then falls back to the thumbnail; pasted images are stored as files (2747 KB → tens of KB); tool output moves to `payloads/` and stays restorable, while **the message body always stays**.
+- **Failures say what they are.** Half an emoji no longer kills the request; "stalled" and "disconnected" are reported separately; DeepSeek connects directly by default (without touching `git push/pull`); Copilot edit tools that can never work are no longer offered; a command reporting "No such file or directory" now comes with the real directory structure.
+- **Semantic search setup** is documented inside the settings page (Zhipu / Minimax / holysheep) with a "Check direct support" button. Note DeepSeek has **no** embeddings API, and a holysheep key is that account's own key, not your DeepSeek key.
+- This release absorbs the local-only 0.4.5–0.4.10 iterations (never published). Verified with **1192 unit tests + 67 guard scripts**.
 
-0.4.3 fixes a **structural mistake**: the chat record was being used as the agent's brain. A single message with two screenshots (2747 KB, image bytes inlined as base64) could eat the whole 2 MB context budget and push the sentence you had just written out of the request — the panel then answered "I did not receive a specific request: this conversation only contains the environment and tool description". Now **the record is an archive and the task tree is the memory**.
+## Earlier: 0.4.3 (internal build)
 
-- **What you said can no longer be budgeted away.** The budget counts only what the model actually receives (image bytes no longer count), the newest user message is always kept, and a final guard re-adds the current turn when the window comes back empty. A "system-only" request can no longer happen.
-- **Memory = task tree + constraints + checklist.** Every turn injects `<project_memory>`: finished tasks carry a one-line outcome, the hard constraints the user gave ("don't touch the capsule style", "keep the Esc shortcut") and which checklist items were actually completed. Checklist items are attributed by each task's own time window, so one list is never copied onto every task.
-- **Retrieval is automatic.** While cutting the window the host scores the older record with keywords taken from your message (fuzzy — different wording still matches) and injects the hits as `<auto_recall>`; tool output archived under `payloads/` is searched too. Clues that only appear mid-run can still be chased with `search_conversation_history`. When one term maps to several tasks it proceeds with the closest match and states the assumption, and only asks you when the candidates are genuinely tied.
-- **The record is moved, never deleted.** Pasted images are written to `<conversation>/images/<sha256>.<ext>` (only the path stays in the message: 2747 KB → tens of KB) and tool output moves to `<conversation>/payloads/<messageId>.json` on the retention schedule, restorable through `read_message_detail`; the message body itself always stays. **Nothing disappears unless you clean it up.**
-- **Within a single run, tool output is no longer re-sent in full.** The six most recent results stay verbatim and older ones collapse into a one-line summary (keeping `tool_call_id` and the summary). Measured on a real archive: 12.07 MB of tool text, with single turns reaching 1.37M / 4.99M / 10.6M / **20.28M** prompt tokens.
-- Older conversations are not migrated: their `<project_memory>` is simply empty, but automatic retrieval reads the message archive, so it still finds old records.
+0.4.3 was an internal build that was never published; its content (the context-budget root cause behind "suddenly forgets the project", and the first version of the task-tree memory) is included in 0.4.4 and described there. Full history: [CHANGELOG](CHANGELOG.md).
 
 ## Interface language
 
