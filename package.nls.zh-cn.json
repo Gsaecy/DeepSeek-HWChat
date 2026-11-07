@@ -86,5 +86,8 @@
   "command.emptyTrash": "清空回收站（永久删除）",
   "command.diagnoseNetwork": "测试网络连接（DNS / TCP / TLS / HTTP 分段诊断）",
   "config.proxy": "接口请求使用的 HTTP 代理，例如 http://127.0.0.1:8080；留空表示直连。Node 的 fetch 不会使用 HTTPS_PROXY 环境变量，VS Code 的 http.proxy 也不覆盖扩展，所以这是让 HWChat 走代理的唯一方式。不支持 socks://，请填代理软件提供的 HTTP 端口。",
-  "config.proxyBypassHosts": "即使配了代理也直连的主机（设置里可写多行/逗号分隔）。默认 api.deepseek.com：经代理上传几 MB 请求体时，首字节很容易被拖过空闲超时。这一项只影响 HWChat 自己发出的请求 —— git push/pull 等子进程仍走它们自己的代理配置。"
+  "config.proxyBypassHosts": "即使配了代理也直连的主机（设置里可写多行/逗号分隔）。默认 api.deepseek.com：经代理上传几 MB 请求体时，首字节很容易被拖过空闲超时。这一项只影响 HWChat 自己发出的请求 —— git push/pull 等子进程仍走它们自己的代理配置。",
+  "config.embeddingProfileId": "语义检索用哪个配置档的密钥算向量。DeepSeek 没有 embeddings 接口，所以要选一个有的服务商（例如智谱、Minimax）。留空=关闭语义检索，只走关键词。",
+  "config.embeddingModel": "向量模型名，例如智谱 embedding-3、Minimax embo-01。留空=关闭语义检索。",
+  "config.embeddingBaseUrl": "向量接口地址（与配置档的聊天地址不同时填写；智谱要填 /api/paas/v4，不是编码用的 /api/coding/paas/v4）。留空则用配置档地址。"
 }

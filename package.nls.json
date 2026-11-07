@@ -86,5 +86,8 @@
   "command.emptyTrash": "Empty the recycle bin (permanent)",
   "command.diagnoseNetwork": "Test endpoint connectivity (DNS / TCP / TLS / HTTP)",
   "config.proxy": "HTTP proxy for API requests, e.g. http://127.0.0.1:8080. Leave empty for a direct connection. Node's fetch ignores HTTPS_PROXY and VS Code's http.proxy does not cover extensions, so this is the only way to route HWChat through a proxy. socks:// is not supported — use the proxy's HTTP port.",
-  "config.proxyBypassHosts": "Hosts to reach directly even when a proxy is configured (comma-separated in settings). Defaults to api.deepseek.com: uploading multi-MB request bodies through a proxy is what pushes time-to-first-byte past the idle timeout. This only affects requests HWChat itself makes — git push/pull and other child processes keep their own proxy configuration."
+  "config.proxyBypassHosts": "Hosts to reach directly even when a proxy is configured (comma-separated in settings). Defaults to api.deepseek.com: uploading multi-MB request bodies through a proxy is what pushes time-to-first-byte past the idle timeout. This only affects requests HWChat itself makes — git push/pull and other child processes keep their own proxy configuration.",
+  "config.embeddingProfileId": "Profile whose API key is used for embeddings (semantic recall). DeepSeek has no embeddings API, so point this at a provider that does (e.g. Zhipu, Minimax). Empty disables semantic recall and keeps keyword search.",
+  "config.embeddingModel": "Embedding model name, e.g. embedding-3 (Zhipu) or embo-01 (Minimax). Empty disables semantic recall.",
+  "config.embeddingBaseUrl": "Base URL for the embeddings endpoint when it differs from the profile's chat URL (Zhipu: /api/paas/v4 rather than /api/coding/paas/v4). Empty uses the profile base URL."
 }

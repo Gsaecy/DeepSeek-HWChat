@@ -385,6 +385,9 @@ export class SettingsPanel implements vscode.Disposable {
             <label class="setting-row"><span><strong>${t(lang, 'settings.timeout.label')}</strong><small>${t(lang, 'settings.timeout.hint')}</small></span><span class="stepper"><input id="requestTimeoutSeconds" type="number" min="10" max="900"><span>${t(lang, 'common.seconds')}</span></span></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.proxy.label')}</strong><small>${t(lang, 'settings.proxy.hint')}</small></span><input id="proxy" class="control mono" type="text" spellcheck="false" placeholder="http://127.0.0.1:8080"></label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.proxyBypassHosts.label')}</strong><small>${t(lang, 'settings.proxyBypassHosts.hint')}</small></span><input id="proxyBypassHosts" class="control mono" type="text" spellcheck="false" placeholder="api.deepseek.com"></label>
+            <label class="setting-row"><span><strong>${t(lang, 'settings.embeddingProfile.label')}</strong><small>${t(lang, 'settings.embeddingProfile.hint')}</small></span><select id="embeddingProfileId" class="control"></select></label>
+            <label class="setting-row"><span><strong>${t(lang, 'settings.embeddingModel.label')}</strong><small>${t(lang, 'settings.embeddingModel.hint')}</small></span><input id="embeddingModel" class="control mono" type="text" spellcheck="false" placeholder="embedding-3"></label>
+            <label class="setting-row"><span><strong>${t(lang, 'settings.embeddingBaseUrl.label')}</strong><small>${t(lang, 'settings.embeddingBaseUrl.hint')}</small></span><input id="embeddingBaseUrl" class="control mono" type="text" spellcheck="false" placeholder="https://open.bigmodel.cn/api/paas/v4"></label>
           </div>
         </section>
         <section id="generation" class="settings-section">

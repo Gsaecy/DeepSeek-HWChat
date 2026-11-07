@@ -4,6 +4,20 @@
 
 - （下一版的内容写在这里）
 
+## 0.4.8
+
+**语义检索（向量索引）**（用户选择：「向量索引」，用来补上词面匹配够不着的同义说法，例如「悬浮条」↔「胶囊」）。
+
+- **先查证再动手**：DeepSeek 官方文档里**没有** embeddings 条目（`/guides/embeddings` 回落到首页），所以不能拿它算向量。实测用户已有的两个配置档都有 OpenAI 兼容接口：智谱 `https://open.bigmodel.cn/api/paas/v4/embeddings`（裸请求 401，路由存在）、Minimax `https://api.minimax.cn/v1/embeddings`（HTTP 200 + 业务错误 `login fail`）。于是做成**通用 OpenAI 兼容 embedder**，不绑定厂商。
+- **默认关闭、必须显式开启**：新增三项设置 —— `hwchat.embeddingProfileId`（用哪个配置档的密钥）、`hwchat.embeddingModel`（如 `embedding-3` / `embo-01`）、`hwchat.embeddingBaseUrl`（地址覆盖；智谱编码端点是 `/api/coding/paas/v4`，向量要 `/api/paas/v4`），设置页有三个控件。之所以默认关：索引会把对话片段发给该服务商，这必须是用户的选择。
+- **绝不拖住对话**：未配置 / 没有 Key / 请求失败 / 超时，一律静默退回关键词检索；查询向量请求 15 秒上限；索引是运行结束后的 fire-and-forget，失败只记一行日志。
+- **省钱且不重复**：按内容哈希判断是否需要重算；每轮最多补 24 条（每批 8 条）；索引上限 600 条按最近裁剪；**换模型整份索引作废**（不同语义空间的向量混用会给出假高分）。
+- **与关键词结果并存**：`<auto_recall>` 先放语义命中、再接词面命中，按 `messageId` 去重，总数仍限 6 条；语义命中的旧消息同样标 `hasDetail`，可再用 `read_message_detail` 展开。
+- 索引文件随对话目录走：`<对话>/embeddings.json`（向量用 base64 Float32 存，比 JSON 数字数组小 3–4 倍），删除对话/进回收站一起处理。
+- 守护：`src/test/embeddings.test.ts`（15 条：编解码往返、余弦、排序阈值、合并裁剪、换模型作废、批量条数校验、Minimax 业务错误、无 Key 不发请求）、`test/check-semantic-recall.mjs`（20 项：默认关闭、不阻塞、省钱、合并不互相顶掉 + 真实余弦断言）。全量：**1184 条单测 + 67 个 `check-*.mjs` 全绿**。
+
+- （下一版的内容写在这里）
+
 ## 0.4.7
 
 用户追问「过程中你说有漏洞，修复了没有」。当时列的是 4 条边界 + 1 条按你的决定关闭的，现在逐条落地：

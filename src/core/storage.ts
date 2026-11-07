@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { imageExtensionFor } from '../agent/attachmentOpen';
 import { ContextWindowBuilder, ContextWindowResult, lightForDigest } from './contextWindow';
 import { clipText, safeSlice } from './textSafety';
+import { EmbeddingIndex } from './embeddings';
 import { excerptAround, matchTokens, normalizeSearchText, recallTokens } from './searchText';
 
 /** 自动检索时单条消息参与匹配的最大字符数（头 3/4 + 尾 1/4）。 */
@@ -735,6 +736,55 @@ export class ConversationStorage {
     return { ...message };
   }
 
+  /** 语义索引文件：`<对话>/embeddings.json`（随对话目录走，删除/回收站一起处理）。 */
+  private embeddingPath(conversationId: string): string {
+    return join(this.conversationDirectory(conversationId), 'embeddings.json');
+  }
+
+  async readEmbeddingIndex(conversationId: string): Promise<EmbeddingIndex | undefined> {
+    await this.initialize();
+    if (!this.findSummary(conversationId)) return undefined;
+    const index = await readJsonWithBackup<EmbeddingIndex>(this.embeddingPath(conversationId)).catch(() => undefined);
+    if (!index || index.version !== 1 || !Array.isArray(index.records)) return undefined;
+    return index;
+  }
+
+  async writeEmbeddingIndex(conversationId: string, index: EmbeddingIndex): Promise<void> {
+    await this.initialize();
+    if (!this.findSummary(conversationId)) return;
+    await this.enqueueWrite(async () => {
+      await writeJsonAtomic(this.embeddingPath(conversationId), index);
+    });
+  }
+
+  /**
+   * 挑出「还没索引过」的消息（按时间从旧到新）。
+   *
+   * 只取**窗口外**的内容：最近几条每轮都会原样发给模型，再索引一遍纯属浪费。
+   * 只取有正文的消息（工具消息里的 JSON 片段对语义检索价值低、噪音大）。
+   */
+  async messagesNeedingEmbedding(
+    conversationId: string,
+    options: { skipRecent: number; limit: number; excludeIds?: ReadonlySet<string> },
+  ): Promise<ChatMessage[]> {
+    await this.initialize();
+    if (!this.findSummary(conversationId)) return [];
+    const files = (await this.messageFiles(conversationId)).sort((a, b) => a.localeCompare(b));
+    const eligible = files.slice(0, Math.max(0, files.length - Math.max(0, options.skipRecent)));
+    const picked: ChatMessage[] = [];
+    for (const file of eligible) {
+      const message = await readJsonWithBackup<ChatMessage>(join(this.messageDirectory(conversationId), file));
+      if (!message) continue;
+      if (options.excludeIds?.has(message.id)) continue;
+      if (message.role !== 'user' && message.role !== 'assistant') continue;
+      if (!message.content?.trim()) continue;
+      // 半截/失败的回复也会索引：结论可能仍有用；但空回复跳过。
+      picked.push(message);
+      if (picked.length >= Math.max(1, options.limit)) break;
+    }
+    return picked;
+  }
+
   /** 重字段的旁挂文件：正文留在消息里，工具输出/附件正文搬到这里，可随时还原。 */
   private payloadPath(conversationId: string, messageId: string): string {
     return join(this.conversationDirectory(conversationId), 'payloads', `${messageId}.json`);
@@ -780,6 +830,13 @@ export class ConversationStorage {
       if (item) delete item.content;
     }
     return bytes;
+  }
+
+  /** 这条消息的重字段是不是被搬到 `payloads/` 了（检索结果据此标记「可展开」）。 */
+  async hasMessageDetail(conversationId: string, messageId: string): Promise<boolean> {
+    await this.initialize();
+    if (!this.findSummary(conversationId)) return false;
+    return existsSync(this.payloadPath(conversationId, messageId));
   }
 
   /** 读回被搬到旁挂文件的内容（工具输出、附件正文、思考过程）。 */

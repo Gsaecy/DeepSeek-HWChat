@@ -20,7 +20,7 @@
   }
 
   const fieldIds = [
-    'apiKey', 'profileName', 'profileModels', 'profileImageModel', 'baseUrl', 'model', 'requestHeaders', 'requestTimeoutSeconds', 'proxy', 'proxyBypassHosts',
+    'apiKey', 'profileName', 'profileModels', 'profileImageModel', 'baseUrl', 'model', 'requestHeaders', 'requestTimeoutSeconds', 'proxy', 'proxyBypassHosts', 'embeddingProfileId', 'embeddingModel', 'embeddingBaseUrl',
     'temperature', 'maxTokens', 'maxMessagesInContext', 'sendOnEnter',
     'systemPrompt', 'historyRetentionDays', 'taskCacheRetentionHours',
     'cacheBudgetMB', 'cleanupIntervalMinutes', 'defaultMode',
@@ -55,6 +55,7 @@
     clearLocalDataButton: document.getElementById('clearLocalDataButton'),
     toast: document.getElementById('toast'),
     profileSelect: document.getElementById('profileSelect'),
+    embeddingProfileId: document.getElementById('embeddingProfileId'),
     addProfileButton: document.getElementById('addProfileButton'),
     deleteProfileButton: document.getElementById('deleteProfileButton'),
   };
@@ -107,6 +108,9 @@
       requestTimeoutSeconds: numberValue(fields.requestTimeoutSeconds, 120),
       proxy: fields.proxy.value.trim(),
       proxyBypassHosts: fields.proxyBypassHosts.value.split(/[,\n;]/).map((item) => item.trim()).filter(Boolean),
+      embeddingProfileId: fields.embeddingProfileId.value,
+      embeddingModel: fields.embeddingModel.value.trim(),
+      embeddingBaseUrl: fields.embeddingBaseUrl.value.trim(),
       temperature: numberValue(fields.temperature, 1),
       maxTokens: numberValue(fields.maxTokens, 0),
       maxMessagesInContext: numberValue(fields.maxMessagesInContext, 20),
@@ -211,6 +215,14 @@
     fields.requestTimeoutSeconds.value = settings.requestTimeoutSeconds;
     fields.proxy.value = settings.proxy || '';
     fields.proxyBypassHosts.value = (settings.proxyBypassHosts || []).join(', ');
+    // 语义检索：配置档下拉 = 「关闭」+ 已有配置档（用它们的密钥算向量）。
+    const embeddingOptions = [{ id: '', name: t('settings.embeddingOff') }, ...profiles.map((profile) => ({ id: profile.id, name: profile.name }))];
+    elements.embeddingProfileId.replaceChildren(...embeddingOptions.map((item) => {
+      const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; return option;
+    }));
+    elements.embeddingProfileId.value = settings.embeddingProfileId || '';
+    fields.embeddingModel.value = settings.embeddingModel || '';
+    fields.embeddingBaseUrl.value = settings.embeddingBaseUrl || '';
     fields.searchExclude.value = Array.isArray(settings.searchExclude) ? settings.searchExclude.join(', ') : '';
     fields.temperature.value = settings.temperature;
     fields.maxTokens.value = settings.maxTokens;

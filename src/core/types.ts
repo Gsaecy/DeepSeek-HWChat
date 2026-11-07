@@ -469,6 +469,18 @@ export interface ChatSettings {
    * 起的子进程走它们自己的代理配置（环境变量 / git config），完全不受本项影响。
    */
   proxyBypassHosts?: string[];
+  /**
+   * 语义检索（向量索引）用的配置档 id；留空表示关闭。
+   *
+   * 为什么需要单独指定：DeepSeek 没有 embeddings 接口，向量要靠另一个兼容服务
+   * （用户已有的智谱 / Minimax 都有）。只有显式选一个配置档并填模型，才会启用；
+   * 默认关闭 —— 索引会把对话片段发给该服务商，这必须是用户的选择。
+   */
+  embeddingProfileId?: string;
+  /** 向量模型名，例如智谱的 `embedding-3`、Minimax 的 `embo-01`。 */
+  embeddingModel?: string;
+  /** 向量接口地址覆盖（例如智谱要用 `/api/paas/v4`，而不是编码用的 `/api/coding/paas/v4`）。 */
+  embeddingBaseUrl?: string;
   defaultMode: ConversationMode;
   agentMaxSteps: number;
   reasoningEffort: ReasoningEffort;

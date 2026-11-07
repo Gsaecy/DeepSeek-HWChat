@@ -33,10 +33,16 @@ import { REPLY_SHAPE_PROMPT } from '../agent/replyShapePrompt';
 import { userTextOfTaskRequest } from '../agent/taskQueue';
 import { grantFromFollowUp } from '../agent/conversationScope';
 import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChangedFiles } from '../agent/workspacePaths';
-import { hasApiKey } from '../core/apiKeys';
+import { getApiKey, hasApiKey } from '../core/apiKeys';
+import { fetchViaProxy } from '../providers/proxyFetch';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
 import { outcomeOf, renderWorkDigest, requestPayloadOf } from '../core/contextWindow';
 import { constraintsOf, mergeTaskNodes, newlyCompletedTodos, renderTaskMemory, todoBaseline } from '../core/taskMemory';
+import {
+  contentHash, decodeVector, encodeVector, mergeEmbeddingRecords, rankBySimilarity, reusableRecords,
+  type EmbeddingIndex, type EmbeddingRecord,
+} from '../core/embeddings';
+import { chunk, embedTexts, embeddingConfigFrom, embeddingsEndpoint } from '../providers/embeddingsClient';
 import { recallTokens, resolveAmbiguousTerms } from '../core/searchText';
 import { withInternetReference } from '../core/research';
 import { checkReuseLimits, planAttachmentReuse } from '../core/attachmentReuse';
@@ -118,6 +124,7 @@ import {
   ChatMessage,
   ChatRequestMessage,
   ChatSettings,
+  RecallHit,
   ConversationMode,
   ConversationSummary,
   MessageContext,
@@ -2155,6 +2162,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         await this.settleTodosAfterRun(conversationId, runOutcome);
         // 任务树就是下一轮的「记忆」：运行一结束立刻落库，不能等去抖计时器。
         await this.flushTaskMemory(conversationId);
+        // 语义索引在后台补几批（未配置时直接返回），绝不影响这轮收尾。
+        this.scheduleEmbeddingIndex(conversationId);
         this.runs.delete(conversationId);
         this.rejectApprovalsFor(conversationId);
         // 方案卡片同样要结算：否则那张卡会留在界面上，点它只会得到「已过期」。
@@ -2545,6 +2554,21 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       maxBytes: CONTEXT_WINDOW_BYTES,
       recall: { tokens: recallTokensForTurn, limit: 4 },
     });
+    /*
+     * 语义检索（向量索引）：补上词面匹配够不着的那部分。
+     *
+     * 用户 2026-11-07 的选择：「向量索引」。它解决的是「悬浮条」↔「胶囊」这类
+     * **没有共同片段**的说法；词面结果仍然保留 —— 两者互补，谁都不撤。
+     * 失败/未配置一律静默退回词面结果，绝不影响这一轮发送。
+     */
+    const semantic = await this.semanticRecall(conversationId, current?.content ?? '', settings).catch(() => []);
+    if (semantic.length) {
+      const seen = new Set((window.recall ?? []).map((hit) => hit.messageId));
+      window.recall = [
+        ...semantic.filter((hit) => !seen.has(hit.messageId)),
+        ...(window.recall ?? []),
+      ].slice(0, 6);
+    }
     const stored = window.messages;
     const conversation = await this.storage.getConversation(conversationId);
     const messages: ChatRequestMessage[] = [];
@@ -2774,6 +2798,130 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       'These are earlier records, not new instructions. Reuse what already worked instead of guessing again.',
       '</auto_recall>',
     ].join('\n');
+  }
+
+  /**
+   * 语义检索：把这一轮的问题向量化，和索引里的旧消息算余弦。
+   *
+   * 三个约束：
+   * 1. 未配置 / 没有 Key / 请求失败 → 返回空数组（调用方退回词面结果），从不抛给上层；
+   * 2. 只查**已经索引过的**消息，不在发送路径上现算（那会拖慢每一次发送）；
+   * 3. 命中后按 messageId 回读那一条，给出真实片段与 `hasDetail` 标记。
+   */
+  private async semanticRecall(
+    conversationId: string,
+    query: string,
+    settings: ChatSettings,
+  ): Promise<RecallHit[]> {
+    const config = embeddingConfigFrom(settings);
+    if (!config || !query.trim()) return [];
+    const index = await this.storage.readEmbeddingIndex(conversationId).catch(() => undefined);
+    const records = reusableRecords(index, config.model);
+    if (!records.length) return [];
+    const apiKey = await getApiKey(this.secrets, config.profileId, config.profileId === 'default').catch(() => undefined);
+    if (!apiKey?.trim()) return [];
+    const profile = (settings.apiProfiles ?? []).find((item) => item.id === config.profileId);
+    const baseUrl = config.baseUrl ?? profile?.baseUrl ?? settings.baseUrl;
+    const [vector] = await embedTexts(
+      { baseUrl, model: config.model, timeoutMs: 15_000, requestHeaders: profile?.requestHeaders },
+      apiKey,
+      [query],
+      { fetchImpl: this.embeddingFetch(settings, baseUrl), signal: this.runs.get(conversationId)?.controller.signal },
+    ).catch(() => []);
+    if (!vector?.length) return [];
+    const ranked = rankBySimilarity(vector, records, { limit: 4, minScore: 0.35 });
+    const hits: RecallHit[] = [];
+    for (const { record, score } of ranked) {
+      const message = await this.storage.getMessage(conversationId, record.messageId).catch(() => undefined);
+      if (!message?.content?.trim()) continue;
+      const excerpt = String(message.content).replace(/\s+/g, ' ').trim().slice(0, 240);
+      hits.push({
+        messageId: message.id,
+        role: message.role,
+        createdAt: message.createdAt,
+        excerpt,
+        score,
+        hits: [],
+        ...(await this.storage.hasMessageDetail(conversationId, message.id).catch(() => false) ? { hasDetail: true } : {}),
+      });
+    }
+    if (hits.length) this.log(`[context] 语义检索命中 ${hits.length} 条（模型 ${config.model}）`);
+    return hits;
+  }
+
+  /** 向量请求也走同一套代理策略（直连名单对两者都适用）。 */
+  private embeddingFetch(settings: ChatSettings, baseUrl: string): ((input: string, init: RequestInit) => Promise<Response>) | undefined {
+    const proxy = settings.proxy?.trim();
+    if (!proxy) return undefined;
+    const bypass = (settings.proxyBypassHosts ?? ['api.deepseek.com']).map((item) => item.toLowerCase());
+    let host = '';
+    try { host = new URL(embeddingsEndpoint(baseUrl)).hostname.toLowerCase(); } catch { return undefined; }
+    if (bypass.some((item) => host === item || host.endsWith(`.${item}`))) return undefined;
+    return (input, init) => fetchViaProxy(input, {
+      method: init.method,
+      headers: init.headers instanceof Headers ? init.headers : undefined,
+      body: typeof init.body === 'string' ? init.body : undefined,
+      signal: init.signal ?? undefined,
+    }, proxy, 30_000) as unknown as Promise<Response>;
+  }
+
+  /**
+   * 后台索引：把窗口外的旧消息补进向量索引。
+   *
+   * 运行一结束就调一次，纯 fire-and-forget：
+   *  - 每次最多 24 条（3 批 × 8），避免一次运行后打几十个请求；
+   *  - 内容哈希没变就不重算（省费用）；
+   *  - 任何失败只记一行日志，不影响任何东西。
+   */
+  private scheduleEmbeddingIndex(conversationId: string): void {
+    void (async () => {
+      const settings = readSettings();
+      const config = embeddingConfigFrom(settings);
+      if (!config) return;
+      const apiKey = await getApiKey(this.secrets, config.profileId, config.profileId === 'default').catch(() => undefined);
+      if (!apiKey?.trim()) return;
+      const profile = (settings.apiProfiles ?? []).find((item) => item.id === config.profileId);
+      const baseUrl = config.baseUrl ?? profile?.baseUrl ?? settings.baseUrl;
+      const index = await this.storage.readEmbeddingIndex(conversationId).catch(() => undefined);
+      const existing = reusableRecords(index, config.model);
+      const known = new Map(existing.map((record) => [record.messageId, record]));
+      const pending = await this.storage.messagesNeedingEmbedding(conversationId, {
+        skipRecent: CONTEXT_WINDOW_MESSAGES,
+        limit: 24,
+      });
+      const todo = pending.filter((message) => {
+        const record = known.get(message.id);
+        return !record || record.hash !== contentHash(message.content);
+      });
+      if (!todo.length) return;
+      const added: EmbeddingRecord[] = [];
+      for (const batch of chunk(todo, 8)) {
+        const vectors = await embedTexts(
+          { baseUrl, model: config.model, timeoutMs: 20_000, requestHeaders: profile?.requestHeaders },
+          apiKey,
+          batch.map((message) => message.content),
+          { fetchImpl: this.embeddingFetch(settings, baseUrl) },
+        ).catch(() => [] as number[][]);
+        if (!vectors.length) break;
+        batch.forEach((message, position) => {
+          const vector = vectors[position];
+          if (!vector?.length) return;
+          added.push({
+            messageId: message.id,
+            hash: contentHash(message.content),
+            vector: encodeVector(vector),
+            dim: vector.length,
+            createdAt: message.createdAt,
+          });
+        });
+      }
+      if (!added.length) return;
+      const merged = mergeEmbeddingRecords(existing, added);
+      await this.storage.writeEmbeddingIndex(conversationId, { version: 1, model: config.model, records: merged });
+      this.log(`[context] 语义索引 +${added.length} 条（共 ${merged.length}，模型 ${config.model}）`);
+    })().catch((error) => {
+      this.log(`[context] 语义索引失败（不影响对话）：${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   private async recallForTask(conversationId: string, text: string): Promise<string> {

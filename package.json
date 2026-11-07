@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek: approval-controlled workspace tools, plan-tracking task lists, copyable local/server commands and durable local history.",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -322,6 +322,24 @@
           ],
           "description": "%config.proxyBypassHosts%",
           "markdownDescription": "%config.proxyBypassHosts%"
+        },
+        "hwchat.embeddingProfileId": {
+          "type": "string",
+          "default": "",
+          "description": "%config.embeddingProfileId%",
+          "markdownDescription": "%config.embeddingProfileId%"
+        },
+        "hwchat.embeddingModel": {
+          "type": "string",
+          "default": "",
+          "description": "%config.embeddingModel%",
+          "markdownDescription": "%config.embeddingModel%"
+        },
+        "hwchat.embeddingBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "%config.embeddingBaseUrl%",
+          "markdownDescription": "%config.embeddingBaseUrl%"
         },
         "hwchat.temperature": {
           "type": "number",
