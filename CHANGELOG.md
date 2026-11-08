@@ -25,18 +25,34 @@
   `/tmp/a` 确实是两个目录）。同时把判定抽成纯函数 `gitScopeVerdict()`，并明确规定
   **仓库根自己绝不是「外来项目」**，与拼写无关。
 
-- **同一类缺陷的其余 6 处一并修掉**（全部是「把路径当字符串比」，在 Windows / macOS 上
-  同源发作）：`preferredRootOf`、相对路径在多个根下命中时的归属、`chooseProjectRoot`
-  对存档绑定的校验、`run_command` 与文件策略里的 `preferredRoot`、多项目徽标去重
-  （同一个项目会因盘符大小写重复入库）、工作区搜索的 `folder` 参数对齐。
+- **同一类缺陷把全仓扫了一遍，共修 10 处**（全部是「把路径当字符串比」，在
+  Windows / macOS 上同源发作）。除 git 守卫本身，还有：
+  - `preferredRootOf`：项目根匹配不上 → `'.'` 失去「本次对话所属项目」的含义；
+  - `resolveWorkspacePath` 里多根同名命中的归属；
+  - `chooseProjectRoot`：存档里绑定的项目根被判无效 → 每轮重新推断项目；
+  - `run_command` 与文件读写策略里的 `preferredRoot`：相对路径可能落到另一个根；
+  - 多项目徽标去重（`projectRoot` / `projectRoots`，`Array.includes`）：
+    同一个项目会因盘符大小写重复入库；
+  - `involvedProjectRoots`：主项目被判「不在工作区里」→ **徽标凭空丢掉主项目**；
+  - `storage.normalizeProjectRoots`：存档里同一个项目存两份；
+  - `pathRewriteSuggestion`：建议里用错根目录；
+  - 工作区搜索的 `folder` 参数对齐；
+  - `pathHints.ts` 里**自己抄了一份**「是否在目录内」的判断 —— 那份在 macOS 上
+    是大小写敏感的，会让「向上找最近目录」越过工作区根。
+
+- **路径身份收敛到一个模块**：新增 `src/core/pathIdentity.ts`（只依赖 `node:path`，
+  不 import vscode），`pathKey` / `samePath` / `isPathWithin` 只有这一份实现；
+  `workspacePaths.ts` 继续 re-export，调用方无需改动。`pathHints.ts` 的私有副本已删除。
 
 - **为什么之前没被发现**：测试里的路径全是手写的 POSIX 串（`/Users/test/...`），
   这类比较在单测里永远「恰好相等」；macOS 上的 `path.relative` 又大小写**敏感**，
   连开发机都复现不出来。新增 `test/check-path-identity.mjs` 专门盯这一类：
-  - 静态：源码里不许再出现 `resolve(a) === resolve(b)`、`.fsPath ===` 这类写法；
+  - 静态：源码里不许再出现 `resolve(a) === resolve(b)`、`.fsPath ===`、
+    路径数组上的 `includes` / `indexOf`、以及第二份「是否在目录内」的实现；
   - 真机：在真实文件系统上建一个目录，用不同大小写的拼写访问，断言
     `samePath` / `isPathWithin` / `gitScopeVerdict` 都判成同一个目录；
-  - 反例：**真的**另一个工作区项目仍然要拦，仓库不在项目里仍然报不匹配。
+  - 反例：**真的**另一个工作区项目仍然要拦，仓库不在项目里仍报不匹配，
+    Linux 上大小写不同的两个目录仍算两处。
 
 验证：**1210 条单测 + 69 个守护脚本全绿**。
 

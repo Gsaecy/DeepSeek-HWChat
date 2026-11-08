@@ -35,10 +35,15 @@ const read = (path) => readFileSync(path, 'utf8');
 const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 
 const SOURCES = [
+  'src/core/pathIdentity.ts',
   'src/agent/workspacePaths.ts',
   'src/agent/toolExecutor.ts',
   'src/agent/workspaceSearch.ts',
   'src/agent/commandPaths.ts',
+  'src/agent/pathHints.ts',
+  'src/core/permissions.ts',
+  'src/agent/conversationScope.ts',
+  'src/core/storage.ts',
   'src/views/chatPanel.ts',
 ];
 const code = Object.fromEntries(SOURCES.map((path) => [path, stripComments(read(path))]));
@@ -50,25 +55,37 @@ const RAW_COMPARISONS = [
   /resolve\(([^()]*(?:\([^()]*\))?[^()]*)\)\s*!==\s*resolve\(/,
   /\.fsPath\s*===/,
   /===\s*[A-Za-z_$][\w$]*\.fsPath/,
+  // 路径数组的 includes / indexOf 同样是字符串相等：盘符大小写不同就判成「不在里面」。
+  /\b(roots|rootPaths|paths|projectRoots|folders|targets)\.(includes|indexOf)\(/,
 ];
 for (const pattern of RAW_COMPARISONS) {
   const hit = pattern.exec(allCode);
   check(`没有「把路径当字符串比」的写法 ${pattern}`, hit === null, hit ? `命中：${hit[0]}` : '');
 }
 
+const IDENTITY = code['src/core/pathIdentity.ts'] ?? '';
 check(
-  '路径身份有统一出口 pathKey / samePath',
-  /export function pathKey\(/.test(code['src/agent/workspacePaths.ts'] ?? '')
-    && /export function samePath\(/.test(code['src/agent/workspacePaths.ts'] ?? ''),
+  '路径身份有统一出口 pathKey / samePath（在 core/pathIdentity，不依赖 vscode）',
+  /export function pathKey\(/.test(IDENTITY) && /export function samePath\(/.test(IDENTITY),
+);
+check(
+  'agent 侧继续 re-export，调用方不会各引各的',
+  /export \{ isPathWithin, pathKey, samePath \}/.test(code['src/agent/workspacePaths.ts'] ?? ''),
 );
 check(
   'Linux 上不折叠大小写（/tmp/A 与 /tmp/a 是两个目录）',
-  /process\.platform === 'win32' \|\| process\.platform === 'darwin'/.test(code['src/agent/workspacePaths.ts'] ?? ''),
+  /process\.platform === 'win32' \|\| process\.platform === 'darwin'/.test(IDENTITY),
 );
 check(
   'git 判定抽成了纯函数 gitScopeVerdict',
   /export function gitScopeVerdict\(/.test(code['src/agent/workspacePaths.ts'] ?? '')
     && /gitScopeVerdict\(\{ roots, repo, project \}\)/.test(code['src/agent/toolExecutor.ts'] ?? ''),
+);
+check(
+  '只有 workspacePaths 可以定义包含判断（不许再抄第二份）',
+  !/function (within|inside|contains|isInside)\(/.test(allCode.replace(code['src/agent/workspacePaths.ts'] ?? '', ''))
+    && !/relative\(\s*resolve\(/.test(allCode.replace(code['src/agent/workspacePaths.ts'] ?? '', '')),
+  '重复实现会在某个平台上悄悄大小写敏感',
 );
 check(
   '仓库根自己绝不算「外来项目」',
@@ -92,7 +109,7 @@ const { gitScopeVerdict, isPathWithin, samePath } = await (async () => {
   const { build } = await import('esbuild');
   const bundle = await build({
     stdin: {
-      contents: `export { gitScopeVerdict, isPathWithin, samePath } from './src/agent/workspacePaths';`,
+      contents: `export { isPathWithin, samePath } from './src/core/pathIdentity';\nexport { gitScopeVerdict } from './src/agent/workspacePaths';`,
       resolveDir: process.cwd(),
       loader: 'ts',
     },

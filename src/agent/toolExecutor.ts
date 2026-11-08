@@ -1860,7 +1860,7 @@ function success(summary: string, content: string): ToolExecutionResult {
  * 其它情况返回空串（不瞎猜）。
  */
 export function pathRewriteSuggestion(command: string, roots: readonly string[], preferredRoot?: string): string {
-  const root = preferredRoot && roots.includes(preferredRoot) ? preferredRoot : roots[0];
+  const root = preferredRoot && roots.some((item) => samePath(item, preferredRoot)) ? preferredRoot : roots[0];
   if (!root) return '';
   const directory = join(root, 'tmp');
   /*

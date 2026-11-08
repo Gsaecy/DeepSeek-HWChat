@@ -1,4 +1,5 @@
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
+import { isPathWithin } from '../core/pathIdentity';
 
 /**
  * 路径不存在时，把「真实结构」还给模型，而不是只回一行 `ENOENT`。
@@ -33,10 +34,13 @@ export interface MissingPathHint {
   sameName?: string[];
 }
 
-function within(root: string, candidate: string): boolean {
-  const rel = relative(resolve(root), resolve(candidate));
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
-}
+/*
+ * 这里原本自己抄了一份「是否在目录内」的判断，用 `relative()` + 字符串前缀。
+ * 那份实现在 macOS 上是**大小写敏感**的：同一个目录换个拼写就会被判成「在外面」，
+ * 于是 `nearestExistingDirectory` 会越过工作区根继续往上找。
+ * 统一走 `isPathWithin`，别再有第二份实现。
+ */
+const within = (root: string, candidate: string): boolean => isPathWithin(root, candidate);
 
 /**
  * 从目标路径往上找第一层真实存在的目录，**不越过工作区根**。

@@ -1,4 +1,4 @@
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, isAbsolute, resolve } from 'node:path';
 import { tt } from '../core/i18n';
 
 export interface WorkspaceRootLike {
@@ -123,41 +123,16 @@ export function resolveWorkspacePath<T extends WorkspaceRootLike>(
   throw new Error(tt('path.outsideWorkspace'));
 }
 
-/** 该平台的文件名默认是否大小写不敏感（决定路径比较要不要折叠大小写）。 */
-const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin';
+import { isPathWithin, pathKey, samePath } from '../core/pathIdentity';
 
-/**
- * 比较用的路径键：绝对化 + 去掉尾部分隔符 + 在大小写不敏感的平台上折叠大小写。
- *
- * 为什么必须有它（2026-11-08 用户实测）：Windows 上工作区根登记为
- * `e:\AI Projects\maiker_windows`，而 `git rev-parse --show-toplevel` 回的是
- * `E:\AI Projects\maiker_windows`。旧代码用 `===` 直接比字符串，于是**同一个目录**
- * 被判成「另一个工作区项目」，`git pull` 被自己的守卫拦下；更糟的是提示里两边路径
- * 看起来一模一样，用户根本无从理解。macOS 默认卷同样大小写不敏感，`path.relative`
- * 却是大小写敏感的，属于同一类隐患。
- *
- * 不能一律 `toLowerCase()`：Linux 是大小写敏感的，`/tmp/A` 与 `/tmp/a` 是两个目录。
- */
-export function pathKey(value: string, caseInsensitive = CASE_INSENSITIVE_FS): string {
-  const absolute = resolve(value);
-  const trimmed = absolute.length > 1 ? absolute.replace(/[\\/]+$/, '') : absolute;
-  return caseInsensitive ? trimmed.toLowerCase() : trimmed;
-}
-
-/** 两个路径是否指向同一处（忽略大小写差异与尾部分隔符）。 */
-export function samePath(a: string, b: string, caseInsensitive = CASE_INSENSITIVE_FS): boolean {
-  return pathKey(a, caseInsensitive) === pathKey(b, caseInsensitive);
-}
+// 路径身份的实现搬到了 `core/pathIdentity`（只依赖 node:path，守护脚本可直接跑）。
+// 这里继续 re-export，现有调用方与单测无需改动。
+export { isPathWithin, pathKey, samePath };
 
 /** 项目根必须是 `roots` 里的一个实例，否则忽略（例如工作区根已被移除）。 */
 function preferredRootOf<T extends WorkspaceRootLike>(roots: readonly T[], preferred?: T): T | undefined {
   if (!preferred) return undefined;
   return roots.find((root) => samePath(root.fsPath, preferred.fsPath));
-}
-
-export function isPathWithin(root: string, candidate: string, caseInsensitive = CASE_INSENSITIVE_FS): boolean {
-  const relativePath = relative(pathKey(root, caseInsensitive), pathKey(candidate, caseInsensitive));
-  return relativePath === '' || (!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath));
 }
 
 /** git 写操作能落在哪个项目上：允许、还是先解释为什么不许。 */
@@ -251,14 +226,16 @@ export function involvedProjectRoots(input: {
   limit?: number;
 }): string[] {
   const roots = input.roots.filter((root) => Boolean(root)).map((root) => resolve(root));
+  // `Array.includes` 是字符串相等的：盘符大小写不同就会把**同一个**项目判成不存在，
+  // 徽标于是凭空丢掉主项目（2026-11-08 与 git 守卫同源）。一律走路径身份。
+  const findRoot = (value: string): string | undefined => roots.find((root) => samePath(root, value));
   const canonical = (value?: string): string | undefined => {
     if (!value) return undefined;
-    const target = resolve(value);
-    return roots.includes(target) ? target : undefined;
+    return findRoot(resolve(value));
   };
   const ordered: string[] = [];
   const push = (root?: string): void => {
-    if (root && !ordered.includes(root)) ordered.push(root);
+    if (root && !ordered.some((item) => samePath(item, root))) ordered.push(root);
   };
   push(canonical(input.primary));
   for (const item of input.touched ?? []) push(canonical(item));

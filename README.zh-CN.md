@@ -16,7 +16,7 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 
 > 已阻止 git 操作：仓库 `E:\AI Projects\maiker_windows` 里还包含另一个工作区项目 `e:\AI Projects\maiker_windows`
 
-两边是**同一个目录**，只差盘符大小写。守卫拿字符串比路径，于是 `git pull` / `git fetch` 被自己的扩展拦住。现在路径身份统一走 `samePath()`（Windows/macOS 折叠大小写，Linux 不折叠），并明确「仓库根自己绝不是外来项目」。同一类「把路径当字符串比」的另外 6 处一并修掉（`run_command` 的 cwd 归属、文件策略的项目根、多项目徽标去重、工作区搜索等）。
+两边是**同一个目录**，只差盘符大小写。守卫拿字符串比路径，于是 `git pull` / `git fetch` 被自己的扩展拦住。现在路径身份统一走 `samePath()`（Windows/macOS 折叠大小写，Linux 不折叠），并明确「仓库根自己绝不是外来项目」。顺手把全仓扫了一遍，同类问题共修 **10 处**：`run_command` 的 cwd 归属、文件策略的项目根、项目根绑定校验、多项目徽标（主项目会凭空消失 / 同一项目重复入库）、存档去重、路径改写建议、工作区搜索，以及 `pathHints.ts` 里私自抄的一份包含判断（那份在 macOS 上大小写敏感，会让「向上找目录」越过工作区根）。路径身份现在只有一份实现，在 `core/pathIdentity.ts`。
 
 新增 `test/check-path-identity.mjs`：既静态禁止 `resolve(a) === resolve(b)` 这类写法，也在真实文件系统上用不同大小写拼写验证判定 —— 这类 bug 以前**在开发机上根本复现不出来**。
 

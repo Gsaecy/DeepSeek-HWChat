@@ -13,6 +13,7 @@ import {
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { imageExtensionFor } from '../agent/attachmentOpen';
+import { samePath } from './pathIdentity';
 import { ContextWindowBuilder, ContextWindowResult, lightForDigest } from './contextWindow';
 import { clipText, safeSlice } from './textSafety';
 import { EmbeddingIndex } from './embeddings';
@@ -2287,7 +2288,8 @@ function normalizeProjectRoots(value: unknown): string[] {
     const text = item.trim();
     if (!text || !isAbsolute(text)) continue;
     const canonical = resolve(text);
-    if (!roots.includes(canonical)) roots.push(canonical);
+    // 同一个项目不该因为盘符大小写不同在存档里出现两次（徽标会重复）。
+    if (!roots.some((root) => samePath(root, canonical))) roots.push(canonical);
   }
   return roots;
 }
