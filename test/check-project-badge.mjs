@@ -126,7 +126,13 @@ check('工具执行器：只读命令不算改过项目', /if \(gitWrite && resu
 // 面板：作用域里必须传 touchProjectRoot，否则上面的回调全是空调用。
 check('面板：作用域传了 touchProjectRoot', /touchProjectRoot: \(fsPath\) => this\.touchProjectRoot\(conversationId!?/.test(CHAT_PANEL), '作用域里没有 touchProjectRoot');
 check('面板：追加项目时读的是存档里的现值', /const existing = conversation\.projectRoots \?\? \[\];/.test(CHAT_PANEL), '没有读存档现值');
-check('面板：主项目不重复入库', /if \(conversation\.projectRoot && resolve\(conversation\.projectRoot\) === target\) return;/.test(CHAT_PANEL), '缺主项目去重');
+check(
+  '面板：主项目不重复入库（按路径身份，不按字符串）',
+  // Windows 上「e:\」与「E:\」是同一个目录；用 === 比字符串会让同一个项目
+  // 因盘符大小写不同重复入库（2026-11-08 新用户实测的同类事故）。
+  /if \(conversation\.projectRoot && samePath\(conversation\.projectRoot, target\)\) return;/.test(CHAT_PANEL),
+  '缺主项目去重',
+);
 check('面板：徽标用 involvedProjectRoots 汇总', /involvedProjectRoots\(\{/.test(CHAT_PANEL), '徽标没走 involvedProjectRoots');
 check('面板：老对话从 changedFiles 反推项目', /rootsFromChangedFiles\(\{/.test(CHAT_PANEL), '缺老对话反推');
 check('面板：sendState 把消息一起交给徽标', /this\.projectBadgeFor\(conversation, page\.messages\)/.test(CHAT_PANEL), 'sendState 没传消息');

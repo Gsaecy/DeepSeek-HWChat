@@ -102,7 +102,7 @@ export function resolveWorkspacePath<T extends WorkspaceRootLike>(
       if (matches.length === 1) return matches[0]!;
       if (matches.length > 1) {
         // 多个根下都有：项目根下的那一份才是用户的意思，不是歧义。
-        const inPreferred = preferred ? matches.find((entry) => resolve(entry.root.fsPath) === resolve(preferred.fsPath)) : undefined;
+        const inPreferred = preferred ? matches.find((entry) => samePath(entry.root.fsPath, preferred.fsPath)) : undefined;
         if (inPreferred) return inPreferred;
         throw new Error(
           tt('path.ambiguous', { value, roots: matches.map((entry) => entry.root.name).join(tt('common.listSeparator')), example: `${matches[0]!.root.name}/${value}` }),
@@ -112,7 +112,7 @@ export function resolveWorkspacePath<T extends WorkspaceRootLike>(
   }
 
   // 3) 项目根兜底：相对路径在项目根下不存在时优先在那里创建。
-  const ordered = preferred ? [preferred, ...roots.filter((root) => root !== preferred)] : roots;
+  const ordered = preferred ? [preferred, ...roots.filter((root) => !samePath(root.fsPath, preferred.fsPath))] : roots;
   for (let index = 0; index < ordered.length; index += 1) {
     const root = ordered[index]!;
     if (!absoluteCandidate && !preferred && index > 0) continue;
@@ -123,15 +123,81 @@ export function resolveWorkspacePath<T extends WorkspaceRootLike>(
   throw new Error(tt('path.outsideWorkspace'));
 }
 
+/** 该平台的文件名默认是否大小写不敏感（决定路径比较要不要折叠大小写）。 */
+const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin';
+
+/**
+ * 比较用的路径键：绝对化 + 去掉尾部分隔符 + 在大小写不敏感的平台上折叠大小写。
+ *
+ * 为什么必须有它（2026-11-08 用户实测）：Windows 上工作区根登记为
+ * `e:\AI Projects\maiker_windows`，而 `git rev-parse --show-toplevel` 回的是
+ * `E:\AI Projects\maiker_windows`。旧代码用 `===` 直接比字符串，于是**同一个目录**
+ * 被判成「另一个工作区项目」，`git pull` 被自己的守卫拦下；更糟的是提示里两边路径
+ * 看起来一模一样，用户根本无从理解。macOS 默认卷同样大小写不敏感，`path.relative`
+ * 却是大小写敏感的，属于同一类隐患。
+ *
+ * 不能一律 `toLowerCase()`：Linux 是大小写敏感的，`/tmp/A` 与 `/tmp/a` 是两个目录。
+ */
+export function pathKey(value: string, caseInsensitive = CASE_INSENSITIVE_FS): string {
+  const absolute = resolve(value);
+  const trimmed = absolute.length > 1 ? absolute.replace(/[\\/]+$/, '') : absolute;
+  return caseInsensitive ? trimmed.toLowerCase() : trimmed;
+}
+
+/** 两个路径是否指向同一处（忽略大小写差异与尾部分隔符）。 */
+export function samePath(a: string, b: string, caseInsensitive = CASE_INSENSITIVE_FS): boolean {
+  return pathKey(a, caseInsensitive) === pathKey(b, caseInsensitive);
+}
+
 /** 项目根必须是 `roots` 里的一个实例，否则忽略（例如工作区根已被移除）。 */
 function preferredRootOf<T extends WorkspaceRootLike>(roots: readonly T[], preferred?: T): T | undefined {
   if (!preferred) return undefined;
-  return roots.find((root) => resolve(root.fsPath) === resolve(preferred.fsPath));
+  return roots.find((root) => samePath(root.fsPath, preferred.fsPath));
 }
 
-export function isPathWithin(root: string, candidate: string): boolean {
-  const relativePath = relative(resolve(root), resolve(candidate));
+export function isPathWithin(root: string, candidate: string, caseInsensitive = CASE_INSENSITIVE_FS): boolean {
+  const relativePath = relative(pathKey(root, caseInsensitive), pathKey(candidate, caseInsensitive));
   return relativePath === '' || (!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath));
+}
+
+/** git 写操作能落在哪个项目上：允许、还是先解释为什么不许。 */
+export type GitScopeVerdict =
+  | { kind: 'ok' }
+  | { kind: 'mismatch'; repo: string; project: string }
+  | { kind: 'foreign'; repo: string; foreignRoot: string };
+
+/**
+ * 判定「这个仓库能不能代表这个项目」。
+ *
+ * 从 `toolExecutor` 里抽出来，纯粹是为了能被单测直接打 —— 这段逻辑 2026-11-08
+ * 出过一次事故：Windows 上工作区根是 `e:\...`、`git rev-parse --show-toplevel`
+ * 回 `E:\...`，裸 `===` 把同一个目录判成「另一个项目」，`git pull` 被自己拦住。
+ * 这种错不该再靠「读代码时看出来」来防。
+ *
+ * 规则（三条，缺一不可）：
+ * 1. 仓库根就是项目根 → 允许；
+ * 2. 或项目根在仓库根之内、且仓库根本身是一个工作区根 → 允许；
+ * 3. 仓库根不能顺带罩住**别的**工作区根，否则一次 `git add -A` 会收进别人的改动。
+ */
+export function gitScopeVerdict(input: {
+  roots: readonly string[];
+  repo: string;
+  project: string;
+  caseInsensitive?: boolean;
+}): GitScopeVerdict {
+  const same = (a: string, b: string): boolean => samePath(a, b, input.caseInsensitive);
+  const within = (root: string, candidate: string): boolean => isPathWithin(root, candidate, input.caseInsensitive);
+  const { roots, repo, project } = input;
+  const repoIsWorkspaceRoot = roots.some((root) => same(root, repo));
+  if (!same(repo, project) && !(within(repo, project) && repoIsWorkspaceRoot)) {
+    return { kind: 'mismatch', repo, project };
+  }
+  /*
+   * 仓库根**自己**绝不算「外来项目」。旧代码靠 `root !== project` 排除，而工作区根
+   * 与仓库根只是**拼写不同**（盘符大小写）时它会放行，于是仓库根被当成外来项目拦下。
+   */
+  const foreignRoot = roots.find((root) => !same(root, project) && !same(root, repo) && within(repo, root));
+  return foreignRoot ? { kind: 'foreign', repo, foreignRoot } : { kind: 'ok' };
 }
 
 /**
@@ -154,7 +220,7 @@ export function chooseProjectRoot(input: {
     return undefined;
   }
   const stored = input.stored;
-  if (stored && roots.some((root) => resolve(root) === resolve(stored))) {
+  if (stored && roots.some((root) => samePath(root, stored))) {
     return stored;
   }
   const activeFile = input.activeFile;

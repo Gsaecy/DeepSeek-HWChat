@@ -32,7 +32,7 @@ import { FOLLOW_UP_PROMPT } from '../agent/followUpPrompt';
 import { REPLY_SHAPE_PROMPT } from '../agent/replyShapePrompt';
 import { userTextOfTaskRequest } from '../agent/taskQueue';
 import { grantFromFollowUp } from '../agent/conversationScope';
-import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChangedFiles } from '../agent/workspacePaths';
+import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChangedFiles, samePath } from '../agent/workspacePaths';
 import { hasApiKey, resolveEmbeddingKey } from '../core/apiKeys';
 import { fetchViaProxy } from '../providers/proxyFetch';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
@@ -3455,9 +3455,9 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       const conversation = await this.storage.getConversation(conversationId);
       if (!conversation) return;
       // 主项目已经由 projectRoot 表达，不重复入库。
-      if (conversation.projectRoot && resolve(conversation.projectRoot) === target) return;
+      if (conversation.projectRoot && samePath(conversation.projectRoot, target)) return;
       const existing = conversation.projectRoots ?? [];
-      if (existing.some((item) => resolve(item) === target)) return;
+      if (existing.some((item) => samePath(item, target))) return;
       await this.storage.updateConversation(conversationId, { projectRoots: [...existing, target] });
       this.callbacks.onHistoryChanged();
       // 徽标要多显示一个项目，补推一次状态让界面立刻看到。

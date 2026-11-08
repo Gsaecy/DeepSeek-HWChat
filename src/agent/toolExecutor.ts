@@ -18,7 +18,7 @@ import {
 import { AuditLog, redact } from './auditLog';
 import { commandPathViolation, maskPatternFlagArguments, missingPathsInCommandOutput } from './commandPaths';
 import { safeSlice } from '../core/textSafety';
-import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath } from './workspacePaths';
+import { gitScopeVerdict, isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath, samePath } from './workspacePaths';
 import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
 import { shouldAutoBackground } from './serverCommands';
 import { effectiveTimeoutSeconds, timeoutAdvice, timeoutClampNotice, timeoutClampSummary } from './commandTimeout';
@@ -1436,14 +1436,14 @@ export class ToolExecutor implements vscode.Disposable {
     if (!repoRoot) return tt('tool.gitNotRepository', { path: cwd.relativePath });
 
     const [repo, project] = await Promise.all([safeRealpath(repoRoot), safeRealpath(projectRoot)]);
-    const repoIsWorkspaceRoot = roots.some((root) => root === repo);
-    // 允许两种情形：仓库根就是项目根；或项目根在仓库根之内、而仓库根本身是一个工作区根。
-    if (repo !== project && !(isPathWithin(repo, project) && repoIsWorkspaceRoot)) {
-      return tt('tool.gitProjectMismatch', { repo, project });
+    // 判定抽成纯函数（`gitScopeVerdict`）：路径身份必须忽略大小写差异，见那里的注释。
+    const verdict = gitScopeVerdict({ roots, repo, project });
+    if (verdict.kind === 'mismatch') {
+      return tt('tool.gitProjectMismatch', { repo: verdict.repo, project: verdict.project });
     }
-    // 仓库根不能顺带罩住别的工作区根，否则一次 `git add -A` 会收进其他项目的改动。
-    const foreignRoot = roots.find((root) => root !== project && isPathWithin(repo, root));
-    if (foreignRoot) return tt('tool.gitForeignProject', { project: foreignRoot, repo });
+    if (verdict.kind === 'foreign') {
+      return tt('tool.gitForeignProject', { project: verdict.foreignRoot, repo: verdict.repo });
+    }
     return undefined;
   }
 
@@ -1492,7 +1492,7 @@ export class ToolExecutor implements vscode.Disposable {
     if (name === 'run_command') {
       const roots = workspaceRoots();
       const preferredRoot = scope?.projectRoot
-        ? roots.find((root) => resolve(root.fsPath) === resolve(scope.projectRoot!))
+        ? roots.find((root) => samePath(root.fsPath, scope.projectRoot!))
         : undefined;
       const cwd = (() => {
         try {
@@ -1609,7 +1609,7 @@ export class ToolExecutor implements vscode.Disposable {
         exists: existsSync,
         // 本次对话已绑定项目根时，相对路径以它为准（含 `'.'`）。
         preferredRoot: scope?.projectRoot
-          ? roots.find((root) => resolve(root.fsPath) === resolve(scope.projectRoot!))
+          ? roots.find((root) => samePath(root.fsPath, scope.projectRoot!))
           : undefined,
       },
     );

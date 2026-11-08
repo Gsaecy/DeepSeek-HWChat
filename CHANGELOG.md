@@ -4,6 +4,42 @@
 
 - （下一版的内容写在这里）
 
+## 0.4.6
+
+**线上阻断问题热修**：一位新用户在全新的 Windows 上第一次用 HWChat，第一件事（拉取远端）就失败。
+
+- **`git pull` / `git fetch` 被自己的守卫拦住**（用户贴回的原文）：
+
+  > 已阻止 git 操作：仓库 `E:\AI Projects\maiker_windows` 里还包含另一个工作区项目 `e:\AI Projects\maiker_windows`
+
+  同一行提示里，**两边是同一个目录**，只是盘符大小写不同。根因是路径身份判定拿字符串比：
+
+  - 工作区根来自 `resolve(folder.uri.fsPath)`，保留 VS Code 报来的小写盘符 `e:\`；
+  - 仓库根与项目根都过了 `realpath`，Windows 会规范成大写 `E:\`；
+  - 守卫却用裸 `===` 比这两串，于是 `root !== project` 为真；而 `isPathWithin()`
+    在 Windows 上又通过 `path.relative` 大小写不敏感地返回 true —— 两个条件同时成立，
+    **仓库根被当成了「外来项目」**，非写操作（`pull` / `fetch`）被一并拒绝。
+
+  修法是给路径身份一个统一出口 `pathKey()` / `samePath()`：绝对化 + 去尾部分隔符 +
+  在大小写不敏感的平台（Windows / macOS）折叠大小写；**Linux 不折叠**（`/tmp/A` 与
+  `/tmp/a` 确实是两个目录）。同时把判定抽成纯函数 `gitScopeVerdict()`，并明确规定
+  **仓库根自己绝不是「外来项目」**，与拼写无关。
+
+- **同一类缺陷的其余 6 处一并修掉**（全部是「把路径当字符串比」，在 Windows / macOS 上
+  同源发作）：`preferredRootOf`、相对路径在多个根下命中时的归属、`chooseProjectRoot`
+  对存档绑定的校验、`run_command` 与文件策略里的 `preferredRoot`、多项目徽标去重
+  （同一个项目会因盘符大小写重复入库）、工作区搜索的 `folder` 参数对齐。
+
+- **为什么之前没被发现**：测试里的路径全是手写的 POSIX 串（`/Users/test/...`），
+  这类比较在单测里永远「恰好相等」；macOS 上的 `path.relative` 又大小写**敏感**，
+  连开发机都复现不出来。新增 `test/check-path-identity.mjs` 专门盯这一类：
+  - 静态：源码里不许再出现 `resolve(a) === resolve(b)`、`.fsPath ===` 这类写法；
+  - 真机：在真实文件系统上建一个目录，用不同大小写的拼写访问，断言
+    `samePath` / `isPathWithin` / `gitScopeVerdict` 都判成同一个目录；
+  - 反例：**真的**另一个工作区项目仍然要拦，仓库不在项目里仍然报不匹配。
+
+验证：**1210 条单测 + 69 个守护脚本全绿**。
+
 ## 0.4.5
 
 这一版全部落在「语义检索」这条链路上 —— 从设置页能不能点、检测说不说得清、到检测通过之后到底生不生效。起点是 0.4.4 装上去之后用户当场撞到的四件事，终点是「换把 Key 就能用」被真正验证通过。

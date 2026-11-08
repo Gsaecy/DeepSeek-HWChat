@@ -385,3 +385,78 @@ test('平台检查不影响正常相对路径与工作区内绝对路径', () =>
   assert.equal(resolveWorkspacePath('docs/TECHNICAL.md', roots, { platform: 'darwin' }).root.name, 'Safevault_android');
   assert.equal(resolveWorkspacePath(roots[1]!.fsPath + '/README.md', roots, { platform: 'darwin' }).root.name, 'MaiKer_Win');
 });
+
+/* ── 路径身份：大小写不该让同一个目录变成两个 ───────────────────── */
+
+import { gitScopeVerdict, pathKey, samePath } from '../agent/workspacePaths';
+
+/**
+ * 现场（用户 2026-11-08，Windows）：
+ *
+ *     已阻止 git 操作：仓库 E:\AI Projects\maiker_windows 里还包含另一个工作区项目
+ *     e:\AI Projects\maiker_windows
+ *
+ * 同一行提示里两边是**同一个目录**，只是盘符大小写不同。守卫用 `===` 比字符串，
+ * 于是 `git pull` 被自己拦住，而且用户完全无从理解。
+ *
+ * 这些用例把「路径身份」钉死：大小写不敏感的平台必须认成同一个目录，
+ * 大小写敏感的平台（Linux）必须仍然当成两个。
+ */
+test('路径身份：大小写不敏感时必须认成同一个目录', () => {
+  assert.equal(samePath('/work/AI Projects/MaiKer_Win', '/work/ai projects/maiker_win', true), true);
+  assert.equal(pathKey('/work/AI Projects/MaiKer_Win/', true), pathKey('/WORK/AI PROJECTS/MAIKER_WIN', true));
+});
+
+test('路径身份：大小写敏感的平台（Linux）不许折叠', () => {
+  assert.equal(samePath('/tmp/Proj', '/tmp/proj', false), false);
+  assert.notEqual(pathKey('/tmp/Proj', false), pathKey('/tmp/proj', false));
+});
+
+test('路径身份：尾部斜杠不影响判断', () => {
+  assert.equal(samePath('/work/a/', '/work/a', true), true);
+  assert.equal(samePath('/work/a///', '/work/a', true), true);
+});
+
+test('git 判定：仓库根与项目根只是盘符大小写不同 → 允许（就是这次的 bug）', () => {
+  const verdict = gitScopeVerdict({
+    roots: ['/work/ai projects/maiker_windows'],
+    repo: '/work/AI Projects/maiker_windows',
+    project: '/work/AI Projects/maiker_windows',
+    caseInsensitive: true,
+  });
+  assert.equal(verdict.kind, 'ok');
+});
+
+test('git 判定：工作区根与仓库根大小写不同，项目根也对 → 仍然允许', () => {
+  const verdict = gitScopeVerdict({
+    roots: ['/work/ai projects/maiker_windows'],
+    repo: '/work/AI Projects/maiker_windows',
+    project: '/work/ai projects/maiker_windows',
+    caseInsensitive: true,
+  });
+  assert.equal(verdict.kind, 'ok', '仓库根自己绝不能被当成「外来项目」');
+});
+
+test('git 判定：仓库根就是项目根 → 允许', () => {
+  assert.equal(gitScopeVerdict({ roots: ['/work/repo'], repo: '/work/repo', project: '/work/repo' }).kind, 'ok');
+});
+
+test('git 判定：项目根在仓库根之内且仓库根是工作区根 → 允许', () => {
+  const verdict = gitScopeVerdict({ roots: ['/work/repo'], repo: '/work/repo', project: '/work/repo/sub' });
+  assert.equal(verdict.kind, 'ok');
+});
+
+test('git 判定：仓库根罩住了**真的**另一个工作区项目 → 仍然要拦', () => {
+  const verdict = gitScopeVerdict({
+    roots: ['/work/repo', '/work/repo/other-project'],
+    repo: '/work/repo',
+    project: '/work/repo',
+  });
+  assert.equal(verdict.kind, 'foreign');
+  assert.equal(verdict.kind === 'foreign' ? verdict.foreignRoot : '', '/work/repo/other-project');
+});
+
+test('git 判定：仓库在项目之外（仓库存放不当）→ 报不匹配', () => {
+  const verdict = gitScopeVerdict({ roots: ['/work/a', '/work/b'], repo: '/work/c', project: '/work/a' });
+  assert.equal(verdict.kind, 'mismatch');
+});

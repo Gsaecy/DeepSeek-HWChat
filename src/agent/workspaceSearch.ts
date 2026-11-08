@@ -15,6 +15,7 @@ import * as vscode from 'vscode';
 import { SearchScheduler } from './searchScheduler';
 import type { SearchCallResult, SearchSchedulerStats } from './searchScheduler';
 import { OperationCancelledError } from './transientErrors';
+import { samePath } from './workspacePaths';
 
 /** 默认不参与搜索的目录名。 */
 export const DEFAULT_SEARCH_EXCLUDED_DIRS: readonly string[] = [
@@ -218,7 +219,7 @@ function ensureScheduler(): SearchScheduler<WorkspaceSearchParams, vscode.Uri> {
     run: async (params, context) => {
       if (context.signal.aborted) throw new OperationCancelledError();
       const folder = params.folder
-        ? (vscode.workspace.workspaceFolders ?? []).find((candidate) => candidate.uri.fsPath === params.folder)
+        ? (vscode.workspace.workspaceFolders ?? []).find((candidate) => samePath(candidate.uri.fsPath, params.folder!))
         : undefined;
       const cancellation = bridgeCancellation(context.signal);
       try {

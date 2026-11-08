@@ -10,6 +10,18 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 
 完整改动见 [CHANGELOG](CHANGELOG.md)。
 
+## 0.4.6 更新了什么
+
+**线上阻断热修。** 一位新用户在全新 Windows 上第一次用 HWChat，第一件事就失败：
+
+> 已阻止 git 操作：仓库 `E:\AI Projects\maiker_windows` 里还包含另一个工作区项目 `e:\AI Projects\maiker_windows`
+
+两边是**同一个目录**，只差盘符大小写。守卫拿字符串比路径，于是 `git pull` / `git fetch` 被自己的扩展拦住。现在路径身份统一走 `samePath()`（Windows/macOS 折叠大小写，Linux 不折叠），并明确「仓库根自己绝不是外来项目」。同一类「把路径当字符串比」的另外 6 处一并修掉（`run_command` 的 cwd 归属、文件策略的项目根、多项目徽标去重、工作区搜索等）。
+
+新增 `test/check-path-identity.mjs`：既静态禁止 `resolve(a) === resolve(b)` 这类写法，也在真实文件系统上用不同大小写拼写验证判定 —— 这类 bug 以前**在开发机上根本复现不出来**。
+
+验证：**1210 条单测 + 69 个守护脚本全绿**。
+
 ## 0.4.5 更新了什么
 
 全部落在**语义检索**这条链路上：从设置页能不能点、检测说不说得清，到检测通过之后到底生不生效。

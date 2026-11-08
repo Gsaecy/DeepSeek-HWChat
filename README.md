@@ -8,6 +8,18 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.6
+
+**Hotfix for a release-blocking bug.** A new user on a fresh Windows machine failed at the very first thing:
+
+> Blocked the git operation: repository `E:\AI Projects\maiker_windows` also contains another workspace project (`e:\AI Projects\maiker_windows`)
+
+Those are the **same directory** - only the drive letter's case differs. The guard compared paths as strings, so `git pull` / `git fetch` were rejected by the extension itself. Path identity now goes through `samePath()` (case-folded on Windows/macOS, not on Linux), and a repository root can never be treated as "foreign" regardless of spelling. Six other sites with the same "compare paths as strings" defect were fixed too (command cwd ownership, file policy project root, project badge dedupe, workspace search).
+
+New `test/check-path-identity.mjs`: it statically forbids `resolve(a) === resolve(b)`-style comparisons and verifies identity on a real filesystem using differently-cased spellings - this class of bug **could not be reproduced on the development machine at all**.
+
+Verified: **1210 unit tests + 69 guard scripts green**.
+
 ## What's new in 0.4.5
 
 All of it on the **semantic retrieval** path: whether the settings page responds, whether the check says the right thing, and whether a passing check actually takes effect.
