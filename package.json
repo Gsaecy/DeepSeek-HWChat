@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek: approval-controlled workspace tools, plan-tracking task lists, copyable local/server commands and durable local history.",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -23,7 +23,27 @@
         "hwchat.fileWritePolicy",
         "hwchat.commandPolicy",
         "hwchat.dangerousCommandPolicy",
-        "hwchat.sensitiveFilePolicy"
+        "hwchat.sensitiveFilePolicy",
+        "hwchat.apiProfiles",
+        "hwchat.activeApiProfileId",
+        "hwchat.baseUrl",
+        "hwchat.requestHeaders",
+        "hwchat.proxy",
+        "hwchat.proxyBypassHosts",
+        "hwchat.systemPrompt",
+        "hwchat.allowSensitiveFiles",
+        "hwchat.allowDangerousCommands",
+        "hwchat.maxReadBytes",
+        "hwchat.maxToolOutputBytes",
+        "hwchat.maxCommandSeconds",
+        "hwchat.historyRetentionDays",
+        "hwchat.taskCacheRetentionHours",
+        "hwchat.cacheBudgetMB",
+        "hwchat.cleanupIntervalMinutes",
+        "hwchat.auditRetentionDays",
+        "hwchat.embeddingProfileId",
+        "hwchat.embeddingModel",
+        "hwchat.embeddingBaseUrl"
       ]
     }
   },
@@ -274,17 +294,20 @@
                 }
               }
             }
-          }
+          },
+          "scope": "machine"
         },
         "hwchat.activeApiProfileId": {
           "type": "string",
           "default": "default",
-          "description": "%config.activeApiProfileId%"
+          "description": "%config.activeApiProfileId%",
+          "scope": "machine"
         },
         "hwchat.baseUrl": {
           "type": "string",
           "default": "https://api.deepseek.com",
-          "markdownDescription": "%config.baseUrl%"
+          "markdownDescription": "%config.baseUrl%",
+          "scope": "machine"
         },
         "hwchat.model": {
           "type": "string",
@@ -297,7 +320,8 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "%config.requestHeaders%"
+          "description": "%config.requestHeaders%",
+          "scope": "machine"
         },
         "hwchat.requestTimeoutSeconds": {
           "type": "number",
@@ -310,7 +334,8 @@
           "type": "string",
           "default": "",
           "description": "%config.proxy%",
-          "markdownDescription": "%config.proxy%"
+          "markdownDescription": "%config.proxy%",
+          "scope": "machine"
         },
         "hwchat.proxyBypassHosts": {
           "type": "array",
@@ -321,25 +346,29 @@
             "api.deepseek.com"
           ],
           "description": "%config.proxyBypassHosts%",
-          "markdownDescription": "%config.proxyBypassHosts%"
+          "markdownDescription": "%config.proxyBypassHosts%",
+          "scope": "machine"
         },
         "hwchat.embeddingProfileId": {
           "type": "string",
           "default": "",
           "description": "%config.embeddingProfileId%",
-          "markdownDescription": "%config.embeddingProfileId%"
+          "markdownDescription": "%config.embeddingProfileId%",
+          "scope": "machine"
         },
         "hwchat.embeddingModel": {
           "type": "string",
           "default": "",
           "description": "%config.embeddingModel%",
-          "markdownDescription": "%config.embeddingModel%"
+          "markdownDescription": "%config.embeddingModel%",
+          "scope": "machine"
         },
         "hwchat.embeddingBaseUrl": {
           "type": "string",
           "default": "",
           "description": "%config.embeddingBaseUrl%",
-          "markdownDescription": "%config.embeddingBaseUrl%"
+          "markdownDescription": "%config.embeddingBaseUrl%",
+          "scope": "machine"
         },
         "hwchat.temperature": {
           "type": "number",
@@ -358,7 +387,8 @@
           "type": "string",
           "editPresentation": "multilineText",
           "default": "",
-          "description": "%config.systemPrompt%"
+          "description": "%config.systemPrompt%",
+          "scope": "machine"
         },
         "hwchat.sendOnEnter": {
           "type": "boolean",
@@ -369,25 +399,29 @@
           "type": "number",
           "default": 30,
           "minimum": 0,
-          "description": "%config.historyRetentionDays%"
+          "description": "%config.historyRetentionDays%",
+          "scope": "machine"
         },
         "hwchat.taskCacheRetentionHours": {
           "type": "number",
           "default": 24,
           "minimum": 0,
-          "description": "%config.taskCacheRetentionHours%"
+          "description": "%config.taskCacheRetentionHours%",
+          "scope": "machine"
         },
         "hwchat.cacheBudgetMB": {
           "type": "number",
           "default": 100,
           "minimum": 5,
-          "description": "%config.cacheBudgetMB%"
+          "description": "%config.cacheBudgetMB%",
+          "scope": "machine"
         },
         "hwchat.cleanupIntervalMinutes": {
           "type": "number",
           "default": 10,
           "minimum": 1,
-          "description": "%config.cleanupIntervalMinutes%"
+          "description": "%config.cleanupIntervalMinutes%",
+          "scope": "machine"
         },
         "hwchat.maxMessagesInContext": {
           "type": "number",
@@ -449,7 +483,7 @@
         },
         "hwchat.permissionPreset": {
           "type": "string",
-          "scope": "resource",
+          "scope": "machine",
           "enum": [
             "askAll",
             "review",
@@ -468,7 +502,7 @@
         },
         "hwchat.fileReadPolicy": {
           "type": "string",
-          "scope": "resource",
+          "scope": "machine",
           "enum": [
             "allow",
             "ask",
@@ -480,7 +514,7 @@
         },
         "hwchat.fileWritePolicy": {
           "type": "string",
-          "scope": "resource",
+          "scope": "machine",
           "enum": [
             "allow",
             "ask",
@@ -492,7 +526,7 @@
         },
         "hwchat.commandPolicy": {
           "type": "string",
-          "scope": "resource",
+          "scope": "machine",
           "enum": [
             "allow",
             "ask",
@@ -504,7 +538,7 @@
         },
         "hwchat.dangerousCommandPolicy": {
           "type": "string",
-          "scope": "resource",
+          "scope": "machine",
           "enum": [
             "allow",
             "ask",
@@ -521,7 +555,7 @@
         },
         "hwchat.sensitiveFilePolicy": {
           "type": "string",
-          "scope": "resource",
+          "scope": "machine",
           "enum": [
             "allow",
             "ask",
@@ -540,41 +574,47 @@
           "type": "boolean",
           "default": false,
           "deprecationMessage": "%config.allowSensitiveFiles.deprecated%",
-          "description": "%config.allowSensitiveFiles%"
+          "description": "%config.allowSensitiveFiles%",
+          "scope": "machine"
         },
         "hwchat.allowDangerousCommands": {
           "type": "boolean",
           "default": false,
           "deprecationMessage": "%config.allowDangerousCommands.deprecated%",
-          "description": "%config.allowDangerousCommands%"
+          "description": "%config.allowDangerousCommands%",
+          "scope": "machine"
         },
         "hwchat.maxReadBytes": {
           "type": "number",
           "default": 512000,
           "minimum": 16384,
           "maximum": 5242880,
-          "description": "%config.maxReadBytes%"
+          "description": "%config.maxReadBytes%",
+          "scope": "machine"
         },
         "hwchat.maxToolOutputBytes": {
           "type": "number",
           "default": 200000,
           "minimum": 16384,
           "maximum": 2097152,
-          "description": "%config.maxToolOutputBytes%"
+          "description": "%config.maxToolOutputBytes%",
+          "scope": "machine"
         },
         "hwchat.maxCommandSeconds": {
           "type": "number",
           "default": 120,
           "minimum": 5,
           "maximum": 900,
-          "description": "%config.maxCommandSeconds%"
+          "description": "%config.maxCommandSeconds%",
+          "scope": "machine"
         },
         "hwchat.auditRetentionDays": {
           "type": "number",
           "default": 30,
           "minimum": 0,
           "maximum": 365,
-          "description": "%config.auditRetentionDays%"
+          "description": "%config.auditRetentionDays%",
+          "scope": "machine"
         },
         "hwchat.language": {
           "type": "string",

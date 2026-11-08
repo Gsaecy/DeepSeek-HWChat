@@ -1,6 +1,7 @@
 import { basename, isAbsolute, resolve } from 'node:path';
 import { isPathWithin } from './workspacePaths';
 import { tt } from '../core/i18n';
+import { commandSubstitutions } from '../core/permissions';
 
 /**
  * 命令路径隔离（纯函数，不依赖 vscode，便于单测）。
@@ -184,6 +185,22 @@ export function commandPathViolation(
     }
   }
 
+  /*
+   * 2026-11-08 外部评审指出的三类「路径藏在别处」的绕过，都已真机复现：
+   *
+   *     echo "$(cat /etc/passwd)"                      ← 命令替换
+   *     python -c "open('/etc/passwd').read()"         ← 解释器载荷
+   *     cat src/a.ts > /etc/passwd                     ← 重定向目标
+   *
+   * 它们共同的特点：绝对路径不在「命令参数」位置上，所以旧的扫描看不到。
+   * 这三类内容的共同点是**一定是代码/写入目标**，扫里面的绝对路径不会误伤
+   * 普通参数（例如 `git commit -m "$(cat msg.txt)"` 里没有绝对路径）。
+   */
+  for (const payload of scriptPayloads(rawCommand)) candidates.push(...absolutePathsIn(payload));
+  for (const target of redirectTargets(withoutUrls)) {
+    if (isAbsolute(target) || /^[A-Za-z]:[\\/]/.test(target)) candidates.push(target);
+  }
+
   for (const raw of candidates) {
     const candidate = raw.replace(/[.,;:)\]]+$/, '');
     if (!candidate) continue;
@@ -199,6 +216,49 @@ export function commandPathViolation(
     }
   }
   return undefined;
+}
+
+/**
+ * 会被当代码执行的内容：命令替换 `$(…)`/反引号、嵌套解释器 `-c` 的载荷。
+ * 这些位置里的绝对路径是真实文件访问，必须参与校验。
+ */
+function scriptPayloads(command: string): string[] {
+  const payloads = commandSubstitutions(command);
+  const patterns: RegExp[] = [
+    /\b(?:ba|z|k|da|fi)?sh\s+-[a-zA-Z]*c\s+(['"])([\s\S]*?)\1/g,
+    /\b(?:python[0-9.]*|node|deno|bun|perl|ruby|php|pwsh|powershell)\s+(?:-[a-zA-Z]*[ce]\b|-(?:Command|EncodedCommand)\b)\s+(['"])([\s\S]*?)\1/g,
+    /\bcmd(?:\.exe)?\s+\/c\s+(['"])([\s\S]*?)\1/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of command.matchAll(pattern)) {
+      if (match[2]) payloads.push(match[2]);
+    }
+  }
+  return payloads;
+}
+
+/** 一段代码里出现的绝对路径字面量（带引号或不带引号）。 */
+function absolutePathsIn(code: string): string[] {
+  const found: string[] = [];
+  for (const match of code.matchAll(QUOTED_STRING)) {
+    const value = (match[1] ?? match[2] ?? '').trim();
+    if (/[\r\n]/.test(value)) continue;
+    if (isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)) found.push(value);
+  }
+  for (const match of code.replace(QUOTED_STRING, ' ').matchAll(BARE_ABSOLUTE_PATH)) {
+    found.push(match[2]!);
+  }
+  return found;
+}
+
+/** 重定向目标（`> /etc/x`、`2>>x`、`&>y`）—— 写入位置同样是文件访问。 */
+function redirectTargets(command: string): string[] {
+  const targets: string[] = [];
+  for (const match of command.matchAll(/(?:^|[^<>&|])(?:\d?>>?|&>)\s*([^\s;&|<>]+)/g)) {
+    const target = match[1]?.trim();
+    if (target) targets.push(target);
+  }
+  return targets;
 }
 
 /** 判断一个“绝对路径”候选其实是不是正则表达式片段。 */

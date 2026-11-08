@@ -19,6 +19,7 @@ import { AuditLog, redact } from './auditLog';
 import { commandPathViolation, maskPatternFlagArguments, missingPathsInCommandOutput } from './commandPaths';
 import { safeSlice } from '../core/textSafety';
 import { gitScopeVerdict, isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath, samePath } from './workspacePaths';
+import { isAutoExecPath } from '../core/permissions';
 import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
 import { shouldAutoBackground } from './serverCommands';
 import { effectiveTimeoutSeconds, timeoutAdvice, timeoutClampNotice, timeoutClampSummary } from './commandTimeout';
@@ -70,6 +71,13 @@ export interface ToolExecutionScope {
   signal?: AbortSignal;
   /** 诊断用：本次运行的标识，和工具调用 id 配对写入结构化日志。 */
   turnId?: string;
+  /**
+   * 本次 run 是否已经摄入过外部不可信内容（联网工具 / 桥接工具输出）。
+   *
+   * 一旦为真，后续的 `run_command` 与写入即使预设允许也要重新确认 ——
+   * 这是提示注入最便宜的闸门：模型可以读到恶意网页，但不能因此获得额外权限。
+   */
+  untrustedIngested?: boolean;
   /**
    * 命令运行期的进度回调（每秒一次 + 停滞/超时事件）。
    * 由面板接上后，界面才能区分「在跑」和「卡住」——没有这条回调时，
@@ -370,14 +378,32 @@ export class ToolExecutor implements vscode.Disposable {
       // 的授权已经由开关本身给出，再逐次问一遍只是噪声。
       ? 'allow' as PermissionPolicy
       : policyFor(risk, settings, tier);
-    const denied = this.checkAccess(name, args, mode, settings, policy, tier, scope);
+    /*
+     * 自启动文件（`.vscode/tasks.json`、`package.json` 的 postinstall、
+     * `.envrc`、workflow、git hook…）写一次就等于把执行推到闸门外，
+     * 所以即使预设允许写入，也要再确认一次。
+     */
+    const autoExecWrite = risk === 'write'
+      && isAutoExecPath(String(args.path ?? args.from ?? args.to ?? ''));
+    const effectivePolicy: PermissionPolicy = autoExecWrite && policy !== 'deny' ? 'ask' : policy;
+    /*
+     * 污点降级：一旦本 run 摄入过外部不可信内容（联网工具），
+     * 之后的命令与写入即使预设允许，也要重新确认。
+     * 这是「提示注入」最便宜也最有效的一道闸（见架构评审手册 ②）。
+     */
+    if (scope && isResearchTool(name)) scope.untrustedIngested = true;
+    const tainted = Boolean(scope?.untrustedIngested);
+    const finalPolicy: PermissionPolicy = tainted && (risk === 'command' || risk === 'write') && effectivePolicy === 'allow'
+      ? 'ask'
+      : effectivePolicy;
+    const denied = this.checkAccess(name, args, mode, settings, finalPolicy, tier, scope);
     if (denied) {
       const result = deniedResult(denied);
       await this.auditResult(call, result, conversationId);
       return result;
     }
 
-    let approvalRequired = policy === 'ask';
+    let approvalRequired = finalPolicy === 'ask';
     let approvalRequest: ToolApprovalRequest | undefined = approvalRequired
       ? {
         callId: call.id,
@@ -566,7 +592,12 @@ export class ToolExecutor implements vscode.Disposable {
     const { conversationId, forceApproval = false, delegateApproval = false, internal = false } = options;
     // 内部数据（自己的存档）不参与文件策略：它既不是工作区读取，也不该打断用户。
     const policy = internal ? 'allow' : policyFor(risk, settings, risk === 'command' ? 'standard' : undefined);
-    if (!delegateApproval && policy === 'deny') {
+    /*
+     * `deny` 永远优先：即使审批被委托给 VS Code（`delegateApproval`），
+     * 扩展策略里的「禁止写入/禁止执行」也不该被另一层审批覆盖。
+     * 2026-11-08 外部评审（Claude）指出的「桥接工具绕过权限层」就是这条。
+     */
+    if (policy === 'deny') {
       const result = deniedResult(tt('tool.policyDenied', { kind: risk === 'read' ? tt('tool.policyKind.read') : risk === 'write' ? tt('tool.policyKind.write') : tt('tool.policyKind.command') }));
       await this.auditResult(call, result, conversationId);
       return result;

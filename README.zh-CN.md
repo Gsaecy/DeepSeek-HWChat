@@ -10,6 +10,23 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 
 完整改动见 [CHANGELOG](CHANGELOG.md)。
 
+架构与功能实现清单（含 12 个待评审漏洞点及**代码坐标**、以及「刻意取舍」清单）见 [docs/ARCHITECTURE-REVIEW.md](docs/ARCHITECTURE-REVIEW.md) —— 这份文档就是为外部评审（Claude / GPT）准备的，可直接整份贴出去。
+
+## 0.4.9 更新了什么
+
+外部评审（GPT + Claude）推动的安全边界整改。原则：**命令无法静态判定时，不再静默放行**。下面每一条都基于真实复现，不是读代码推断。
+
+- **SSRF（真漏洞，已复现）**：公网 URL 302 到 `127.0.0.1` 能读到本机服务。现在手动跟随重定向，**每一跳**重新校验（协议 / 主机 / **解析后的 IP**），跨域丢凭据，跳数封顶；主机判定补上 IPv4-mapped IPv6、CGNAT（云元数据 `100.100.100.200`）、`fe80::/10` 全段等，且不误杀 `fdroid.org` / `fc2.com`。
+- **命令分档（真漏洞，已复现）**：`python -c "open('/etc/passwd')"`、`bash -c`、`X=rm; $X -rf`、`curl … | sh`、`find -delete`、`git clean -fdx` 以前是 `standard`，在 `review`/`autopilot` 下静默执行；现在一律 `severe`。
+- **路径隔离（真漏洞，已复现）**：藏在命令替换 `$(cat /etc/passwd)`、解释器载荷、重定向目标 `> /etc/passwd` 里的绝对路径也会被校验。
+- **仓库不能改安全配置（P0）**：37 个配置项里 30 个没有 `scope`，恶意仓库的 `.vscode/settings.json` 可以把 `baseUrl` 指向自己的服务器并拿到 SecretStorage 里的 Key。现在 26 个安全/凭据项全部 `scope: machine`。
+- **提示注入**：外部内容包进 `<untrusted_external_content>`；任务记忆声明「是记录不是指令」；system 写明四级信任等级；本 run 摄入过外部内容后，命令与写入重新确认（污点降级）。
+- **新增**：写入会被自动执行的文件（`.vscode/tasks.json`、`postinstall`、`.envrc`、workflow、git hook…）必须确认；桥接的 VS Code 工具不能再借 `delegateApproval` 绕过本扩展的 `deny`。
+
+验证：**1235 条单测 + 72 个守护脚本全绿**，其中 `check-security-boundaries.mjs` 的 27 项里包含一次真实联网的重定向攻击链复测。
+
+仍未做（如实记录）：子进程 OS 级沙箱、连接层固定 IP、跨窗口文件锁、`runId` 归属、Webview 消息 schema、按已知值脱敏。
+
 ## 0.4.8 更新了什么
 
 命令被路径隔离拦下时给的「可直接改写为」**自己也是违规的**，照抄仍然失败。

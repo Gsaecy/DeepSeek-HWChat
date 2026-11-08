@@ -60,23 +60,87 @@ export function checkFetchableUrl(raw: string): { ok: true; url: string } | { ok
   return { ok: true, url: parsed.toString() };
 }
 
-/** 回环 / 内网 / 链路本地 / 单标签主机名（不含点）都算私有。 */
+/**
+ * 回环 / 内网 / 链路本地 / 单标签主机名都算私有。
+ *
+ * 2026-11-08 由外部评审推动的加固（原实现只匹配字面量，已被真机绕过验证）：
+ *  - IPv4-mapped IPv6（`::ffff:127.0.0.1`、`::ffff:7f00:1`）原先完全漏网；
+ *  - CGNAT `100.64.0.0/10`、基准测试 `198.18.0.0/15`、`192.0.0.0/24`；
+ *  - `224.0.0.0/4` 组播与 `240.0.0.0/4` 保留段；
+ *  - `.internal` / `.localhost` / `.home.arpa` 这类内网专用后缀；
+ *  - 末尾的点（`example.com.` 与 `example.com` 是同一台主机）。
+ *
+ * 另外新增 `resolvePublicHost()`：域名解析后复查所有候选 IP。
+ * 只查字符串挡不住 DNS rebinding —— 校验时解析到公网、连接时解析到内网。
+ */
 export function isPrivateHost(host: string): boolean {
-  if (!host) return true;
-  if (BLOCKED_HOSTS.has(host)) return true;
-  if (host.endsWith('.local')) return true;
-  if (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true;
-  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  const raw = String(host ?? '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!raw) return true;
+  if (BLOCKED_HOSTS.has(raw)) return true;
+  if (/\.(local|internal|localhost|home\.arpa)$/.test(raw)) return true;
+
+  // IPv4-mapped IPv6：`::ffff:127.0.0.1` 与 `::ffff:7f00:1` 都要还原成 IPv4 再判。
+  const mapped = ipv4FromMappedIpv6(raw);
+  if (mapped) return isPrivateHost(mapped);
+
+  if (raw === '::' || raw === '::1') return true;
+  if (raw.includes(':')) {
+    // 链路本地 fe80::/10、唯一本地 fc00::/7、站点本地 fec0::/10
+    return /^fe[89ab]/.test(raw) || /^f[cd]/.test(raw) || /^fec/.test(raw);
+  }
+
+  const ipv4 = raw.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (ipv4) {
-    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+    const [a, b, c] = [Number(ipv4[1]), Number(ipv4[2]), Number(ipv4[3])];
     if (a === 0 || a === 10 || a === 127) return true;
     if (a === 169 && b === 254) return true;
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT
+    if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
+    if (a === 192 && b === 0 && c === 0) return true;     // IETF 协议分配
+    if (a >= 224) return true;                            // 组播 + 保留 + 广播
     return false;
   }
   // 没有点的主机名（如 `intranet`、`mybox`）走的是内网解析，一律拒绝。
-  return !host.includes('.');
+  return !raw.includes('.');
+}
+
+/** `::ffff:a.b.c.d` / `::ffff:7f00:1` → 点分 IPv4；不是这两种形式则返回 undefined。 */
+function ipv4FromMappedIpv6(host: string): string | undefined {
+  const dotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(host);
+  if (dotted) return dotted[1];
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  if (!hex) return undefined;
+  const high = Number.parseInt(hex[1]!, 16);
+  const low = Number.parseInt(hex[2]!, 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+}
+
+/**
+ * 域名解析后复查：**任何一个**候选 IP 落在私有段就拒绝。
+ *
+ * 这不是完备的 DNS rebinding 防护（校验与实际连接之间仍可能重新解析），
+ * 但能挡掉「解析到内网」这一大类；真正的完备做法是把连接固定到校验过的 IP，
+ * 那需要自定义 HTTP agent，超出当前范围 —— 已在架构评审手册里写明这条边界。
+ */
+export async function resolvePublicHost(
+  host: string,
+  lookup?: (host: string, options: { all: true }) => Promise<Array<{ address: string }>>,
+): Promise<{ ok: true } | { ok: false; address: string }> {
+  const name = String(host ?? '').trim().replace(/^\[|\]$/g, '');
+  if (isPrivateHost(name)) return { ok: false, address: name };
+  // IP 字面量无需解析（上面已经判过）。
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(name) || name.includes(':')) return { ok: true };
+  if (!lookup) return { ok: true };
+  try {
+    const results = await lookup(name, { all: true });
+    const bad = results.find((item) => isPrivateHost(item.address));
+    return bad ? { ok: false, address: bad.address } : { ok: true };
+  } catch {
+    // 解析失败交给实际请求去报错；这里不该伪装成「安全」以外的东西。
+    return { ok: true };
+  }
 }
 
 const ENTITIES: Record<string, string> = {

@@ -173,11 +173,122 @@ export function sensitiveFilePolicyFor(settings: ChatSettings): GuardedPolicy {
   return PERMISSION_PRESET_PROFILES[settings.permissionPreset].sensitiveFilePolicy;
 }
 
+/** 嵌套 shell / 解释器的 `-c` 载荷：静态无法判定它会做什么。 */
+const NESTED_SHELL = /\b(?:ba|z|k|da|fi)?sh\s+-[a-zA-Z]*c\b/i;
+const NESTED_INTERPRETER = /\b(?:python[0-9.]*|node|deno|bun|perl|ruby|php|pwsh|powershell|osascript)\b[^|;&\n]*?(?:\s-[ce]\b|\s-(?:Command|EncodedCommand)\b)/i;
+const CMD_SLASH_C = /\bcmd(?:\.exe)?\s+\/c\b/i;
+// 只认「命令位置」的 eval / source / `. script`：`find .` 里的点不是 dot-source（曾误判）。
+const EVAL_LIKE = /(?:^|[;&|]\s*)(?:eval|source)\s|(?:^|[;&|]\s*)\.\s+\S|\bInvoke-Expression\b|\biex\b/i;
+const PIPE_TO_SHELL = /\|\s*(?:sudo\s+)?(?:ba|z|k|da|fi)?sh\b/i;
+const BASE64_DECODE = /\bbase64\b[^|;&]*?(?:-d\b|--decode\b|-[dD]\b)/;
+/** 命令位置是变量展开（`X=rm; $X -rf x`）。 */
+const VARIABLE_AS_COMMAND = /(?:^|[;&|]\s*)\$(?:\{)?[A-Za-z_]\w*(?:\})?\s/;
+/** 会把整棵子树删掉、却常常藏在「只读」命令里的写法。 */
+const IMPLICIT_DELETE = [
+  /\bfind\b[^|;&]*-delete\b/i,
+  /\bxargs\b[^|;&]*\brm\b/i,
+  /\bgit\s+clean\b[^|;&]*-[a-z]*[fdx][a-z]*/i,
+  /\bgit\s+checkout\s+--\s+\.\s*$/i,
+];
+
+/**
+ * 「这条命令会不会执行我读不懂的东西？」
+ *
+ * 2026-11-08 外部评审（Claude + GPT）一致指出：正则黑名单不能当沙箱。
+ * 但这不代表正则没用 —— 它能把**明显无法静态判定**的写法一律升级到 `severe`
+ * （`askAll` 直接拒绝，其余预设逐次确认），从而把「静默执行」变成「必须人看」。
+ *
+ * 真机复现的四个绕过（修复前 `standard` + 路径检查放行）：
+ *
+ *     python -c "open('/etc/passwd').read()"
+ *     node -e "require('fs').readFileSync('/etc/passwd','utf8')"
+ *     bash -c 'cat /etc/passwd'
+ *     echo "$(cat /etc/passwd)"
+ *
+ * 返回原因（用于日志与测试），不是 severe 则返回 undefined。
+ */
+export function dynamicExecutionReason(command: string): string | undefined {
+  const text = String(command ?? '');
+  if (NESTED_SHELL.test(text)) return 'nested-shell';
+  if (NESTED_INTERPRETER.test(text)) return 'nested-interpreter';
+  if (CMD_SLASH_C.test(text)) return 'cmd-slash-c';
+  if (EVAL_LIKE.test(text)) return 'eval';
+  if (PIPE_TO_SHELL.test(text)) return 'pipe-to-shell';
+  if (BASE64_DECODE.test(text) && PIPE_TO_SHELL.test(text)) return 'decoded-to-shell';
+  if (VARIABLE_AS_COMMAND.test(text)) return 'variable-as-command';
+  if (IMPLICIT_DELETE.some((pattern) => pattern.test(text))) return 'implicit-delete';
+  // 命令替换里出现危险动作：`echo "$(rm -rf x)"`
+  for (const payload of commandSubstitutions(text)) {
+    if (SEVERE_COMMAND_PATTERNS.some((pattern) => pattern.test(payload))) return 'dangerous-substitution';
+    if (NESTED_SHELL.test(payload) || NESTED_INTERPRETER.test(payload)) return 'dangerous-substitution';
+  }
+  return undefined;
+}
+
+/** 取出 `$(…)`（含嵌套）与反引号里的内容。 */
+export function commandSubstitutions(text: string): string[] {
+  const found: string[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === '`') {
+      const end = text.indexOf('`', index + 1);
+      if (end > index) found.push(text.slice(index + 1, end));
+    }
+    if (text[index] === '$' && text[index + 1] === '(') {
+      let depth = 0;
+      for (let cursor = index + 1; cursor < text.length; cursor += 1) {
+        if (text[cursor] === '(') depth += 1;
+        else if (text[cursor] === ')') {
+          depth -= 1;
+          if (depth === 0) {
+            found.push(text.slice(index + 2, cursor));
+            break;
+          }
+        }
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * 会「被别的程序自动执行」的文件。
+ *
+ * 2026-11-08 外部评审（Claude）指出的绕过：`write_file` 在 `review` 预设下是
+ * **allow**，于是写 `.vscode/tasks.json`（`runOn: folderOpen`）、
+ * `package.json` 的 `postinstall`、`.envrc`、`.github/workflows/*`、
+ * `.devcontainer/*`、`.git/hooks/*`，等价于把执行推迟到工具闸门之外 ——
+ * 用户下次打开文件夹或装依赖时，代码就跑起来了。
+ *
+ * 这些路径一律**至少要一次确认**（`deny` 仍然拒绝，不会被放宽）。
+ */
+const AUTO_EXEC_PATTERNS: readonly RegExp[] = [
+  /(^|\/)\.vscode\/[^/]+$/i,
+  /(^|\/)\.devcontainer\//i,
+  /(^|\/)\.github\/workflows\//i,
+  /(^|\/)\.git\/hooks\//i,
+  /(^|\/)\.gitmodules$/i,
+  /(^|\/)\.envrc$/i,
+  /(^|\/)\.pre-commit-config\.ya?ml$/i,
+  /(^|\/)[^/]+\.code-workspace$/i,
+  /(^|\/)(?:package|composer)\.json$/i,
+  /(^|\/)(?:Makefile|GNUmakefile|makefile)$/i,
+  /(^|\/)(?:setup\.py|pyproject\.toml|Pipfile)$/i,
+  /(^|\/)(?:build|preinstall|postinstall|prepare|install)\.(?:sh|js|cjs|mjs|ps1|bat)$/i,
+];
+
+export function isAutoExecPath(path: string): boolean {
+  const normalized = String(path ?? '').replaceAll('\\', '/').replace(/^\.\//, '');
+  if (!normalized) return false;
+  return AUTO_EXEC_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
 export function classifyCommandTier(command: string): CommandRiskTier {
   const text = command.trim();
   if (!text) return 'standard';
   if (isPushingToRemote(text)) return 'severe';
   if (SEVERE_COMMAND_PATTERNS.some((pattern) => pattern.test(text))) return 'severe';
+  // 无法静态判定的动态执行：一律 severe（= 必须人看），不再静默放行。
+  if (dynamicExecutionReason(text)) return 'severe';
   return isSafeCommand(text) ? 'safe' : 'standard';
 }
 
