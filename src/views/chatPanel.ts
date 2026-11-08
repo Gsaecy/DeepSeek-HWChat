@@ -118,6 +118,8 @@ import {
 } from '../core/settings';
 import { REASONING_DEPTHS, reasoningEffortForModel, withFallbackCapabilities } from '../core/modelCapabilities';
 import { SingleFlight } from '../core/singleFlight';
+import { validateIncomingMessage } from '../core/incomingMessage';
+import { EpochGuard, makeRunId } from '../core/runScope';
 import { ConversationStorage } from '../core/storage';
 import { shortTitle } from '../core/ids';
 import {
@@ -215,6 +217,14 @@ interface SendOptions {
  */
 interface ConversationRun {
   conversationId: string;
+  /**
+   * 这一轮的标识（`makeRunId`）。
+   *
+   * 收尾动作（删登记、结算审批与方案卡片）都是 `await` 之后才跑的，判据不能用
+   * conversationId：同一对话可能已经有新的一轮。只能比对象 / 比 runId。
+   * 见架构评审 ⑨。
+   */
+  runId: string;
   controller: AbortController;
   taskQueue: AgentTaskQueue;
   settings: ChatSettings;
@@ -238,6 +248,8 @@ interface ConversationRun {
 
 interface PendingApproval {
   conversationId: string;
+  /** 提出这次请求的那一轮（`ConversationRun.runId`）：收尾只能结算自己那一轮的卡片。 */
+  runId: string;
   /** 推给 webview 的同一份数据，状态刷新时原样重发，面板重载也不会丢卡片。 */
   request: PendingApprovalView;
   resolve: (allowed: boolean) => void;
@@ -252,6 +264,8 @@ interface PendingApproval {
  */
 interface PendingDecision {
   conversationId: string;
+  /** 同 `PendingApproval.runId`。 */
+  runId: string;
   request: PendingDecisionView;
   resolve: (chosenIndex: number, custom?: string) => void;
 }
@@ -654,7 +668,18 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     };
     webviewView.webview.html = this.html(webviewView.webview);
     webviewView.webview.onDidReceiveMessage(
-      (message: IncomingMessage) => void this.handleMessage(message),
+      (message: unknown) => {
+        /*
+         * webview 视为可能已被攻破的一方：形状不对的消息整条丢弃。
+         * 校验只保证「字段类型对」，放行的消息照样走完整的权限链路。
+         */
+        const verdict = validateIncomingMessage(message);
+        if (!verdict.ok) {
+          this.log(`[webview] 丢弃异常入站消息：${verdict.reason}`);
+          return;
+        }
+        void this.handleMessage(message as IncomingMessage);
+      },
       undefined,
       this.disposables,
     );
@@ -687,7 +712,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     if (!this.skills.hasScanned) await this.skills.hydrate();
     void this.skills.refresh().catch(() => undefined);
     if (conversationId && await this.storage.getConversation(conversationId)) {
-      this.activeConversationId = conversationId;
+      this.setActiveConversation(conversationId);
       const summary = await this.storage.getConversation(conversationId);
       // 模式不在这里缓存：sendState 每次都以存档里的 mode 为准，避免面板缓存与存档分叉。
       // Skill 同理：有存档记录就用它自己的，没有才取全局清单当初始值。
@@ -774,7 +799,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       skillIds: this.effectiveSkillIds(this.activeSkillIds),
       skillSelectionInitialized: true,
     });
-    this.activeConversationId = created.id;
+    this.setActiveConversation(created.id);
     this.activeSkillIds = this.seedSkillSelection(await this.storage.getConversation(created.id));
     this.skillDraftTouched = false;
     this.showArchived = false;
@@ -973,6 +998,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   private async attachMessageAttachment(message: { id?: string; path?: string }): Promise<void> {
+    // 与 `attachFiles` 同理：下面要读存档、必要时还要从磁盘重读，落地前必须对代次。
+    const epoch = this.draftEpoch.current;
     const id = message.id?.trim();
     // 索引被淘汰时同样要从存档恢复，否则「添加到输入框」会静默失败。
     const known = await this.resolveAttachment(id);
@@ -1027,12 +1054,21 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       }
     }
 
+    if (this.draftEpoch.isStale(epoch)) {
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('notice.attachDiscarded') });
+      return;
+    }
     this.pendingAttachments.push(attachment);
     await this.open();
     await this.post({ type: 'attachments', attachments: this.pendingAttachmentsForWebview() });
   }
 
   async attachFiles(initialUris?: vscode.Uri[]): Promise<void> {
+    /*
+     * 记下草稿代次：选文件可能要开对话框等很久，读完还要判大小/敏感文件。
+     * 这段窗口里用户完全可能切到别的对话，结果不能落到新对话的草稿上。
+     */
+    const epoch = this.draftEpoch.current;
     const selected = initialUris ?? await vscode.window.showOpenDialog({
         canSelectMany: true,
         canSelectFiles: true,
@@ -1041,6 +1077,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         filters: { [tt('notice.filter.textAndCode')]: ['txt', 'md', 'json', 'yaml', 'yml', 'ts', 'tsx', 'js', 'jsx', 'py', 'java', 'go', 'rs', 'swift', 'kt', 'html', 'css', 'xml', 'sql', 'sh'], [tt('notice.filter.allFiles')]: ['*'] },
       });
     if (!selected?.length) return;
+    if (this.draftEpoch.isStale(epoch)) {
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('notice.attachDiscarded') });
+      return;
+    }
     /*
      * 附件读取按“这条对话当前的预设”判定，而不是读全局设置。
      *
@@ -1068,6 +1108,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       } catch (error) {
         errors.push(`${basename(uri.fsPath)}：${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+    /*
+     * 逐份读取也是 `await`：读到一半用户切走了，剩下的不能再往新对话的草稿里塞。
+     * 已经推上去的那几份属于上一个草稿，切走时代次已经作废，界面会拿到新对话的全量状态。
+     */
+    if (this.draftEpoch.isStale(epoch)) {
+      await this.post({ type: 'toast', tone: 'neutral', text: tt('notice.attachDiscarded') });
+      return;
     }
     await this.open();
     await this.post({
@@ -1207,6 +1255,31 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   /** `sendState()` 的单飞合并器：并发请求只跑一份，跑完再补一次（见 `core/singleFlight`）。 */
   private readonly statePush = new SingleFlight(() => this.runSendState());
 
+  /**
+   * 草稿代次：换对话就 +1。
+   *
+   * `pendingAttachments` / `pendingContext` 是「当前这条对话的草稿」，但它们的来源
+   * 都要先 `await`（文件对话框、剪贴板解码、索引淘汰后从磁盘重读）。用户在这期间
+   * 切到别的对话时，旧结果不能落到新对话上 —— 否则给 A 选的图会被 B 一起发给模型。
+   * 异步链在开头记下代次，落地前用 `draftEpoch` 对一次。
+   */
+  private readonly draftEpoch = new EpochGuard();
+
+  /** 本轮运行的序号：只用来生成可读的 `runId`，不参与安全判定。 */
+  private runSequence = 0;
+
+  /**
+   * 切换当前对话。
+   *
+   * 所有赋值都必须走这里：`draftEpoch.bump()` 就是靠它驱动的，
+   * 漏掉一处就等于留了一条「异步结果挂错对话」的入口。
+   */
+  private setActiveConversation(id: string | undefined): void {
+    if (this.activeConversationId === id) return;
+    this.activeConversationId = id;
+    this.draftEpoch.bump();
+  }
+
   private async handleMessage(message: IncomingMessage): Promise<void> {
     try {
       switch (message.type) {
@@ -1222,7 +1295,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           break;
         case 'selectConversation':
           // 同理，随时可以切到别的对话（包括正在运行的那条，切过去就能看到它的实时输出）。
-          this.activeConversationId = message.id;
+          this.setActiveConversation(message.id);
           this.pendingContext = undefined;
           this.pendingAttachments = [];
           try {
@@ -1730,7 +1803,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         createdConversationId = conversationId;
         this.startingConversationIds.add(conversationId);
         startedConversationId = conversationId;
-        this.activeConversationId = conversationId;
+        this.setActiveConversation(conversationId);
         // 草稿已经变成真正的对话，模式随对话存档走，草稿选择不再参与。
         this.draftModeOverride = undefined;
         // 草稿上改过的运行时设置随新对话一起落库，随后清空。
@@ -1756,7 +1829,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         // `permissionPreset`），说明这条路径确实会半途失败。
         if (createdConversationId) {
           await this.storage.deleteConversation(createdConversationId).catch(() => undefined);
-          if (this.activeConversationId === createdConversationId) this.activeConversationId = undefined;
+          if (this.activeConversationId === createdConversationId) this.setActiveConversation(undefined);
         }
         throw error;
       }
@@ -1897,6 +1970,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       });
       const run: ConversationRun = {
         conversationId,
+        runId: makeRunId(conversationId, ++this.runSequence),
         controller,
         taskQueue,
         settings,
@@ -2102,7 +2176,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
               const response = this.currentActiveResponse(run);
               if (response) response.usage = addUsage(response.usage, roundUsage);
             },
-            requestApproval: (request) => this.requestToolApproval(request.summary, request.detail, request.risk, run),
+            requestApproval: (request) => this.requestToolApproval(request.summary, request.detail, request.risk, run, request.dangerous),
           },
         });
         // 走到这里说明 Agent 循环没有抛错也没被停止：清单上再有没打勾的项，
@@ -2178,10 +2252,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         await this.flushTaskMemory(conversationId);
         // 语义索引在后台补几批（未配置时直接返回），绝不影响这轮收尾。
         this.scheduleEmbeddingIndex(conversationId);
-        this.runs.delete(conversationId);
-        this.rejectApprovalsFor(conversationId);
+        /*
+         * 只删**自己那一轮**的登记：收尾是 `await` 之后才跑的，期间同一对话可能
+         * 已经起了新的一轮。无条件 `delete(conversationId)` 会把新轮删掉，
+         * 界面上的运行圆点随即消失、停止按钮失灵（架构评审 ⑨）。
+         */
+        if (this.runs.get(conversationId) === run) this.runs.delete(conversationId);
+        this.rejectApprovalsFor(run);
         // 方案卡片同样要结算：否则那张卡会留在界面上，点它只会得到「已过期」。
-        this.settleDecisionsFor(conversationId);
+        this.settleDecisionsFor(run);
         this.callbacks.onHistoryChanged();
         await this.post({ type: 'runs', runningConversationIds: [...this.runs.keys()] });
         await this.post({ type: 'streamIdle', conversationId });
@@ -3050,7 +3129,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const conversations = allConversations.filter((item) => !item.archived);
     const archivedConversations = allConversations.filter((item) => item.archived);
     if (this.activeConversationId && !allConversations.some((item) => item.id === this.activeConversationId)) {
-      this.activeConversationId = undefined;
+      this.setActiveConversation(undefined);
     }
     const conversation = this.activeConversationId
       ? await this.storage.getConversation(this.activeConversationId) ?? null
@@ -4271,7 +4350,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       sourceHistoryDigest: digest,
       sourceLinkedAt: Date.now(),
     });
-    this.activeConversationId = linked.id;
+    this.setActiveConversation(linked.id);
     this.pendingContext = undefined;
     this.pendingAttachments = [];
     this.activeSkillIds = this.seedSkillSelection(linked);
@@ -4843,7 +4922,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       return;
     }
     if (this.activeConversationId === id) {
-      this.activeConversationId = undefined;
+      this.setActiveConversation(undefined);
     }
     this.callbacks.onHistoryChanged();
     await this.sendState();
@@ -5681,7 +5760,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       };
       const onAbort = (): void => finish(-1);
       run.controller.signal.addEventListener('abort', onAbort, { once: true });
-      this.pendingDecisions.set(requestId, { conversationId: run.conversationId, request: view, resolve: finish });
+      this.pendingDecisions.set(requestId, { conversationId: run.conversationId, runId: run.runId, request: view, resolve: finish });
       void this.post({ type: 'decisionRequest', request: view });
       // 用户正在看别的对话时提醒一句，避免这条线程无声地卡在等决策上。
       if (this.activeConversationId !== run.conversationId) {
@@ -5803,9 +5882,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   /** 把某条对话里挂着的决策卡片结算掉（停止 / 出错 / 换对话时）。 */
-  private settleDecisionsFor(conversationId: string): void {
+  /**
+   * 结算**这一轮**留下的方案卡片。
+   *
+   * 用 runId 而不是 conversationId：同一对话可能已经起了新的一轮，按对话结算会把
+   * 新轮正等着的卡片提前关掉，用户点下去只会看到「已过期」（架构评审 ⑨）。
+   */
+  private settleDecisionsFor(run: ConversationRun): void {
     for (const pending of [...this.pendingDecisions.values()]) {
-      if (pending.conversationId !== conversationId) continue;
+      if (pending.runId !== run.runId) continue;
       void this.post({ type: 'decisionResolved', requestId: pending.request.requestId });
       // resolve 内部会把自己从 pendingDecisions 里删掉。
       pending.resolve(-1);
@@ -5822,15 +5907,29 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 以前用 `showWarningMessage({ modal: true })`：模态框会锁住整个 VS Code 窗口，
    * 对话期间连侧边栏边框都拖不动，也没法切到别的对话看文档。现在改成面板内一张卡片，
    * 窗口完全不被占用。只有在没有面板可见（例如视图被关掉）时才退回非模态通知。
+   *
+   * 例外是**危险档**（删库、`curl | sh`、解释器内联脚本那类）：卡片上的「允许」
+   * 只是一条 `postMessage`，webview 被注入后可以自己发,等于自己批准自己。
+   * 所以危险档一律走原生模态框 —— 那条确认路径不经过 webview，伪造不了。
    */
   private async requestToolApproval(
     summary: string,
     detail: string,
     risk: 'read' | 'write' | 'command',
     run: ConversationRun,
+    dangerous = false,
   ): Promise<boolean> {
     if (run.controller.signal.aborted) return false;
     const title = risk === 'command' ? tt('notice.approveCommandTitle') : risk === 'write' ? tt('notice.approveWriteTitle') : tt('notice.approveReadTitle');
+    if (dangerous) {
+      const answer = await vscode.window.showWarningMessage(
+        `${title}\n${summary}`,
+        { modal: true, detail: tt('notice.approveDangerousDetail', { detail }) },
+        tt('notice.approveDeny'),
+        tt('notice.approveAllowOnce'),
+      );
+      return answer === tt('notice.approveAllowOnce');
+    }
     if (!this.view) {
       // 非模态：用户可以在通知中心里处理，窗口依旧可用。
       const answer = await vscode.window.showWarningMessage(
@@ -5856,6 +5955,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       run.controller.signal.addEventListener('abort', onAbort, { once: true });
       this.pendingApprovals.set(requestId, {
         conversationId: run.conversationId,
+        runId: run.runId,
         request: { requestId, conversationId: run.conversationId, title, summary, detail, risk },
         resolve: finish,
       });
@@ -5870,9 +5970,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     });
   }
 
-  private rejectApprovalsFor(conversationId: string): void {
+  /** 同 `settleDecisionsFor`：只结算这一轮自己的审批卡片。 */
+  private rejectApprovalsFor(run: ConversationRun): void {
     for (const pending of [...this.pendingApprovals.values()]) {
-      if (pending.conversationId !== conversationId) continue;
+      if (pending.runId !== run.runId) continue;
       void this.post({ type: 'approvalResolved', requestId: pending.request.requestId });
       // resolve() 内部会把自己从 pendingApprovals 里删掉。
       pending.resolve(false);
@@ -5929,7 +6030,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${scriptNonce}'; img-src ${webview.cspSource} data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${scriptNonce}'; img-src ${webview.cspSource} data:; base-uri 'none'; form-action 'none';">
   <link rel="stylesheet" href="${style}">
   <title>HWChat</title>
 </head>

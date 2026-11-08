@@ -149,6 +149,14 @@ export interface ToolApprovalRequest {
   summary: string;
   detail: string;
   risk: 'read' | 'write' | 'command';
+  /**
+   * 危险档（`classifyCommandTier(...) === 'severe'`）。
+   *
+   * 面板必须把它交回原生模态框，**不能**只靠 webview 里的卡片：卡片上的「允许」
+   * 是一条 `postMessage`，webview 一旦被注入就能自己发这条消息，等于自己批准自己。
+   * 见架构评审 ⑫。
+   */
+  dangerous?: boolean;
 }
 
 export type RequestApproval = (request: ToolApprovalRequest) => Promise<boolean>;
@@ -428,6 +436,7 @@ export class ToolExecutor implements vscode.Disposable {
         summary: approvalSummary(name, args),
         detail: approvalDetail(name, args, tier),
         risk,
+        dangerous: tier === 'severe',
       }
       : undefined;
 
@@ -446,6 +455,7 @@ export class ToolExecutor implements vscode.Disposable {
         summary: sensitive.summary!,
         detail: sensitive.detail!,
         risk,
+        dangerous: tier === 'severe',
       };
     }
 

@@ -524,10 +524,10 @@ npm run package
 | ⑥ | 敏感文件 | **已修（部分）** | `core/secretScan.ts` 一份判据管 `read_file` 门控 / 向量索引过滤 / 审计脱敏 / 界面提示，并断言两者不漂移。**未做**：`cat .env`、`git show HEAD:.env` 这类**命令通道**的内容扫描（命令输出仍按 `maxToolOutputBytes` 截断，未逐条扫描）。 |
 | ⑦ | 存档并发 | **已修（主要）** | 跨进程锁 + 读回合并（`updatedAt` 新者胜）+ 删除墓碑 + 单一「清理主」。启动时已有一致性重建（`reconcileManifest`）。**未做**：GC 可达性扫描（清理主只保证同一时刻一个窗口在回收）。 |
 | ⑧ | 向量索引出站 | **已修（部分）** | 命中凭据的消息不进索引并记日志。**未做**：显示 target host/数量预览、可清空按钮、SHA-256 内容身份（仍是 FNV 短哈希，仅用于缓存去重）。 |
-| ⑨ | 状态机竞态 | **待做** | 计划：`runId`/`turnId` 所有权校验 + webview 丢弃过期消息 + 随机交错测试。 |
+| ⑨ | 状态机竞态 | **已修（主要）** | 每轮 `runId`（`core/runScope.ts`）；收尾只删自己那一轮的登记（`this.runs.get(id) === run`）；审批与方案卡片按 `runId` 结算（以前按对话整片结算，会把新轮正等的卡片关掉）；草稿代次 `EpochGuard`：换对话后，在飞的选文件 / 复用附件结果不再落到新对话的草稿上。**未做**：随机交错测试（需要能实例化面板的测试夹具），webview 侧仍未按 runId 丢弃过期消息（现在靠 `conversationId + messageId` 隔离，见 `streamDelta`）。 |
 | ⑩ | 失败分类 | **待做** | 计划：`abort(reason)` 类型化 + `error.cause.code`，不再靠文案正则。 |
 | ⑪ | 审计脱敏 | **已修（部分）** | 按已知密钥值（原文/base64/URL 编码）+ PEM 整块 + 厂商前缀 + `user:pass@`。**未做**：日志文件 0600、减少原始数据记录（改为结构化元数据）。 |
-| ⑫ | Webview | **待做** | 计划：CSP `base-uri/form-action`、链接协议白名单、入站消息运行时 schema、危险审批走原生 modal。 |
+| ⑫ | Webview | **已修（主要）** | CSP 补 `base-uri 'none'; form-action 'none'`；54 条入站消息全部过运行时形状校验（`core/incomingMessage.ts`，规格表与联合类型由单测对拍）；危险档审批改走原生 `showWarningMessage({modal:true})`，那条路径不经过 webview。**已有**：链接协议白名单（`media/chat.js` 只放行 http/https/mailto/站内锚点）、`enableCommandUris` 未开启、`approvalResponse` 必须命中宿主 pending 表。**未做**：`openFileReference` / `revealFile` 的宿主侧路径范围（现在只判存在性，不做工作区限制）。 |
 | ⑬ | 工具权限统一性 | **已修（部分）** | `deny` 不再被委托绕过。**待做**：桥接工具的档位与审计矩阵显式化。 |
 | ⑭ | 子进程隔离 | **已修（生命周期）** | `deactivate()` / 面板 dispose 会收掉后台服务与在跑命令（`dispose()` 之前从未被调用）；Windows 用 `taskkill /T` 杀进程树。**未做**：OS 级沙箱（用户决定做通用方案，不单独为 macOS 优化），因此「子进程继承当前用户全部权限」这条边界仍然成立。 |
 | ⑮ | 数据出站治理 | **已修（部分）** | 四条通道（模型/向量/审计/界面）共用 `core/secretScan`。**未做**：命令通道、出站前的分类与计数预览。 |

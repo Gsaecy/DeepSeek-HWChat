@@ -568,7 +568,23 @@ const DICTIONARY: Record<string, Entry> = {
   'notice.approveReadTitle': { zh: '允许 Agent 读取文件？', en: 'Allow the agent to read files?' },
   'notice.approveDeny': { zh: '拒绝', en: 'Deny' },
   'notice.approveAllowOnce': { zh: '允许一次', en: 'Allow once' },
+  /*
+   * 危险档（删库 / `curl | sh` / 解释器内联脚本）用原生模态框，理由见
+   * `chatPanel.requestToolApproval`：模态框那条路径不经过 webview，伪造不了。
+   */
+  'notice.approveDangerousDetail': {
+    zh: '这一步被判定为危险操作（可能删除文件、绕过权限或执行任意代码）。确认框特意不放在对话框里：\n\n{detail}',
+    en: 'This step is classified as dangerous (it may delete files, bypass permissions, or execute arbitrary code). This confirmation is deliberately kept outside the chat panel:\n\n{detail}',
+  },
   // 面板内审批：模态框会锁死整个 VS Code 窗口（连侧边栏拖拽都做不了），改成输入框上方一张卡片。
+  /*
+   * 选附件期间用户切走了：结果不作数，但必须说出来。
+   * 静默丢弃等于让用户以为「点了添加但没反应」。
+   */
+  'notice.attachDiscarded': {
+    zh: '你已切换对话，刚才选择的附件没有加入（它们属于原来的对话）。',
+    en: 'You switched conversations, so the files you just picked were not attached (they belonged to the previous conversation).',
+  },
   'approval.cardTitle': { zh: '需要你确认后继续', en: 'Needs your approval to continue' },
   'approval.detail': { zh: '查看详情', en: 'Details' },  'approval.pending': { zh: '等待授权', en: 'Waiting for approval' },
   'approval.otherConversation': { zh: '有对话正在等待你的授权，切回该对话即可继续。', en: 'A conversation is waiting for your approval. Switch back to it to continue.' },

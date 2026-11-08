@@ -53,7 +53,8 @@ check('工具调用挂在 Promise 上直到用户选择',
   '必须真的阻塞，模型才无法绕过决策');
 
 check('停止 / 出错 / 释放时结算掉卡片',
-  /settleDecisionsFor\(conversationId\)/.test(PANEL) && /settleAllDecisions\(\)/.test(PANEL),
+  // 按 run 结算（不是按对话整片结算）：同一对话可能已经有新的一轮在等卡片，见架构评审 ⑨。
+  /settleDecisionsFor\(run\)/.test(PANEL) && /settleAllDecisions\(\)/.test(PANEL),
   '不结算的话那张线程的 finally 永远不跑（与审批卡片同一个坑）');
 
 check('方案卡片随状态重发（面板重载不丢）',

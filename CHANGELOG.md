@@ -4,6 +4,30 @@
 
 - （下一版的内容写在这里）
 
+## 0.4.12
+
+评审第四批：**webview 边界（⑫）+ 运行/草稿归属（⑨）**。这一批的共同前提是一句以前没写下来的话：
+**webview 可能已经被攻破**，宿主不能把它的每条消息都当真。
+
+### ⑫ webview 边界
+
+- **CSP 补齐两条不会回退的指令**：`base-uri 'none'; form-action 'none'`。`default-src 'none'` 不覆盖这两条，缺了就等于留了一条注入 `<base>` / 提交表单的缝。输入框所在的 `<form>` 自己 `preventDefault()`，行为不变。
+- **入站消息先过运行时形状校验**：新增 `core/incomingMessage.ts`，把 54 条消息登记成运行时规格，`onDidReceiveMessage` 收到的第一条事就是校验，形状不对整条丢弃并留一行日志。以前 `{ type: 'togglePin', pinned: 'false' }`（字符串假值）会被 `Boolean()` 当成 true，`{ type: 'attachClipboardFiles', files: null }` 直接在 `.map` 上抛错。规格表与 `chatPanel.ts` 的联合类型由单测**对拍**，以后加一条消息忘登记会被测试挡下。
+- **危险档审批改走原生模态框**：`chmod 777`、`curl | sh`、解释器内联脚本这类命令的确认，不再用对话框里的卡片 —— 卡片上的「允许」只是一条 `postMessage`，webview 被注入后可以自己发，等于自己批准自己。现在危险档走 `showWarningMessage({ modal: true })`，这条路径不经过 webview。普通档位仍然是卡片（不锁窗口）。
+- **设置页同样补齐**：那一侧比对话框更敏感 —— `save` 带着**明文 API Key** 进来，`clearLocalData` 会删本地存档，配置项还能改 `baseUrl`。现在它也有自己的规格表（`SETTINGS_INCOMING_MESSAGE_SPECS`）、同样的入口校验和同样的 CSP 两条指令。两份规格表互不串用（对话面板不接受 `save`，设置页不接受 `approvalResponse`），单测两个方向都断言了。
+- 链接协议白名单（只放行 http/https/mailto/站内锚点）、`enableCommandUris` 未开启、`approvalResponse` 必须命中宿主 pending 表 —— 这几条**本来就有**，这批补上了守护断言，防止以后被改回去。
+
+### ⑨ 运行与草稿的归属
+
+- **收尾只删自己那一轮**：一轮 agent 结束时无条件 `runs.delete(conversationId)`，而这行代码是 `await` 之后才跑的；期间同一对话若已起了新的一轮，就会把**新轮**的登记删掉，界面上的运行圆点消失、停止按钮失灵。现在判对象身份：`this.runs.get(id) === run`。
+- **卡片按 runId 结算**：审批卡与方案卡以前按对话整片结算（`conversationId` 相同就关），同样会把新轮正等着的卡片提前关掉，用户点下去只看到「已过期」。现在每张卡记着自己属于哪一轮，只结算自己那一轮。
+- **草稿代次（`EpochGuard`）**：`pendingAttachments` / `pendingContext` 属于「当前这条对话」，但附件来源都要先 `await`（文件对话框、剪贴板解码、索引淘汰后从磁盘重读）。用户在这期间切到别的对话，旧结果原本会推进**新对话**的草稿 —— 给 A 选的图/文件悄悄挂到 B 上，然后被 B 一起发给模型。现在切对话统一走 `setActiveConversation()` 提升代次，两条附件链路在落地前对一次，不一致就丢弃**并明确提示**「已切换对话，刚才选的附件没有加入」（静默丢等于点了没反应）。
+  用代次而不是直接比对话 id：A → B → A 切回来时 id 一模一样，只有代次能证明中间发生过切换。
+
+### 验证
+
+**1,276 条单测 + 75 个守护脚本全绿**。新增 `src/test/runScope.test.ts`（12 项）、`src/test/incomingMessage.test.ts`（13 项）、`test/check-webview-boundary.mjs`（32 项）；`toolExecutor.test.ts` 补两条运行时断言：严重风险命令的审批请求 `dangerous === true`，普通读取 `dangerous === false`。
+
 ## 0.4.11
 
 评审第三批：**存档跨窗口并发（⑦）+ 子进程生命周期（⑭）**。两条都是「数据/进程悄悄丢失」，用户当场看不见。

@@ -209,6 +209,23 @@ test('review 预设：危险命令逐次确认，拒绝后不执行', async () =
   assert.equal(result.status, 'denied');
 });
 
+test('危险命令的审批请求带 dangerous 标记（面板据此改走原生模态框）', async () => {
+  /*
+   * 面板把「允许」做成 webview 里的卡片；webview 一旦被注入，它自己发一条
+   * `approvalResponse` 就等于自己批准自己。所以危险档必须能在宿主侧被认出来，
+   * 改走不经过 webview 的原生模态框（架构评审 ⑫）。
+   */
+  const { requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'DeepSeek-HWChat' }, { approve: true });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]!.dangerous, true, '严重风险命令必须打上 dangerous');
+});
+
+test('普通操作的审批请求不带 dangerous（不要把所有确认都变成模态框）', async () => {
+  const { requests } = await run('read_file', { path: 'DeepSeek-HWChat/package.json' }, { preset: 'askAll', approve: true });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]!.dangerous, false);
+});
+
 test('askAll 预设：危险命令直接拒绝，不弹确认', async () => {
   const { result, requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'DeepSeek-HWChat' }, { preset: 'askAll' });
   assert.equal(requests.length, 0);

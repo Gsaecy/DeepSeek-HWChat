@@ -8,6 +8,19 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.12
+
+Webview boundary (⑫) and run/draft ownership (⑨). Both start from a premise that was never written down before: **the webview may already be compromised**, so the host must not treat its messages as trustworthy.
+
+- **Inbound messages are validated at runtime.** `src/core/incomingMessage.ts` registers all 54 message shapes; `onDidReceiveMessage` validates before dispatch and drops anything malformed (with a log line). Previously `{ type: 'togglePin', pinned: 'false' }` reached `Boolean()` as `true`, and `{ type: 'attachClipboardFiles', files: null }` threw inside `.map`. The spec table is **cross-checked against the `IncomingMessage` union** by a unit test, so a new message type that forgets its spec fails the build.
+- **Dangerous-tier approvals use a native modal.** For `chmod 777`, `curl | sh` and inline interpreter scripts, the "Allow" button used to be a webview card — which is just a `postMessage` the webview can send to itself if it gets injected. Those confirmations now go through `showWarningMessage({ modal: true })`, a path the webview cannot reach. Ordinary approvals stay in-panel (no window lock).
+- **The settings panel got the same treatment**, and it matters more there: `save` carries **plaintext API keys**, `clearLocalData` wipes local storage, and settings can redirect `baseUrl`. It now has its own spec table, the same entry validation and the same CSP directives. The two tables cannot be used interchangeably (the chat panel rejects `save`, the settings panel rejects `approvalResponse`), asserted in both directions.
+- **CSP gained `base-uri 'none'; form-action 'none'`** — neither falls back to `default-src`, so leaving them out left a hole for injected `<base>` tags and form submissions.
+- **Run teardown only removes its own registration.** `runs.delete(conversationId)` ran after several `await`s; if the same conversation had already started a new turn, it deleted the **new** turn, making the running dot vanish and Stop stop working. It now compares identity. Approval and decision cards are settled per `runId` for the same reason — settling them per conversation closed cards the new turn was still waiting on.
+- **Draft epoch.** `pendingAttachments` / `pendingContext` belong to "the current conversation", but every source of them is async (file dialog, clipboard decode, re-reading from disk). Switching conversations mid-flight used to push A's attachments into **B's** draft, so they got sent to the model with B's message. Every conversation switch now bumps an epoch, and both attachment paths discard stale results **with an explicit notice**. An epoch (not a conversation-id compare) is required because A → B → A leaves the id unchanged.
+
+Verified: **1,276 unit tests + 75 guard scripts green**, including `test/check-webview-boundary.mjs` (32 assertions) and two runtime assertions that severe commands carry `dangerous === true` while ordinary reads carry `false`.
+
 ## What's new in 0.4.11
 
 Storage concurrency (⑦) and process lifecycle (⑭) — both are "data or processes disappear quietly".

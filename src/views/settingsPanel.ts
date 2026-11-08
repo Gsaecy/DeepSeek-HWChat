@@ -9,6 +9,7 @@ import { isConversationMode } from '../core/modes';
 import { imageProfileFor, profileFor, readSettings, updateSettings } from '../core/settings';
 import { ConversationStorage } from '../core/storage';
 import { ChatSettings } from '../core/types';
+import { validateSettingsIncomingMessage } from '../core/incomingMessage';
 import { DeepSeekClient } from '../providers/deepseekClient';
 import { mediaUri, nonce } from './webview';
 
@@ -72,7 +73,18 @@ export class SettingsPanel implements vscode.Disposable {
       this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'resources', 'logo.png');
       this.panel.webview.html = this.html(this.panel.webview);
       this.panel.webview.onDidReceiveMessage(
-        (message: IncomingMessage) => void this.handleMessage(message),
+        (message: unknown) => {
+          /*
+           * 设置页这一侧比对话框更敏感：`save` 带明文 API Key，`clearLocalData` 删存档。
+           * 同样按「webview 可能已被攻破」处理：形状不对整条丢弃。
+           */
+          const verdict = validateSettingsIncomingMessage(message);
+          if (!verdict.ok) {
+            console.warn(`[hwchat] 丢弃异常设置页消息：${verdict.reason}`);
+            return;
+          }
+          void this.handleMessage(message as IncomingMessage);
+        },
         undefined,
         this.disposables,
       );
@@ -430,7 +442,7 @@ export class SettingsPanel implements vscode.Disposable {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${scriptNonce}'; img-src ${webview.cspSource} data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${scriptNonce}'; img-src ${webview.cspSource} data:; base-uri 'none'; form-action 'none';">
   <link rel="stylesheet" href="${style}">
   <title>${t(lang, 'settings.windowTitle')}</title>
 </head>

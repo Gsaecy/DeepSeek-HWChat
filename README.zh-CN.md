@@ -12,6 +12,19 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 
 架构与功能实现清单（含 12 个待评审漏洞点及**代码坐标**、以及「刻意取舍」清单）见 [docs/ARCHITECTURE-REVIEW.md](docs/ARCHITECTURE-REVIEW.md) —— 这份文档就是为外部评审（Claude / GPT）准备的，可直接整份贴出去。
 
+## 0.4.12 更新了什么
+
+webview 边界（⑫）+ 运行与草稿的归属（⑨）。这一批的共同前提是一句以前没写下来的话：**webview 可能已经被攻破**，宿主不能把它的每条消息都当真。
+
+- **入站消息先过运行时校验**：新增 `src/core/incomingMessage.ts`，把 54 条消息形状登记成规格，`onDidReceiveMessage` 先校验再分发，形状不对整条丢弃并留日志。以前 `{ type: 'togglePin', pinned: 'false' }` 会被 `Boolean()` 当成 true，`{ type: 'attachClipboardFiles', files: null }` 会在 `.map` 上抛错。规格表与联合类型由单测**对拍**，以后加消息忘登记会直接测试失败。
+- **危险档审批改走原生模态框**：`chmod 777`、`curl | sh`、解释器内联脚本这类确认，以前是对话框里的一张卡片 —— 而卡片上的「允许」只是一条 `postMessage`，webview 被注入后可以自己发，等于自己批准自己。现在走 `showWarningMessage({ modal: true })`，这条路径 webview 碰不到。普通档位仍是卡片（不锁窗口）。
+- **设置页同样补齐**：那一侧其实更敏感 —— `save` 带**明文 API Key** 进来，`clearLocalData` 会删本地存档，配置项还能改 `baseUrl`。现在它有自己的规格表、同样的入口校验、同样的 CSP 两条指令；两份规格表互不串用（对话面板不接受 `save`，设置页不接受 `approvalResponse`），两个方向都有断言。
+- **CSP 补 `base-uri 'none'; form-action 'none'`**：这两条不会从 `default-src` 回退，缺了就等于给注入的 `<base>` 和表单提交留了口子。
+- **收尾只删自己那一轮**：`runs.delete(conversationId)` 是 `await` 之后才跑的；同一对话若已起了新的一轮，会把这个**新轮**的登记删掉 —— 运行圆点消失、停止按钮失灵。现在比对象身份。审批卡与方案卡同理改成按 `runId` 结算（以前按对话整片结算，会把新轮正等的卡片关掉）。
+- **草稿代次**：`pendingAttachments` / `pendingContext` 属于「当前这条对话」，但它们的来源全是异步的（文件对话框、剪贴板解码、从磁盘重读）。切走再回来看不出区别，所以用**代次**而不是比对话 id：A → B → A 时 id 一模一样。两条附件链路落地前对一次代次，不一致就丢弃**并明确提示**（静默丢等于「点了没反应」）。
+
+验证：**1,276 条单测 + 75 个守护脚本全绿**，新增 `test/check-webview-boundary.mjs`（32 项），并补了两条运行时断言：严重风险命令的审批 `dangerous === true`、普通读取 `dangerous === false`。
+
 ## 0.4.11 更新了什么
 
 存档跨窗口并发（⑦）+ 子进程生命周期（⑭）。
