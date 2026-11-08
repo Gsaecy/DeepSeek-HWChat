@@ -23,7 +23,7 @@ import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, ty
 import { shouldAutoBackground } from './serverCommands';
 import { effectiveTimeoutSeconds, timeoutAdvice, timeoutClampNotice, timeoutClampSummary } from './commandTimeout';
 import { commandEnvironmentHint, selfNestedCdHint, stripRedundantLeadingCd } from './commandHints';
-import { diagnoseMissingOldText, findAlreadyApplied, renderMissingOldTextDiagnosis } from './replaceDiagnostics';
+import { diagnoseMissingOldText, findAlreadyApplied, findIndentTolerantWindow, renderMissingOldTextDiagnosis, shiftIndent } from './replaceDiagnostics';
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
 import { gitWriteOperation, GIT_VERBS_WITHOUT_INTENT } from './conversationScope';
 import { detectVersionBump, versionBumpCommand } from './releasePolicy';
@@ -2129,6 +2129,25 @@ export function planReplacement(current: string, oldText: string, newText: strin
   const needle = oldText.replace(/\r\n?/g, '\n');
   const hits = findAll(haystack.text, needle);
   if (hits.length === 0) {
+    /*
+     * 第三档：只差**行首缩进**且窗口唯一 → 直接按文件的实际缩进落盘。
+     *
+     * 不这么做的话，模型会进入死循环：它凭记忆重建的 oldText 缩进不准，我们只把
+     * 「文件里实际是什么」打印回去（而且旧版打印时还多加了 2 个空格），它照抄一遍
+     * 仍然不准，三轮后停机。语义相同且唯一，就不该把数字符这种活交给模型。
+     */
+    const tolerant = findIndentTolerantWindow(current, oldText);
+    if (tolerant && tolerant.count === 1) {
+      const replacement = shiftIndent(newText, tolerant.fileIndent - tolerant.oldIndent);
+      const eol = lineEndingOf(current.slice(tolerant.start, tolerant.end), fallbackEol);
+      const body = withLineEnding(replacement, eol);
+      return {
+        occurrences: 1,
+        oldBytes: Buffer.byteLength(current.slice(tolerant.start, tolerant.end)),
+        newBytes: Buffer.byteLength(body),
+        apply: () => spliceAt(current, [[tolerant.start, tolerant.end]], body),
+      };
+    }
     return { occurrences: 0, oldBytes: 0, newBytes: 0, apply: () => current };
   }
   const ranges = hits.map((at): [number, number] => {

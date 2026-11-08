@@ -8,6 +8,16 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.7
+
+`replace_in_file` failed three times in a row on the same comment, then stopped with "3 consecutive tool failures".
+
+- **The diagnostic was lying**: the "file actually reads" lines were prefixed with 2 extra spaces, so 7 real spaces were shown as 9 - exactly what the model had already written. Copying it verbatim could never work.
+- **The tool should not make the model count spaces**: when only leading indentation differs and the window is unique, the edit is now applied using the file's real indentation, with `newText` shifted to match. Multiple similar windows are left alone and reported instead.
+- Intra-line whitespace differences are still treated as different (they change meaning); only line-leading whitespace is tolerated.
+
+Verified: **1216 unit tests + 70 guard scripts green**, plus a run of `planReplacement` against the real `i18n.js` from the report.
+
 ## What's new in 0.4.6
 
 **Hotfix for a release-blocking bug.** A new user on a fresh Windows machine failed at the very first thing:

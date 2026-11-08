@@ -119,6 +119,92 @@ export function diagnoseMissingOldText(current: string, oldText: string): Missin
   };
 }
 
+/**
+ * 只差**行首缩进**的唯一窗口。
+ *
+ * 为什么要它能直接落盘（2026-11-08 用户贴回的死循环）：
+ * 模型凭记忆重建 `oldText` 时，行首缩进几乎每次都不准（文件 7 个空格、它写 9 个）。
+ * 旧实现只会把「文件里实际是什么」打印回去让它重试 —— 而打印时又多加了 2 个空格，
+ * 于是一模一样再次失败，三轮后触发「无进展」停机。这是工具该自己解决的事：
+ * 语义（去掉行首缩进后的内容）完全相同且窗口唯一，就按文件的实际缩进改写。
+ *
+ * 只容忍**行首**空白：行内空白变化会改变代码含义，不在此列。
+ */
+export interface IndentTolerantWindow {
+  /** 命中窗口在 `current` 里的字符区间 [start, end)。 */
+  start: number;
+  end: number;
+  /** 命中窗口起始行的行号（1 起算）。 */
+  line: number;
+  /** 文件里起始行的行首缩进宽度。 */
+  fileIndent: number;
+  /** `oldText` 起始行的行首缩进宽度。 */
+  oldIndent: number;
+  /** 文件里一共有几处这样的窗口；只有 1 处才允许自动落盘。 */
+  count: number;
+}
+
+/** 每一行在原文里的字符区间（不含行尾换行符）。 */
+function lineSpans(text: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  let start = 0;
+  for (let index = 0; index <= text.length; index += 1) {
+    const isBreak = index === text.length || text[index] === '\n' || text[index] === '\r';
+    if (!isBreak) continue;
+    spans.push({ start, end: index });
+    if (text[index] === '\r' && text[index + 1] === '\n') index += 1;
+    start = index + 1;
+  }
+  return spans;
+}
+
+function leadingWidth(line: string): number {
+  const match = /^[ \t]*/.exec(line);
+  return match ? match[0].length : 0;
+}
+
+export function findIndentTolerantWindow(current: string, oldText: string): IndentTolerantWindow | undefined {
+  const fileLines = toLines(current);
+  const needle = withoutTrailingBlank(trimmedLines(oldText));
+  if (needle.length === 0) return undefined;
+  const hits = findWindow(trimmedLines(current), needle);
+  if (hits.length === 0) return undefined;
+  const spans = lineSpans(current);
+  const firstLine = hits[0]!;
+  const lastLine = firstLine + needle.length - 1;
+  const startSpan = spans[firstLine];
+  const endSpan = spans[lastLine];
+  if (!startSpan || !endSpan) return undefined;
+  return {
+    start: startSpan.start,
+    end: endSpan.end,
+    line: firstLine + 1,
+    fileIndent: leadingWidth(fileLines[firstLine] ?? ''),
+    oldIndent: leadingWidth(toLines(oldText)[0] ?? ''),
+    count: hits.length,
+  };
+}
+
+/**
+ * 把 `newText` 的行首缩进整体平移 `delta` 列。
+ *
+ * 平移而不是「统一改成某个宽度」：模型写的相对缩进（续行比首行多几格）是有意义的，
+ * 只把基准对齐到文件即可。
+ */
+export function shiftIndent(text: string, delta: number): string {
+  if (delta === 0) return text;
+  return text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => {
+      if (!line.trim()) return line;
+      if (delta > 0) return `${' '.repeat(delta)}${line}`;
+      const width = leadingWidth(line);
+      return line.slice(Math.min(width, -delta));
+    })
+    .join('\n');
+}
+
 function snippet(lines: readonly string[], start: number, count: number): string[] {
   return lines.slice(start, start + Math.min(count, MAX_SNIPPET_LINES));
 }
@@ -134,7 +220,14 @@ export function renderMissingOldTextDiagnosis(
       ? t('tool.replace.diffWhitespace', { line: diagnosis.line })
       : t('tool.replace.diffFirstLine', { line: diagnosis.line, count: diagnosis.actual.length }),
   ];
-  for (const line of diagnosis.actual) lines.push(`  ${line}`);
+  /*
+   * 每行**原样**输出，不再前缀 `  `。
+   *
+   * 旧实现 `lines.push(`  ${line}`)` 给每行加了 2 个空格：文件里是 7 个、模型原本写
+   * 9 个，提示打印出 7+2=9 —— 看起来与它写的**一模一样**，于是「照抄」重试仍然失败，
+   * 三轮后停机（2026-11-08 用户贴回的连续 3 次失败）。缩进这种东西必须原样给。
+   */
+  for (const line of diagnosis.actual) lines.push(line);
   if (diagnosis.otherMatches) lines.push(t('tool.replace.diffMore', { count: diagnosis.otherMatches }));
   lines.push(t('tool.replace.diffAdvice'));
   return lines.join('\n');

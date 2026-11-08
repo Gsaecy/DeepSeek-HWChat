@@ -14,7 +14,9 @@ import test from 'node:test';
 import {
   diagnoseMissingOldText,
   findAlreadyApplied,
+  findIndentTolerantWindow,
   renderMissingOldTextDiagnosis,
+  shiftIndent,
 } from '../agent/replaceDiagnostics';
 
 const t = (key: string, values?: Record<string, string | number>): string =>
@@ -97,4 +99,83 @@ test('同位置多处相似时说明还有几处没展开', () => {
   const diagnosis = diagnoseMissingOldText(file, 'X\ny');
   assert.ok(diagnosis);
   assert.equal(diagnosis.otherMatches, 1);
+});
+
+/* ── 只差行首缩进：必须能直接落盘 ───────────────────────────────── */
+
+/*
+ * 现场（用户 2026-11-08，连续 3 轮失败）：
+ *
+ *     replace_in_file → oldText 在文件中不存在，未执行修改。
+ *     内容其实在第 706 行找到了，只是空白/缩进不同。文件里实际是：
+ *             /* 深色卡里那三行价格…
+ *
+ * 文件里是 7 个空格，模型写 9 个；提示打印时又加了 2 个空格（7+2=9），
+ * 看起来与它写的**一字不差**，于是它照抄重试、仍然失败，三轮后停机。
+ */
+const COMMENT_BLOCK = [
+  '    /* 深色卡里那三行价格（一次性买断 / 金额 / 付一次，长期使用）',
+  '       2026-12-24 第六十五版删掉：H2 已经写着「一次买断，之后不再收费」，',
+  '       同一句话说两遍。2026-12-25 起 H2 也不写金额了——全站唯一的金额在',
+  '       `pricing.html` 的 `.price-amount`，改价只改那一处。 */',
+].join('\n');
+const DOC = `line1\n${COMMENT_BLOCK}\nline-tail\n`;
+/** 模型凭记忆写出来的版本：续行是 9 个空格。 */
+const DRIFTED = COMMENT_BLOCK.split('\n')
+  .map((line, index) => (index === 0 ? line : `  ${line}`))
+  .join('\n');
+
+test('缩进容错：只差行首缩进且唯一 → 找得到窗口，并给出两侧缩进', () => {
+  const window = findIndentTolerantWindow(DOC, DRIFTED);
+  assert.ok(window);
+  assert.equal(window.count, 1);
+  assert.equal(window.fileIndent, 4);
+  assert.equal(window.oldIndent, 4, '首行缩进相同；差异在续行');
+  assert.equal(window.line, 2);
+});
+
+test('缩进容错：行内空白不同不算同一段（会改变代码含义）', () => {
+  const changed = DRIFTED.replace('一次买断，之后不再收费', '一次买断, 之后不再收费');
+  assert.equal(findIndentTolerantWindow(DOC, changed), undefined);
+});
+
+test('缩进容错：出现两处相同窗口时不自动落盘（避免改错位置）', () => {
+  const twice = `${DOC}${COMMENT_BLOCK}\n`;
+  const window = findIndentTolerantWindow(twice, DRIFTED);
+  assert.ok(window);
+  assert.equal(window.count, 2);
+});
+
+test('shiftIndent：按差值平移，保留相对缩进，空行不动', () => {
+  const text = '  a\n      b\n\nc';
+  // 非空行整体平移：`c` 原本 0 缩进，右移 2 后是 2 个空格（块缩进的正常语义）。
+  assert.equal(shiftIndent(text, 2), '    a\n        b\n\n  c');
+  assert.equal(shiftIndent(text, -2), 'a\n    b\n\nc');
+  assert.equal(shiftIndent(text, 0), text);
+  assert.equal(shiftIndent('   x', -9), 'x', '缩进不够时只吃到行首为止');
+});
+
+test('shiftIndent：缩进写的是 9 个空格、文件是 7 个 → newText 也跟着对齐', () => {
+  const oldText = '         2026-12-24 第六十五版删掉：H2 已经写着「一次买断，之后不再收费」，';
+  const newText = '         2026-12-24 已改为价格口径，';
+  const fileLine = '       2026-12-24 第六十五版删掉：H2 已经写着「一次买断，之后不再收费」，';
+  const window = findIndentTolerantWindow(fileLine, oldText);
+  assert.ok(window);
+  assert.equal(window.fileIndent, 7);
+  assert.equal(window.oldIndent, 9);
+  assert.equal(shiftIndent(newText, window.fileIndent - window.oldIndent), '       2026-12-24 已改为价格口径，');
+});
+
+test('诊断渲染：每行原样输出，绝不再加缩进', () => {
+  const diagnosis = diagnoseMissingOldText(DOC, DRIFTED);
+  const text = renderMissingOldTextDiagnosis(diagnosis, t);
+  assert.ok(text);
+  for (const line of COMMENT_BLOCK.split('\n')) {
+    assert.ok(text.includes(line), `缺原文行：${JSON.stringify(line)}`);
+  }
+  // 关键回归：旧实现会给每行加两个空格，于是「7 个空格」被显示成「9 个空格」。
+  assert.ok(
+    !text.includes('  ' + COMMENT_BLOCK.split('\n')[1]!),
+    '第二行被多加了缩进 —— 这正是让模型「照抄仍失败」的原因',
+  );
 });
