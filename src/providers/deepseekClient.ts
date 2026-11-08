@@ -10,6 +10,7 @@ import {
 import { tt } from '../core/i18n';
 import { hasImageParts, isTextOnlyContentRejection, stripImageParts } from './visionFallback';
 import { sanitizeJsonStrings } from '../core/textSafety';
+import { registerKnownSecret } from '../agent/auditLog';
 import { fetchWithNetworkRetry, type RetryEvent } from './netDiagnostics';
 import { fetchViaProxy, type ResponseLike } from './proxyFetch';
 
@@ -285,6 +286,8 @@ export class DeepSeekClient {
     if (!apiKey?.trim()) {
       throw new Error(tt('api.noKey'));
     }
+    // 审计与日志按「已知值」脱敏（评审 ⑪）：真实密钥的 base64/URL 编码形态也能盖掉。
+    registerKnownSecret(apiKey);
 
     const endpoint = buildEndpoint(settings.baseUrl);
     /*

@@ -911,6 +911,10 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.noMatches': { zh: '没有匹配。', en: 'No matches.' },
   'tool.matchesFound': { zh: '找到 {count} 处匹配', en: 'Found {count} matches' },
   'tool.readFileTooLarge': { zh: '文件过大（{size}），已超过 {max} 上限；请提高读取上限或先用搜索定位内容。', en: 'File too large ({size}); it exceeds the {max} limit. Raise the read limit or locate the content with a search first.' },
+  // 内容处理层：文件名挡不住 config.json / notes.md 里的明文密钥。
+  'tool.readSecretSummary': { zh: '读取 {path}：文件里有疑似凭据（{kinds}）', en: 'Read {path}: the file contains suspected credentials ({kinds})' },
+  'tool.readSecretDetail': { zh: '命中 {count} 处疑似凭据（{kinds}）。继续读取会把这段内容发给模型提供商。放行之前请确认：这确实是你要处理的内容，而不是别人的密钥/隐私数据。只想看结构就改用 search_files 或只读片段。', en: 'Found {count} suspected secret(s) ({kinds}). Continuing sends this content to the model provider. Confirm this is content you intend to process, not someone else\'s credentials or private data; if you only need the structure, use search_files or read a narrower range.' },
+  'tool.readSecretDenied': { zh: '已取消读取：文件含疑似凭据，未发送给模型。', en: 'Read cancelled: the file contains suspected secrets, so nothing was sent to the model.' },
   'tool.readSummary': { zh: '读取 {path}（{size}）', en: 'Read {path} ({size})' },
   'tool.pathNotFound.head': { zh: '路径不存在：{path}', en: 'Path not found: {path}' },
   'path.windowsPathOnThisPlatform': { zh: '这是 Windows 路径（{path}），而当前系统是 {platform} —— 不能直接使用。本机可用的是这些工作区根：{roots}。改用相对路径（例如 `website/instindex/web`），或用上面某个根开头的绝对路径。', en: 'This is a Windows path ({path}) but the current platform is {platform}, so it cannot be used here. Available workspace roots: {roots}. Use a relative path (for example `website/instindex/web`) or an absolute path under one of those roots.' },

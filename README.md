@@ -8,6 +8,19 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.10
+
+Sensitive-data egress (review items ⑥ + ⑮), plus two gaps from the previous batch.
+
+- **One detector, four channels.** `src/core/secretScan.ts` is now the single host-side check (the webview keeps its own copy for warnings, and a guard compares both on the same corpus so they cannot drift).
+  - **To the model**: `read_file` used to trust filenames only, so keys inside `config.json` / `notes.md` / `backup.txt` went straight out. Now a content hit asks first, showing only kinds and counts.
+  - **To the embedding service**: messages containing credentials are skipped from the index (logged), while keyword search still covers them.
+  - **To audit logs**: redaction is now driven by **known secret values** (raw, base64 and URL-encoded), plus whole PEM blocks and vendor prefixes.
+- **Taint actually persists**: `agentRunner` copies the scope per tool call, so the earlier `untrustedIngested` flag died after one call. It is now written back to the shared run scope.
+- **Bridged VS Code tools now taint too**: their output is untrusted as well, but only native tools were marking it.
+
+Verified: **1,240 unit tests + 73 guard scripts green**, including `test/check-secret-egress.mjs` (13 assertions).
+
 ## What's new in 0.4.9
 
 Security boundaries, driven by external review (GPT + Claude). Principle: **when a command cannot be statically understood, it is no longer allowed silently**. Every fix below was verified against a real reproduction, not inferred from reading code.

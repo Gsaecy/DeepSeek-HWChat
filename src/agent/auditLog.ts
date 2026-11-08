@@ -112,10 +112,51 @@ export class AuditLog {
   }
 }
 
+/**
+ * 已知密钥值（来自 SecretStorage）。
+ *
+ * 2026-11-08 外部评审 ⑪：只靠正则猜「什么像密钥」必然漏；最可靠的是**按已知值匹配**。
+ * 插件在解析出 API key / 向量 key 之后登记一次，之后审计与日志里出现它的任何形态
+ * （原文、base64、URL 编码）都会被替换。值只存在内存里，不落盘。
+ */
+const KNOWN_SECRETS = new Set<string>();
+
+export function registerKnownSecret(value: string | undefined): void {
+  const text = String(value ?? '').trim();
+  // 太短的值（本地 mock 的 `test`）逐字匹配会把正常文本打碎。
+  if (text.length >= 8) KNOWN_SECRETS.add(text);
+}
+
+function encodedForms(secret: string): string[] {
+  const forms = [secret];
+  try {
+    forms.push(Buffer.from(secret, 'utf8').toString('base64'));
+    forms.push(encodeURIComponent(secret));
+  } catch {
+    /* 编码失败就只按原文匹配 */
+  }
+  return forms;
+}
+
 export function redact(value: string): string {
-  return value
+  let output = String(value ?? '');
+  for (const secret of KNOWN_SECRETS) {
+    for (const form of encodedForms(secret)) {
+      if (form && output.includes(form)) output = output.split(form).join('[REDACTED_KEY]');
+    }
+  }
+  return output
+    // PEM 私钥正文：整块盖掉，不能只盖第一行。
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]')
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
-    .replace(/(sk-[A-Za-z0-9_-]{8,})/g, '[REDACTED_KEY]')
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\bsk-ant-[A-Za-z0-9_-]{16,}\b/g, '[REDACTED_ANTHROPIC_KEY]')
+    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{8,}/g, '[REDACTED_KEY]')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]')
+    .replace(/\bAIza[0-9A-Za-z_-]{35,}/g, '[REDACTED_GOOGLE_KEY]')
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '[REDACTED_SLACK_TOKEN]')
+    .replace(/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b/g, '[REDACTED_JWT]')
+    .replace(/(\/\/)[^/\s:@]+:[^/\s@]+@/g, '$1[REDACTED]@')
     .replace(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\s&]+)/g, (match, key: string) => (
       /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY)/i.test(key)
         ? `${key}=[REDACTED]`

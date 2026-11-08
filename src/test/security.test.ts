@@ -173,3 +173,59 @@ test('自启动文件必须识别出来（写一次等于把执行推到闸门�
     assert.equal(isAutoExecPath(path), false, path);
   }
 });
+
+/* ── ⑥/⑮ 敏感数据：一份判据，四条通道 ─────────────────────────── */
+
+import { hasSecrets, maskSecrets, scanSecrets } from '../core/secretScan';
+import { redact, registerKnownSecret } from '../agent/auditLog';
+
+test('识别：有名格式的密钥与显式赋值都要命中', () => {
+  const samples = [
+    'key = sk-proj-AbCd1234EfGh5678IjKl',
+    'token: ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+    'aws AKIAIOSFODNN7EXAMPLE',
+    'pw DB_PASSWORD=hunter2hunter2',
+    'jwt eyJhbGciOi.eyJzdWIiOi.sigpart123456',
+  ];
+  for (const sample of samples) {
+    assert.equal(hasSecrets(sample), true, sample);
+  }
+});
+
+test('识别：占位符与「值在别处」不能误报（否则提醒会被无视）', () => {
+  const samples = [
+    'password: process.env.DB_PASSWORD',
+    'api_key = "your_api_key_here"',
+    'token: sk-xxxxxxxxxxxx',
+    'password: <YOUR_PASSWORD>',
+    'secret = config.db.secret',
+    'see docs at https://example.com/guide',
+  ];
+  for (const sample of samples) {
+    assert.deepEqual(scanSecrets(sample), [], sample);
+  }
+});
+
+test('遮罩：命中的段落被替换，其余原文不动，且绝不回显原值', () => {
+  const text = 'const key = "sk-proj-AbCd1234EfGh5678IjKl"; // keep me';
+  const masked = maskSecrets(text);
+  assert.doesNotMatch(masked, /AbCd1234EfGh5678IjKl/);
+  assert.match(masked, /\[REDACTED:/);
+  assert.match(masked, /keep me/);
+});
+
+test('审计脱敏：已知密钥值的原文 / base64 / URL 编码形态都盖掉', () => {
+  const secret = 'sk-live-ZZZZ1111YYYY2222XXXX';
+  registerKnownSecret(secret);
+  const base64 = Buffer.from(secret, 'utf8').toString('base64');
+  for (const form of [secret, base64, encodeURIComponent(secret)]) {
+    assert.doesNotMatch(redact(`payload ${form} end`), new RegExp(secret.slice(0, 12)));
+  }
+});
+
+test('审计脱敏：PEM 私钥整块盖掉（不能只盖第一行）', () => {
+  const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEow\nABC123\n-----END RSA PRIVATE KEY-----';
+  const masked = redact(`x ${pem} y`);
+  assert.doesNotMatch(masked, /MIIEow|ABC123/);
+  assert.match(masked, /REDACTED_PRIVATE_KEY/);
+});

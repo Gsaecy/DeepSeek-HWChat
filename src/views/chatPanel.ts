@@ -38,6 +38,8 @@ import { fetchViaProxy } from '../providers/proxyFetch';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
 import { outcomeOf, renderWorkDigest, requestPayloadOf } from '../core/contextWindow';
 import { constraintsOf, mergeTaskNodes, newlyCompletedTodos, renderTaskMemory, todoBaseline } from '../core/taskMemory';
+import { hasSecrets } from '../core/secretScan';
+import { registerKnownSecret } from '../agent/auditLog';
 import {
   contentHash, decodeVector, encodeVector, mergeEmbeddingRecords, rankBySimilarity, reusableRecords,
   type EmbeddingIndex, type EmbeddingRecord,
@@ -2009,13 +2011,20 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
             if (!run.scope.versionBumpAllowed && argumentsMentionVersionBump(call.function.arguments)) {
               return { result: this.versionBumpBlockedResult() };
             }
-            return this.vscodeTools.execute(
+            const bridged = await this.vscodeTools.execute(
               call,
               mode,
               settings,
               (request) => this.requestToolApproval(request.summary, request.detail, request.risk, run),
               conversationId!,
             );
+            /*
+             * 桥接工具的输出同样不可信（第三方扩展拿到的网页/终端内容），
+             * 所以也要参与污点：本 run 之后的命令与写入重新确认。
+             * 之前只在内置工具里置位，这条通道是漏的。
+             */
+            if (bridged) run.scope.untrustedIngested = true;
+            return bridged;
           },
           takeTaskUpdate: async (phase) => {
             /*
@@ -2879,6 +2888,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       const config = embeddingConfigFrom(settings);
       if (!config) return;
       const apiKey = await resolveEmbeddingKey(this.secrets, config.profileId).catch(() => undefined);
+      registerKnownSecret(apiKey);
       if (!apiKey?.trim()) return;
       const profile = (settings.apiProfiles ?? []).find((item) => item.id === config.profileId);
       const baseUrl = config.baseUrl ?? profile?.baseUrl ?? settings.baseUrl;
@@ -2889,10 +2899,18 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         skipRecent: CONTEXT_WINDOW_MESSAGES,
         limit: 24,
       });
+      /*
+       * 出站治理（评审 ⑧/⑮）：命中文凭/隐私的消息**不进索引**。
+       * 索引会把正文发给第三方 embedding 服务，用户同意「用向量检索」不等于
+       * 同意「把密钥发给另一家」。跳过只影响这几条的语义召回，关键词检索仍然覆盖。
+       */
       const todo = pending.filter((message) => {
         const record = known.get(message.id);
-        return !record || record.hash !== contentHash(message.content);
+        if (record && record.hash === contentHash(message.content)) return false;
+        return !hasSecrets(message.content);
       });
+      const skippedSecrets = pending.length - todo.length;
+      if (skippedSecrets > 0) this.log(`[embedding] 跳过 ${skippedSecrets} 条疑似含凭据的消息（不发送给向量服务）`);
       if (!todo.length) return;
       const added: EmbeddingRecord[] = [];
       for (const batch of chunk(todo, 8)) {

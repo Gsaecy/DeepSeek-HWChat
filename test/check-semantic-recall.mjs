@@ -173,7 +173,10 @@ check(
 /* ── 3. 省钱与正确性 ─────────────────────────────────────────────── */
 check(
   '内容哈希没变就不重算',
-  /record\.hash !== contentHash\(message\.content\)/.test(PANEL) && /export function contentHash/.test(CORE),
+  // 0.4.9 起改成「已命中且哈希相同 → return false」，语义不变，断言跟着实现走。
+  (/record\.hash !== contentHash\(message\.content\)/.test(PANEL)
+    || /record && record\.hash === contentHash\(message\.content\)\) return false;/.test(PANEL))
+    && /export function contentHash/.test(CORE),
 );
 check(
   '每轮最多补 24 条、每批 8 条',

@@ -20,6 +20,7 @@ import { commandPathViolation, maskPatternFlagArguments, missingPathsInCommandOu
 import { safeSlice } from '../core/textSafety';
 import { gitScopeVerdict, isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath, samePath } from './workspacePaths';
 import { isAutoExecPath } from '../core/permissions';
+import { scanSecrets, secretKinds } from '../core/secretScan';
 import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
 import { shouldAutoBackground } from './serverCommands';
 import { effectiveTimeoutSeconds, timeoutAdvice, timeoutClampNotice, timeoutClampSummary } from './commandTimeout';
@@ -492,7 +493,7 @@ export class ToolExecutor implements vscode.Disposable {
           result = await this.searchFiles(args, settings, scope, metrics);
           break;
         case 'read_file':
-          result = await this.readFile(args, settings, scope);
+          result = await this.readFile(args, settings, scope, { callId: call.id, request: requestApproval });
           break;
         case 'open_file':
           result = await this.openFile(args, settings, scope);
@@ -992,7 +993,12 @@ export class ToolExecutor implements vscode.Disposable {
     }
   }
 
-  private async readFile(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
+  private async readFile(
+    args: Record<string, unknown>,
+    settings: ChatSettings,
+    scope?: ToolExecutionScope,
+    approval?: { callId: string; request: RequestApproval },
+  ): Promise<ToolExecutionResult> {
     const resolved = await this.resolvePath(stringArg(args, 'path'), scope);
     this.assertReadable(resolved, settings);
     const stat = await vscode.workspace.fs.stat(resolved.uri);
@@ -1005,6 +1011,26 @@ export class ToolExecutor implements vscode.Disposable {
     if (startLine > 1 || endLine < Number.MAX_SAFE_INTEGER) {
       const lines = text.split(/\r?\n/);
       text = lines.slice(startLine - 1, endLine).map((line, index) => `${startLine + index}: ${line}`).join('\n');
+    }
+    /*
+     * 内容处理层（2026-11-08 外部评审 ⑥）：文件名白名单挡不住
+     * `config.json`、`notes.md`、`backup.txt` 里的明文密钥。
+     * 命中时先问一次「这段内容会发给模型提供商」—— `askAll` 下本来就是 ask，
+     * 这里补的是 `review`/`autopilot` 下读敏感内容的那一次确认。
+     */
+    const findings = scanSecrets(text);
+    if (findings.length && sensitiveFilePolicyFor(settings) !== 'allow') {
+      const kinds = secretKinds(findings).join(tt('common.listSeparator'));
+      const approved = approval
+        ? await approval.request({
+          callId: approval.callId,
+          name: 'read_file',
+          risk: 'read',
+          summary: tt('tool.readSecretSummary', { path: resolved.relativePath, kinds }),
+          detail: tt('tool.readSecretDetail', { count: findings.length, kinds }),
+        })
+        : true;
+      if (!approved) return deniedResult(tt('tool.readSecretDenied'));
     }
     text = truncate(redact(text), settings.maxToolOutputBytes);
     return {
