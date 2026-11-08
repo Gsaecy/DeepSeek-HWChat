@@ -660,6 +660,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     );
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) this.view = undefined;
+      /*
+       * 面板被销毁（用户关掉视图/切换容器）时，本面板起的后台服务必须一起收掉：
+       * 此时界面上已经没有「停止」按钮了，留下就是没人能管的孤儿进程（评审 ⑭）。
+       */
+      this.toolExecutor.dispose();
     }, undefined, this.disposables);
     // 视图被切到后台再切回来时，webview 的内容是**重建**的（官方文档：*contents …
     // destroyed when the webview is moved into the background*），期间推给它的消息会被丢弃。

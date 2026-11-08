@@ -8,6 +8,16 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.11
+
+Storage concurrency (⑦) and process lifecycle (⑭) — both are "data or processes disappear quietly".
+
+- **Two VS Code windows are no longer two unrelated truths.** Manifest writes now take a **cross-process lock**, re-read the latest file, merge by id (newer `updatedAt` wins) and write atomically. Deletions leave a 7-day tombstone (`deleted.json`) so another window's stale snapshot cannot resurrect them; restoring from the recycle bin revokes the tombstone. `cleanup()` now elects a single "cleanup master" (non-blocking lock) instead of letting two windows delete shared, content-addressed `payloads/` from under each other.
+- **Closing a window no longer leaves orphan servers.** `ToolExecutor.dispose()` already killed background services and in-flight commands but **was never called**; `deactivate()` and the panel's `onDidDispose` now invoke it (plus a live-executor registry). On Windows the tree is killed with `taskkill /T`, because `child.kill()` leaves spawned `npm`/`node` children holding ports.
+- Two real regressions were caught by unit tests during the work: tombstones keyed by timestamp collided when several deletions happened in the same millisecond, and the resurrection allow-list was too broad, permanently exempting later peer deletions.
+
+Verified: **1,249 unit tests + 74 guard scripts green**, including `test/check-concurrency-and-lifecycle.mjs` (lock exclusivity, stale-lock takeover, two-instance merge, tombstone protection, and a real `sleep` process that must be gone after deactivate).
+
 ## What's new in 0.4.10
 
 Sensitive-data egress (review items ⑥ + ⑮), plus two gaps from the previous batch.

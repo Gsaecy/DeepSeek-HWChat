@@ -391,6 +391,8 @@ export interface CleanupResult extends StorageStats {
   scannedConversations?: number;
   /** 其中「建了但从没初始化、也没有消息」的残骸条数（已包含在 deletedConversations 里）。 */
   prunedDrafts?: number;
+  /** 本轮被另一个窗口的「清理主」跳过（跨进程锁没拿到）。 */
+  skippedByPeer?: boolean;
   /**
    * 缓存体积是否已超出 `hwchat.cacheBudgetMB`。
    *

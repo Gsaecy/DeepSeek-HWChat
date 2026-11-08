@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { AuditLog } from './agent/auditLog';
 import { pruneAttachmentCache } from './agent/attachmentCache';
 import { SkillRegistry } from './agent/skillRegistry';
-import { ToolExecutor } from './agent/toolExecutor';
+import { ToolExecutor, disposeAllToolExecutors } from './agent/toolExecutor';
 import { CleanupScheduler } from './core/cleanupScheduler';
 import { getApiKey, storeApiKey } from './core/apiKeys';
 import { describePermissionScope, formatPermissionScope, profileFor, readSettings } from './core/settings';
@@ -410,6 +410,14 @@ async function ensurePrivacyConsent(context: vscode.ExtensionContext): Promise<b
 }
 
 export async function deactivate(): Promise<void> {
+  /*
+   * 停用扩展 / 关工作区时收掉所有子进程。
+   *
+   * `ToolExecutor.dispose()` 早就实现了「杀后台服务 + 杀正在跑的命令」，
+   * 但 2026-11-08 之前**没有任何地方调用它** —— 于是 `run_command background:true`
+   * 起的服务在窗口关闭后继续占端口（外部评审 ⑭）。
+   */
+  disposeAllToolExecutors();
   await activeStorage?.flush();
   activeStorage = undefined;
 }

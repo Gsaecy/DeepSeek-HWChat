@@ -36,7 +36,8 @@ function methodBody(source, name) {
   return code.slice(index, end);
 }
 
-const cleanup = methodBody(STORAGE, 'cleanup');
+// 0.4.11 起 cleanup() 是「选主 + 委托」的薄包装，真正的逐条处理在 runCleanup()。
+const cleanup = methodBody(STORAGE, 'runCleanup');
 
 /* 1. 清理不许整轮独占写队列 */
 assert.match(cleanup, /for \(const id of ids\)/, '必须按对话逐条处理');

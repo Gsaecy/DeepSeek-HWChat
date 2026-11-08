@@ -7,7 +7,7 @@ import { isProcessAlive, sleepUntil } from './support/processHelpers';
 import { AuditLog } from '../agent/auditLog';
 import { CommandQueueFullError, CommandScheduler } from '../agent/commandScheduler';
 import { SearchResourceBusyError, SearchScheduler } from '../agent/searchScheduler';
-import { ToolExecutor, spawnCommand } from '../agent/toolExecutor';
+import { ToolExecutor, disposeAllToolExecutors, spawnCommand } from '../agent/toolExecutor';
 import {
   OperationCancelledError,
   describeTransientResourceError,
@@ -330,4 +330,29 @@ test('tool executor: 杀某一次运行不影响另一次运行的进程', async
   } finally {
     executor.dispose();
   }
+});
+
+/**
+ * 评审 ⑭：`dispose()` 早就实现了，但**从来没有被调用**。
+ * 这里验证「停用扩展」那条路径真的能收掉进程，而不是只验证方法本身。
+ */
+test('停用扩展：disposeAllToolExecutors 会杀光所有执行器拉起的后台服务', async () => {
+  const executor = new ToolExecutor(new AuditLog(auditPath), () => true);
+  const result = await executor.execute(
+    { id: 'bg-dispose', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'sleep 30', background: true }) } },
+    'agent',
+    settings({ permissionPreset: 'autopilot' }),
+    async () => true,
+    'conversation-bg-dispose',
+    { projectRoot: workspaceRoot },
+  );
+  assert.equal(result.status, 'success', result.content);
+  const pid = Number(/pid[^\d]*(\d+)/.exec(result.content)?.[1] ?? NaN);
+  assert.ok(Number.isFinite(pid), `后台命令应返回 pid：${result.content}`);
+  assert.equal(isProcessAlive(pid), true, '后台进程应真的活着（测试前提）');
+
+  disposeAllToolExecutors();
+
+  const dead = await sleepUntil(() => !isProcessAlive(pid), 3_000, 20);
+  assert.equal(dead, true, `停用扩展后后台进程 ${pid} 必须消失（否则端口一直被占）`);
 });

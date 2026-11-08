@@ -1,5 +1,5 @@
 import { fetchUrl, searchGitHubRepos, searchWeb } from './webResearch';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { basename, dirname, extname, resolve, join } from 'node:path';
 import { realpath } from 'node:fs/promises';
@@ -222,6 +222,20 @@ const COMMAND_TIMEOUT_MAX = 900;
 
 const PATH_TOOLS = ['list_directory', 'read_file', 'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file', 'delete_file'];
 
+/**
+ * 所有活着的执行器。
+ *
+ * 2026-11-08 外部评审 ⑭：`ToolExecutor.dispose()` 早就会杀后台进程与正在跑的命令，
+ * 但**从来没人调用它** —— 关窗口 / 停用扩展时进程照样活着。
+ * 这里登记一份，`deactivate()` 与面板 dispose 才能真的收干净。
+ */
+const liveExecutors = new Set<ToolExecutor>();
+
+/** 停用扩展 / 关工作区时调用：把所有执行器的子进程收干净。 */
+export function disposeAllToolExecutors(): void {
+  for (const executor of [...liveExecutors]) executor.dispose();
+}
+
 export class ToolExecutor implements vscode.Disposable {
   /** 命令独立限流：搜索和命令抢的是不同资源，不能共用一个很小的全局并发。 */
   private readonly commands = new CommandScheduler(2, 8);
@@ -252,7 +266,9 @@ export class ToolExecutor implements vscode.Disposable {
     private readonly audit: AuditLog,
     private readonly isWorkspaceTrusted: () => boolean,
     private readonly onDiagnostic: (event: ToolDiagnostic) => void = () => undefined,
-  ) {}
+  ) {
+    liveExecutors.add(this);
+  }
 
   /**
    * 工具清单。
@@ -703,6 +719,7 @@ export class ToolExecutor implements vscode.Disposable {
     }
     this.children.clear();
     disposeWorkspaceSearch();
+    liveExecutors.delete(this);
   }
 
   /**
@@ -2403,7 +2420,19 @@ function lineDelta(before: string, after: string): string {
  */
 export function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid;
-  if (process.platform !== 'win32' && pid !== undefined) {
+  if (pid === undefined) return;
+  if (process.platform === 'win32') {
+    /*
+     * Windows 没有进程组信号：`child.kill()` 只结束直接子进程，
+     * 它派生的 `node`/`npm` 子进程会留下来占端口（真实表现就是「点了停止，服务还在」）。
+     * `taskkill /T` 才会连整棵树一起收掉；`/F` 对应 SIGKILL。
+     */
+    try {
+      spawnSync('taskkill', ['/pid', String(pid), '/T', ...(signal === 'SIGKILL' ? ['/F'] : [])], { windowsHide: true });
+    } catch {
+      /* taskkill 不在 PATH 时退回下面的 child.kill */
+    }
+  } else {
     try {
       process.kill(-pid, signal);
       return;

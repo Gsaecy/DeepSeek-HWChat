@@ -40,7 +40,8 @@ function methodBody(name) {
 }
 
 // 1. 自动清理不许让任何带内容的对话离开列表。
-const cleanup = methodBody('cleanup');
+// 0.4.11 起 cleanup() 是「选主 + 委托」的薄包装，断言要看 runCleanup()。
+const cleanup = methodBody('runCleanup');
 assert.doesNotMatch(cleanup, /this\.destroyConversation\(/, 'cleanup() 不许销毁对话目录');
 assert.doesNotMatch(
   cleanup,

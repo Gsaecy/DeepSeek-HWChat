@@ -24,6 +24,7 @@ const RECALL_HAYSTACK_LIMIT = 32 * 1024;
 import { isEmptyDraftConversation } from './conversationControls';
 import { createId, createOrderedId, previewText, shortTitle } from './ids';
 import { readJsonWithBackup, removeIfPresent, writeJsonAtomic } from './jsonFile';
+import { tryFileLock, withFileLock } from './fileLock';
 import {
   AgentTaskNode,
   AgentTaskStatus,
@@ -58,7 +59,10 @@ interface Manifest {
  */
 const EMPTY_DRAFT_PRUNE_GRACE_MS = 5 * 60 * 1000;
 
-const MANIFEST_VERSION = 1 as const;
+/** manifest 的 schema 版本；测试与合并逻辑都要用同一个值。 */
+export const MANIFEST_VERSION = 1 as const;
+/** 删除墓碑保留多久：够覆盖「另一个窗口还开着」的时间窗即可。 */
+const DELETION_TOMBSTONE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * 归档标记的落盘文件名。
@@ -199,8 +203,31 @@ export class ConversationStorage {
   private cleanupScanAt = 0;
   private cleanupScanKey: string | null = null;
 
+  /** 跨进程锁：manifest 写与清理各一把（同目录，随存储一起被备份/清理）。 */
+  private readonly manifestLockPath: string;
+  private readonly cleanupLockPath: string;
+  private readonly deletedPath: string;
+  /**
+   * 删除墓碑（id → 时间）。
+   *
+   * 跨窗口合并写必须能区分两种「磁盘上没有」：
+   *  - 我刚建的 → 保留；
+   *  - 对端删掉的 → 丢弃。
+   * 只看两份 manifest 分不出来，所以删除时留一条墓碑，随 manifest 一起原子写。
+   * 墓碑只保留 7 天（`PRUNE_MS`），不会无限增长。
+   */
+  private deletedIds = new Map<string, number>();
+  /**
+   * 本次进程内「明确复活」的 id（恢复回收站 / 重建时发现目录还在）。
+   * 合并写要先从**磁盘上的墓碑**里把它们剔掉，否则刚恢复的对话会被旧墓碑再删一次。
+   */
+  private readonly resurrected = new Set<string>();
+
   constructor(private readonly rootPath: string) {
     this.manifestPath = join(rootPath, 'manifest.json');
+    this.manifestLockPath = join(rootPath, '.manifest.lock');
+    this.deletedPath = join(rootPath, 'deleted.json');
+    this.cleanupLockPath = join(rootPath, '.cleanup.lock');
     this.conversationsPath = join(rootPath, 'conversations');
     this.trashPath = join(rootPath, 'trash');
     this.safetyPath = join(rootPath, 'safety.json');
@@ -223,6 +250,9 @@ export class ConversationStorage {
         } else {
           await this.rebuildManifestFromDisk();
         }
+        const deleted = await readJsonWithBackup<{ ids?: Record<string, number> }>(this.deletedPath);
+        const cutoff = Date.now() - DELETION_TOMBSTONE_MS;
+        this.deletedIds = new Map(Object.entries(deleted?.ids ?? {}).filter(([, at]) => Number(at) > cutoff));
         // 中断消息的恢复与清单对账共用同一次遍历。
         // 以前这里是「recoverInterruptedMessages 读一遍全部消息 → reconcileManifest
         // 再读一遍」：每次 VS Code 启动都付双份 JSON 解析与 IO（21MB 历史实测多付
@@ -231,6 +261,11 @@ export class ConversationStorage {
         await this.reconcileArchiveMarkers();
         // 必须在 reconcile 之后：先让磁盘状态稳定下来，再判断「谁不见了」。
         await this.checkArchivedIntegrity();
+        /*
+         * 初始化时的 reconcile 会把磁盘上存在的条目记进 `resurrected`（它们确实没被删），
+         * 但这份豁免只该覆盖**本次写入**。留着它，对端之后删掉的对话就会一直豁免墓碑。
+         */
+        this.resurrected.clear();
         this.initialized = true;
       })();
     }
@@ -1125,7 +1160,7 @@ export class ConversationStorage {
       }
       this.conversationRevisions.delete(conversationId);
       this.cleanupScanCache.delete(conversationId);
-      this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== conversationId);
+      this.forgetManifestEntry(conversationId);
       await this.persistManifest();
       // 用户明确删掉的，必须立刻从「归档守护快照」里去掉，否则下次启动会误报缺失。
       await this.persistSafetySnapshot();
@@ -1161,7 +1196,7 @@ export class ConversationStorage {
     await this.enqueueWrite(async () => {
       await rm(this.conversationsPath, { recursive: true, force: true });
       await mkdir(this.conversationsPath, { recursive: true });
-      this.manifest = { version: MANIFEST_VERSION, conversations: [] };
+      this.replaceManifest([]);
       // 清空后增量扫描的记账也必须一起清掉，否则下次清理会沿用已不存在的对话的体积。
       this.conversationRevisions.clear();
       this.cleanupScanCache.clear();
@@ -1223,8 +1258,37 @@ export class ConversationStorage {
     }
   }
 
+  /**
+   * 清理入口：**先选主，再干活**。
+   *
+   * 2026-11-08 外部评审 ⑦：两个窗口同时清理，可能一个在按预算淘汰 `payloads/`，
+   * 另一个刚写进去的正文就被删掉。载荷是内容寻址、跨会话共享的，不能并行回收。
+   * 这里用非阻塞锁做「清理主」：拿不到就跳过这一轮（下一次定时器再试），
+   * 不做等待 —— 等待没有意义，另一个窗口正在做同样的事。
+   */
   async cleanup(options: CleanupOptions): Promise<CleanupResult> {
     await this.initialize();
+    const release = await tryFileLock(this.cleanupLockPath, { timeoutMs: 0, staleMs: 120_000 });
+    if (!release) {
+      return {
+        conversations: this.manifest.conversations.length,
+        messages: 0,
+        bytes: 0,
+        compactedMessages: 0,
+        deletedConversations: 0,
+        deletedMessageCacheBytes: 0,
+        scannedConversations: 0,
+        skippedByPeer: true,
+      };
+    }
+    try {
+      return await this.runCleanup(options);
+    } finally {
+      await release();
+    }
+  }
+
+  private async runCleanup(options: CleanupOptions): Promise<CleanupResult> {
     /*
      * 这一轮清理的整体计划。**放在写锁外面算**：它只读内存里的 manifest，
      * 不碰磁盘，却要遍历所有对话 —— 没有必要占着写队列。
@@ -1372,7 +1436,7 @@ export class ConversationStorage {
       if (!isEmptyDraftConversation(summary)) return;
       // 自动删除一律进回收站：出问题时还能找回（用户 2026-10-31 报过数据丢失）。
       if (!await this.moveToTrash(id, summary, 'draft')) return;
-      this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== id);
+      this.forgetManifestEntry(id);
       this.conversationRevisions.delete(id);
       this.cleanupScanCache.delete(id);
       plan.counters.deletedConversations += 1;
@@ -1443,7 +1507,7 @@ export class ConversationStorage {
       && now - summary.createdAt >= 60_000
     ) {
       if (!await this.moveToTrash(id, summary, 'draft')) return;
-      this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== id);
+      this.forgetManifestEntry(id);
       this.conversationRevisions.delete(id);
       this.cleanupScanCache.delete(id);
       plan.bytesById.delete(id);
@@ -1683,6 +1747,9 @@ export class ConversationStorage {
     }
     if (!restored) return false;
     await writeJsonAtomic(this.trashIndexPath, entries.filter((item) => item.id !== entryId), false).catch(() => undefined);
+    // 恢复 = 撤销删除：内存墓碑清掉，并标记「磁盘墓碑也要剔除」。
+    this.deletedIds.delete(entry.conversationId);
+    this.resurrected.add(entry.conversationId);
     this.invalidateMessagePages();
     await this.reconcileManifest();
     await this.persistSafetySnapshot();
@@ -1710,8 +1777,64 @@ export class ConversationStorage {
     return readJsonWithBackup<ChatMessage>(this.messagePath(conversationId, messageId));
   }
 
+  /**
+   * 写 manifest：**先拿跨进程锁 → 读回磁盘最新 → 按 id 合并 → 原子写**。
+   *
+   * 2026-11-08 外部评审 ⑦：旧实现直接把本进程内存快照整体写下去，两个 VS Code 窗口
+   * 各持一份时后写覆盖先写，会话会从索引里消失。
+   *
+   * 合并规则：
+   *  - 只在一侧存在 → 保留（另一个窗口新建的不能被抹掉）；
+   *  - 两侧都有 → `updatedAt` 更大的赢（内容更新的那份）；
+   *  - 本进程已删除的 id → 无论磁盘有没有都剔除（否则「删除」会被并发写复活）。
+   */
+  /**
+   * 整份替换 manifest（重建 / 清空这类「以磁盘为准」的路径）。
+   *
+   * 直接赋值会绕过 `pendingRemovals`，合并写时磁盘上的旧条目又会被当成
+   * 「另一个窗口新建的」保留下来 —— 幽灵对话就是这么复活的（真实回归，单测已覆盖）。
+   */
+  private replaceManifest(next: ConversationSummary[]): void {
+    const keep = new Set(next.map((item) => item.id));
+    for (const old of this.manifest.conversations) {
+      if (!keep.has(old.id)) this.deletedIds.set(old.id, Date.now());
+    }
+    // 磁盘上真的还有目录的条目，说明没被删：清掉内存墓碑，并标记「要从磁盘墓碑里剔除」。
+    for (const id of keep) {
+      this.deletedIds.delete(id);
+      this.resurrected.add(id);
+    }
+    this.manifest = { version: MANIFEST_VERSION, conversations: next };
+  }
+
+  /** 记住「这条已被删除」，合并写时不许被磁盘上的旧副本复活。 */
+  private forgetManifestEntry(id: string): void {
+    this.manifest.conversations = this.manifest.conversations.filter((item) => item.id !== id);
+    this.deletedIds.set(id, Date.now());
+  }
+
   private async persistManifest(): Promise<void> {
-    await writeJsonAtomic(this.manifestPath, this.manifest);
+    const snapshot = this.manifest;
+    await withFileLock(this.manifestLockPath, async () => {
+      const onDisk = await readJsonWithBackup<Manifest>(this.manifestPath);
+      const diskDeleted = await readJsonWithBackup<{ ids?: Record<string, number> }>(this.deletedPath);
+      // 必须是 Set：早先按时间戳做 Map 键，同一毫秒内删多条会互相覆盖。
+      const tombstones = new Set<string>();
+      for (const id of Object.keys(diskDeleted?.ids ?? {})) {
+        if (this.resurrected.has(id)) continue;
+        tombstones.add(id);
+      }
+      for (const id of this.deletedIds.keys()) tombstones.add(id);
+      const merged = mergeManifests(onDisk, snapshot, [...tombstones]);
+      await writeJsonAtomic(this.manifestPath, merged);
+      // 墓碑与 manifest 必须同一次写入语义：先清掉已落地条目的墓碑，再写回。
+      for (const summary of merged.conversations) this.deletedIds.delete(summary.id);
+      await writeJsonAtomic(this.deletedPath, {
+        ids: Object.fromEntries(this.deletedIds),
+      }, false).catch(() => undefined);
+      this.manifest = merged;
+      this.resurrected.clear();
+    });
   }
 
   private enqueueWrite<T = void>(task: () => Promise<T>): Promise<T> {
@@ -1764,7 +1887,7 @@ export class ConversationStorage {
         ...(existsSync(join(this.conversationsPath, id, ARCHIVED_MARKER)) ? { archived: true as const } : { archived: false }),
       });
     }
-    this.manifest = { version: MANIFEST_VERSION, conversations };
+    this.replaceManifest(conversations);
     await this.persistManifest();
   }
 
@@ -1933,7 +2056,7 @@ export class ConversationStorage {
         this.lastMessageTimestamp = lastMessage.createdAt;
       }
     }
-    this.manifest.conversations = [...summaries.values()];
+    this.replaceManifest([...summaries.values()]);
     if (changed) {
       await this.persistManifest();
     }
@@ -2332,4 +2455,28 @@ function normalizeStoredReasoning(value: unknown): ConversationSummary['reasonin
   return value === 'default' || value === 'none' || value === 'low' || value === 'medium' || value === 'high' || value === 'max'
     ? value
     : null;
+}
+
+/**
+ * 合并两份 manifest（磁盘 + 本进程），按 id 去重。
+ *
+ * 导出是为了能单测「两个窗口各写一条，最终都在」这种真实并发场景。
+ */
+export function mergeManifests(
+  onDisk: Manifest | undefined,
+  memory: Manifest,
+  tombstones: readonly string[] = [],
+): Manifest {
+  const map = new Map<string, ConversationSummary>();
+  for (const item of onDisk?.conversations ?? []) {
+    if (item?.id) map.set(item.id, item);
+  }
+  for (const item of memory.conversations) {
+    if (!item?.id) continue;
+    const existing = map.get(item.id);
+    // `>=`：同一毫秒内的本进程改动也算更新（它刚刚发生过）。
+    if (!existing || (item.updatedAt ?? 0) >= (existing.updatedAt ?? 0)) map.set(item.id, item);
+  }
+  for (const id of tombstones) map.delete(id);
+  return { version: MANIFEST_VERSION, conversations: [...map.values()] };
 }
