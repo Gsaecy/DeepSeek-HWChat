@@ -8,7 +8,16 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
-## What's new in 0.4.12
+## What's new in 0.4.8
+
+> **About the version number**: the last Marketplace release was **0.4.7**. Development kept five separate notes
+> (0.4.8 – 0.4.12); they are published as a single version, and the five sections below are all of 0.4.8.
+
+Almost every fix here is invisible when it works: a security gate that could be bypassed, two windows overwriting
+each other's archive, a compromised webview approving itself, attachments landing in the wrong conversation.
+Each one was reproduced before it was fixed, not inferred from reading code.
+
+### Webview boundary and run/draft ownership (was 0.4.12)
 
 Webview boundary (⑫) and run/draft ownership (⑨). Both start from a premise that was never written down before: **the webview may already be compromised**, so the host must not treat its messages as trustworthy.
 
@@ -19,9 +28,7 @@ Webview boundary (⑫) and run/draft ownership (⑨). Both start from a premise 
 - **Run teardown only removes its own registration.** `runs.delete(conversationId)` ran after several `await`s; if the same conversation had already started a new turn, it deleted the **new** turn, making the running dot vanish and Stop stop working. It now compares identity. Approval and decision cards are settled per `runId` for the same reason — settling them per conversation closed cards the new turn was still waiting on.
 - **Draft epoch.** `pendingAttachments` / `pendingContext` belong to "the current conversation", but every source of them is async (file dialog, clipboard decode, re-reading from disk). Switching conversations mid-flight used to push A's attachments into **B's** draft, so they got sent to the model with B's message. Every conversation switch now bumps an epoch, and both attachment paths discard stale results **with an explicit notice**. An epoch (not a conversation-id compare) is required because A → B → A leaves the id unchanged.
 
-Verified: **1,276 unit tests + 75 guard scripts green**, including `test/check-webview-boundary.mjs` (32 assertions) and two runtime assertions that severe commands carry `dangerous === true` while ordinary reads carry `false`.
-
-## What's new in 0.4.11
+### Cross-window storage concurrency and process lifecycle (was 0.4.11)
 
 Storage concurrency (⑦) and process lifecycle (⑭) — both are "data or processes disappear quietly".
 
@@ -29,9 +36,7 @@ Storage concurrency (⑦) and process lifecycle (⑭) — both are "data or proc
 - **Closing a window no longer leaves orphan servers.** `ToolExecutor.dispose()` already killed background services and in-flight commands but **was never called**; `deactivate()` and the panel's `onDidDispose` now invoke it (plus a live-executor registry). On Windows the tree is killed with `taskkill /T`, because `child.kill()` leaves spawned `npm`/`node` children holding ports.
 - Two real regressions were caught by unit tests during the work: tombstones keyed by timestamp collided when several deletions happened in the same millisecond, and the resurrection allow-list was too broad, permanently exempting later peer deletions.
 
-Verified: **1,249 unit tests + 74 guard scripts green**, including `test/check-concurrency-and-lifecycle.mjs` (lock exclusivity, stale-lock takeover, two-instance merge, tombstone protection, and a real `sleep` process that must be gone after deactivate).
-
-## What's new in 0.4.10
+### Sensitive-data egress (was 0.4.10)
 
 Sensitive-data egress (review items ⑥ + ⑮), plus two gaps from the previous batch.
 
@@ -42,9 +47,7 @@ Sensitive-data egress (review items ⑥ + ⑮), plus two gaps from the previous 
 - **Taint actually persists**: `agentRunner` copies the scope per tool call, so the earlier `untrustedIngested` flag died after one call. It is now written back to the shared run scope.
 - **Bridged VS Code tools now taint too**: their output is untrusted as well, but only native tools were marking it.
 
-Verified: **1,240 unit tests + 73 guard scripts green**, including `test/check-secret-egress.mjs` (13 assertions).
-
-## What's new in 0.4.9
+### Security boundaries (first review batch) (was 0.4.9)
 
 Security boundaries, driven by external review (GPT + Claude). Principle: **when a command cannot be statically understood, it is no longer allowed silently**. Every fix below was verified against a real reproduction, not inferred from reading code.
 
@@ -55,18 +58,21 @@ Security boundaries, driven by external review (GPT + Claude). Principle: **when
 - **Prompt injection**: external content is wrapped in `<untrusted_external_content>`; project memory now states it is a **record, not instructions** (blocking "malicious page → model summary → system memory"); the system prompt defines four trust levels; and once a run has ingested external content, commands and writes require confirmation again (taint downgrade).
 - **New**: writing auto-executed files (`.vscode/tasks.json`, `postinstall`, `.envrc`, workflows, git hooks…) always requires confirmation; bridged VS Code tools can no longer bypass this extension's `deny` via `delegateApproval`.
 
-Verified: **1235 unit tests + 72 guard scripts green**, including `test/check-security-boundaries.mjs` (27 assertions, one of them re-running the real public-redirect attack chain end to end).
 
-Still open (tracked, not claimed as fixed): OS-level process sandboxing, pinning the connection to a validated IP, cross-window storage locking, `runId` ownership for async results, webview message schema validation, and audit redaction based on known secret values.
+Still open (tracked, not claimed as fixed): OS-level process sandboxing and pinning the connection to a validated IP (custom undici `lookup`). Cross-window locking, `runId` ownership, webview message schema validation and known-value audit redaction were opened here and closed in the sections below.
 
-## What's new in 0.4.8
+### Command advice and shell compatibility (was 0.4.8)
 
 When a command was blocked by path isolation, the "rewrite it as" advice **was itself illegal** - copying it would fail again.
 
 - **The advice picked the wrong workspace**: the command ran in `Safevault_windows`, but the suggested scratch path was under `Personal Workstation OS/tmp` (a different workspace, and the conversation's bound project). The root is now chosen by where the command actually runs, and the advice starts with `mkdir -p` because that directory usually does not exist yet.
 - **Bash-only syntax was killed by `/bin/sh`**: `diff <(…) <(…)` uses process substitution, which only bash has. Commands are now inspected first (process substitution, `[[ ]]`, `=~`) and only those switch to `/bin/bash`; everything else keeps the default shell, and Windows is unchanged.
 
-Verified: **1222 unit tests + 71 guard scripts green**, plus the exact command from the report re-run end to end after applying the advice.
+### Verified
+
+**1,276 unit tests + 75 guard scripts green.** Guard scripts added in this release: `check-webview-boundary.mjs` (32),
+`check-concurrency-and-lifecycle.mjs` (15), `check-secret-egress.mjs` (13), `check-security-boundaries.mjs` (27, one of
+them re-running the real public-redirect attack chain), `check-command-advice.mjs` (17).
 
 ## What's new in 0.4.7
 
