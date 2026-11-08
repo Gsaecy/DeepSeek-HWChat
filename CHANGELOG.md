@@ -4,6 +4,38 @@
 
 - （下一版的内容写在这里）
 
+## 0.4.8
+
+命令被路径隔离策略拦下后，给出的「可直接改写为」**自己也是违规的**；外加一条 bash 语法被 `/bin/sh` 打死。
+
+- **建议里的临时目录选错了工作区**（用户 2026-11-08 贴回，11 条命令后停机）：
+
+  > 命令被路径隔离策略拦截：路径 `/tmp/mac.txt` 不在当前工作区内。
+  > 可直接改写为：`cd …/Safevault_macOS && … > …/**Personal Workstation OS**/tmp/mac.txt …`
+
+  命令是在 `Safevault_windows` 里执行的，隔离策略按**该根**判定；而建议用的是
+  「对话绑定的项目」（`Personal Workstation OS`）—— 两个不同的工作区，照着改必然再被拦。
+  现在按 `cwd` 所属的根来选（`isPathWithin`），并且**先 `mkdir -p` 再写文件**：那个
+  `tmp/` 目录当时并不存在，不建目录的建议等于没改。
+
+- **bash 专有语法被 `/bin/sh` 打死**。同一份日志里：
+
+  > `/bin/sh: -c: line 0: syntax error near unexpected token `('`
+
+  模型写了 `diff <(cd … && find …) <(find …)` —— 进程替换是 bash 才有的，而执行器
+  `shell: true` 在 POSIX 上就是 `/bin/sh`。现在运行前先探测（进程替换、`[[ … ]]`、`=~`），
+  命中就改用 `/bin/bash`；**其余命令保持默认 shell**，不改动现有的引号/展开行为；
+  Windows 没有 `/bin/bash`，维持原样。改用 bash 的那一轮，模型原本要「白跑一次再自己
+  加 `bash -c`」的开销就没了。
+
+- **验证**：把日志里那条真实命令按建议改写后**实跑了一遍**（`mkdir -p` → 两个 `find`
+  → `diff`），diff 输出与模型最终拿到的一致，两个文件都在 `Safevault_windows` 内。
+
+- 新增守护 `test/check-command-advice.mjs`（17 项）：静态要求建议按 `cwd` 选根、必须带
+  `mkdir -p`、bash 探测只切需要的那一类；真机用报告里的原命令跑纯函数。
+
+验证：**1222 条单测 + 71 个守护脚本全绿**。
+
 ## 0.4.7
 
 `replace_in_file` 因为**行首缩进**反复失败，最后「连续 3 轮工具调用全部失败」停机。

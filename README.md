@@ -8,6 +8,15 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.8
+
+When a command was blocked by path isolation, the "rewrite it as" advice **was itself illegal** - copying it would fail again.
+
+- **The advice picked the wrong workspace**: the command ran in `Safevault_windows`, but the suggested scratch path was under `Personal Workstation OS/tmp` (a different workspace, and the conversation's bound project). The root is now chosen by where the command actually runs, and the advice starts with `mkdir -p` because that directory usually does not exist yet.
+- **Bash-only syntax was killed by `/bin/sh`**: `diff <(…) <(…)` uses process substitution, which only bash has. Commands are now inspected first (process substitution, `[[ ]]`, `=~`) and only those switch to `/bin/bash`; everything else keeps the default shell, and Windows is unchanged.
+
+Verified: **1222 unit tests + 71 guard scripts green**, plus the exact command from the report re-run end to end after applying the advice.
+
 ## What's new in 0.4.7
 
 `replace_in_file` failed three times in a row on the same comment, then stopped with "3 consecutive tool failures".

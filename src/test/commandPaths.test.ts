@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { commandPathViolation } from '../agent/commandPaths';
-import { pathRewriteSuggestion } from '../agent/toolExecutor';
+import { bashOnlySyntax, pathRewriteSuggestion, shellFor } from '../agent/toolExecutor';
 
 const roots = [
   '/Users/test/AI projects/DeepSeek-HWChat',
@@ -359,4 +359,53 @@ test('the rewrite suggestion fixes every temp path, not just the first', () => {
 
 test('a single temp path is still rewritten once', () => {
   assert.match(pathRewriteSuggestion('cat /tmp/x.log', [osRoot]), /Personal Workstation OS\/tmp\/x\.log/);
+});
+
+/* ── 建议必须落在「命令所在的那个工作区」里 ─────────────────────── */
+
+/*
+ * 现场（用户 2026-11-08，11 条命令后停机）：
+ *
+ *     命令被路径隔离策略拦截：路径 /tmp/mac.txt 不在当前工作区内。
+ *     可直接改写为：`cd …/Safevault_macOS && … > /Users/…/Personal Workstation OS/tmp/mac.txt …`
+ *
+ * 建议里的临时目录属于**另一个**工作区（对话绑定的项目），而命令是在
+ * `Safevault_windows` 里执行的 —— 照着改仍然会被拦。而且那个 `tmp/` 目录并不存在。
+ */
+const TWO_ROOTS = ['/Users/x/Personal Workstation OS', '/Users/x/Safevault_windows'];
+
+test('建议用命令所在工作区（cwd）的根，不是对话绑定的项目根', () => {
+  const command = 'cd "/Users/x/Safevault_macOS" && find src -type f | sort > /tmp/mac.txt && diff -u /tmp/mac.txt /tmp/win.txt';
+  const suggestion = pathRewriteSuggestion(command, TWO_ROOTS, '/Users/x/Safevault_windows');
+  assert.match(suggestion, /Safevault_windows\/tmp\/mac\.txt/);
+  assert.doesNotMatch(suggestion, /Personal Workstation OS\/tmp/);
+});
+
+test('建议先把临时目录建出来（那个目录通常并不存在）', () => {
+  const suggestion = pathRewriteSuggestion('cat /tmp/x.log', ['/Users/x/proj'], '/Users/x/proj');
+  assert.match(suggestion, /mkdir -p '?\/Users\/x\/proj\/tmp'?/);
+});
+
+test('cwd 就是根本身时也能选对', () => {
+  const suggestion = pathRewriteSuggestion('cat /tmp/x.log', TWO_ROOTS, '/Users/x/Safevault_windows');
+  assert.match(suggestion, /Safevault_windows\/tmp\/x\.log/);
+});
+
+/* ── bash 专有语法：/bin/sh 跑不了，要换 bash ───────────────────── */
+
+test('进程替换与 [[ ]] 会被认出来（/bin/sh 会直接语法错误）', () => {
+  assert.ok(bashOnlySyntax('diff <(cd a && find .) <(find .)'));
+  assert.ok(bashOnlySyntax('[[ -f x ]] && echo yes'));
+  assert.ok(bashOnlySyntax('if [[ "$a" =~ ^x ]]; then :; fi'));
+});
+
+test('普通命令不触发（保持默认 sh，避免改变展开/引号行为）', () => {
+  assert.equal(bashOnlySyntax('find . -name "*.ts" | sort > /tmp/x.txt'), undefined);
+  assert.equal(bashOnlySyntax('grep -n foo src/a.ts && wc -l src/b.ts'), undefined);
+});
+
+test('只有需要时才切 /bin/bash；Windows 不切', () => {
+  assert.equal(shellFor('diff <(a) <(b)', 'darwin'), '/bin/bash');
+  assert.equal(shellFor('ls -la', 'darwin'), true);
+  assert.equal(shellFor('diff <(a) <(b)', 'win32'), true);
 });

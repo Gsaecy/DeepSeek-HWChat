@@ -1328,7 +1328,7 @@ export class ToolExecutor implements vscode.Disposable {
     const id = `bg-${++this.backgroundSequence}`;
     const child = spawn(command, {
       cwd,
-      shell: true,
+      shell: shellFor(command),
       windowsHide: true,
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1507,7 +1507,7 @@ export class ToolExecutor implements vscode.Disposable {
         roots.map((root) => root.fsPath),
         cwd,
       );
-      if (violation) return `${violation}${pathRewriteSuggestion(command, roots.map((root) => root.fsPath), preferredRoot?.fsPath ?? cwd)}`;
+      if (violation) return `${violation}${pathRewriteSuggestion(command, roots.map((root) => root.fsPath), cwd)}`;
     }
     return undefined;
   }
@@ -1848,6 +1848,40 @@ function success(summary: string, content: string): ToolExecutionResult {
   return { status: 'success', summary, content, approval: 'not-required' };
 }
 
+/** 单引号包裹，供建议里直接复制执行。路径里可能有空格。 */
+function shellQuote(value: string): string {
+  return /[^\w@%+=:,./-]/.test(value) ? `'${value.replaceAll("'", `'\\''`)}'` : value;
+}
+
+/**
+ * 命令里的 bash 专有语法。
+ *
+ * 真实故障（2026-11-08 用户贴回）：模型写 `diff <(cd … && find …) <(find …)`，
+ * 执行器用 `shell: true` —— 在 macOS/Linux 上就是 `/bin/sh`，进程替换是 bash 才有的，
+ * 于是只拿到一行 `/bin/sh: syntax error near unexpected token '('`，白跑一轮。
+ *
+ * 返回命中的人话名字（用于日志/测试）；没有则 `undefined`。
+ * 误判的代价很小（用 bash 跑同样的命令，结果一样），漏判的代价是整轮失败 —— 所以宁可宽。
+ */
+export function bashOnlySyntax(command: string): string | undefined {
+  if (/<\(|>\(/.test(command)) return 'process substitution (<(…) / >(…))';
+  if (/\[\[|\]\]/.test(command)) return '[[ … ]]';
+  if (/=~/.test(command)) return '=~';
+  return undefined;
+}
+
+/**
+ * 该用哪个 shell。
+ *
+ * 只有在**确实需要** bash 时才切过去：默认仍然是平台默认 shell，
+ * 免得改变用户已经在用的引号/展开行为。Windows 没有 `/bin/bash`，保持原状。
+ */
+export function shellFor(command: string, platform: string = process.platform): string | true {
+  if (platform === 'win32') return true;
+  if (!bashOnlySyntax(command)) return true;
+  return existsSync('/bin/bash') ? '/bin/bash' : true;
+}
+
 /**
  * 路径被拒时给出**可直接使用**的替代命令，而不只是"换路径"。
  *
@@ -1859,8 +1893,20 @@ function success(summary: string, content: string): ToolExecutionResult {
  * 做法：把最外层的临时目录（`/tmp`、`$TMPDIR`、`~/…`）替换成工作区内的 `tmp/`。
  * 其它情况返回空串（不瞎猜）。
  */
-export function pathRewriteSuggestion(command: string, roots: readonly string[], preferredRoot?: string): string {
-  const root = preferredRoot && roots.some((item) => samePath(item, preferredRoot)) ? preferredRoot : roots[0];
+export function pathRewriteSuggestion(command: string, roots: readonly string[], cwd?: string): string {
+  /*
+   * 临时目录必须落在**命令实际所在的那个工作区根**里。
+   *
+   * 真实故障（2026-11-08 用户贴回）：命令 `cd …/Safevault_macOS && … > /tmp/mac.txt`
+   * 在 `Safevault_windows` 里执行，被拦后我们建议写到
+   * `Personal Workstation OS/tmp/mac.txt` —— 那是「对话绑定的项目」，**不是**命令
+   * 所在的工作区，照着改仍然被拦。一条「改了但没用」的建议比不给建议更浪费时间。
+   *
+   * 隔离策略按 cwd 所属的根判定，所以这里也必须用同一个根。
+   */
+  const root = (cwd ? roots.find((item) => isPathWithin(item, cwd)) : undefined)
+    ?? roots.find((item) => cwd !== undefined && samePath(item, cwd))
+    ?? roots[0];
   if (!root) return '';
   const directory = join(root, 'tmp');
   /*
@@ -1896,7 +1942,15 @@ export function pathRewriteSuggestion(command: string, roots: readonly string[],
   if (!replaced) return '';
   rewritten += command.slice(lastIndex);
   if (rewritten === command) return '';
-  return tt('path.blockedSuggestion', { command: rewritten, directory });
+  /*
+   * 先把目录建出来再改写。
+   *
+   * 真实故障（2026-11-08）：`<工作区根>/tmp` 并不存在，建议里直接 `> …/tmp/x.txt`
+   * 会以 `No such file or directory` 收场 —— 又是一条「照抄也没用」的建议。
+   * `mkdir -p` 是幂等的，放在最前面不影响原有语义。
+   */
+  const prepared = `mkdir -p ${shellQuote(directory)} && ${rewritten}`;
+  return tt('path.blockedSuggestion', { command: prepared, directory });
 }
 
 function deniedResult(summary: string): ToolExecutionResult {
@@ -2418,7 +2472,7 @@ export function spawnCommand(
     const detached = process.platform !== 'win32';
     const child = spawn(command, {
       cwd,
-      shell: true,
+      shell: shellFor(command),
       windowsHide: true,
       detached,
       stdio: ['ignore', 'pipe', 'pipe'],
