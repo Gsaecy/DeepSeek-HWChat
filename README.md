@@ -16,6 +16,14 @@ It ships a compact chat surface and settings page, native streaming tool calling
 This release fixes two kinds of "it just stopped": a healthy run aborting itself, and a conversation that
 grows long with no warning and no way out.
 
+### Request budget: fold the oldest tool outputs when over
+
+Per your choice (A): when over budget, fold the oldest tool outputs first, keeping conclusions and the most recent turns.
+
+- Pruning used to be **count-based only** (keep the last 3 payloads) — but "three" and "how big" are different things; three at the 200KB cap is 600KB.
+- It now prunes by count, then by **total bytes** (same measure as the gauge), folding from the **oldest** until it fits.
+- **The newest payload is never folded**; folding drops only the raw text — status, summary and changed files stay.
+
 ### Conversation length gauge + "Continue in a new chat" (was 0.4.14)
 
 The panel only ever showed a **cumulative billed token count** (that 1.03M figure). That is not context length — it tells you nothing about how close the conversation is to not fitting.

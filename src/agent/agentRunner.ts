@@ -416,7 +416,11 @@ export class AgentRunner {
             changedFiles: result.changedFiles,
           }),
         });
-        pruneToolPayloads(requestMessages);
+        /*
+         * 先按条数折（保留最近 3 条），再按总预算折最旧的 —— 用户选的方案 A。
+         * 预算按 token 上限反推字节（4 字符 ≈ 1 token），与对话长度进度条同口径。
+         */
+        pruneToolPayloads(requestMessages, TOOL_PAYLOAD_KEEP, DEFAULT_CONTEXT_TOKEN_BUDGET * 4);
         if (result.status !== 'error' && result.status !== 'denied') roundFailed = false;
 
         // 工具刚被取消：不要等到下一轮才反应，立刻停下。
@@ -533,38 +537,83 @@ export class AgentRunner {
  * 细节随时可以用同样的工具再查一次（文件也还在磁盘上）。所以这里做的是
  * 「最近的留全，早的留摘要」，和跨轮记忆采用同一条原则。
  */
+import { DEFAULT_CONTEXT_TOKEN_BUDGET } from '../core/contextBudget';
+
 const TOOL_PAYLOAD_KEEP = 3;
 
-export function pruneToolPayloads(messages: ChatRequestMessage[], keep = TOOL_PAYLOAD_KEEP): number {
+/**
+ * 折叠一条工具载荷（保留结论与改动文件，丢掉原文）。
+ * 返回 true 表示这次真的折了。
+ */
+function foldToolPayloadAt(messages: ChatRequestMessage[], at: number): boolean {
+  const message = messages[at];
+  if (!message || typeof message.content !== 'string') return false;
+  let payload: { status?: string; summary?: string; result?: unknown; changedFiles?: unknown; folded?: boolean };
+  try {
+    payload = JSON.parse(message.content) as typeof payload;
+  } catch {
+    return false;
+  }
+  if (payload.folded) return false;
+  messages[at] = {
+    ...message,
+    content: JSON.stringify({
+      status: payload.status,
+      summary: payload.summary,
+      folded: true,
+      result: '（早期工具输出已折叠：结论见任务树，需要原文请重新执行该工具）',
+      changedFiles: payload.changedFiles,
+    }),
+  };
+  return true;
+}
+
+/**
+ * 请求体的总字节数（按真正会发出去的内容估）。
+ *
+ * 只用 `content` 的长度近似：请求里最大的部分就是正文与工具输出，
+ * 角色名、id 这些开销可以忽略；要的是「量级对不对」，不是精确到字节。
+ */
+export function requestBytes(messages: readonly ChatRequestMessage[]): number {
+  let total = 0;
+  for (const message of messages) {
+    if (typeof message.content !== 'string') continue;
+    total += Buffer.byteLength(message.content);
+  }
+  return total;
+}
+
+/**
+ * 折叠早期工具输出，**先按条数，再按总预算**。
+ *
+ * 用户 2026-11-09 选了方案 A：「超预算时先折叠最旧的工具输出、保留结论与最近几轮」。
+ *
+ * 为什么不能只按条数（`keep = 3`）：一次运行里单条工具输出上限 200KB，
+ * 三条就是 600KB；再加上历史窗口，请求体可以很大 —— 而「几条」和「多大」不是一回事。
+ * 所以按条数折完之后再看总字节：仍然超预算就**从最旧的继续折**，
+ * 但**永远保留最新那一条**（它通常正是模型下一步要用的）。
+ */
+export function pruneToolPayloads(
+  messages: ChatRequestMessage[],
+  keep = TOOL_PAYLOAD_KEEP,
+  budgetBytes = 0,
+): number {
   const toolIndexes: number[] = [];
   for (let index = 0; index < messages.length; index += 1) {
     if (messages[index]?.role === 'tool') toolIndexes.push(index);
   }
-  const cutoff = toolIndexes.length - Math.max(0, keep);
-  if (cutoff <= 0) return 0;
   let folded = 0;
-  for (let index = 0; index < cutoff; index += 1) {
-    const at = toolIndexes[index]!;
-    const message = messages[at];
-    if (!message || typeof message.content !== 'string') continue;
-    let payload: { status?: string; summary?: string; result?: unknown; changedFiles?: unknown; folded?: boolean };
-    try {
-      payload = JSON.parse(message.content) as typeof payload;
-    } catch {
-      continue;
-    }
-    if (payload.folded) continue;
-    messages[at] = {
-      ...message,
-      content: JSON.stringify({
-        status: payload.status,
-        summary: payload.summary,
-        folded: true,
-        result: '（早期工具输出已折叠：结论见任务树，需要原文请重新执行该工具）',
-        changedFiles: payload.changedFiles,
-      }),
-    };
-    folded += 1;
+  const cutoff = toolIndexes.length - Math.max(0, keep);
+  for (let index = 0; index < Math.max(0, cutoff); index += 1) {
+    if (foldToolPayloadAt(messages, toolIndexes[index]!)) folded += 1;
+  }
+  if (budgetBytes <= 0) return folded;
+  /*
+   * 预算这一轮从**最旧的**还没折的开始折，直到装得下；最新一条永远不动。
+   */
+  for (let index = 0; index < toolIndexes.length - 1; index += 1) {
+    if (requestBytes(messages) <= budgetBytes) break;
+    if (foldToolPayloadAt(messages, toolIndexes[index]!)) folded += 1;
   }
   return folded;
 }

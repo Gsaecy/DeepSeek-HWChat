@@ -110,8 +110,9 @@ check(
   /detail\?\.tools\?\.\[index\] \?\? detail\?\.tools\?\.find/.test(PANEL),
 );
 check(
-  '运行内工具输出只留最近几条全文',
-  /pruneToolPayloads\(requestMessages\)/.test(RUNNER) && /const TOOL_PAYLOAD_KEEP = 3;/.test(RUNNER),
+  '运行内工具输出只留最近几条全文，并按总预算继续折最旧的',
+  /pruneToolPayloads\(requestMessages, TOOL_PAYLOAD_KEEP, DEFAULT_CONTEXT_TOKEN_BUDGET \* 4\)/.test(RUNNER)
+    && /const TOOL_PAYLOAD_KEEP = 3;/.test(RUNNER),
 );
 
 /* ── 3. 全文保留：base64 落盘、工具输出搬进 payloads ──────────────── */
