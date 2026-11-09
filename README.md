@@ -8,20 +8,24 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
-## What's new in 0.4.14
+## What's new in 0.4.12
 
-### Conversation length gauge + "Continue in a new chat"
+> **About the version number**: the last Marketplace release was **0.4.11**. Development kept three notes
+> (0.4.12 – 0.4.14); they are published as a single version — the three sections below are all of 0.4.12.
+
+This release fixes two kinds of "it just stopped": a healthy run aborting itself, and a conversation that
+grows long with no warning and no way out.
+
+### Conversation length gauge + "Continue in a new chat" (was 0.4.14)
 
 The panel only ever showed a **cumulative billed token count** (that 1.03M figure). That is not context length — it tells you nothing about how close the conversation is to not fitting.
 
 - **A length gauge** whose measurement matches the real request (message text plus attachment text; image base64, tool executions and reasoning are excluded). Three states: normal / warn at ≥70% / over at ≥90%.
 - **When over, a "Continue in a new chat" button appears**: it creates a new conversation that references the current one's digest, reusing the existing continuation link — compressing the conversation by starting a fresh window. The original conversation is untouched.
 
-Verified: **1,299 unit tests + 77 guard scripts green**, including three real Chromium states (9% / 78% / 148%) where the over state actually clicks the button.
+Verified at that point: **1,299 unit tests + 77 guard scripts green**, including three real Chromium states (9% / 78% / 148%) where the over state actually clicks the button.
 
-## What's new in 0.4.13
-
-### "request failed: terminated" — a healthy run aborted itself (reported 2026-11-09 14:03)
+### A dropped connection (`terminated`) no longer ends the agent (was 0.4.13)
 
 A perfectly normal run (44 commands, 6 files changed) stopped mid-way with "request failed: terminated".
 
@@ -34,9 +38,7 @@ A perfectly normal run (44 commands, 6 files changed) stopped mid-way with "requ
 
 Verified: two new real-stream tests (drop before the first chunk → second request succeeds; "half a sentence" then drop → no retry). **1,294 unit tests + 76 guard scripts green.**
 
-## What's new in 0.4.12
-
-### "Stalled" stopped the whole agent (reported 2026-11-09 13:57)
+### Idle timeout scales with the request size (was 0.4.12)
 
 A run reached **1.03M tokens**, then failed with "no new data for 120s (idle timeout / stalled:mid-stream)" and the agent stopped.
 
@@ -49,7 +51,7 @@ The cause was not the network: the same 120-second window was applied to request
 
 **Also fixed**: when `run_command`'s `cwd` pointed at a parent of the workspace roots, the error was a bare "the path must be inside the workspace" and the model could only keep guessing. It now lists the **available workspace roots** and states that a shared parent folder is not part of the workspace.
 
-Verified: **1,291 unit tests + 76 guard scripts green**, including the new `requestBudget.test.ts` (5 cases, one of them the 1.03M-token size) and the "stall counts as interruption" assertion.
+Verified at that point: **1,291 unit tests + 76 guard scripts green**, including the new `requestBudget.test.ts` and the "stall counts as interruption" assertion.
 
 ## What's new in 0.4.11
 
