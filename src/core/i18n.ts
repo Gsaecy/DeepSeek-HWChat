@@ -494,7 +494,7 @@ const DICTIONARY: Record<string, Entry> = {
   'chat.stopped': { zh: '已停止生成。', en: 'Generation stopped.' },
   'chat.requestFailed': { zh: '请求失败：{error}', en: 'Request failed: {error}' },
   'chat.aborted.timeout': { zh: '这次运行超时被中止了。想要更长的等待，把设置里的「请求超时」调大；长命令请用 `background: true` 后台跑，再轮询日志。已经执行过的步骤都保留着，重发一句即可继续。', en: 'This run was stopped by a timeout. Raise the request timeout in settings, or run long commands in the background with `background: true` and poll the log. Completed steps are kept; send a follow-up to continue.' },
-  'chat.aborted.stalled': { zh: '已经连上，但 {seconds} 秒没有收到新数据，本轮被判定为「卡住」而不是断网。最省事的做法：把设置里的「请求超时」调大；如果你配了代理，可以在「代理直连名单」里把该域名加上（默认已包含 api.deepseek.com），避免几 MB 的请求体卡在代理缓冲里。已经执行过的步骤都保留，重发一句即可继续。', en: 'The request connected but received no data for {seconds}s, so this run was treated as stalled rather than disconnected. Cheapest fixes: raise the request timeout, or add the host to the proxy bypass list (api.deepseek.com is included by default) so multi-MB request bodies do not sit in a proxy buffer. Completed steps are kept — send a follow-up to continue.' },
+  'chat.aborted.stalled': { zh: '已经连上，但 {seconds} 秒没有收到新数据，本轮被判为「卡住」而不是断网 —— 这是**中断，不是失败**：已经写出来的内容、已经执行过的步骤、清单里还没跑的消息都保留着，回一句「继续」就能接着做。请求越大、首字越慢，空闲判定现在会按请求体自动放宽（上限 10 分钟）；如果想更宽松，把设置里的「请求超时」调大即可。如果配了代理，也可以在「代理直连名单」里加上该域名（默认已包含 api.deepseek.com），避免几 MB 的请求体卡在代理缓冲里。', en: 'The connection was alive but sent nothing for {seconds}s, so this turn was treated as stalled rather than disconnected. This is an **interruption, not a failure**: everything already written, every step already executed and every unstarted message in the list is kept — reply "continue" to carry on. Larger requests take longer to produce their first token, so the idle window now widens automatically with the request size (capped at 10 minutes); raise the request timeout in Settings for more. If you use a proxy, add the host to the bypass list (api.deepseek.com is included by default) so multi-MB bodies do not sit in a proxy buffer.' },
   'chat.aborted.network': { zh: '连接被中途断开（不是你的操作，也不是服务报错）：常见原因是代理断线或服务端关闭长连接。检查代理是否稳定，然后重发一句继续 —— 已执行的步骤不会丢。', en: 'The connection was dropped mid-run (not your action and not a service error): usually the proxy dropping out or the server closing the long-lived connection. Check the proxy, then send a follow-up to continue; completed steps are not lost.' },
   'chat.aborted.user': { zh: '已停止。已经执行过的步骤都保留，未执行的消息仍在清单里，下次运行会接着执行。', en: 'Stopped. Completed steps are kept, and unexecuted messages stay in the list for the next turn.' },
   'chat.stoppedBeforeRun': { zh: '任务在执行前被停止。', en: 'The task was stopped before it ran.' },
@@ -1219,7 +1219,16 @@ const DICTIONARY: Record<string, Entry> = {
   'path.blockedSimple': { zh: '命令被路径隔离策略拦截：路径 {path} 不在当前工作区内。**换路径，不要重试同一写法**：把文件放到工作区内（例如 <工作区根>/tmp/），或改用读写文件的工具。', en: 'Blocked by path isolation: {path} is outside the current workspace. **Change the path instead of retrying the same one**: keep the file inside the workspace (for example <workspace root>/tmp/) or use the file tools instead.' },
   'path.noWorkspace': { zh: '当前没有打开的工作区。', en: 'No workspace is currently open.' },
   'path.ambiguous': { zh: '路径「{value}」在多个工作区根目录中同时存在（{roots}），无法判断目标。请在路径前加上根目录名，例如「{example}」。', en: 'The path "{value}" exists in several workspace roots ({roots}), so the target is ambiguous. Prefix it with a root name, for example "{example}".' },
-  'path.outsideWorkspace': { zh: '路径必须位于当前 VS Code 工作区内。', en: 'The path must be inside the current VS Code workspace.' },
+  /*
+   * 必须把**可用的根**列出来。
+   * 现场（2026-11-09）：模型想在某几个仓库的共同上级目录里 `ls`，被判越界，
+   * 而旧文案只有一句「路径必须位于工作区内」—— 模型不知道该改成什么，
+   * 只能反复试，最后撞上「连续 3 轮无进展」停机。
+   */
+  'path.outsideWorkspace': {
+    zh: '路径必须位于当前 VS Code 工作区内。可用的工作区根：{roots}。要跨仓库操作，请把 cwd 设成其中一个根，再用该根内的相对路径（例如 cwd=某个根，命令里写子目录名）；上级公共目录不是工作区。',
+    en: 'The path must be inside the current VS Code workspace. Available workspace roots: {roots}. To work across repositories, set cwd to one of those roots and use paths relative to it; a shared parent folder is not part of the workspace.',
+  },
   'path.homeReference': { zh: '参数引用了 HOME 或用户目录：{value}', en: 'The argument references HOME or a user directory: {value}' },
   'path.notInside': { zh: '路径不在当前工作区内：{value}', en: 'The path is outside the current workspace: {value}' },
 

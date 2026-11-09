@@ -8,6 +8,23 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.12
+
+### "Stalled" stopped the whole agent (reported 2026-11-09 13:57)
+
+A run reached **1.03M tokens**, then failed with "no new data for 120s (idle timeout / stalled:mid-stream)" and the agent stopped.
+
+The cause was not the network: the same 120-second window was applied to requests of every size. Bigger request, slower first token — and during that silence nothing arrives at all. The fixed 120s fired first. Worse, it was treated as a **failure**, so the user believed the work was lost.
+
+- **Idle window scales with the request** (new `src/core/requestBudget.ts`): allowed silence = base timeout + prefill time (a conservative 2,000 tokens/s), capped at **600s**. A 3 KB request still gets 120s; 1.03M tokens gets 600s; a larger "request timeout" in Settings always wins.
+- **Stall before the first token retries once** (nothing was received, so resending is safe); only a second stall is reported.
+- **A stall is an interruption, not a failure**: content already written, steps already executed and unstarted messages are all kept — reply "continue".
+- The message now says exactly that, and mentions that the idle window widened automatically.
+
+**Also fixed**: when `run_command`'s `cwd` pointed at a parent of the workspace roots, the error was a bare "the path must be inside the workspace" and the model could only keep guessing. It now lists the **available workspace roots** and states that a shared parent folder is not part of the workspace.
+
+Verified: **1,291 unit tests + 76 guard scripts green**, including the new `requestBudget.test.ts` (5 cases, one of them the 1.03M-token size) and the "stall counts as interruption" assertion.
+
 ## What's new in 0.4.11
 
 ### The third instance of the same inconsistency: web tools ignored the preset

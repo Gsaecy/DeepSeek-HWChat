@@ -8,6 +8,7 @@ import {
   UsageInfo,
 } from '../core/types';
 import { tt } from '../core/i18n';
+import { stallExtended, stallIdleSeconds } from '../core/requestBudget';
 import { hasImageParts, isTextOnlyContentRejection, stripImageParts } from './visionFallback';
 import { sanitizeJsonStrings } from '../core/textSafety';
 import { registerKnownSecret } from '../agent/auditLog';
@@ -348,8 +349,23 @@ export class DeepSeekClient {
       Authorization: `Bearer ${apiKey}`,
       ...sanitizeHeaders(settings.requestHeaders),
     });
-    const idleMs = Math.max(1, settings.requestTimeoutSeconds) * 1000;
-    const timeoutMessage = tt('api.timeout', { seconds: settings.requestTimeoutSeconds });
+    /*
+     * 空闲判定必须**按本次请求体大小放宽**：请求越大，首字延迟越长。
+     *
+     * 真实故障（2026-11-09）：上下文涨到 1.03M tokens，prefill 期间一个字节都不回，
+     * 固定 120 秒先到点 —— 整轮被判「卡住」，agent 停下。规则见 `core/requestBudget`。
+     */
+    /*
+     * 请求体与空闲判定都必须在**循环内**算：重试会改写 `body`
+     * （去掉模型不认的 `reasoning_effort`、去掉图片），拿循环外编码好的旧文本重发，
+     * 等于让那次重试白做 —— 单测 `retries without an unsupported reasoning control`
+     * 当场抓到了这个错误。
+     */
+    let requestText = '';
+    let idleMs = Math.max(1, settings.requestTimeoutSeconds) * 1000;
+    let idleSeconds = Math.max(1, settings.requestTimeoutSeconds);
+    let timeoutMessage = tt('api.timeout', { seconds: settings.requestTimeoutSeconds });
+    let loggedExtension = false;
 
     /*
      * 每次尝试都用**新的** AbortController：一旦某次超时把它 abort 了，这条控制器
@@ -362,6 +378,8 @@ export class DeepSeekClient {
 
     let response: ResponseLike;
     let statusAttempt = 0;
+    /** 首字未到就卡住的重试次数（只允许 1 次，见下面的说明）。 */
+    let stallRetries = 0;
     const transport = this.transport(settings);
     while (true) {
       const current = newAttempt();
@@ -371,7 +389,14 @@ export class DeepSeekClient {
        * 而不是笼统一句「请求失败」。
        */
       let stalledByUs = false;
-      const requestText = this.encodeBody(body, endpoint);
+      requestText = this.encodeBody(body, endpoint);
+      idleSeconds = stallIdleSeconds(requestText.length, settings.requestTimeoutSeconds);
+      idleMs = idleSeconds * 1000;
+      timeoutMessage = tt('api.timeout', { seconds: idleSeconds });
+      if (!loggedExtension && stallExtended(requestText.length, settings.requestTimeoutSeconds)) {
+        loggedExtension = true;
+        this.logNetwork(`[stall] 本次请求较大，空闲判定从 ${settings.requestTimeoutSeconds}s 放宽到 ${idleSeconds}s`);
+      }
       try {
         response = await withDeadline(
           fetchWithNetworkRetry(endpoint, {
@@ -389,7 +414,17 @@ export class DeepSeekClient {
         );
       } catch (error) {
         if (stalledByUs && !options.signal?.aborted) {
-          throw new StreamStalledError('awaiting-response', Math.round(idleMs / 1000), requestText.length, Boolean(settings.proxy?.trim()));
+          /*
+           * 首字还没到就判了「卡住」：这时**一个 token 都没收到**，重发完全安全，
+           * 而且大请求的首字延迟本来就波动很大（排队靠后、prefill 抖动）。
+           * 重试一次比直接把整轮 agent 停掉划算得多；仍然失败才报给用户。
+           */
+          if (stallRetries < 1) {
+            stallRetries += 1;
+            this.logNetwork(`[stall] 等待 ${idleSeconds}s 没有响应，重试一次（请求体 ${requestText.length} 字符）`);
+            continue;
+          }
+          throw new StreamStalledError('awaiting-response', idleSeconds, requestText.length, Boolean(settings.proxy?.trim()));
         }
         if (isAbortError(error) && options.signal?.aborted) {
           throw new RequestCancelledError();
@@ -444,7 +479,7 @@ export class DeepSeekClient {
      * 于是「模型慢慢写」不会失败，「连接真的死了」仍然在 N 秒后被判超时。
      */
     try {
-      return await parseSse(response.body, options.onDelta, options.signal, idleMs, timeoutMessage);
+      return await parseSse(response.body, options.onDelta, options.signal, idleMs, timeoutMessage, idleSeconds);
     } catch (error) {
       if (options.signal?.aborted) {
         throw new RequestCancelledError();
@@ -1118,6 +1153,7 @@ async function parseSse(
   /** 「多久没收到数据就判超时」；0 表示不限制。见 `withDeadline`。 */
   idleMs = 0,
   timeoutMessage = '',
+  idleSeconds?: number,
 ): Promise<StreamChatResult> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -1169,7 +1205,7 @@ async function parseSse(
      * 「模型还在想」还是「代理断了」—— 前者只要调大超时就好，后者才需要查代理。
      */
     if (stalledMidStream && !signal?.aborted) {
-      throw new StreamStalledError('mid-stream', Math.round(idleMs / 1000), 0, false);
+      throw new StreamStalledError('mid-stream', idleSeconds ?? Math.round(idleMs / 1000), 0, true);
     }
     throw error;
   } finally {

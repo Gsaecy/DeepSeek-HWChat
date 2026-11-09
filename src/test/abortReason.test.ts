@@ -74,6 +74,16 @@ test('用户主动停止仍然是 user（即使错误形状像卡住）', () => 
   assert.equal(classifyAbort(error, true), 'user');
 });
 
+test('「卡住」算中断（isAbortLikeError），不会被当成请求失败', () => {
+  /*
+   * 用户 2026-11-09：运行到 1.03M tokens 时被判「卡住」，界面显示
+   * 「请求失败：等待 120 秒没有收到新数据」。它不是失败 —— 已经收到的内容还在，
+   * 队列里没跑的消息也还在，用户续一句就能继续。把它归成失败会让人以为白干了。
+   */
+  const error = Object.assign(new Error('stalled:mid-stream:120'), { name: 'StreamStalledError' });
+  assert.equal(isAbortLikeError(error), true);
+});
+
 test('普通网络错误不会被误判成 stalled', () => {
   const error = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' });
   assert.equal(classifyAbort(error, false), 'network');

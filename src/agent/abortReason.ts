@@ -46,7 +46,12 @@ export function isAbortLikeError(error: unknown): boolean {
     if (typeof item === 'string') return item.trim().toLowerCase() === 'aborted';
     if (item instanceof Error) {
       const name = item.name;
-      if (name === 'AbortError' || name === 'TimeoutError' || name === 'RequestCancelledError') return true;
+      /*
+       * `StreamStalledError` 也必须算「被掐断」：它是我们自己的空闲判定，
+       * 不是服务端报错。不算进来的后果（用户 2026-11-09 看到的）：
+       * 「卡住」被当成「请求失败」，界面上显示成一次失败而不是可续的中断。
+       */
+      if (name === 'AbortError' || name === 'TimeoutError' || name === 'RequestCancelledError' || name === 'StreamStalledError') return true;
       return item.message.trim().toLowerCase() === 'aborted';
     }
     return false;

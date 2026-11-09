@@ -120,7 +120,7 @@ export function resolveWorkspacePath<T extends WorkspaceRootLike>(
     const candidate = absoluteCandidate ?? resolve(rootPath, value);
     if (isPathWithin(rootPath, candidate)) return { root, fsPath: candidate };
   }
-  throw new Error(tt('path.outsideWorkspace'));
+  throw new Error(tt('path.outsideWorkspace', { roots: roots.map((root) => root.fsPath).join(tt('common.listSeparator')) }));
 }
 
 import { isPathWithin, pathKey, samePath } from '../core/pathIdentity';
