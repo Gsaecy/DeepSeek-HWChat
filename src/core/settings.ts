@@ -102,6 +102,12 @@ export function readSettings(): ChatSettings {
     // 只由对话自己的存档打开（见 applyRuntimeControls）。没有全局开关：
     // 联网会把内容发给第三方检索服务，不能靠一个会被历史残留影响的设置项决定。
     internetReference: false,
+    /*
+     * 项目技术文档：读不懂就按「自动维护」，与 package.json 的默认值一致。
+     * 这是预设之外唯一会改变「要不要问」的开关 —— 所以它是 machine 作用域，
+     * 且在设置页单独列一行（用户 2026-11-09 选定）。
+     */
+    projectDoc: normalizeProjectDocMode(configuration.get<unknown>('projectDoc', 'auto')),
     ...permission,
     maxReadBytes: clamp(configuration.get<number>('maxReadBytes', 512_000), 16_384, 5_242_880),
     maxToolOutputBytes: clamp(configuration.get<number>('maxToolOutputBytes', 200_000), 16_384, 2_097_152),
@@ -147,6 +153,8 @@ export async function updateSettings(values: Partial<ChatSettings>): Promise<voi
     ['maxCommandSeconds', values.maxCommandSeconds],
     ['searchExclude', values.searchExclude],
     ['auditRetentionDays', values.auditRetentionDays],
+    // 项目技术文档：machine 作用域，写回与读取同一处（见 `projectDocMode`）。
+    ['projectDoc', values.projectDoc === undefined ? undefined : normalizeProjectDocMode(values.projectDoc)],
     ['language', values.language === undefined ? undefined : normalizeLanguageSetting(values.language)],
   ];
   for (const [key, value] of entries) {
@@ -349,6 +357,16 @@ export function applyRuntimeControls(
     internetReference: internetReference === true,
     ...permission,
   };
+}
+
+/** 项目技术文档的模式：只认三个合法值，其余（含 undefined）一律按「自动维护」。 */
+export function normalizeProjectDocMode(value: unknown): 'auto' | 'ask' | 'off' {
+  return value === 'ask' || value === 'off' ? value : 'auto';
+}
+
+/** 取生效的项目技术文档模式。字段可缺省（老设置 / 测试夹具），缺省即「自动维护」。 */
+export function projectDocMode(settings: Pick<ChatSettings, 'projectDoc'>): 'auto' | 'ask' | 'off' {
+  return normalizeProjectDocMode(settings.projectDoc);
 }
 
 export function normalizeGuardedPolicy(value: unknown, fallback: ChatSettings['dangerousCommandPolicy'] = 'deny'): ChatSettings['dangerousCommandPolicy'] {

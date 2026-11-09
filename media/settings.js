@@ -25,7 +25,7 @@
     'systemPrompt', 'historyRetentionDays', 'taskCacheRetentionHours',
     'cacheBudgetMB', 'cleanupIntervalMinutes', 'defaultMode',
     'maxReadBytes', 'maxToolOutputBytes',
-    'maxCommandSeconds', 'auditRetentionDays', 'language', 'searchExclude',
+    'maxCommandSeconds', 'auditRetentionDays', 'language', 'searchExclude', 'projectDoc',
   ];
   const fields = Object.fromEntries(fieldIds.map((id) => [id, document.getElementById(id)]));
   const elements = {
@@ -135,6 +135,7 @@
       maxToolOutputBytes: numberValue(fields.maxToolOutputBytes, 200000),
       maxCommandSeconds: numberValue(fields.maxCommandSeconds, 120),
       auditRetentionDays: numberValue(fields.auditRetentionDays, 30),
+      projectDoc: ['auto', 'ask', 'off'].includes(fields.projectDoc.value) ? fields.projectDoc.value : 'auto',
       // 用户在输入框里可能用逗号、顿号或换行分隔；统一拆成数组并去重去空。
       searchExclude: fields.searchExclude.value
         .split(/[,，\n]/)
@@ -261,6 +262,7 @@
     fields.maxToolOutputBytes.value = settings.maxToolOutputBytes;
     fields.maxCommandSeconds.value = settings.maxCommandSeconds;
     fields.auditRetentionDays.value = settings.auditRetentionDays;
+    fields.projectDoc.value = settings.projectDoc || 'auto';
     fields.language.value = settings.language || 'auto';
     elements.temperatureValue.textContent = Number(settings.temperature).toFixed(1);
     loadProfileFields();

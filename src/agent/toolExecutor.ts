@@ -20,7 +20,19 @@ import { commandPathViolation, maskPatternFlagArguments, missingPathsInCommandOu
 import { safeSlice } from '../core/textSafety';
 import { gitScopeVerdict, isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath, samePath } from './workspacePaths';
 import { isAutoExecPath } from '../core/permissions';
-import { scanSecrets, secretKinds } from '../core/secretScan';
+import { projectDocMode } from '../core/settings';
+import {
+  PROJECT_DOC_MARKER,
+  PROJECT_DOC_NAME,
+  appendProjectDoc,
+  emptyProjectDoc,
+  isProjectDoc,
+  isProjectDocKind,
+  projectDocSummary,
+  type ProjectDocEntry,
+} from '../core/projectDoc';
+import { tryFileLock } from '../core/fileLock';
+import { maskSecrets, scanSecrets, secretKinds } from '../core/secretScan';
 import { nearestExistingDirectory, renderMissingPathHint, sortDirectoryHints, type DirectoryEntryHint } from './pathHints';
 import { shouldAutoBackground } from './serverCommands';
 import { effectiveTimeoutSeconds, timeoutAdvice, timeoutClampNotice, timeoutClampSummary } from './commandTimeout';
@@ -346,6 +358,26 @@ export class ToolExecutor implements vscode.Disposable {
       this.definition('delete_file', tt('tool.deleteFile.description'), {
         type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false,
       }),
+      this.definition('update_project_doc', tt('tool.updateProjectDoc.description'), {
+        type: 'object',
+        properties: {
+          entries: {
+            type: 'array',
+            description: tt('tool.updateProjectDoc.entriesParam'),
+            items: {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', enum: ['convention', 'decision', 'rejected', 'open'] },
+                text: { type: 'string' },
+              },
+              required: ['kind', 'text'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['entries'],
+        additionalProperties: false,
+      }),
       this.definition('run_command', tt('tool.runCommand.description', { shell: commandShellLabel() }), {
         type: 'object',
         properties: {
@@ -398,7 +430,16 @@ export class ToolExecutor implements vscode.Disposable {
      * 「读取：逐次确认」对不上。同样的不一致，用户在 2026-11-09 已经明确不接受。
      * 现在它和读文件用同一列策略：`每次询问` 会问，其余档位不问。
      */
-    const policy: PermissionPolicy = policyFor(risk, settings, tier);
+    /*
+     * 项目技术文档是预设之外**唯一**会改变「要不要问」的开关，且它在设置页单独列一行、
+     * machine 作用域（用户 2026-11-09 选定）。`auto` 直接放行；`ask` 跟随预设；
+     * `off` 在下面被直接拒绝。
+     */
+    const docMode = name === 'update_project_doc' ? projectDocMode(settings) : undefined;
+    const presetPolicy: PermissionPolicy = policyFor(risk, settings, tier);
+    const policy: PermissionPolicy = docMode === 'auto' && presetPolicy !== 'deny'
+      ? 'allow'
+      : presetPolicy;
     /*
      * **权限预设是唯一权威**（用户 2026-11-09 明确要求：预设与实际效果必须一致，
      * 不接受任何隐藏的加严/放宽）。
@@ -533,6 +574,9 @@ export class ToolExecutor implements vscode.Disposable {
         case 'delete_file':
           result = await this.deleteFile(args, settings, scope);
           break;
+        case 'update_project_doc':
+          result = await this.updateProjectDoc(args, settings, scope);
+          break;
         case 'run_command':
           result = await this.runCommand(args, settings, scope, metrics, userApproved);
           break;
@@ -563,6 +607,14 @@ export class ToolExecutor implements vscode.Disposable {
       this.reportDiagnostic(name, call.id, scope, metrics, startedAt);
     }
     result.approval = approvalRequired ? 'approved' : 'not-required';
+    /*
+     * 「真的改过项目文件」才建立项目技术文档（用户 2026-11-09 的要求）。
+     * 判据用工具的 `changedFiles`，而不是「这条对话是否存在」或「是否读过文件」——
+     * 没动过项目就绝不在项目里留文件。失败/拒绝不算改动。
+     */
+    if (result.status === 'success' && (result.changedFiles?.length ?? 0) > 0) {
+      await this.ensureProjectDoc(settings, scope).catch(() => undefined);
+    }
     await this.auditResult(call, result, conversationId);
     return result;
   }
@@ -1089,6 +1141,119 @@ export class ToolExecutor implements vscode.Disposable {
     );
   }
 
+  /**
+   * 项目技术文档：找到（或建立）那份唯一的文档，往固定小节里**追加**条目。
+   *
+   * 为什么不复用 `write_file`：那会把整份文档交给模型重写，模型一旦「总结」就会吃掉旧结论 ——
+   * 而这份文件存在的意义恰恰是别丢旧结论。这里由宿主读改写，模型只提供条目。
+   */
+  private async updateProjectDoc(
+    args: Record<string, unknown>,
+    settings: ChatSettings,
+    scope?: ToolExecutionScope,
+  ): Promise<ToolExecutionResult> {
+    const mode = projectDocMode(settings);
+    if (mode === 'off') {
+      return deniedResult(tt('tool.projectDocOff'));
+    }
+    const raw = Array.isArray(args.entries) ? args.entries : [];
+    const entries: ProjectDocEntry[] = [];
+    for (const item of raw.slice(0, 20)) {
+      if (!item || typeof item !== 'object') continue;
+      const record = item as Record<string, unknown>;
+      const kind = record.kind;
+      const text = typeof record.text === 'string' ? record.text.trim() : '';
+      if (!isProjectDocKind(kind) || !text) continue;
+      // 文档会进 git、也会被每轮注入 system：抄进工具输出里的密钥不能顺着这条路出站。
+      const secretText = maskSecrets(text);
+      entries.push({ kind, text: secretText });
+    }
+    if (!entries.length) {
+      return { status: 'error', summary: tt('tool.projectDocNoEntries'), content: tt('tool.updateProjectDoc.entriesParam'), approval: 'not-required' };
+    }
+    const docPath = await this.resolveProjectDocPath(scope);
+    if (!docPath) {
+      return deniedResult(tt('tool.projectDocNoProject'));
+    }
+    const result = await this.appendProjectDocFile(docPath, entries);
+    return success(projectDocSummary(docPath, result.added, result.skipped), tt('tool.projectDocWritten', { added: result.added, skipped: result.skipped }));
+  }
+
+  /**
+   * 定位那份唯一的文档。
+   *
+   * 先按**标记**在 `docs/` 与项目根里找（用户可能把它改过名）；找不到再按默认路径。
+   * 只在已绑定的项目根里找 —— 绝不跨项目写别人的文档。
+   */
+  private async resolveProjectDocPath(scope?: ToolExecutionScope): Promise<string | undefined> {
+    const projectRoot = scope?.projectRoot;
+    if (!projectRoot) return undefined;
+    for (const candidate of await this.projectDocCandidates(projectRoot)) {
+      const text = await Promise.resolve(vscode.workspace.fs.readFile(vscode.Uri.file(candidate)))
+        .then(decodeText)
+        .catch(() => '');
+      if (isProjectDoc(text)) return candidate;
+    }
+    return (await this.projectDocCandidates(projectRoot))[0];
+  }
+
+  /** `docs/` 存在就放 `docs/`，否则项目根。 */
+  private async projectDocCandidates(projectRoot: string): Promise<string[]> {
+    const docsDir = join(projectRoot, 'docs');
+    const hasDocs = await Promise.resolve(vscode.workspace.fs.stat(vscode.Uri.file(docsDir)))
+      .then((stat) => (stat.type & vscode.FileType.Directory) !== 0)
+      .catch(() => false);
+    const primary = hasDocs ? join(docsDir, PROJECT_DOC_NAME) : join(projectRoot, PROJECT_DOC_NAME);
+    const fallback = hasDocs ? join(projectRoot, PROJECT_DOC_NAME) : primary;
+    return primary === fallback ? [primary] : [primary, fallback];
+  }
+
+  /**
+   * 读 → 追加 → 写，全程持有跨进程锁。
+   *
+   * 两个窗口同时追加会互相吞条目（存档那边已经踩过这个坑，见 `core/fileLock`），
+   * 所以这里复用同一把锁，不另造一套。
+   */
+  private async appendProjectDocFile(
+    docPath: string,
+    entries: readonly ProjectDocEntry[],
+  ): Promise<{ added: number; skipped: number }> {
+    const lockPath = `${docPath}.lock`;
+    const release = await tryFileLock(lockPath, { staleMs: 15_000 });
+    try {
+      const uri = vscode.Uri.file(docPath);
+      const current = await Promise.resolve(vscode.workspace.fs.readFile(uri)).then(decodeText).catch(() => '');
+      const base = isProjectDoc(current) ? current : emptyProjectDoc(basename(dirname(docPath)) || 'project');
+      const next = appendProjectDoc(base, entries);
+      if (!next.added) return { added: 0, skipped: next.skipped };
+      await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(docPath)));
+      await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(next.text));
+      invalidateWorkspaceSearch();
+      return { added: next.added, skipped: next.skipped };
+    } finally {
+      await release?.();
+    }
+  }
+
+  /**
+   * 真的改过项目文件之后，确保文档存在（不写内容，只建骨架）。
+   *
+   * 这是用户要求的「涉及修改的项目文件里新建一份技术文档；没用 hwchat 修改的就不新建」：
+   * 触发点只能是**成功的文件修改**，而不是「打开了一条对话」或「读了一个文件」。
+   */
+  private async ensureProjectDoc(settings: ChatSettings, scope?: ToolExecutionScope): Promise<void> {
+    if (projectDocMode(settings) === 'off') return;
+    const projectRoot = scope?.projectRoot;
+    if (!projectRoot) return;
+    const docPath = await this.resolveProjectDocPath(scope);
+    if (!docPath) return;
+    const existing = await Promise.resolve(vscode.workspace.fs.readFile(vscode.Uri.file(docPath)))
+      .then(decodeText)
+      .catch(() => '');
+    if (isProjectDoc(existing)) return;
+    await this.appendProjectDocFile(docPath, []);
+  }
+
   private async writeFile(args: Record<string, unknown>, settings: ChatSettings, scope?: ToolExecutionScope): Promise<ToolExecutionResult> {
     const resolved = await this.resolvePath(stringArg(args, 'path'), scope);
     this.assertWritable(resolved, settings);
@@ -1563,8 +1728,8 @@ export class ToolExecutor implements vscode.Disposable {
         ? tt('tool.dangerousDenied')
         : tt('tool.policyDeniedTool', { name });
     }
-    if (mode === 'plan' && ['write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name)) return tt('tool.planModeReadOnlyTool');
-    if (['write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command'].includes(name) && !this.isWorkspaceTrusted()) {
+    if (mode === 'plan' && ['write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command', 'update_project_doc'].includes(name)) return tt('tool.planModeReadOnlyTool');
+    if (['write_file', 'replace_in_file', 'rename_file', 'delete_file', 'run_command', 'update_project_doc'].includes(name) && !this.isWorkspaceTrusted()) {
       return tt('tool.untrustedWrite');
     }
     if (name === 'run_command') {
@@ -1841,7 +2006,7 @@ export function redactCommandForSummary(command: string, limit = 60): string {
 }
 
 function riskFor(name: string): ToolApprovalRequest['risk'] {
-  if (['write_file', 'replace_in_file', 'rename_file', 'delete_file'].includes(name)) return 'write';
+  if (['write_file', 'replace_in_file', 'rename_file', 'delete_file', 'update_project_doc'].includes(name)) return 'write';
   if (name === 'run_command') return 'command';
   return 'read';
 }
@@ -1857,7 +2022,7 @@ function riskFor(name: string): ToolApprovalRequest['risk'] {
 const LOCAL_TOOL_NAMES: readonly string[] = [
   'list_workspace_roots', 'list_directory', 'list_files', 'search_files', 'read_file',
   'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file',
-  'delete_file', 'run_command',
+  'delete_file', 'run_command', 'update_project_doc',
 ];
 
 /**

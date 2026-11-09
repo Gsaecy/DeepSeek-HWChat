@@ -62,6 +62,8 @@ const EDITING = {
   'hwchat.maxToolOutputBytes': 'input',
   'hwchat.maxCommandSeconds': 'input',
   'hwchat.auditRetentionDays': 'input',
+  // 项目技术文档：设置页「权限与隐私」里单独一行 `<select id="projectDoc">`。
+  'hwchat.projectDoc': 'input',
 };
 
 /** media/settings.js 里读取的字段 id 清单。 */

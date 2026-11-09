@@ -48,7 +48,14 @@ assert.match(PANEL, /badgeBinding\(\{/, '徽标必须走 badgeBinding，而不�
  * 那条推断（单根直接返回该根）就是这次的根因，只要它还出现在徽标路径上，
  * 不管写在 `const primary =` 还是别处，都会把猜出来的目录名画成既成事实。
  */
-const badgeBody = PANEL.slice(PANEL.indexOf('private projectBadgeFor('), PANEL.indexOf('private projectBadgeFor(') + 2200);
+/*
+ * 只切出**这一个方法**的方法体（到它的结尾 `\n  }` 为止）。
+ * 以前这里写死 2200 字符，后面新增的方法一旦落在窗口内就会误报 —— 假阳性同样有害。
+ */
+const badgeStart = PANEL.indexOf('private projectBadgeFor(');
+const badgeEnd = PANEL.indexOf('\n  }', badgeStart);
+assert.ok(badgeStart > 0 && badgeEnd > badgeStart, '切不出 projectBadgeFor 的方法体');
+const badgeBody = PANEL.slice(badgeStart, badgeEnd);
 assert.doesNotMatch(badgeBody, /projectRootFor\(/, '徽标里不许再出现 projectRootFor：它会在单根工作区"猜"出一个根');
 assert.match(badgeBody, /badgeBinding\(\{/, '徽标必须走 badgeBinding');
 

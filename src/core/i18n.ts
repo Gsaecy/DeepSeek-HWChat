@@ -141,6 +141,15 @@ const DICTIONARY: Record<string, Entry> = {
   },
 
   // 权限预设：对照表表头与单元格
+  /* 设置页：项目技术文档（预设之外唯一会改变「要不要问」的开关，单独一行） */
+  'settings.projectDoc.title': { zh: '项目技术文档', en: 'Project decision record' },
+  'settings.projectDoc.hint': {
+    zh: '真的改过项目文件之后，由 HWChat 在 docs/HWCHAT-PROJECT-NOTES.md 建立并维护**唯一一份**决策记录（只追加、不重写、随项目提交）。它的作用是让早期定下的决策在长对话或新对话里不丢，避免同一件事反复改。这是权限预设之外唯一会改变「要不要问」的开关。',
+    en: 'Once HWChat has actually changed files in a project, it creates and maintains a **single** decision record at docs/HWCHAT-PROJECT-NOTES.md (append-only, committed with the project). It keeps earlier decisions alive across long or new conversations so the same thing is not reworked. This is the only switch outside the permission presets that changes whether you are asked.',
+  },
+  'settings.projectDoc.auto': { zh: '自动维护（推荐）', en: 'Maintain automatically (recommended)' },
+  'settings.projectDoc.ask': { zh: '每次写入前确认', en: 'Ask before each write' },
+  'settings.projectDoc.off': { zh: '关闭', en: 'Off' },
   'matrix.preset': { zh: '档位', en: 'Preset' },
   'matrix.read': { zh: '读取', en: 'Read' },
   'matrix.write': { zh: '写入', en: 'Write' },
@@ -1037,6 +1046,26 @@ const DICTIONARY: Record<string, Entry> = {
    * 只在「预设本来就要问」的卡片上出现，用来提醒这个文件会被别的程序自动执行。
    * 它**不改变**要不要问 —— 那个决定只由权限预设给出（用户 2026-11-09 明确要求）。
    */
+  /* 项目技术文档工具（唯一一份、只追加）。描述要写清「什么时候记」，否则模型会记成流水账。 */
+  'tool.updateProjectDoc.description': {
+    zh: '把这一轮定下的决策、被否决的做法、用户的硬性约定、或还没做完的事，追加到项目里那份唯一的决策记录（docs/HWCHAT-PROJECT-NOTES.md）。只追加不重写，重复的条目会被跳过。**什么时候该记**：用户拍板了方案、你放弃了一种做法并知道原因、用户给出新的硬性要求、或者你留下了一件没做完的事。不要记流水账（「读了某个文件」不算决策）。',
+    en: 'Append the decisions of this turn — settled choices, approaches ruled out, hard user rules, unfinished work — to the single project decision record (docs/HWCHAT-PROJECT-NOTES.md). Append-only; duplicates are skipped. **When to record**: the user settled an approach, you ruled out an option and know why, the user gave a new hard rule, or you left something unfinished. Not a changelog — "read file X" is not a decision.',
+  },
+  'tool.updateProjectDoc.entriesParam': {
+    zh: '要追加的条目。kind：convention=用户的硬性约定，decision=已定的方案及理由，rejected=已否决的做法及原因，open=还没做完的事。',
+    en: 'Entries to append. kind: convention = a hard user rule, decision = a settled choice plus why, rejected = an approach ruled out plus why, open = work still unfinished.',
+  },
+  'tool.projectDocOff': {
+    zh: '项目技术文档已在设置里关闭（hwchat.projectDoc = off）。要记录决策，请让用户打开它，或改用普通文件工具写进项目文档。',
+    en: 'The project decision record is turned off (hwchat.projectDoc = off). Ask the user to enable it, or write into a normal project document with the file tools.',
+  },
+  'tool.projectDocNoEntries': { zh: '没有可写入的条目：每条都需要 kind（convention/decision/rejected/open）与非空 text。', en: 'Nothing to write: every entry needs a kind (convention/decision/rejected/open) and non-empty text.' },
+  'tool.projectDocNoProject': {
+    zh: '这条对话还没有绑定项目，无法确定文档放到哪个仓库。先读写一次目标项目里的文件（或指定 cwd），再记录。',
+    en: 'This conversation is not bound to a project yet, so there is no repository to put the record in. Touch a file in the target project first (or pass an explicit cwd).',
+  },
+  'tool.projectDocWritten': { zh: '已追加 {added} 条决策，跳过 {skipped} 条（重复或为空）。', en: 'Appended {added} entries and skipped {skipped} (duplicates or empty).' },
+  'agent.progress.update_project_doc': { zh: '记录项目决策', en: 'Recording project decisions' },
   'tool.detailAutoExecFile': {
     zh: '注意：这个文件会被 VS Code / 构建脚本自动执行（如 .vscode/tasks.json、postinstall、git hook），写入它等于提前安排了一次执行。',
     en: 'Note: this file is executed automatically by VS Code or build tooling (.vscode/tasks.json, postinstall, git hooks). Writing it schedules an execution.',

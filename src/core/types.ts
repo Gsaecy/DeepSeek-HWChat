@@ -494,6 +494,14 @@ export interface ChatSettings {
    * 按对话存档打开。这样「在 A 对话开了查资料」不会让 B 对话也偷偷联网。
    */
   internetReference: boolean;
+  /**
+   * 项目技术文档（`docs/HWCHAT-PROJECT-NOTES.md`）：自动维护 / 询问 / 关闭。
+   *
+   * 这是权限预设之外**唯一**会改变「要不要问」的开关，所以它在设置页单独列一行，
+   * 且是 machine 作用域（克隆下来的仓库不能靠 `.vscode/settings.json` 打开自动写）。
+   * 见 `core/projectDoc.ts` 顶部的说明。
+   */
+  projectDoc?: 'auto' | 'ask' | 'off';
   fileReadPolicy: PermissionPolicy;
   fileWritePolicy: PermissionPolicy;
   commandPolicy: PermissionPolicy;

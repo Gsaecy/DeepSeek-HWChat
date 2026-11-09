@@ -8,6 +8,24 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.14
+
+### Project decision record: earlier decisions stop getting lost
+
+The diagnosis was right, and it is structural: task-tree memory lives in the extension's storage **per conversation** — nothing is stored in the project. Even inside one conversation it is truncated (40 finished tasks, 100 chars per line, only 3 constraints), and "continue in a new chat" carries a ≤10,000-character digest. So once the conversation grows or you start a new one, earlier decisions are gone — and the same thing gets reworked.
+
+Now:
+
+- **One file, recognised by marker**: `docs/HWCHAT-PROJECT-NOTES.md` (project root when there is no `docs/`), with `<!-- hwchat:project-doc v1 -->` in the header. Renaming or moving it will not create a second copy.
+- **Append-only**: the model supplies entries, the extension does the read-modify-write — the file is never "summarised" by the model, which would eat the old decisions it exists to protect.
+- Four sections: **hard conventions / settled decisions / rejected approaches (do not retry) / open work**. "Rejected approaches" is the one that stops the loop.
+- **Created only after a real file change** (`changedFiles`), so projects HWChat never touched gain no file.
+- **8KB injected per turn**, dropping the oldest entries with an explicit note; secrets are masked before writing and appends hold a cross-process lock.
+
+One row in Settings under Permissions & privacy: **maintain automatically / ask before each write / off**, machine-scoped (a cloned repo cannot turn it on for you).
+
+Verified: **1,316 unit tests + 79 guard scripts green**.
+
 ## What's new in 0.4.13
 
 ### The project badge showed a project name for a brand-new conversation (reported on Windows)

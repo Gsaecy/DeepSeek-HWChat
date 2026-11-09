@@ -38,6 +38,7 @@ import { fetchViaProxy } from '../providers/proxyFetch';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
 import { outcomeOf, renderWorkDigest, requestBytesOf, requestPayloadOf } from '../core/contextWindow';
 import { contextLoad } from '../core/contextBudget';
+import { PROJECT_DOC_NAME, isProjectDoc, renderProjectDocContext } from '../core/projectDoc';
 import { constraintsOf, mergeTaskNodes, newlyCompletedTodos, renderTaskMemory, todoBaseline } from '../core/taskMemory';
 import { hasSecrets } from '../core/secretScan';
 import { registerKnownSecret } from '../agent/auditLog';
@@ -114,6 +115,7 @@ import {
   normalizeAgentMaxSteps,
   normalizeReasoningEffort,
   profileFor,
+  projectDocMode,
   readSettings,
   updateSettings,
 } from '../core/settings';
@@ -2767,6 +2769,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         ].join('\n')
         : '',
     ].filter(Boolean).join('\n');
+    /*
+     * 项目技术文档：对话太长、或换一条对话之后，旧决策就靠它活着（用户 2026-11-09）。
+     * 只读**已绑定项目**里的那一份，且注入有预算（8KB），不会反过来把上下文挤爆。
+     */
+    const projectDocContext = await this.projectDocContextFor(conversationId);
     const runTree = this.runs.get(conversationId)?.taskQueue.state();
     const taskMemory = renderTaskMemory({
       nodes: conversation?.taskNodes,
@@ -2787,6 +2794,7 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         withInternetReference(this.agentSystemPrompt(mode, settings.systemPrompt, skillPrompt, historyPrompt, settings.imageModel), settings.internetReference),
         playbookDirective,
         todoContext,
+        projectDocContext,
         taskMemory,
         autoRecall,
         termConflict,
@@ -3529,6 +3537,27 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       .map((root) => projectNameOf(root))
       .filter((name): name is string => Boolean(name));
     return { name: names[0] ?? null, others: names.slice(1), bound: binding.bound && Boolean(names[0]) };
+  }
+
+  /**
+   * 读项目技术文档并渲染成要注入 system 的那一段。
+   *
+   * 只在**已绑定项目**时读（`projectRootFor`），且找不到文件就返回空串 ——
+   * 没被修改过的项目不该因为「打开了一条对话」就多出任何注入。
+   */
+  private async projectDocContextFor(conversationId: string): Promise<string> {
+    const settings = readSettings();
+    if (projectDocMode(settings) === 'off') return '';
+    const conversation = await this.storage.getConversation(conversationId).catch(() => undefined);
+    const projectRoot = this.projectRootFor(conversation);
+    if (!projectRoot) return '';
+    for (const candidate of [join(projectRoot, 'docs', PROJECT_DOC_NAME), join(projectRoot, PROJECT_DOC_NAME)]) {
+      const text = await Promise.resolve(vscode.workspace.fs.readFile(vscode.Uri.file(candidate)))
+        .then((content) => new TextDecoder().decode(content))
+        .catch(() => '');
+      if (isProjectDoc(text)) return renderProjectDocContext(text);
+    }
+    return '';
   }
 
   /** 用户改标题：写库后回推状态，让标题栏与历史列表同时更新。 */

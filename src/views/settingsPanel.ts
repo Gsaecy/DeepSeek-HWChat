@@ -532,6 +532,18 @@ export class SettingsPanel implements vscode.Disposable {
               </table>
               <p>${t(lang, 'matrix.hardBoundary')}</p>
             </div>
+            <!--
+              项目技术文档：预设之外唯一会改变「要不要问」的开关，所以在此单独列一行。
+              放在权限矩阵正下方，用户对照档案位与写入规则时一眼能看到这个例外。
+            -->
+            <label class="setting-row">
+              <span><strong>${t(lang, 'settings.projectDoc.title')}</strong><small>${t(lang, 'settings.projectDoc.hint')}</small></span>
+              <select id="projectDoc">
+                <option value="auto">${t(lang, 'settings.projectDoc.auto')}</option>
+                <option value="ask">${t(lang, 'settings.projectDoc.ask')}</option>
+                <option value="off">${t(lang, 'settings.projectDoc.off')}</option>
+              </select>
+            </label>
             <label class="setting-row"><span><strong>${t(lang, 'settings.privacy.audit')}</strong><small>${t(lang, 'settings.privacy.auditHint')}</small></span><span class="stepper"><input id="auditRetentionDays" type="number" min="0" max="365"><span>${t(lang, 'common.days')}</span></span></label>
           </div>
           <div class="danger-zone"><div><strong>${t(lang, 'settings.dangerZone.title')}</strong><span>${t(lang, 'settings.dangerZone.hint')}</span></div><button id="clearLocalDataButton" type="button">${t(lang, 'settings.dangerZone.action')}</button></div>
