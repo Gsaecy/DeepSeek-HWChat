@@ -1,8 +1,8 @@
 # HWChat 架构评审手册
 
-> 版本：0.4.8 · 生成于 2026-11-08
+> 版本：0.4.8 生成，随版本增量修订至 **0.4.15**（最近修订 2026-11-09：§6 增加跨对话记忆层、刷新规模与自检计数）
 > 用途：把这份文档整份贴给 Claude / GPT，让它们针对**具体代码坐标**评审，而不是泛泛而谈。
-> 所有行号对应仓库当前 commit `1c7f638`（可用 `git log --oneline -1` 核对）。
+> 行号基线为 commit `1c7f638`（0.4.8）；后续小节（如 §6 跨对话记忆层）不带行号，改代码时不用同步改文档。
 
 ## 怎么用这份文档
 
@@ -18,14 +18,14 @@
 |---|---|
 | 形态 | VS Code 扩展，单 webview 面板（辅助侧栏），无自建后端 |
 | 语言/构建 | TypeScript → esbuild → `out/extension.js`；无框架、无运行时依赖注入 |
-| 规模 | 189 个 `.ts` / 50,119 行（生产 ~30,800，测试 19,325）+ webview 资源 ~9.5k 行 |
-| 最大单文件 | `src/views/chatPanel.ts` 6,385 行；`src/agent/toolExecutor.ts` 2,608；`src/core/storage.ts` 2,335 |
+| 规模 | 203 个 `.ts` / 52,837 行 + webview 资源 ~9.5k 行（0.4.15 实测） |
+| 最大单文件 | `src/views/chatPanel.ts` 6,621 行；`src/agent/toolExecutor.ts` 2,892；`src/core/storage.ts` 2,482 |
 | 对外接口 | 任意 OpenAI 兼容端点（chat / images / models / embeddings） |
 | 密钥 | 只在 `SecretStorage`（`src/core/apiKeys.ts`），不进 settings.json |
 | 权限 | 四档预设 × 三档命令风险 × 敏感文件，默认 `askAll`（最严） |
-| 配置项 | 37 个 `contributes.configuration` |
+| 配置项 | 38 个 `contributes.configuration` |
 | 命令 | 19 个 |
-| 质量 | 1,222 条单测 + 71 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
+| 质量 | 1,318 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
 
 ---
 
@@ -179,13 +179,35 @@ Webview (media/, 无 Node 权限)
 
 ---
 
-## 6. 上下文与记忆（三层）
+## 6. 上下文与记忆（四层）
 
 ```
+⓪ 跨对话记忆 = 项目技术文档       （docs/HWCHAT-PROJECT-NOTES.md，写在项目里）
 ① 长期记忆 = 任务树 + 约束 + 清单   （落库 ConversationSummary.taskNodes）
 ② 最近原文 = 12 条 / 768 KB       （chatPanel.ts:446/454）
 ③ 按需检索 = 关键词（模糊匹配）+ 可选向量索引
 ```
+
+**⓪ 为什么必须有这一层**：①–③每一层都**绑在对话上**，且都截断 ——
+`taskNodes` 存在扩展 globalStorage（项目里一个字都没有），`taskMemory.ts` 里已完成上限
+40 条 / 每行 100 字 / 约束只留 3 条（`FINISHED_LIMIT` / `LINE_LIMIT` / `CONSTRAINT_LIMIT`），
+「在新对话继续」只带 `conversationHistory.ts` 的 ≤10,000 字符摘要。
+所以对话一长或换新对话，旧决策必然丢 —— 丢掉「已否决的做法」的直接后果就是**循环修改**。
+
+`src/core/projectDoc.ts` 是这一层：五节（约定 / 决策 / 已否决 / 已完成 / 未完成），
+文件头带 `<!-- hwchat:project-doc v1 -->`，**靠标记认而不靠文件名**（改名、移动不会长出第二份）。
+三条不变量：
+
+1. **只追加**：模型只给条目（`update_project_doc`），读改写由宿主做 —— 整篇交给模型「总结」
+   会压缩掉旧结论，而这份文件存在的意义正是别丢旧结论。
+2. **宿主也写**：每轮收尾 `chatPanel.recordRunToProjectDoc()` 从任务树取 `complete` 节点、
+   附上本轮工具执行记录里的 `changedFiles`，追加进「已完成（不要重做）」，按标题去重。
+   不依赖模型自觉 —— 漏记一次这条记忆就永久缺一块。写失败一律吞掉，不影响收尾；
+   `changedFiles` 为空时直接返回，所以没被改过文件的项目不会因为「跑了轮对话」长出文件。
+3. **注入有预算**：`renderProjectDocContext` 限 8KB，超出从最旧省略并说明省了多少条；
+   只在**真的改过文件**（`changedFiles` 非空）之后才建文件，没动过的项目不多一个文件。
+   写入前 `maskSecrets`，追加持 `tryFileLock`。系统提示从**第一轮**就声明它存在，
+   否则新项目里模型不知道有地方可记。
 
 - **预算口径**：`requestBytesOf()` 只算正文/附件文本，**图片字节不计**；最新用户消息无条件保留。
 - **任务树**（`src/core/taskMemory.ts:169` `renderTaskMemory`）：每节点带一句结论 + 用户硬约束 + 清单差集；已完成上限 40、未完成 20。
@@ -234,8 +256,8 @@ Webview (media/, 无 Node 权限)
 
 ## 10. 质量保障
 
-- **1,222 条单测**（`src/test/`，103 文件）。
-- **71 个 `test/check-*.mjs` 守护脚本**，其中若干不是静态断言，而是**真跑**：
+- **1,318 条单测**（`src/test/`）。
+- **79 个 `test/check-*.mjs` 守护脚本**，其中若干不是静态断言，而是**真跑**：
   - 真实 Chromium：量按钮宽高、真点按钮、走完整交互（`check-settings-layout`、`check-image-attachment`、`check-capsule-*` …）；
   - 真实文件系统：大小写不同拼写是否算同一目录（`check-path-identity`）；
   - 真实命令：改写建议端到端实跑（`check-command-advice`）。
@@ -471,10 +493,10 @@ Webview (media/, 无 Node 权限)
 # 类型检查
 npx tsc -p ./ --noEmit
 
-# 单测（1,222 条）
+# 单测（1,318 条）
 npm test
 
-# 全部守护脚本（71 个；含真实 Chromium / 真实文件系统 / 真实命令）
+# 全部守护脚本（79 个；含真实 Chromium / 真实文件系统 / 真实命令）
 for f in test/check-*.mjs; do node "$f" >/dev/null 2>&1 || echo "FAIL: $f"; done
 
 # 危险写法扫描（应全部为 0）

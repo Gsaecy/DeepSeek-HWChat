@@ -38,7 +38,7 @@ import { fetchViaProxy } from '../providers/proxyFetch';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
 import { outcomeOf, renderWorkDigest, requestBytesOf, requestPayloadOf } from '../core/contextWindow';
 import { contextLoad } from '../core/contextBudget';
-import { PROJECT_DOC_NAME, isProjectDoc, renderProjectDocContext } from '../core/projectDoc';
+import { PROJECT_DOC_NAME, doneEntriesForRun, isProjectDoc, renderProjectDocContext } from '../core/projectDoc';
 import { constraintsOf, mergeTaskNodes, newlyCompletedTodos, renderTaskMemory, todoBaseline } from '../core/taskMemory';
 import { hasSecrets } from '../core/secretScan';
 import { registerKnownSecret } from '../agent/auditLog';
@@ -2258,6 +2258,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         await this.settleTodosAfterRun(conversationId, runOutcome);
         // 任务树就是下一轮的「记忆」：运行一结束立刻落库，不能等去抖计时器。
         await this.flushTaskMemory(conversationId);
+        /*
+         * 项目技术文档：把这一轮**做完的事**由宿主写进去（用户 2026-11-09：「做彻底」）。
+         *
+         * 只靠模型主动调 `update_project_doc` 不够 —— 它漏记一次，这条记忆就永久缺一块，
+         * 而它存在的意义正是「别忘」。宿主手里有确切的事实（任务树节点、改动文件），
+         * 不依赖模型自觉。写失败绝不影响收尾：这是附加收益，不是主流程。
+         */
+        await this.recordRunToProjectDoc(run).catch(() => undefined);
         // 语义索引在后台补几批（未配置时直接返回），绝不影响这轮收尾。
         this.scheduleEmbeddingIndex(conversationId);
         /*
@@ -3558,6 +3566,36 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       if (isProjectDoc(text)) return renderProjectDocContext(text);
     }
     return '';
+  }
+
+  /**
+   * 把这一轮完成的任务写进项目技术文档（宿主侧，不依赖模型）。
+   *
+   * 只在**已绑定项目**、这一轮**真的改过文件**、且确实完成过任务时写；`done` 节按标题去重，
+   * 所以同一件事重跑一次不会留下两条记录。
+   */
+  private async recordRunToProjectDoc(run: ConversationRun): Promise<void> {
+    const settings = readSettings();
+    if (projectDocMode(settings) === 'off') return;
+    const tree = run.taskQueue.state();
+    /*
+     * 改动文件取自**这一轮真实发生过的工具调用**（`changedFiles` 只有工具执行记录里有），
+     * 任务节点自身不记文件。整轮共用一份，附到最后一条完成记录上即可 ——
+     * 写成「每个任务各自改了哪些文件」需要把工具调用归因到节点，那是另一个改动，
+     * 当前这份记录要回答的是「这一轮动了什么」，一份就够。
+     */
+    const changedFiles = [...new Set(run.globalTools.flatMap((tool) => tool.changedFiles ?? []))];
+    // 用户定的规矩：**没被 HWChat 改过文件的项目不许多出文件**。文档的建立由
+    // `ensureProjectDoc`（成功的文件修改）触发；只动了嘴上功夫的一轮不写、也不建。
+    if (!changedFiles.length) return;
+    const done = doneEntriesForRun(tree.nodes.map((node, index, list) => ({
+      title: node.title,
+      status: node.status,
+      summary: node.summary,
+      changedFiles: index === list.length - 1 ? changedFiles : undefined,
+    })));
+    if (!done.length) return;
+    await this.toolExecutor.appendProjectDocEntries(done, settings, run.scope);
   }
 
   /** 用户改标题：写库后回推状态，让标题栏与历史列表同时更新。 */
@@ -5691,6 +5729,16 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   ): string {
     return [
       'You are HWChat, a precise coding agent running inside VS Code.',
+      /*
+       * 项目技术文档：**从第一轮就说清它存在**。
+       * 只在文档已被注入时才提这件事是不够的 —— 新项目里文档还没建立，模型就永远不知道
+       * 该往里记，第一轮定下的决策直接漏掉（用户 2026-11-09：「做彻底」）。
+       */
+      [
+        'This project keeps a single decision record at `docs/HWCHAT-PROJECT-NOTES.md` (project root when there is no `docs/`), created automatically after the first file change.',
+        'Use `update_project_doc` — not `write_file` — whenever this turn settles an approach, rules an option out (with the reason), receives a new hard rule from the user, or leaves work unfinished. The host already records what was completed, so record only decisions and rejected approaches, never a changelog.',
+        'Never rewrite that file by hand: it is append-only so earlier decisions survive.',
+      ].join(' '),
       // 模式说明由 core/modes 统一生成：名字与界面下拉一致，并声明以本轮为准。
       modePromptInstruction(mode),
       // 回答的形状（我的理解 → 结果 → 需要你做的）必须排在很前面：它决定用户

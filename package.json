@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek: approval-controlled workspace tools, plan-tracking task lists, copyable local/server commands and durable local history.",
-  "version": "0.4.14",
+  "version": "0.4.15",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -482,22 +482,22 @@
           "deprecationMessage": "%config.reasoningEffort.deprecated%"
         },
         "hwchat.projectDoc": {
-      "type": "string",
-      "enum": [
-        "auto",
-        "ask",
-        "off"
-      ],
-      "enumDescriptions": [
-        "自动维护：真的改过项目文件之后，由 HWChat 建立并追加项目技术文档（推荐）",
-        "每次写入前确认",
-        "关闭：不建立、不追加、不注入项目技术文档"
-      ],
-      "default": "auto",
-      "scope": "machine",
-      "markdownDescription": "项目技术文档（`docs/HWCHAT-PROJECT-NOTES.md`，没有 `docs/` 时放项目根）。**唯一一份、只追加不重写**，随项目一起提交，用来让早期决策在长对话或新对话里不丢。只在 HWChat 真的改过该项目文件之后才会建立。\n\n这是权限预设之外**唯一一个**会改变「要不要问」的开关，所以它在设置页单独列一行，且是 machine 作用域（克隆下来的仓库不能靠 `.vscode/settings.json` 替你打开它）。"
-    },
-    "hwchat.permissionPreset": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "ask",
+            "off"
+          ],
+          "enumDescriptions": [
+            "自动维护：真的改过项目文件之后，由 HWChat 建立并追加项目技术文档（推荐）",
+            "每次写入前确认",
+            "关闭：不建立、不追加、不注入项目技术文档"
+          ],
+          "default": "auto",
+          "scope": "machine",
+          "markdownDescription": "项目技术文档（`docs/HWCHAT-PROJECT-NOTES.md`，没有 `docs/` 时放项目根）。**唯一一份、只追加不重写**，随项目一起提交，用来让早期决策在长对话或新对话里不丢。只在 HWChat 真的改过该项目文件之后才会建立。\n\n这是权限预设之外**唯一一个**会改变「要不要问」的开关，所以它在设置页单独列一行，且是 machine 作用域（克隆下来的仓库不能靠 `.vscode/settings.json` 替你打开它）。"
+        },
+        "hwchat.permissionPreset": {
           "type": "string",
           "scope": "machine",
           "enum": [

@@ -41,7 +41,7 @@ assert.match(EXEC, /maskSecrets\(text\)/, '写入前必须遮掉密钥（文档�
 const { build } = await import('esbuild');
 const bundle = await build({
   stdin: {
-    contents: `export { PROJECT_DOC_MARKER, PROJECT_DOC_NAME, appendProjectDoc, emptyProjectDoc, isProjectDoc, parseProjectDoc, renderProjectDocContext } from './src/core/projectDoc';`,
+    contents: `export { PROJECT_DOC_MARKER, PROJECT_DOC_NAME, appendProjectDoc, doneEntriesForRun, emptyProjectDoc, isProjectDoc, parseProjectDoc, renderProjectDocContext } from './src/core/projectDoc';`,
     resolveDir: process.cwd(),
     loader: 'ts',
   },
@@ -78,7 +78,28 @@ assert.ok(Buffer.byteLength(context) <= 8 * 1024, `注入不得超过 8KB，实�
 assert.match(context, /第 299 条/, '最新的那条必须在');
 assert.match(context, /omitted to stay within budget/, '省略必须说出来');
 
+// 5) 宿主自己会记「做完了什么」——不靠模型自觉。
+const finished = doc.doneEntriesForRun([
+  { title: '修好表格排版', status: 'complete', summary: '胶囊最小宽度收敛', changedFiles: ['media/chat.css'] },
+  { title: '还在跑的事', status: 'running' },
+]);
+assert.equal(finished.length, 1, '只记已完成的任务');
+assert.match(finished[0].text, /^完成：修好表格排版/);
+assert.equal(doc.parseProjectDoc(doc.appendProjectDoc(doc.emptyProjectDoc('P'), finished).text).done.length, 1);
+assert.equal(doc.appendProjectDoc(doc.appendProjectDoc(doc.emptyProjectDoc('P'), finished).text, finished).added, 0, '同一件事重跑不该留两条');
+
+// 6) 收尾真的接上了：运行结束时宿主自己调 appendProjectDocEntries。
+const panelSource = readFileSync('src/views/chatPanel.ts', 'utf8');
+assert.match(panelSource, /recordRunToProjectDoc\(run\)/, '运行收尾必须调用 recordRunToProjectDoc');
+assert.match(panelSource, /appendProjectDocEntries\(/, '必须走宿主追加入口，而不是让模型再跑一遍工具');
+assert.match(panelSource, /recordRunToProjectDoc\(run\)\.catch\(/, '写文档失败不能影响收尾');
+// 用户定的规矩：没用 HWChat 改过文件的项目不许多出文件 —— 宿主追加也守这一条。
+assert.match(panelSource, /if \(!changedFiles\.length\) return;/, '这一轮没改过文件就不许写/建文档');
+// 第一轮就要告诉模型文档存在，否则新项目第一轮的决策永远漏记。
+assert.match(panelSource, /update_project_doc/, '系统提示里必须提到 update_project_doc');
+
 rmSync(dir, { recursive: true, force: true });
 console.log('✓ 唯一性靠标记、只追加、重复条目跳过');
+console.log('✓ 宿主在运行收尾自动追加「已完成」，并按标题去重');
 console.log('✓ 注入上限 8KB，省略时明确说明');
 console.log('\n项目技术文档检查通过。');

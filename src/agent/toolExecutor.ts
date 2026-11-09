@@ -1236,6 +1236,25 @@ export class ToolExecutor implements vscode.Disposable {
   }
 
   /**
+   * 宿主追加条目（运行收尾用）。
+   *
+   * 为什么不只靠模型调工具：模型漏记一次，这条记忆就永久缺一块 —— 而它存在的意义
+   * 正是「别忘」。所以运行结束时由宿主把这一轮做完的事写进去（用户 2026-11-09
+   * 要求「做彻底」）。返回实际写入条数，0 表示没有可写的或已记过。
+   */
+  async appendProjectDocEntries(
+    entries: readonly ProjectDocEntry[],
+    settings: ChatSettings,
+    scope?: ToolExecutionScope,
+  ): Promise<number> {
+    if (!entries.length || projectDocMode(settings) === 'off') return 0;
+    const docPath = await this.resolveProjectDocPath(scope);
+    if (!docPath) return 0;
+    const written = await this.appendProjectDocFile(docPath, entries);
+    return written.added;
+  }
+
+  /**
    * 真的改过项目文件之后，确保文档存在（不写内容，只建骨架）。
    *
    * 这是用户要求的「涉及修改的项目文件里新建一份技术文档；没用 hwchat 修改的就不新建」：

@@ -36,7 +36,7 @@ const ENTRY_LIMIT = 600;
 /** 每个小节最多留多少条：超出时丢最旧的（它们已经在 git 历史里）。 */
 const SECTION_LIMIT = 400;
 
-export type ProjectDocKind = 'decision' | 'rejected' | 'convention' | 'open';
+export type ProjectDocKind = 'decision' | 'rejected' | 'convention' | 'done' | 'open';
 
 export interface ProjectDocEntry {
   kind: ProjectDocKind;
@@ -48,6 +48,7 @@ const SECTIONS: ReadonlyArray<{ kind: ProjectDocKind; title: string; hint: strin
   { kind: 'convention', title: '不可违反的约定', hint: '用户定下的规则、边界、口味。违反它就算「改进了」也是错的。' },
   { kind: 'decision', title: '已定的决策', hint: '定型的选择及理由。后来的改动不得与之冲突，除非先在这里写明为什么改。' },
   { kind: 'rejected', title: '已否决的做法（不要再试）', hint: '试过、被否掉、以及为什么。这一节就是为了避免反复循环修改。' },
+  { kind: 'done', title: '已完成（不要重做）', hint: 'HWChat 在每次运行结束时自动追加：做完了什么、动了哪些文件。新对话据此知道哪些事已经做完。' },
   { kind: 'open', title: '未完成', hint: '已知还没做完的事。完成之后改成 decision 或删掉。' },
 ];
 
@@ -55,7 +56,7 @@ const TITLE_BY_KIND = new Map(SECTIONS.map((section) => [section.kind, section.t
 const KIND_BY_TITLE = new Map(SECTIONS.map((section) => [section.title, section.kind]));
 
 export function isProjectDocKind(value: unknown): value is ProjectDocKind {
-  return value === 'decision' || value === 'rejected' || value === 'convention' || value === 'open';
+  return value === 'decision' || value === 'rejected' || value === 'convention' || value === 'done' || value === 'open';
 }
 
 /** 这份文本是不是我们的项目文档（靠标记认，不靠文件名）。 */
@@ -66,6 +67,19 @@ export function isProjectDoc(text: string | undefined): boolean {
 /** 一行一条：`- 内容`。去重与比较都用这个规范化形式。 */
 function normalizeEntry(text: string): string {
   return text.replace(/\s+/g, ' ').trim().slice(0, ENTRY_LIMIT);
+}
+
+/**
+ * `done` 条目的身份：标题（`完成：<标题>` 之后、破折号之前的那一段）。
+ * 用来判断「这件事是不是已经记过了」，避免重跑一次就多一条。
+ */
+function sameDoneKey(existing: string, incoming: string): boolean {
+  const keyOf = (text: string): string => {
+    const body = text.replace(/^完成：/, '').split('—')[0] ?? '';
+    return body.trim();
+  };
+  const a = keyOf(existing);
+  return Boolean(a) && a === keyOf(incoming);
 }
 
 /** 新文档的骨架（创建时写一次）。 */
@@ -87,7 +101,7 @@ export function emptyProjectDoc(projectName: string, createdAt = new Date()): st
 
 /** 解析出四个小节的条目（解析失败的那一行按忽略处理，绝不抛错）。 */
 export function parseProjectDoc(text: string): Record<ProjectDocKind, string[]> {
-  const result: Record<ProjectDocKind, string[]> = { decision: [], rejected: [], convention: [], open: [] };
+  const result: Record<ProjectDocKind, string[]> = { decision: [], rejected: [], convention: [], done: [], open: [] };
   let current: ProjectDocKind | undefined;
   for (const raw of String(text ?? '').split('\n')) {
     const line = raw.trimEnd();
@@ -127,6 +141,14 @@ export function appendProjectDoc(
       continue;
     }
     const list = parsed[entry.kind];
+    /*
+     * `done` 额外按**标题**去重：同一个任务重跑一次，摘要和改动文件通常会变，
+     * 只比整条文本会留下两条几乎一样的记录；而这一节要回答的是「这件事做没做过」。
+     */
+    if (entry.kind === 'done' && list.some((item) => sameDoneKey(item, value))) {
+      skipped += 1;
+      continue;
+    }
     if (list.includes(value)) {
       skipped += 1;
       continue;
@@ -195,6 +217,38 @@ export function renderProjectDocContext(text: string, budgetBytes = PROJECT_DOC_
     ? `(Earlier entries are omitted to stay within budget: ${omitted.join('、')}. Read the file if you need them.)`
     : '';
   return [...header, ...body, omittedLine, ...footer].filter(Boolean).join('\n');
+}
+
+/**
+ * 把一次运行的结果变成 `done` 条目（**宿主自动追加**，不依赖模型记得记录）。
+ *
+ * 用户 2026-11-09 的要求是「做彻底」：只靠模型主动记录，它漏一次决策就白做了。
+ * 所以运行结束时由宿主把「这一轮做完了什么、动了哪些文件」写进去 ——
+ * 这正是任务树记忆里最有价值、却因为按对话存而活不过换对话的那部分。
+ *
+ * 只记**已完成**的节点；`summary` 与文件列表都可能缺，缺了就不写那一段。
+ */
+export function doneEntriesForRun(nodes: ReadonlyArray<{
+  title: string;
+  status: string;
+  summary?: string;
+  changedFiles?: readonly string[];
+}>): ProjectDocEntry[] {
+  const entries: ProjectDocEntry[] = [];
+  for (const node of nodes) {
+    if (node.status !== 'complete') continue;
+    const title = String(node.title ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    if (!title) continue;
+    const summary = String(node.summary ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    const allFiles = [...new Set((node.changedFiles ?? []).map((file) => String(file).trim()).filter(Boolean))];
+    const files = allFiles.slice(0, 6);
+    const tail = [
+      summary ? `— ${summary}` : '',
+      files.length ? `（改动 ${files.join('、')}${allFiles.length > files.length ? ' 等' : ''}）` : '',
+    ].filter(Boolean).join(' ');
+    entries.push({ kind: 'done', text: `完成：${title}${tail ? ` ${tail}` : ''}` });
+  }
+  return entries;
 }
 
 /** 结论一句话：给工具返回值用。 */

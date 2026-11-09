@@ -18,15 +18,29 @@ Now:
 
 - **One file, recognised by marker**: `docs/HWCHAT-PROJECT-NOTES.md` (project root when there is no `docs/`), with `<!-- hwchat:project-doc v1 -->` in the header. Renaming or moving it will not create a second copy.
 - **Append-only**: the model supplies entries, the extension does the read-modify-write — the file is never "summarised" by the model, which would eat the old decisions it exists to protect.
-- Four sections: **hard conventions / settled decisions / rejected approaches (do not retry) / open work**. "Rejected approaches" is the one that stops the loop.
+- Five sections: **hard conventions / settled decisions / rejected approaches (do not retry) / done (do not redo) / open work** — the fourth is written by the host automatically. "Rejected approaches" is the one that stops the loop.
 - **Created only after a real file change** (`changedFiles`), so projects HWChat never touched gain no file.
 - **8KB injected per turn**, dropping the oldest entries with an explicit note; secrets are masked before writing and appends hold a cross-process lock.
 
 One row in Settings under Permissions & privacy: **maintain automatically / ask before each write / off**, machine-scoped (a cloned repo cannot turn it on for you).
 
-Verified: **1,316 unit tests + 79 guard scripts green**.
+Verified: **1,316 unit tests + 79 guard scripts green** (at the time of 0.4.14).
 
-## What's new in 0.4.13
+## What's new in 0.4.15
+
+### The decision record, finished properly: the host records work itself, and the model is told from turn one
+
+0.4.14 only created the skeleton and relied on the model calling the tool. Three holes closed here:
+
+- **The host appends finished work itself.** Previously a single missed call meant that piece of memory was gone forever. At the end of every run the extension reads completed tasks from the task tree, attaches the files this run actually changed, and appends them to a new **"Done — do not redo"** section. Any failure is swallowed: the record must never break run teardown. The rule still holds — **a run that changed no files writes and creates nothing**.
+- **Deduplicated by title**, so re-running the same task (different summary, different files) does not leave two entries.
+- **The system prompt mentions the file from turn one.** The old note was only attached when a document already existed, so on a fresh project the model never knew where to write — and turn-one decisions were lost.
+
+Verified: **1,318 unit tests + 79 guard scripts green**; the guard was reverse-checked by removing the teardown call.
+
+## What's new in 0.4.14
+
+### Project decision record
 
 ### The project badge showed a project name for a brand-new conversation (reported on Windows)
 

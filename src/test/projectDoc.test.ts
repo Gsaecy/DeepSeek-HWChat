@@ -4,18 +4,19 @@ import {
   PROJECT_DOC_CONTEXT_BYTES,
   PROJECT_DOC_MARKER,
   appendProjectDoc,
+  doneEntriesForRun,
   emptyProjectDoc,
   isProjectDoc,
   parseProjectDoc,
   renderProjectDocContext,
 } from '../core/projectDoc';
 
-test('新文档带标记，且四个小节齐全', () => {
+test('新文档带标记，且五个小节齐全', () => {
   const doc = emptyProjectDoc('Safevault');
   assert.ok(doc.includes(PROJECT_DOC_MARKER));
   assert.equal(isProjectDoc(doc), true);
   const parsed = parseProjectDoc(doc);
-  assert.deepEqual(Object.keys(parsed).sort(), ['convention', 'decision', 'open', 'rejected']);
+  assert.deepEqual(Object.keys(parsed).sort(), ['convention', 'decision', 'done', 'open', 'rejected']);
   for (const items of Object.values(parsed)) assert.deepEqual(items, []);
 });
 
@@ -83,4 +84,39 @@ test('脏输入不抛错', () => {
   assert.equal(parseProjectDoc('## 不存在的节\n- x').decision.length, 0);
   const result = appendProjectDoc('', [{ kind: 'open', text: '   ' }]);
   assert.equal(result.added, 0);
+});
+
+test('运行结果转成 done 条目：只收已完成，标题去重后重跑不留两条', () => {
+  const entries = doneEntriesForRun([
+    { title: '修好表格排版', status: 'complete', summary: '胶囊最小宽度收敛', changedFiles: ['media/chat.css', 'media/chat.js'] },
+    { title: '还没做完的事', status: 'running' },
+    { title: '   ', status: 'complete' },
+  ]);
+  assert.equal(entries.length, 1);
+  const [entry] = entries;
+  assert.equal(entry!.kind, 'done');
+  assert.match(entry!.text, /^完成：修好表格排版/);
+  assert.match(entry!.text, /改动 media\/chat\.css、media\/chat\.js/);
+
+  let doc = emptyProjectDoc('P');
+  const first = appendProjectDoc(doc, entries);
+  assert.equal(first.added, 1);
+  doc = first.text;
+  // 同标题重跑：摘要变了、文件变了，但仍然是同一件事，不该再记一条。
+  const again = appendProjectDoc(doc, doneEntriesForRun([
+    { title: '修好表格排版', status: 'complete', summary: '换了个说法', changedFiles: ['media/chat.css'] },
+  ]));
+  assert.equal(again.added, 0);
+  assert.equal(parseProjectDoc(again.text).done.length, 1);
+});
+
+test('done 条目不改动其他小节，也不影响注入', () => {
+  const doc = appendProjectDoc(emptyProjectDoc('P'), [
+    { kind: 'decision', text: '权限预设是唯一权威' },
+    { kind: 'done', text: '完成：修好表格排版' },
+  ]).text;
+  const parsed = parseProjectDoc(doc);
+  assert.deepEqual(parsed.decision, ['权限预设是唯一权威']);
+  assert.deepEqual(parsed.done, ['完成：修好表格排版']);
+  assert.match(renderProjectDocContext(doc), /完成：修好表格排版/);
 });
