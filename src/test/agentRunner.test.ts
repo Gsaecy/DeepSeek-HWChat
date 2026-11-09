@@ -423,7 +423,7 @@ test('工具失败时把自动回查结果并进 tool 结果（不新增对话�
 /* ── 请求体总预算：超预算时从最旧的工具输出开始折（方案 A） ─────────────── */
 import { pruneToolPayloads, requestBytes } from '../agent/agentRunner';
 
-function toolMessage(index: number, bytes: number): { role: 'tool'; tool_call_id: string; name: string; content: string } {
+function toolPayload(index: number, bytes: number): ChatRequestMessage {
   return {
     role: 'tool',
     tool_call_id: `call-${index}`,
@@ -437,37 +437,41 @@ function toolMessage(index: number, bytes: number): { role: 'tool'; tool_call_id
   };
 }
 
+function toolContentAt(messages: readonly ChatRequestMessage[], index: number): string {
+  return String(messages[index]?.content ?? '');
+}
+
 test('按条数折：只保留最近 keep 条原文', () => {
-  const messages = [0, 1, 2, 3, 4].map((index) => toolMessage(index, 100)) as never[];
+  const messages = [0, 1, 2, 3, 4].map((index) => toolPayload(index, 100));
   const folded = pruneToolPayloads(messages);
   assert.equal(folded, 2, '5 条保留 3 条 → 折 2 条');
-  assert.match(String(messages[0]!.content), /"folded":true/);
-  assert.doesNotMatch(String(messages[4]!.content), /"folded":true/);
+  assert.match(toolContentAt(messages, 0), /"folded":true/);
+  assert.doesNotMatch(toolContentAt(messages, 4), /"folded":true/);
 });
 
 test('超预算时从最旧的继续折，直到装得下', () => {
   // 5 条 × 20KB；按条数只折 2 条仍剩 60KB，预算 30KB 时必须继续折。
-  const messages = [0, 1, 2, 3, 4].map((index) => toolMessage(index, 20_000)) as never[];
+  const messages = [0, 1, 2, 3, 4].map((index) => toolPayload(index, 20_000));
   const budget = 30_000;
   assert.ok(requestBytes(messages) > budget, '构造的请求体必须一开始就超预算');
   pruneToolPayloads(messages, 3, budget);
   assert.ok(requestBytes(messages) <= budget, `折完必须装得下，实际 ${requestBytes(messages)}`);
   // 最新那条永远保留原文：它是模型下一步要用的。
-  assert.doesNotMatch(String(messages[4]!.content), /"folded":true/, '最新一条不能被折');
+  assert.doesNotMatch(toolContentAt(messages, 4), /"folded":true/, '最新一条不能被折');
 });
 
 test('已经装得下时一条都不多折', () => {
-  const messages = [0, 1, 2, 3].map((index) => toolMessage(index, 100)) as never[];
+  const messages = [0, 1, 2, 3].map((index) => toolPayload(index, 100));
   const before = requestBytes(messages);
   pruneToolPayloads(messages, 4, before);
   assert.equal(requestBytes(messages), before, '预算够时不该动任何东西');
 });
 
 test('折叠保留结论与改动文件（不丢可用的信息）', () => {
-  const messages = [toolMessage(0, 500), toolMessage(1, 500), toolMessage(2, 500), toolMessage(3, 500)] as never[];
+  const messages = [toolPayload(0, 500), toolPayload(1, 500), toolPayload(2, 500), toolPayload(3, 500)];
   pruneToolPayloads(messages, 1);
-  const first = JSON.parse(String(messages[0]!.content)) as Record<string, unknown>;
-  assert.equal(first.changedFiles?.[0] ?? (first.changedFiles as string[])[0], 'file-0.ts');
+  const first = JSON.parse(toolContentAt(messages, 0)) as { summary?: string; folded?: boolean; changedFiles?: string[] };
+  assert.equal(first.changedFiles?.[0], 'file-0.ts');
   assert.match(String(first.summary), /读取第 0 个文件/);
   assert.equal(first.folded, true);
 });

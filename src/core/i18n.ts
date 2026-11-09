@@ -220,8 +220,8 @@ const DICTIONARY: Record<string, Entry> = {
   },
   'chat.projectPending': { zh: '项目待建立', en: 'No project yet' },
   'chat.projectPendingHint': {
-    zh: '这条对话还没有落到任何工作区文件夹，git 写操作会被拒绝；等它开始改文件（或指定项目）就会自动绑定。',
-    en: 'This conversation is not bound to a workspace folder yet, so git writes are refused. It binds automatically once it touches files (or you name a project).',
+    zh: '这条对话还没有归属到任何项目：它还没读写过文件，你也没指定过项目。第一次动到项目时会自动绑定 —— 单根工作区就是那个文件夹；多根工作区需要明确的 cwd，未绑定前 git 写操作会被拒绝。',
+    en: 'This conversation has no project yet: it has not touched any files and no project was named. It binds automatically on the first file operation — the only folder in a single-root workspace, or an explicit cwd in a multi-root one. Until then git writes are refused.',
   },
   'chat.skillsPanelTitle': { zh: '本次对话使用的 Skill', en: 'Skills used in this conversation' },
   'chat.workspaceTrustBadge': { zh: '工作区状态', en: 'Workspace status' },

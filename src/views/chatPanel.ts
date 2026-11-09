@@ -32,7 +32,7 @@ import { FOLLOW_UP_PROMPT } from '../agent/followUpPrompt';
 import { REPLY_SHAPE_PROMPT } from '../agent/replyShapePrompt';
 import { userTextOfTaskRequest } from '../agent/taskQueue';
 import { grantFromFollowUp } from '../agent/conversationScope';
-import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChangedFiles, samePath } from '../agent/workspacePaths';
+import { badgeBinding, chooseProjectRoot, projectNameOf, rootsFromChangedFiles, samePath } from '../agent/workspacePaths';
 import { hasApiKey, resolveEmbeddingKey } from '../core/apiKeys';
 import { fetchViaProxy } from '../providers/proxyFetch';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
@@ -3508,10 +3508,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    */
   private projectBadgeFor(conversation?: ConversationSummary | null, messages: readonly ChatMessage[] = []): ProjectBadgeView {
     const folders = vscode.workspace.workspaceFolders ?? [];
-    const primary = this.projectRootFor(conversation);
-    const involved = involvedProjectRoots({
+    /*
+     * **不用 `projectRootFor`**：那个会在「只有一个根」时直接返回该根（路径解析与 git 归属
+     * 需要这条推断），但徽标不能把一个猜出来的目录名画成「这条对话已归属该项目」。
+     * 现场（用户 2026-11-09，Windows）：新建对话后本该是「项目待建立」，却直接显示了
+     * `Personal Workstation OS`。判据见 `badgeBinding` 的注释。
+     */
+    const binding = badgeBinding({
       roots: folders.map((folder) => folder.uri.fsPath),
-      primary,
+      stored: conversation?.projectRoot,
       touched: [
         ...(conversation?.projectRoots ?? []),
         ...rootsFromChangedFiles({
@@ -3520,10 +3525,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         }),
       ],
     });
-    const names = involved
+    const names = binding.roots
       .map((root) => projectNameOf(root))
       .filter((name): name is string => Boolean(name));
-    return { name: names[0] ?? null, others: names.slice(1), bound: Boolean(primary) };
+    return { name: names[0] ?? null, others: names.slice(1), bound: binding.bound && Boolean(names[0]) };
   }
 
   /** 用户改标题：写库后回推状态，让标题栏与历史列表同时更新。 */

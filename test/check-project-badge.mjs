@@ -133,7 +133,12 @@ check(
   /if \(conversation\.projectRoot && samePath\(conversation\.projectRoot, target\)\) return;/.test(CHAT_PANEL),
   '缺主项目去重',
 );
-check('面板：徽标用 involvedProjectRoots 汇总', /involvedProjectRoots\(\{/.test(CHAT_PANEL), '徽标没走 involvedProjectRoots');
+/*
+ * 徽标现在走 `badgeBinding`（它内部仍然用 involvedProjectRoots 汇总），
+ * 外层多了一步「只认证据、不许把单根推断当成已绑定」。判据见
+ * test/check-project-badge-binding.mjs。
+ */
+check('面板：徽标用 badgeBinding 汇总（内部走 involvedProjectRoots）', /badgeBinding\(\{/.test(CHAT_PANEL), '徽标没走 badgeBinding');
 check('面板：老对话从 changedFiles 反推项目', /rootsFromChangedFiles\(\{/.test(CHAT_PANEL), '缺老对话反推');
 check('面板：sendState 把消息一起交给徽标', /this\.projectBadgeFor\(conversation, page\.messages\)/.test(CHAT_PANEL), 'sendState 没传消息');
 

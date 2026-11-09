@@ -206,6 +206,45 @@ export function chooseProjectRoot(input: {
   return roots.length === 1 ? roots[0] : undefined;
 }
 
+/**
+ * 徽标上的「已绑定」到底以什么为准。
+ *
+ * 现场（用户 2026-11-09，Windows）：新建对话后，本该显示「项目待建立」的位置直接显示
+ * 了 `Personal Workstation OS`。原因是 `chooseProjectRoot` 有一条「只有一个根时无需提示」
+ * 的推断（`roots.length === 1 ? roots[0] : undefined`）—— 那条推断是为**路径解析与 git 归属**
+ * 服务的（单根确实没有歧义），但徽标拿它当成了「这条对话已经归属到这个项目」，
+ * 于是把一个**猜出来的**目录名画成了既成事实。多根工作区不会触发那条推断，
+ * 所以这个错只在单根环境（例如 Windows 上只打开一个文件夹）露出来。
+ *
+ * 现在两者分开：
+ *  - **路径解析**（`chooseProjectRoot`）继续允许推断；
+ *  - **徽标**只认两种证据：存档里显式绑定的 `projectRoot`，或真的动过文件的项目。
+ *
+ * `bound` 为假时界面上就是「项目待建立」，与用户看到的实际状态一致。
+ */
+export function badgeBinding(input: {
+  roots: readonly string[];
+  stored?: string;
+  touched?: readonly string[];
+  limit?: number;
+}): { primary?: string; roots: string[]; bound: boolean } {
+  const stored = input.stored && input.roots.some((root) => samePath(root, input.stored!))
+    ? input.stored
+    : undefined;
+  const involved = involvedProjectRoots({
+    roots: input.roots,
+    primary: stored,
+    touched: input.touched,
+    limit: input.limit,
+  });
+  return {
+    primary: stored ?? involved[0],
+    roots: involved,
+    bound: involved.length > 0,
+  };
+}
+
+/**
 /** 项目徽标最多显示几个项目：再多就折成 `+N`，否则整条状态栏都被项目名吃掉。 */
 export const PROJECT_BADGE_LIMIT = 8;
 

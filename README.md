@@ -8,6 +8,19 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.13
+
+### The project badge showed a project name for a brand-new conversation (reported on Windows)
+
+After installing 0.4.12 on Windows, a **new conversation** showed `Personal Workstation OS` where it should show "No project yet".
+
+- **Root cause**: path resolution infers "with a single root there is no ambiguity" (`roots.length === 1 ? roots[0] : undefined`) — legitimate for git and relative paths, but the badge treated that guess as "this conversation belongs to that project", painting a guessed folder name as fact.
+- **Why only on Windows**: a multi-root workspace never hits that inference, so macOS kept showing "No project yet"; Windows with one folder open always hits it.
+- **Fix**: the two are now separate. Path resolution keeps the inference; the badge goes through `badgeBinding()`, which only accepts evidence — an explicitly stored `projectRoot`, or a project actually touched. No evidence means "No project yet".
+- **Hint text corrected too**: it claimed git writes would be refused, which is not true in a single-root workspace.
+
+Verified: **1,307 unit tests + 78 guard scripts green**, including the new `check-project-badge-binding.mjs`, verified in reverse (re-adding the old logic turns it red).
+
 ## What's new in 0.4.12
 
 > **About the version number**: the last Marketplace release was **0.4.11**. Development kept three notes

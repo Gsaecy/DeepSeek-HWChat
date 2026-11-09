@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chooseProjectRoot, externalToolPathViolation, foreignPathStyle, involvedProjectRoots, normalizeWorkspaceGlob, PROJECT_BADGE_LIMIT, projectNameOf, resolveWorkspacePath, rootsFromChangedFiles } from '../agent/workspacePaths';
+import { badgeBinding, chooseProjectRoot, externalToolPathViolation, foreignPathStyle, involvedProjectRoots, normalizeWorkspaceGlob, PROJECT_BADGE_LIMIT, projectNameOf, resolveWorkspacePath, rootsFromChangedFiles } from '../agent/workspacePaths';
 
 const roots = [
   { name: 'Safevault_android', fsPath: '/Users/test/AI projects/Safevault_android' },
@@ -245,6 +245,43 @@ test('project root: the active editor decides when nothing is bound yet', () => 
 
 test('project root: a single root needs no hint', () => {
   assert.equal(chooseProjectRoot({ roots: ['/Users/test/only'] }), '/Users/test/only');
+});
+
+/*
+ * 徽标「已绑定」必须只认证据（用户 2026-11-09，Windows 现场）。
+ *
+ * 现场：新建对话后，本该显示「项目待建立」的位置直接显示了 `Personal Workstation OS`。
+ * 根因是徽标复用了 `chooseProjectRoot` 的「单根无需提示」推断 —— 那条推断是给
+ * 路径解析与 git 归属用的，却被当成了「这条对话已归属该项目」。
+ */
+test('徽标：单根工作区的新对话仍然是「项目待建立」（Windows 现场）', () => {
+  const single = ['/Users/test/AI projects/Personal Workstation OS'];
+  // 路径解析照样能定出根（git/相对路径需要它）……
+  assert.equal(chooseProjectRoot({ roots: [...single] }), single[0]);
+  // ……但徽标不能把猜出来的目录名画成既成事实。
+  const badge = badgeBinding({ roots: single });
+  assert.equal(badge.bound, false, '没有任何读写痕迹时不许自称已绑定');
+  assert.equal(badge.primary, undefined);
+});
+
+test('徽标：显式绑定过的对话显示那个项目', () => {
+  const single = ['/Users/test/AI projects/Personal Workstation OS'];
+  const badge = badgeBinding({ roots: single, stored: single[0] });
+  assert.equal(badge.bound, true);
+  assert.equal(badge.primary, single[0]);
+});
+
+test('徽标：动过文件之后才绑定（哪怕没有存 projectRoot）', () => {
+  const roots = ['/Users/test/AI projects/A', '/Users/test/AI projects/B'];
+  const badge = badgeBinding({ roots, touched: [roots[1]!] });
+  assert.equal(badge.bound, true);
+  assert.equal(badge.primary, roots[1]);
+});
+
+test('徽标：存档里的 projectRoot 已不在工作区时不算绑定', () => {
+  const single = ['/Users/test/AI projects/A'];
+  const badge = badgeBinding({ roots: single, stored: '/Users/test/AI projects/Gone' });
+  assert.equal(badge.bound, false);
 });
 
 test('project root: a multi-root workspace without any hint stays unbound', () => {
