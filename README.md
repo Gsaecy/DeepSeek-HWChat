@@ -8,6 +8,18 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.9
+
+A table in the chat rendered with its columns squeezed to **one character per line** — rows 500px tall, and the last column pushed outside the panel where scrolling could not reach it.
+
+- **Root cause**: a file-reference chip inside a table cell had been verified to an **absolute** Windows path (the file lives in a different workspace root, so there is no relative form), and `.file-ref`'s label is `white-space: nowrap` — so the chip's *minimum* width was the whole path (676px measured). Auto table layout takes each column's minimum width first: the other columns hold Chinese text, whose minimum width is a single character. Measured result: table 797px inside a 661px container, column widths `33 / 33 / 697 / 33`, row heights `515` and `422`, the fourth column outside `.message-viewport` (which is `overflow-x: hidden`, so it could not be scrolled into view).
+- **Fix 1 (main)**: inside table cells the chip now shows **only the file name** (`vaultInitializationPolicy.ts`). The full path stays in the tooltip and clicking still opens the file. References in normal prose are **unchanged** — they still show the full absolute path as designed.
+- **Fix 2 (backstop)**: chips in table cells are capped at `20em`, in case the file name itself is long. Bare (non-backticked) paths in cells go through the same `dense` path.
+- **Tried and rejected**: `direction: rtl` to get left-side ellipsis. It is **actively harmful** — a POSIX absolute path starts with `/`, a neutral character that RTL reorders to the *end*, so `/Users/x/README.md` renders as `…/README.md/` and looks like a directory. The guard script now forbids it.
+- **Measured after the fix** (headless Chromium, same content): at 683px the columns are `50 / 117 / 255 / 239` with 51px rows; at 420px rows are 143px (normal wrapping in the single-column layout); no horizontal overflow at any width.
+
+Verified: **1,276 unit tests + 76 guard scripts green**, including the new `test/check-table-layout.mjs` (static contract + real Chromium measurements at three widths, also proving it fails without the fix).
+
 ## What's new in 0.4.8
 
 > **About the version number**: the last Marketplace release was **0.4.7**. Development kept five separate notes

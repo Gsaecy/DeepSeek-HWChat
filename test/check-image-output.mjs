@@ -47,9 +47,9 @@ function slice(startMarker, endMarker, label) {
 }
 
 const imageFunctions = [
-  slice('  function imageSourceAllowed(src) {', '  function appendInline(parent, value) {', 'imageSourceAllowed / inlineImageNode'),
-  slice('  function appendInline(parent, value) {', '  function renderAttachments() {', 'appendInline'),
-  slice('  function appendPlainText(parent, text) {', '  /**\n   * markdown 图片的地址白名单', 'appendPlainText'),
+  slice('  function imageSourceAllowed(src) {', '  function appendInline(parent, value, options = {}) {', 'imageSourceAllowed / inlineImageNode'),
+  slice('  function appendInline(parent, value, options = {}) {', '  function renderAttachments() {', 'appendInline'),
+  slice('  function appendPlainText(parent, text, options = {}) {', '  /**\n   * markdown 图片的地址白名单', 'appendPlainText'),
   slice('  function appendRichText(container, text, streaming = false) {', '\n  /**', 'appendRichText'),
   slice('  function renderMessageAttachments(attachments) {', '  /**\n   * 让已经发出去的附件可以', 'renderMessageAttachments'),
   // 图片加载失败的两级兜底（宿主重新解析 → 缩略图）跟着附件卡片一起装配。

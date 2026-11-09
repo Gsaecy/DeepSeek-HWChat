@@ -44,9 +44,9 @@ check('平台判断只有一处（revealTargetFor）', PANEL.includes('revealTar
 check('类型里声明了 fileRoots / fileTarget', TYPES.includes('fileRoots: { roots: string[]; preferred?: string }') && TYPES.includes("fileTarget: 'finder' | 'explorer' | 'fileManager'"));
 check('chat.js 从状态里读回 fileRoots', /state\.fileRoots = nextRoots;/.test(CHAT_JS) && CHAT_JS.includes('incoming.fileRoots'));
 check('行内渲染走 appendPlainText（裸路径）与 fileReferenceNode（反引号）',
-  CHAT_JS.includes('if (index > cursor) appendPlainText(parent, value.slice(cursor, index));')
-  && CHAT_JS.includes('if (cursor < value.length) appendPlainText(parent, value.slice(cursor));')
-  && CHAT_JS.includes('fileReferenceNode(codeText, { compact: true, allowSpaces: true })'));
+  /if \(index > cursor\) appendPlainText\(parent, value\.slice\(cursor, index\)/.test(CHAT_JS)
+  && /if \(cursor < value\.length\) appendPlainText\(parent, value\.slice\(cursor\)/.test(CHAT_JS)
+  && /fileReferenceNode\(codeText, \{ compact: true, allowSpaces: true/.test(CHAT_JS));
 check('右键菜单挂在 contextmenu 上', CHAT_JS.includes("addEventListener('contextmenu'"));
 check('样式有悬停位移与降级动效', CHAT_CSS.includes('.file-ref:hover') && CHAT_CSS.includes('transform: translateY(-1px)') && CHAT_CSS.includes('prefers-reduced-motion'));
 check('图标集里有 file / folder / copy', /\bfile: \{/.test(ICONS) && /\bfolder: \{/.test(ICONS) && /\bcopy: \{/.test(ICONS));

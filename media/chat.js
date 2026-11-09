@@ -4150,7 +4150,7 @@
       for (let column = 0; column < Math.max(cells.length, aligns.length); column += 1) {
         const td = document.createElement('td');
         if (aligns[column]) td.style.textAlign = aligns[column];
-        appendInline(td, cells[column] || '');
+        appendInline(td, cells[column] || '', { dense: true });
         row.append(td);
       }
       body.append(row);
@@ -4234,6 +4234,7 @@
       reference,
       resolved,
       compact: Boolean(options.compact),
+      dense: Boolean(options.dense),
       original: typeof input === 'string' ? input : (options.original || reference.path),
     };
     const known = cachedReferenceResolution(reference);
@@ -4304,6 +4305,22 @@
    */
   function fileReferenceLabel(entry) {
     const suffix = fileRef.locationSuffix(entry.reference);
+    /*
+     * 表格单元格：只写文件名。
+     *
+     * 胶囊的标签是 nowrap，它的**最小宽度就等于整段标签**；表格自动布局先取各列
+     * 最小宽度再分配，中文列的最小宽度又只有一个字 —— 一条绝对路径（用户在
+     * 2026-11-09 截图里是 `D:/…/vaultInitializationPolicy.ts`，676px）会把整张表
+     * 压成「一个字一行」，行高 500px 以上，右边那列还被推出面板之外。
+     *
+     * 单元格里只留文件名：胶囊 168px 就够放，列宽回到 52/127/216/265。完整路径仍在
+     * `title` 上，点开直达；正文里的引用不受影响，仍按原设计显示完整路径。
+     */
+    if (entry.dense) {
+      const path = entry.resolved.relative || entry.resolved.absolute;
+      const base = path.split(/[\\/]/).filter(Boolean).pop() || path;
+      return `${base}${suffix}`;
+    }
     if (entry.compact && entry.resolved.relative) return `${entry.resolved.relative}${suffix}`;
     return `${entry.resolved.absolute}${suffix}`;
   }
@@ -4440,14 +4457,14 @@
   }
 
   /** 正文里裸写的路径：扫描出来逐个替换成引用，其余部分保持纯文本。 */
-  function appendPlainText(parent, text) {
+  function appendPlainText(parent, text, options = {}) {
     if (!text) return;
     const hits = fileRef ? fileRef.scanPlainText(text) : [];
     if (!hits.length) { parent.append(document.createTextNode(text)); return; }
     let cursor = 0;
     for (const hit of hits) {
       if (hit.index > cursor) parent.append(document.createTextNode(text.slice(cursor, hit.index)));
-      const node = fileReferenceNode(hit.reference, { compact: false, original: hit.text });
+      const node = fileReferenceNode(hit.reference, { compact: false, original: hit.text, dense: options.dense });
       if (node) parent.append(node); else parent.append(document.createTextNode(hit.text));
       cursor = hit.index + hit.length;
     }
@@ -4643,7 +4660,7 @@
     return figure;
   }
 
-  function appendInline(parent, value) {
+  function appendInline(parent, value, options = {}) {
     // 只把「目标看起来像链接」的 [文字](目标) 当链接：目标必须以 http(s)://、mailto:、# 或 / 开头，
     // 这样 [文字](javascript:…) 之类的构造连匹配都不会匹配，不会出现半个链接加一个多余的右括号。
     //
@@ -4653,18 +4670,18 @@
     // 不一样的文字」。加上边界后，半截的粗体一律按字面量显示，直到 `**` 真正闭合。
     const pattern = /(`[^`]+`|\*\*[^*\n]+\*\*|(?<!\*)\*(?!\*)[^\s*][^*\n]*\*(?!\*)|~~[^~\n]+~~|!\[[^\]\n]*\]\(\s*(?:<[^>\n]+>|[^)\s]+)\s*\)|\[[^\]\n]+\]\((?:https?:\/\/|mailto:|#|\/)[^)\s]*\)|https?:\/\/[^\s<]+)/g; let cursor = 0;
     for (const match of value.matchAll(pattern)) {
-      const index = match.index || 0; if (index > cursor) appendPlainText(parent, value.slice(cursor, index)); const token = match[0];
+      const index = match.index || 0; if (index > cursor) appendPlainText(parent, value.slice(cursor, index), { dense: options.dense }); const token = match[0];
       if (token.startsWith('`')) {
         // 反引号里是文件路径时渲染成可点的引用（悬停看完整路径、右键在 Finder/资源管理器中定位），
         // 否则维持原来的代码片段样式。allowSpaces 只在这里打开：反引号已经界定了边界。
         const codeText = token.slice(1, -1);
-        parent.append(fileReferenceNode(codeText, { compact: true, allowSpaces: true }) || textElement('code', '', codeText));
+        parent.append(fileReferenceNode(codeText, { compact: true, allowSpaces: true, dense: options.dense }) || textElement('code', '', codeText));
       }
       else if (token.startsWith('![')) {
         const image = token.match(/^!\[([^\]]*)\]\(\s*(?:<([^>\n]+)>|([^)\s]+))\s*\)$/);
         const inlineSrc = image ? (image[2] || image[3] || '') : '';
         if (image && imageSourceAllowed(inlineSrc)) parent.append(inlineImageNode(image[1], inlineSrc, true));
-        else appendPlainText(parent, token);
+        else appendPlainText(parent, token, { dense: options.dense });
       }
       else if (token.startsWith('**')) parent.append(textElement('strong', '', token.slice(2, -2)));
       else if (token.startsWith('*')) parent.append(textElement('em', '', token.slice(1, -1)));
@@ -4680,7 +4697,7 @@
       else { const link = textElement('a', '', token); link.href = token; link.target = '_blank'; link.rel = 'noreferrer'; parent.append(link); }
       cursor = index + token.length;
     }
-    if (cursor < value.length) appendPlainText(parent, value.slice(cursor));
+    if (cursor < value.length) appendPlainText(parent, value.slice(cursor), { dense: options.dense });
   }
 
   function renderAttachments() {

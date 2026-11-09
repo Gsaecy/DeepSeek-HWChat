@@ -642,6 +642,23 @@ body.editor-open .message-viewport { overflow: hidden; }
 .message-content .table-wrap { margin: 0 0 14px; overflow-x: auto; }
 .message-content table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.55; }
 .message-content th, .message-content td { padding: 6px 10px; border: 1px solid var(--border); vertical-align: top; text-align: left; }
+/*
+ * 表格里的文件引用胶囊必须能被压窄。
+ *
+ * 真实故障（用户 2026-11-09 截图）：一张四列表格里有个 `vaultInitializationPolicy.ts`，
+ * 扩展把它核实成了 Windows 工作区里的**绝对路径**（跨根因而没有相对写法），
+ * 而 `.file-ref` 的标签是 `white-space: nowrap` —— 这一颗胶囊的最小宽度就等于
+ * 整条路径（实测 676px）。自动表格布局先把每列压到最小宽度再分配，剩下三列
+ * 都是中文（最小宽度 = 一个字），于是整张表变成「P0 / 初始化防误写」竖排，
+ * 行高 868px，第四列还被推出面板之外。
+ *
+ * 主修在 `chat.js`：单元格里的胶囊只显示文件名（`fileReferenceLabel` 的 dense 分支）。
+ * 这里留一道兜底：文件名本身也可能很长，任何时候都不许它独占整列。
+ * 上限用 em（跟随胶囊自身字号），20em ≈ 210px —— 常见文件名整段放得下，不再截断。
+ * 只限制表格单元格：正文里的引用仍然按设计显示完整路径。
+ */
+.message-content th .file-ref,
+.message-content td .file-ref { max-width: 20em; }
 .message-content thead th { background: var(--surface); font-weight: 650; }
 .message-content tbody tr:nth-child(even) { background: color-mix(in srgb, var(--surface) 45%, transparent); }
 /* 思考过程沿用同一套结构，但字号压小，避免抢正文的位置。 */

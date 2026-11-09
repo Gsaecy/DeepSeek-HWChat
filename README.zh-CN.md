@@ -12,6 +12,18 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 
 架构与功能实现清单（含 12 个待评审漏洞点及**代码坐标**、以及「刻意取舍」清单）见 [docs/ARCHITECTURE-REVIEW.md](docs/ARCHITECTURE-REVIEW.md) —— 这份文档就是为外部评审（Claude / GPT）准备的，可直接整份贴出去。
 
+## 0.4.9 更新了什么
+
+对话框里的一张三列表格被挤成「一个字一行」，行高 500px 以上，最后一列还被推到面板外面、滚动也看不到。
+
+- **根因**：单元格里那颗文件引用胶囊被核实成了 Windows 工作区里的**绝对路径**（文件在另一个工作区根里，没有相对写法），而 `.file-ref` 的标签是 `white-space: nowrap` —— 胶囊的**最小宽度就是整条路径**（实测 676px）。自动表格布局先取各列最小宽度：其余几列是中文，而中文的最小宽度就是**一个字**。于是表格被算成 797px（容器 661px），列宽 `33 / 33 / 697 / 33`，行高 `515` / `422`，第 4 列落在 `.message-viewport`（`overflow-x: hidden`）之外，滚也滚不到。
+- **修法一（主）**：单元格里的胶囊只写**文件名**，完整路径仍在 `title` 上、点击直达；正文里的引用**一个字符不变**，仍显示完整绝对路径。
+- **修法二（兜底）**：单元格里的胶囊限宽 `20em`，防文件名本身过长。没有反引号的裸路径走 `appendPlainText`，同样收成文件名。
+- **试过但否掉**：用 `direction: rtl` 做「左侧省略」。**实测有害** —— POSIX 路径开头的 `/` 在 RTL 段落里会被排到**末尾**，`/Users/x/README.md` 画成 `…/README.md/`，看着像目录。守护脚本现在禁止这种写法。
+- **修好之后实测**（headless Chromium，同一份内容）：683px 视口列宽 `50 / 117 / 255 / 239`、行高 51；420px 视口行高 143（单列布局下正常换行）；各档都没有横向溢出。
+
+验证：**1,276 条单测 + 76 个守护脚本全绿**，含新增的 `test/check-table-layout.mjs`（静态契约 + 真实 Chromium 三档量像素，并反向验证过去掉修复就会失败）。
+
 ## 0.4.8 更新了什么
 
 > **版本号说明**：市场上一次发布是 **0.4.7**。开发期留了 0.4.8 – 0.4.12 五个小节，对外只发一个版本号，
@@ -456,6 +468,8 @@ npm run package
 **工具栏与输入框上的按钮用的是另一套 24 格图标**（`src/views/webview.ts` 的 `icon()`）：16 格那套给正文与状态标记，24 格那套给按钮，两边各管一处、互不混用。它们的几何由 `node test/check-icon-geometry.mjs` 约束——那套路径是手写的，肉眼「大概居中」并不等于居中：墨迹可以整体偏出中心（`.icon-button` 的居中作用在 `svg` 盒子上，不是墨迹上），可以探出 viewBox 被静默裁掉（SVG 最外层默认 `overflow: hidden`），也可以圆心偏离盒子中心，让加载态的 `spin` 转起来是绕着盒子中心甩而不是原地打转。脚本真解析路径（含弧与曲线）算出每个图标的墨迹包围盒，把这三条一起断言；`--report` 只打印实测几何，改图标时用来看数字。
 
 **助手输出里的少量 emoji 也走同一套图标**（`🔔 📌 💡 🚀 🔍 ⚠ ✅ ❌ 📝` → `bell` `pin` `bulb` `rocket` `search` `warn` `check` `close` `pencil`）。系统 emoji 字体画出来是彩色、带高光的，和这套单色扁平界面不是一回事，而且「扁平/单色」由字体决定、CSS 改不动。替换在渲染后的文本节点上做，`<pre>` / `<code>` 里跳过（代码里的 emoji 是内容本身），只对助手输出生效，未登记的 emoji 原样保留。
+
+**表格单元格里的引用胶囊只写文件名**（`fileReferenceLabel` 的 `dense` 分支）。胶囊的标签是 `white-space: nowrap`，一颗被核实成绝对路径的胶囊（文件在另一个工作区根里时没有相对写法）最小宽度就等于整条路径，而中文列的最小宽度只有一个字——两头一夹，整张表会被压成「一个字一行」，行高 500px 以上，最后一列还被推出面板之外（`overflow-x: hidden` 下滚不到）。单元格里只留文件名（完整路径在 `title` 上、点击直达），`media/chat.css` 再兜一层 `max-width: 20em`；正文里的引用保持原样，仍显示完整路径。不要改用 `direction: rtl` 做「左侧省略」：POSIX 路径开头的 `/` 会跑到末尾，`/Users/x/README.md` 会被画成 `…/README.md/`。回归断言在 `test/check-table-layout.mjs`（真实 Chromium 量三档宽度）。
 
 正文里文件引用的识别在 `media/file-reference.js`（纯函数：扩展名白名单判定、行号后缀拆分、相对→绝对、正文裸路径扫描），平台命名、入参清洗和「文件是否落在工作区内」（`isInsideWorkspace`）在 `src/agent/fileReveal.ts`，「这个引用到底是哪个文件」的判定在 `src/agent/fileReferenceResolve.ts`（存在性由调用方注入、命中集合由 `workspace.findFiles` 喂入），三者都不碰 DOM 和 `vscode`，由 `src/test/fileReference.test.ts`、`src/test/fileReveal.test.ts` 直接覆盖。`src/test/fileReferenceResolve.test.ts` 覆盖「根目录命中优先、同名多份不认、带目录不回退搜索」。`node test/check-file-reference-dom.mjs`（**71 项**）会把 `chat.js` 里真实的渲染段落切出来、配最小 DOM 跑一遍点击与右键菜单——判定逻辑可以单测，「右键真的发出 `revealFile` / `revealFileInExplorer`」「两项各发各的、不会互相误发」「判不出来的引用会还原成原文」「核实到另一个文件后点击目标一起换」只能这样验。
 
