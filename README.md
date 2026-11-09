@@ -8,6 +8,16 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.11
+
+### The third instance of the same inconsistency: web tools ignored the preset
+
+The previous release removed two hidden tightenings, but the same problem existed once more, in the opposite direction: **web tools were hard-coded to "allow"**, justified by "whether to go online is decided by the 'internet reference' switch". That switch only decides *whether the run may use the network* — not *whether this preset should ask*. So under "Ask every time", reading an external page never asked, contradicting the table's "Read: Ask".
+
+Web tools now share the read column: "Ask every time" asks, the other three presets do not. The promise line in Settings gained a third hard limit: web tools are unavailable unless "internet reference" is on (that is an authorisation switch, not a prompt).
+
+Verified: **1,284 unit tests + 76 guard scripts green**, with assertions that `fetch_url` asks 1 / 0 / 0 / 0 times across the four presets.
+
 ## What's new in 0.4.10
 
 ### The permission preset stopped matching reality (reported 2026-11-09)

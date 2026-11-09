@@ -155,8 +155,8 @@ const DICTIONARY: Record<string, Entry> = {
    * 都已删除 —— 所以这里可以这样写。
    */
   'matrix.hardBoundary': {
-    zh: '上表之外没有隐藏的加严或放宽：选了「自动允许」就一定不会弹确认，选了「逐次确认」就一定弹。唯二的硬边界不看预设，且都是「直接拒绝并说明原因」，不会伪装成再问你一次 —— ① 未受信任的工作区禁止写入与执行；② 工作区外的路径被隔离。危险命令指提权、破坏性删除、磁盘擦写、推送远端、把网络脚本管道给 shell 等操作。',
-    en: 'Nothing beyond this table tightens or loosens the rule: "Allow" never prompts, "Ask" always does. Only two hard limits ignore the preset, and both are outright denials with an explanation rather than a surprise prompt: (1) untrusted workspaces block writes and command execution; (2) paths outside the workspace are isolated. Dangerous commands cover privilege escalation, destructive deletion, disk wiping, pushing to a remote, and piping remote scripts into a shell.',
+    zh: '上表之外没有隐藏的加严或放宽：选了「自动允许」就一定不会弹确认，选了「逐次确认」就一定弹。只有三条硬边界不看预设，且都是「直接拒绝并说明原因」，不会伪装成再问你一次 —— ① 未受信任的工作区禁止写入与执行；② 工作区外的路径被隔离；③ 未开启「互联网参考」时联网工具不可用（联网本身要你打开开关，那不是询问）。危险命令指提权、破坏性删除、磁盘擦写、推送远端、把网络脚本管道给 shell 等操作。',
+    en: 'Nothing beyond this table tightens or loosens the rule: "Allow" never prompts, "Ask" always does. Only three hard limits ignore the preset, and all are outright denials with an explanation rather than a surprise prompt: (1) untrusted workspaces block writes and command execution; (2) paths outside the workspace are isolated; (3) web tools are unavailable unless "internet reference" is on (turning it on is an explicit switch, not a prompt). Dangerous commands cover privilege escalation, destructive deletion, disk wiping, pushing to a remote, and piping remote scripts into a shell.',
   },
   'matrix.askEvery': { zh: '逐次确认', en: 'Ask' },
   'matrix.allow': { zh: '自动允许', en: 'Allow' },

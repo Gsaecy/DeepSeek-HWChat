@@ -115,13 +115,13 @@ function recorder(decision: boolean | ((request: ToolApprovalRequest) => boolean
 async function run(
   name: string,
   args: Record<string, unknown>,
-  options: { preset?: PermissionPreset; mode?: 'chat' | 'agent' | 'plan'; approve?: boolean; scope?: ToolExecutionScope } = {},
+  options: { preset?: PermissionPreset; mode?: 'chat' | 'agent' | 'plan'; approve?: boolean; scope?: ToolExecutionScope; overrides?: Partial<ChatSettings> } = {},
 ): Promise<{ result: ToolExecutionResult; requests: ToolApprovalRequest[] }> {
   const recorded = recorder(options.approve ?? true);
   const result = await executor.execute(
     call(name, args),
     options.mode ?? 'agent',
-    settings(options.preset ?? 'review'),
+    settings(options.preset ?? 'review', options.overrides),
     recorded.requestApproval,
     undefined,
     options.scope,
@@ -291,6 +291,26 @@ test('预设与表现逐项一致（四个预设 × 七类动作）', async () =
     }
   }
   assert.deepEqual(mismatches, [], `预设与表现不一致：\n${mismatches.join('\n')}`);
+});
+
+test('联网工具也按预设走（「每次询问」下会问，其余档位不问）', async () => {
+  /*
+   * 旧实现把联网工具固定成「自动允许」，理由是「探不探网由互联网参考开关决定」。
+   * 那个开关只决定"能不能联网"，不决定"这一档要不要问"——于是「每次询问」档位下
+   * 读外部网页一次都不问，和设置页写的「读取：逐次确认」对不上。同一类不一致。
+   */
+  const overrides: Partial<ChatSettings> = { internetReference: true };
+  const cases: Array<{ preset: PermissionPreset; expected: number }> = [
+    { preset: 'askAll', expected: 1 },
+    { preset: 'review', expected: 0 },
+    { preset: 'autopilot', expected: 0 },
+    { preset: 'full', expected: 0 },
+  ];
+  for (const { preset, expected } of cases) {
+    // 用必然连不上的本机端口：只关心「有没有先问」，不关心结果。
+    const { requests } = await run('fetch_url', { url: 'http://127.0.0.1:1/' }, { preset, approve: false, overrides });
+    assert.equal(requests.length, expected, `${preset}：预设要求的确认次数不对`);
+  }
 });
 
 test('Autopilot：用户截图里那条只读命令不再要求确认', async () => {

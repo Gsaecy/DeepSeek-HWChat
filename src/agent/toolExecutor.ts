@@ -389,13 +389,16 @@ export class ToolExecutor implements vscode.Disposable {
     const tier: CommandRiskTier | undefined = risk === 'command'
       ? classifyCommandTier(String(args.command ?? ''))
       : undefined;
-    const policy = isResearchTool(name)
-      // 联网工具不走「文件读取」策略：它读的不是你的文件，探不探网由「互联网参考」
-      // 开关决定（每对话、默认关、来源与 SSRF 过滤另有硬检查）。若沿用 fileReadPolicy，
-      // 默认的 askAll 档位下每搜一次都要点一次批准，一次调研十几次调用 —— 这一项
-      // 的授权已经由开关本身给出，再逐次问一遍只是噪声。
-      ? 'allow' as PermissionPolicy
-      : policyFor(risk, settings, tier);
+    /*
+     * 联网工具同样走预设，不再单独硬编码成 allow。
+     *
+     * 旧实现把它固定成「自动允许」，理由是「探不探网由『互联网参考』开关决定」。
+     * 但那个开关只表示「允不允许联网」，不代表「这一档预设不用问」——
+     * 于是「每次询问」档位下读取外部网页一次都不会问，和设置页写的
+     * 「读取：逐次确认」对不上。同样的不一致，用户在 2026-11-09 已经明确不接受。
+     * 现在它和读文件用同一列策略：`每次询问` 会问，其余档位不问。
+     */
+    const policy: PermissionPolicy = policyFor(risk, settings, tier);
     /*
      * **权限预设是唯一权威**（用户 2026-11-09 明确要求：预设与实际效果必须一致，
      * 不接受任何隐藏的加严/放宽）。

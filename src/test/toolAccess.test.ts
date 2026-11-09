@@ -151,19 +151,40 @@ test('端到端：开关关着时联网工具被拒，且不发起任何请求',
   assert.equal(approvals, 0, '被拒的调用不该弹审批');
 });
 
-test('联网工具不再逐次要审批：一次调研十几次调用不该十几次弹窗', async () => {
+test('联网工具也按预设走：「每次询问」档位下必须先问一次', async () => {
+  /*
+   * 这条以前断言的是「联网工具永不弹审批（开关本身就是授权）」。
+   * 用户 2026-11-09 定的口径是：权限预设说了算 —— 那个开关只决定「能不能联网」，
+   * 不决定「这一档要不要问」。所以「每次询问」档位下读外部网页也必须问一次。
+   * 授权回调返回 false，避免测试真的去联网。
+   */
   for (const name of ['search_github_repos', 'search_web', 'fetch_url']) {
     let approvals = 0;
-    // askAll 档位（读文件都要问）也不该因为这些调用弹窗；用内网地址让它秒失败，
-    // 避免测试真的去访问外网。
     const strict = { ...settings, ...PERMISSION_PRESET_PROFILES.askAll, permissionPreset: 'askAll' as const };
     const result = await executor.execute(
       call(name, name === 'fetch_url' ? { url: 'http://10.0.0.1/secret' } : { query: '' }),
       'agent',
       strict,
-      async () => { approvals += 1; return true; },
+      async () => { approvals += 1; return false; },
     );
-    assert.equal(/未被允许/.test(result.content), false, `${name} 被准入挡下了`);
-    assert.equal(approvals, 0, `${name} 不该逐次弹审批（开关本身就是授权）`);
+    assert.equal(/未被允许/.test(result.content), false, `${name} 不该被准入挡下（开关是开着的）`);
+    assert.equal(approvals, 1, `${name} 在「每次询问」档位下必须先问一次`);
+    assert.equal(result.status, 'denied');
+  }
+});
+
+test('联网工具在放宽档位下不打扰（与设置页对照表一致）', async () => {
+  for (const preset of ['review', 'autopilot', 'full'] as const) {
+    for (const name of ['search_github_repos', 'search_web', 'fetch_url']) {
+      let approvals = 0;
+      const relaxed = { ...settings, ...PERMISSION_PRESET_PROFILES[preset], permissionPreset: preset };
+      await executor.execute(
+        call(name, name === 'fetch_url' ? { url: 'http://10.0.0.1/secret' } : { query: '' }),
+        'agent',
+        relaxed,
+        async () => { approvals += 1; return false; },
+      );
+      assert.equal(approvals, 0, `${preset} 档位下 ${name} 不该弹审批`);
+    }
   }
 });
