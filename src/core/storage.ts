@@ -35,6 +35,7 @@ import {
   ConversationExport,
   ConversationSummary,
   ConversationMode,
+  LegacyConversationControls,
   MessageContext,
   RecallHit,
   MessageExecutionStatus,
@@ -49,6 +50,17 @@ import { AGENT_MAX_STEPS_UNLIMITED, AGENT_STEP_SAFETY_CAP } from './agentLimits'
 interface Manifest {
   version: 1;
   conversations: ConversationSummary[];
+}
+
+export interface ConversationStorageOptions {
+  /**
+   * 旧版本写在 `hwchat.*` 全局设置里的三项。
+   *
+   * 只用来给「升级前就已经有消息、存档里却没有这三项」的老对话补一次值：
+   * 升级前它们显示/执行的就是这份全局值，不补的话会统一变成固定默认值
+   * （每次询问 / 24 步）。新对话（0 条消息）永远不吃这份旧值。
+   */
+  legacyControls?: LegacyConversationControls;
 }
 
 /**
@@ -223,7 +235,10 @@ export class ConversationStorage {
    */
   private readonly resurrected = new Set<string>();
 
-  constructor(private readonly rootPath: string) {
+  constructor(
+    private readonly rootPath: string,
+    private readonly options: ConversationStorageOptions = {},
+  ) {
     this.manifestPath = join(rootPath, 'manifest.json');
     this.manifestLockPath = join(rootPath, '.manifest.lock');
     this.deletedPath = join(rootPath, 'deleted.json');
@@ -258,6 +273,12 @@ export class ConversationStorage {
         // 再读一遍」：每次 VS Code 启动都付双份 JSON 解析与 IO（21MB 历史实测多付
         // 约 130ms CPU）。两个入口本来就要逐条读，顺手修好即可，语义完全一致。
         await this.reconcileManifest();
+        // 升级前的老对话没有「预设 / 步数 / 思考深度」存档值：用旧版全局设置补一次。
+        // 必须放在 reconcile 之后——messageCount 要以磁盘上的真实消息数为准，
+        // 只给确实有消息的对话补，空的新对话仍从固定初始值开始。
+        if (this.backfillLegacyControls()) {
+          await this.persistManifest();
+        }
         await this.reconcileArchiveMarkers();
         // 必须在 reconcile 之后：先让磁盘状态稳定下来，再判断「谁不见了」。
         await this.checkArchivedIntegrity();
@@ -1841,6 +1862,50 @@ export class ConversationStorage {
     const next = this.writeTail.then(task, task);
     this.writeTail = next.then(() => undefined, () => undefined);
     return next;
+  }
+
+  /**
+   * 把旧版全局设置补进「升级前就有消息、存档里没有这三项」的老对话。
+   *
+   * 为什么需要：0.2.5 之前预设 / 步数 / 思考深度只有全局一份，老对话存档里根本
+   * 没有这些字段；升级后如果继续用固定初始值兜底，历史对话会统一变成
+   * 「每次询问 / 24 步」（用户 2026-11-09 Windows 现场：全部历史对话从
+   * 「自动 / 不限制」掉回默认）。补一次并落盘后，这些对话就重新只依赖自己的存档。
+   *
+   * 三条边界：
+   *  - `messageCount === 0` 的对话等同于新对话，不补（否则新建对话会被旧值污染）；
+   *  - 逐项补，已经有了的值绝不被旧全局值覆盖；
+   *  - 不动 `updatedAt`，历史列表的顺序不因迁移而变。
+   */
+  private backfillLegacyControls(): boolean {
+    const legacy = this.options.legacyControls;
+    if (!legacy) return false;
+    let changed = false;
+    for (const summary of this.manifest.conversations) {
+      if (!summary.messageCount) continue;
+      if (summary.permissionPreset === undefined) {
+        const preset = normalizeStoredPreset(legacy.permissionPreset);
+        if (preset) {
+          summary.permissionPreset = preset;
+          changed = true;
+        }
+      }
+      if (summary.agentMaxSteps === undefined) {
+        const steps = normalizeStoredSteps(legacy.agentMaxSteps);
+        if (steps !== undefined && steps !== null) {
+          summary.agentMaxSteps = steps;
+          changed = true;
+        }
+      }
+      if (summary.reasoningEffort === undefined) {
+        const reasoning = normalizeStoredReasoning(legacy.reasoningEffort);
+        if (reasoning) {
+          summary.reasoningEffort = reasoning;
+          changed = true;
+        }
+      }
+    }
+    return changed;
   }
 
   private async rebuildManifestFromDisk(): Promise<void> {

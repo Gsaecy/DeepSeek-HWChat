@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ApiProfile, ChatSettings, PermissionPreset, ReasoningEffort } from './types';
+import { ApiProfile, ChatSettings, LegacyConversationControls, PermissionPreset, ReasoningEffort } from './types';
 import { PERMISSION_PRESET_PROFILES, DEFAULT_PERMISSION_PRESET } from './permissions';
 import { LanguageSetting, normalizeLanguageSetting } from './i18n';
 import { resolveConversationMode } from './modes';
@@ -403,6 +403,52 @@ export function normalizeReasoningEffort(value: unknown): ReasoningEffort {
   return value === 'none' || value === 'low' || value === 'medium' || value === 'high' || value === 'max'
     ? value
     : 'default';
+}
+
+const REASONING_VALUES: readonly ReasoningEffort[] = ['default', 'none', 'low', 'medium', 'high', 'max'];
+
+/**
+ * 合法思考深度判定（**不做兜底**）。
+ *
+ * 迁移旧设置时必须能区分「没写过」与「写了 default」：前者不该产生存档字段，
+ * 后者要原样补进去。`normalizeReasoningEffort` 会把所有不认识的输入变成
+ * `default`，用它做判定就分不出这两种情况了。
+ */
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return typeof value === 'string' && (REASONING_VALUES as readonly string[]).includes(value);
+}
+
+/**
+ * 读一次旧版本写在 `hwchat.*` 里的三项（升级前工具条唯一的落盘位置）。
+ *
+ * 只给**升级前已经有消息的老对话**补存档值用（见 `ConversationStorage` 的
+ * `legacyControls`）：0.2.5 起这三项改成按对话存，老对话存档里没有这些字段；
+ * 如果继续用固定初始值兜底，它们会在升级后统一显示成「每次询问 / 24 步」，
+ * 而升级前实际执行的是旧全局值（用户 2026-11-09 Windows 现场）。
+ *
+ * 新对话不读这里，仍然固定从最保守的初始值开始。
+ *
+ * 作用域：旧版 `updateSettings` 写「最近一层已声明的作用域」，用户级最常见；
+ * 存储本身是全局共享的，所以按 用户 → 工作区 → 文件夹 的顺序取第一个声明值。
+ * 只认用户显式写过的值，`defaultValue` 不参与（否则「没设置过」也会被当成迁移源）。
+ */
+export function readLegacyConversationControls(): LegacyConversationControls {
+  const configuration = vscode.workspace.getConfiguration(SECTION);
+  const declared = (key: string): unknown => {
+    const inspected = configuration.inspect<unknown>(key);
+    if (!inspected) return undefined;
+    return inspected.globalValue ?? inspected.workspaceValue ?? inspected.workspaceFolderValue;
+  };
+  const result: LegacyConversationControls = {};
+  const preset = declared('permissionPreset');
+  if (isPermissionPreset(preset)) result.permissionPreset = preset;
+  const steps = declared('agentMaxSteps');
+  if (typeof steps === 'number' && Number.isFinite(steps) && steps >= 0) {
+    result.agentMaxSteps = normalizeAgentMaxSteps(steps);
+  }
+  const reasoning = declared('reasoningEffort');
+  if (isReasoningEffort(reasoning)) result.reasoningEffort = reasoning;
+  return result;
 }
 
 function cleanId(value: unknown): string {

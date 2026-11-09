@@ -23,6 +23,19 @@ export type ReasoningEffort = 'default' | 'none' | 'low' | 'medium' | 'high' | '
 import type { LanguageSetting } from './i18n';
 export type { Language, LanguageSetting } from './i18n';
 
+/**
+ * 旧版本写在 `hwchat.*` 全局设置里的运行时设置。
+ *
+ * 0.2.5 之前这三项只有全局一份、不随对话存档。升级后那些**老对话**里没有对应
+ * 字段，需要靠这份旧值补一次，否则它们会统一掉回「每次询问 / 24 步」。
+ * 只用于迁移，新对话仍然从 `NEW_CONVERSATION_CONTROLS` 开始。
+ */
+export interface LegacyConversationControls {
+  permissionPreset?: PermissionPreset;
+  agentMaxSteps?: number;
+  reasoningEffort?: ReasoningEffort;
+}
+
 /** 待办条目状态：等待执行 / 执行中 / 已完成。 */
 export type TodoStatus = 'pending' | 'in_progress' | 'completed';
 

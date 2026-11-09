@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as vscode from 'vscode';
-import { applyRuntimeControls, describePermissionScope, formatPermissionScope, readSettings, updateSettings } from '../core/settings';
+import { applyRuntimeControls, describePermissionScope, formatPermissionScope, readLegacyConversationControls, readSettings, updateSettings } from '../core/settings';
 import { setConfiguration, setFolderConfiguration, setWorkspaceRoots } from './support/vscodeMock';
 
 const ROOT_A = process.cwd();
@@ -242,4 +242,30 @@ test('图片模型跟着当前接口配置档走（空则视为不支持出图�
   const withoutImages = readSettings();
   // readSettings 统一把「没有」归一成空串：一个值域只有「空 = 不支持出图」。
   assert.equal(withoutImages.imageModel, '', '没有图片模型的配置档不该继承上一个档位的值');
+});
+
+test('旧全局设置只作为迁移来源：合法值原样返回，非法值与默认值不返回', () => {
+  roots(ROOT_A);
+  setConfiguration({
+    'hwchat.permissionPreset': 'autopilot',
+    'hwchat.agentMaxSteps': 0,
+    'hwchat.reasoningEffort': 'max',
+  });
+  assert.deepEqual(readLegacyConversationControls(), {
+    permissionPreset: 'autopilot',
+    agentMaxSteps: 0,
+    reasoningEffort: 'max',
+  });
+
+  // 「没写过」不能因为 package.json 里的默认值被当成迁移源。
+  setConfiguration({});
+  assert.deepEqual(readLegacyConversationControls(), {});
+
+  // 手改坏的 settings.json 不能把老对话迁成脏值。
+  setConfiguration({
+    'hwchat.permissionPreset': 'bogus',
+    'hwchat.agentMaxSteps': -5,
+    'hwchat.reasoningEffort': 'ultra',
+  });
+  assert.deepEqual(readLegacyConversationControls(), {});
 });

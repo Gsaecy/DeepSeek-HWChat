@@ -7,7 +7,7 @@ import { SkillRegistry } from './agent/skillRegistry';
 import { ToolExecutor, disposeAllToolExecutors } from './agent/toolExecutor';
 import { CleanupScheduler } from './core/cleanupScheduler';
 import { getApiKey, storeApiKey } from './core/apiKeys';
-import { describePermissionScope, formatPermissionScope, profileFor, readSettings } from './core/settings';
+import { describePermissionScope, formatPermissionScope, profileFor, readLegacyConversationControls, readSettings } from './core/settings';
 import { ConversationStorage } from './core/storage';
 import { revertApprovalBridge, showApprovalBridge } from './core/vscodeApprovals';
 import { DeepSeekClient } from './providers/deepseekClient';
@@ -39,7 +39,9 @@ let activeStorage: ConversationStorage | undefined;
  */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const output = vscode.window.createOutputChannel('HWChat', { log: true });
-  const storage = new ConversationStorage(join(context.globalStorageUri.fsPath, 'history-v1'));
+  const storage = new ConversationStorage(join(context.globalStorageUri.fsPath, 'history-v1'), {
+    legacyControls: readLegacyConversationControls(),
+  });
   activeStorage = storage;
 
   const audit = new AuditLog(join(context.globalStorageUri.fsPath, 'agent-audit.jsonl'));

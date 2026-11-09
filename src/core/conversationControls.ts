@@ -1,8 +1,10 @@
 import { ChatSettings, PermissionPreset, ReasoningEffort } from './types';
-import { isPermissionPreset, normalizeAgentMaxSteps } from './settings';
+import { isPermissionPreset, isReasoningEffort, normalizeAgentMaxSteps } from './settings';
 import { DEFAULT_REASONING_EFFORT } from './settings';
 import { DEFAULT_PERMISSION_PRESET } from './permissions';
 import { DEFAULT_AGENT_MAX_STEPS } from './agentLimits';
+
+export { isReasoningEffort };
 
 /**
  * 每条对话自己的运行时设置。
@@ -69,12 +71,6 @@ export const NEW_CONVERSATION_CONTROLS: Readonly<ConversationControls> = Object.
  */
 export function resolveNewConversationControls(draft?: ConversationControlSource): ConversationControls {
   return resolveConversationControls(NEW_CONVERSATION_CONTROLS, draft);
-}
-
-const REASONING_VALUES: readonly ReasoningEffort[] = ['default', 'none', 'low', 'medium', 'high', 'max'];
-
-export function isReasoningEffort(value: unknown): value is ReasoningEffort {
-  return typeof value === 'string' && (REASONING_VALUES as readonly string[]).includes(value);
 }
 
 /**
