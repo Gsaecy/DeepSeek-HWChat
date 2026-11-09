@@ -713,6 +713,14 @@ export interface WebviewConversationState {
   /** 当前清单是否「正常跑完但没结清」；界面据此标「未完成」，与「已中断」区分开。 */
   todosIncomplete?: boolean;
   /**
+   * 对话长度：这条对话离「装不下」还有多远。
+   *
+   * 口径与真正发出去的请求一致（只算正文与附件文本），所以进度条骗不了人。
+   * `level === 'over'` 时界面给一个「在新对话继续」的按钮 ——
+   * 那条链路复用已有的 `continueFromConversation`（新对话 + 引用当前对话摘要）。
+   */
+  contextLoad?: { tokens: number; budget: number; percent: number; level: 'ok' | 'warn' | 'over' };
+  /**
    * 正在后台执行的对话 id 列表。
    *
    * 多线程对话：每个对话各自跑自己的 Agent 循环，用户切走对话不会中断它。

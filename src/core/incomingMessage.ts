@@ -53,6 +53,7 @@ export const INCOMING_MESSAGE_SPECS: Record<string, IncomingMessageSpec> = {
   selectConversation: { required: { id: 'string' } },
   continueConversation: { required: { id: 'string' } },
   detachConversationHistory: {},
+  continueInNewChat: {},
   send: {
     required: { text: 'string' },
     optional: { mode: 'mode', skillIds: 'stringArray', permissionPreset: 'preset', agentMaxSteps: 'number', reasoningEffort: 'effort' },

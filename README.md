@@ -8,6 +8,17 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.14
+
+### Conversation length gauge + "Continue in a new chat"
+
+The panel only ever showed a **cumulative billed token count** (that 1.03M figure). That is not context length — it tells you nothing about how close the conversation is to not fitting.
+
+- **A length gauge** whose measurement matches the real request (message text plus attachment text; image base64, tool executions and reasoning are excluded). Three states: normal / warn at ≥70% / over at ≥90%.
+- **When over, a "Continue in a new chat" button appears**: it creates a new conversation that references the current one's digest, reusing the existing continuation link — compressing the conversation by starting a fresh window. The original conversation is untouched.
+
+Verified: **1,299 unit tests + 77 guard scripts green**, including three real Chromium states (9% / 78% / 148%) where the over state actually clicks the button.
+
 ## What's new in 0.4.13
 
 ### "request failed: terminated" — a healthy run aborted itself (reported 2026-11-09 14:03)

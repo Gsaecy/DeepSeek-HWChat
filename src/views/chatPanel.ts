@@ -36,7 +36,8 @@ import { chooseProjectRoot, involvedProjectRoots, projectNameOf, rootsFromChange
 import { hasApiKey, resolveEmbeddingKey } from '../core/apiKeys';
 import { fetchViaProxy } from '../providers/proxyFetch';
 import { buildConversationHistoryDigest } from '../core/conversationHistory';
-import { outcomeOf, renderWorkDigest, requestPayloadOf } from '../core/contextWindow';
+import { outcomeOf, renderWorkDigest, requestBytesOf, requestPayloadOf } from '../core/contextWindow';
+import { contextLoad } from '../core/contextBudget';
 import { constraintsOf, mergeTaskNodes, newlyCompletedTodos, renderTaskMemory, todoBaseline } from '../core/taskMemory';
 import { hasSecrets } from '../core/secretScan';
 import { registerKnownSecret } from '../agent/auditLog';
@@ -294,6 +295,13 @@ type IncomingMessage =
   | { type: 'selectConversation'; id: string }
   | { type: 'continueConversation'; id: string }
   | { type: 'detachConversationHistory' }
+  /**
+   * 「在新对话继续」：新建一条对话并引用当前这条的摘要。
+   *
+   * 与 `detachConversationHistory` 的区别：那个是「断开引用、继续用这条对话」，
+   * 这个是「保留原对话、开一条新的继续」，用于对话过长时压缩上下文。
+   */
+  | { type: 'continueInNewChat' }
   | { type: 'send'; text: string; mode?: ConversationMode; skillIds?: string[]; permissionPreset?: PermissionPreset; agentMaxSteps?: number; reasoningEffort?: ReasoningEffort }
   | { type: 'sendWhileRunning'; text: string }
   | { type: 'editTaskMessage'; nodeId: string; text: string }
@@ -1314,6 +1322,10 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           break;
         case 'detachConversationHistory':
           await this.detachConversationHistory();
+          break;
+        case 'continueInNewChat':
+          // 对话过长时用「新对话 + 引用当前摘要」压缩上下文；原对话保持原样。
+          if (this.activeConversationId) await this.continueFromConversation(this.activeConversationId);
           break;
         case 'send':
           if (this.isViewingRunningConversation()) {
@@ -3230,6 +3242,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       todosInterrupted: todoView.interrupted,
       todosIncomplete: todoView.incomplete,
       todoArchives: this.todoArchiveViews(conversation?.todoArchives),
+      /*
+       * 对话长度进度：口径与真正发出去的请求一致（`requestBytesOf` 只算正文与附件文本，
+       * 不算图片 base64 / 工具执行记录 / 思考过程），所以进度条骗不了人。
+       * 超过阈值时界面会给一个「在新对话继续」的按钮 —— 那条链路复用已有的
+       * `continueFromConversation`（新对话 + 引用当前对话的摘要）。
+       */
+      contextLoad: contextLoad(page.messages.reduce((total, message) => total + requestBytesOf(message), 0) / 4),
       runningConversationIds: [...this.runs.keys()],
       pendingApprovals: [...this.pendingApprovals.values()].map((item) => item.request),
       pendingDecisions: [...this.pendingDecisions.values()].map((item) => item.request),
@@ -6123,6 +6142,11 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         <div id="attachmentList" class="attachment-list"></div>
         <div id="contextChip" class="context-chip" hidden><span id="contextLabel"></span><button id="removeContextButton" type="button" aria-label="${t(lang, 'chat.removeContext')}" title="${t(lang, 'common.remove')}">×</button></div>
         <div id="agentRunState" class="agent-run-state" hidden><span class="run-indicator"></span><strong id="agentRunLabel">${t(lang, 'chat.agentRunning')}</strong><span id="agentRunMeta"></span></div>
+        <div id="contextGauge" class="context-gauge" hidden>
+          <span class="context-gauge-label" id="contextGaugeLabel"></span>
+          <div class="context-gauge-track"><div class="context-gauge-fill" id="contextGaugeFill"></div></div>
+          <button type="button" class="context-gauge-action" id="contextGaugeAction" hidden>${t(lang, 'chat.contextContinueNew')}</button>
+        </div>
         <div id="panelStack" class="panel-stack">
         <details id="taskTree" class="task-tree" hidden><summary><span class="panel-summary-title">${t(lang, 'chat.taskTree')}</span><small id="taskTreeSummary" class="panel-summary-state"></small></summary><div id="taskTreeList" class="task-tree-list"></div></details>
         <details id="todoPanel" class="todo-panel" hidden open>

@@ -946,6 +946,40 @@ body.editor-open .message-viewport { overflow: hidden; }
 .agent-run-state { display: flex; align-items: center; min-width: 0; gap: 7px; margin: 0 2px 7px; color: var(--muted); font-size: 10px; }
 .agent-run-state strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-size: 10px; }
 .agent-run-state > span:last-child { margin-left: auto; white-space: nowrap; }
+
+/*
+ * 对话长度进度条。
+ *
+ * 用户的实际感受是「聊到后面变慢、变贵、偶尔失败」，但界面上只有一个累计 token 数
+ * —— 那是计费累加，不是上下文长度，看到 1.03M 也判断不出离装不下还差多少。
+ * 这条进度按「真正会发给模型的内容」算（与请求同口径），所以它不会骗人。
+ *
+ * 三档：正常（灰）/ 该提醒（黄）/ 该换新对话（红，同时出现按钮）。
+ */
+.context-gauge { display: flex; align-items: center; min-width: 0; gap: 7px; margin: 0 2px 7px; color: var(--muted); font-size: 10px; }
+.context-gauge[hidden] { display: none; }
+.context-gauge-label { flex: 0 0 auto; white-space: nowrap; }
+.context-gauge-track { flex: 1 1 auto; min-width: 40px; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.context-gauge-fill { height: 100%; width: 0; border-radius: 2px; background: color-mix(in srgb, var(--fg) 40%, transparent); transition: width .18s ease; }
+.context-gauge.level-warn .context-gauge-fill { background: var(--warning); }
+.context-gauge.level-over .context-gauge-fill { background: var(--danger); }
+.context-gauge.level-warn .context-gauge-label { color: var(--warning); }
+.context-gauge.level-over .context-gauge-label { color: var(--danger); }
+.context-gauge-action {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-radius: 999px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.context-gauge-action:hover { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 18%, transparent); }
+.context-gauge-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.context-gauge-action[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .context-gauge-fill { transition: none; } }
 .run-indicator { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
 /* ── 任务清单（待办）─────────────────────────────────────────────
    位置：任务树与输入框之间，和任务树一样是 <details>，点标题折叠/展开。

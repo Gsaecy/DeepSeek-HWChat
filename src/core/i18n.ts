@@ -318,6 +318,13 @@ const DICTIONARY: Record<string, Entry> = {
   'chat.pin': { zh: '固定', en: 'Pin' },
   'chat.unpin': { zh: '取消固定', en: 'Unpin' },
   'chat.agentRunning': { zh: 'Agent 正在执行', en: 'Agent running' },
+  /*
+   * 对话长度进度条。`{percent}` 是占预算的比例，`{tokens}` 是估算的上下文 tokens。
+   * 文案刻意不写「剩余多少条」：预算是估算，写死具体数字会变成假精确。
+   */
+  'chat.contextGaugeLabel': { zh: '对话长度 {percent}% · 约 {tokens} tokens', en: 'Conversation length {percent}% · ~{tokens} tokens' },
+  'chat.contextContinueNew': { zh: '在新对话继续', en: 'Continue in a new chat' },
+
   'chat.agentRunningWith': { zh: 'Agent 正在执行：{title}', en: 'Agent running: {title}' },
   'chat.archivedReadOnly': { zh: '已归档 · 只读', en: 'Archived · read-only' },
   'chat.untrustedRestricted': { zh: '未信任 · 写入与命令受限', en: 'Untrusted · writes and commands restricted' },

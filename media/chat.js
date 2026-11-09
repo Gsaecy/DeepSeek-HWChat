@@ -318,6 +318,7 @@
     'historyLinkBanner', 'sourceHistoryTitle', 'detachHistoryButton',
     'permissionPresetInput', 'agentMaxStepsInput', 'reasoningEffortInput', 'voiceButton',
     'agentRunState', 'agentRunLabel', 'agentRunMeta', 'taskTree', 'taskTreeSummary', 'taskTreeList',
+    'contextGauge', 'contextGaugeLabel', 'contextGaugeFill', 'contextGaugeAction',
     'todoPanel', 'todoList', 'todoSummary', 'todoSummaryActions', 'resumeTodosButton', 'cancelTodosButton',
     'todoArchivePanel', 'todoArchiveList', 'todoArchiveSummary', 'todoArchiveBar',
     'approvalCard', 'approvalTitle', 'approvalSummary', 'approvalDetail', 'approvalDenyButton', 'approvalAllowButton',
@@ -780,7 +781,7 @@
     const forceMessages = Boolean(options && options.forceMessages);
     renderHistory(); renderHeader(); renderSkills();
     if (!skipMessages) renderMessages('replace', { force: forceMessages });
-    renderHistoryLink(); renderAttachments(); renderTaskTree(); renderTodos(); renderArchivePanel(); renderTodoArchives(); renderApproval(); renderDecision(); updateComposerState();
+    renderHistoryLink(); renderAttachments(); renderTaskTree(); renderContextGauge(); renderTodos(); renderArchivePanel(); renderTodoArchives(); renderApproval(); renderDecision(); updateComposerState();
   }
 
   function renderHistory() {
@@ -2318,6 +2319,37 @@
       if (top) node.scrollTop = top;
       if (left) node.scrollLeft = left;
     }
+  }
+
+  /**
+   * 对话长度进度条。
+   *
+   * `state.contextLoad` 由宿主按「真正会发给模型的内容」算好（与请求同口径），
+   * 界面只负责画。`level === 'over'` 时额外给一个「在新对话继续」的按钮 ——
+   * 点击后宿主会新建一条对话并引用当前这条的摘要（复用已有的
+   * `continueFromConversation`），等价于「用新窗口的方式压缩对话」。
+   */
+  function renderContextGauge() {
+    const load = state.contextLoad;
+    if (!elements.contextGauge) return;
+    const usable = load && Number.isFinite(load.percent) && load.tokens > 0;
+    elements.contextGauge.hidden = !usable;
+    if (!usable) {
+      elements.contextGaugeAction.hidden = true;
+      return;
+    }
+    elements.contextGauge.className = `context-gauge level-${load.level}`;
+    elements.contextGaugeLabel.textContent = t('chat.contextGaugeLabel', { percent: Math.min(999, load.percent), tokens: compactTokens(load.tokens) });
+    elements.contextGaugeFill.style.width = `${Math.min(100, Math.max(0, load.percent))}%`;
+    elements.contextGaugeAction.hidden = load.level !== 'over';
+  }
+
+  /** 1.03M / 128k 这种紧凑写法：进度条旁边放不下完整数字。 */
+  function compactTokens(tokens) {
+    if (!Number.isFinite(tokens) || tokens <= 0) return '0';
+    if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2).replace(/0$/, '')}M`;
+    if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+    return String(Math.round(tokens));
   }
 
   function renderTaskTree() {
@@ -4926,6 +4958,12 @@
   elements.exportButton.addEventListener('click', () => post('exportConversation'));
   elements.archiveButton.addEventListener('click', () => { if (state.conversation) post('toggleArchive', { id: state.conversation.id, archived: !state.conversation.archived }); });
   elements.detachHistoryButton.addEventListener('click', () => post('detachConversationHistory'));
+  /*
+   * 「在新对话继续」：宿主收到后新建一条对话并引用当前这条的摘要
+   * （复用 `continueFromConversation`），等于用开新窗口的方式压缩对话。
+   * 界面上不做二次确认——它不删任何东西，用户随时可以切回原对话。
+   */
+  elements.contextGaugeAction.addEventListener('click', () => post('continueInNewChat'));
   elements.attachButton.addEventListener('click', () => post('attachFiles')); elements.removeContextButton.addEventListener('click', () => post('removeContext'));
 
   /*
@@ -5478,7 +5516,8 @@
         if (editingBubbleMessageId && previousConversationId !== message.state?.conversation?.id) {
           editingBubbleMessageId = null; editingBubbleTaskId = null; editingBubbleDraft = '';
         }
-        const incoming = message.state; state.conversations = incoming.conversations || []; state.archivedConversations = incoming.archivedConversations || [];
+        const incoming = message.state; state.contextLoad = incoming.contextLoad;
+        state.conversations = incoming.conversations || []; state.archivedConversations = incoming.archivedConversations || [];
         state.conversation = incoming.conversation;
         /*
          * 换对话 = 换一份消息列表，**本地不留任何东西**。
