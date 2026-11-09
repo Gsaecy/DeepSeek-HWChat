@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifyAbort, isAbortLikeError } from '../agent/abortReason';
+import { classifyAbort, isAbortLikeError, isTransportDropError } from '../agent/abortReason';
 
 function named(name: string, message = '', cause?: unknown): Error {
   const error = new Error(message);
@@ -36,8 +36,27 @@ test('cause 链里嵌着的也算（包装器常常只改外层消息）', () =>
 test('不把「消息里出现 abort 字样」的业务错误误判成中止', () => {
   assert.equal(isAbortLikeError(new Error('abort 按钮的样式没生效')), false);
   assert.equal(isAbortLikeError(new Error('aborted by policy: 该文件被保护')), false);
-  assert.equal(isAbortLikeError(named('TypeError', 'terminated')), false);
   assert.equal(isAbortLikeError(undefined), false);
+});
+
+test('undici 的 terminated / other side closed 算连接被掐断（可续），不算业务错误', () => {
+  /*
+   * 这条以前断言的是 `false` —— 那是错的。
+   *
+   * 现场（用户 2026-11-09 14:03）：一次完全正常的运行中途弹出
+   * 「请求失败：terminated」，agent 停下。`terminated` 是 undici 在 socket
+   * 被对端提前关闭时抛的通用错误，字面上什么都没说。
+   * 它属于「连接被掐断」：内容、步骤、未执行的消息都还在，回一句继续就能接着做。
+   */
+  assert.equal(isAbortLikeError(named('TypeError', 'terminated')), true);
+  assert.equal(isAbortLikeError(named('Error', 'other side closed')), true);
+  assert.equal(isAbortLikeError(named('Error', 'socket hang up')), true);
+  assert.equal(isTransportDropError(named('TypeError', 'terminated')), true);
+  // 挂在 cause 上的一样要认出来（undici 把真原因放在 cause 里）。
+  const wrapped = Object.assign(new Error('fetch failed'), { cause: named('Error', 'other side closed') });
+  assert.equal(isAbortLikeError(wrapped), true);
+  // 只是「消息里出现 terminated 这个词」的业务错误不认。
+  assert.equal(isAbortLikeError(new Error('task terminated by user policy')), false);
 });
 
 test('有取消信号且没有超时特征 → 用户停止', () => {

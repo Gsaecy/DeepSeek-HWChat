@@ -8,6 +8,7 @@ import {
   UsageInfo,
 } from '../core/types';
 import { tt } from '../core/i18n';
+import { isTransportDropError } from '../agent/abortReason';
 import { stallExtended, stallIdleSeconds } from '../core/requestBudget';
 import { hasImageParts, isTextOnlyContentRejection, stripImageParts } from './visionFallback';
 import { sanitizeJsonStrings } from '../core/textSafety';
@@ -380,6 +381,8 @@ export class DeepSeekClient {
     let statusAttempt = 0;
     /** 首字未到就卡住的重试次数（只允许 1 次，见下面的说明）。 */
     let stallRetries = 0;
+    /** 连接被掐断且尚未收到任何内容时的重试次数（同样只 1 次）。 */
+    let connectionRetries = 0;
     const transport = this.transport(settings);
     while (true) {
       const current = newAttempt();
@@ -435,7 +438,34 @@ export class DeepSeekClient {
         this.logFailure(endpoint, error);
         throw new Error(tt('api.connectFailed', { error: error instanceof Error ? error.message : String(error) }));
       }
-      if (response.ok) break;
+      if (response.ok) {
+        if (!response.body) throw new Error(tt('api.noStream'));
+        /*
+         * 每次尝试都记着「有没有真的吐出过内容」：一个 delta 都没发出去时连接断了，
+         * 重发是安全的（用户看到的是空白）；已经吐了半截再重发，界面上会出现重复段落。
+         */
+        let emitted = false;
+        const trackDelta = async (delta: StreamDelta): Promise<void> => {
+          emitted = true;
+          await options.onDelta(delta);
+        };
+        try {
+          return await parseSse(response.body, trackDelta, options.signal, idleMs, timeoutMessage, idleSeconds);
+        } catch (error) {
+          if (options.signal?.aborted) throw new RequestCancelledError();
+          /*
+           * 连接被对端掐断（undici 的 `terminated` / `other side closed` / ECONNRESET…）
+           * 且一个字都还没出去：重试一次。现场（用户 2026-11-09 14:03）就是这种状况，
+           * 旧实现直接抛「请求失败：terminated」，整轮 agent 停下。
+           */
+          if (!emitted && isTransportDropError(error) && connectionRetries < 1) {
+            connectionRetries += 1;
+            this.logNetwork('[net] 连接被中途断开（尚未收到内容），重试一次');
+            continue;
+          }
+          throw error;
+        }
+      }
       const detail = await readError(response, apiKey);
       if (response.status === 400 && removeRejectedReasoningControl(body, detail)) continue;
       /*
@@ -469,22 +499,6 @@ export class DeepSeekClient {
         // 重试用尽仍然过载：告诉用户这是**临时**状态，别以为是自己配置或代码坏了。
         detail: shouldRetryStatus(response.status) ? `${detail}${tt('api.transientHint')}` : detail,
       }));
-    }
-    if (!response.body) {
-      throw new Error(tt('api.noStream'));
-    }
-
-    /*
-     * 流式阶段没有总时长上限：每收到一段数据重新计时（见 `withDeadline` 的说明）。
-     * 于是「模型慢慢写」不会失败，「连接真的死了」仍然在 N 秒后被判超时。
-     */
-    try {
-      return await parseSse(response.body, options.onDelta, options.signal, idleMs, timeoutMessage, idleSeconds);
-    } catch (error) {
-      if (options.signal?.aborted) {
-        throw new RequestCancelledError();
-      }
-      throw error;
     }
   }
 

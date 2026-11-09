@@ -201,6 +201,76 @@ test('reasoning depth: DeepSeek 官方四档原样发送，其他 OpenAI 兼容�
   }
 });
 
+test('连接被掐断且尚未收到内容时自动重试一次（现场：请求失败：terminated）', async () => {
+  /*
+   * 用户 2026-11-09 14:03：一次完全正常的运行中途报「请求失败：terminated」，
+   * agent 停下。terminated 是 undici 在 socket 被对端提前关闭时抛的通用错误。
+   * 一个字都还没发出去时重发是安全的 —— 用户屏幕上还是空白。
+   */
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.error(new TypeError('terminated'));
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }) as typeof fetch;
+
+  try {
+    const client = new DeepSeekClient(async () => 'test-key');
+    const result = await client.streamChat(
+      { ...settings, baseUrl: 'https://api.deepseek.com' },
+      [{ role: 'user', content: 'hello' }],
+      { onDelta: () => undefined },
+    );
+    assert.equal(result.content, 'ok');
+    assert.equal(calls, 2, '第一次断开后应当自动重试一次');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('已经吐出内容后再断开：不自动重试（否则界面上会出现重复段落）', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream({
+      start(controller) {
+        // 先让这一块真的被读走，再断开 —— 同步 error 会把队列里的块一起丢掉，
+        // 那样测的就不是「已经吐过内容」这条路径了。
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"半句"}}]}\n\n'));
+        setTimeout(() => controller.error(new TypeError('terminated')), 1);
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }) as typeof fetch;
+
+  try {
+    const client = new DeepSeekClient(async () => 'test-key');
+    await assert.rejects(() => client.streamChat(
+      { ...settings, baseUrl: 'https://api.deepseek.com' },
+      [{ role: 'user', content: 'hello' }],
+      { onDelta: () => undefined },
+    ));
+    assert.equal(calls, 1, '已经有内容出去了，不能自动重发');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('retries without an unsupported reasoning control', async () => {
   const originalFetch = globalThis.fetch;
   const requestBodies: Array<Record<string, unknown>> = [];

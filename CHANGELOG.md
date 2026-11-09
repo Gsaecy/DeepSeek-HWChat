@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.13
+
+### 「请求失败：terminated」—— 正常跑着突然自己中断（用户 2026-11-09 14:03）
+
+现场：一次完全正常的运行（44 条命令、改了 6 个文件）中途弹出「请求失败：terminated」，agent 停下。
+
+- `terminated` 是 undici 在 **socket 被对端提前关闭**时抛的通用错误，字面上什么都没说。
+- 更关键的是它被当成**业务失败**（`isAbortLikeError` 返回 false），于是整轮结束，界面显示「请求失败」。
+  用户看到的是「执行正常，然后自己中断了」。
+
+**改动**
+
+- `isAbortLikeError` / 新增 `isTransportDropError`：认出 `terminated`、`other side closed`、`socket hang up`、
+  `premature close`，以及 `UND_ERR_SOCKET` / `UND_ERR_CLOSED` / `ECONNRESET` / `EPIPE` / `ECONNABORTED`
+  （含 undici 放在 `cause` 里的那种包装形态）。这类一律按**中断**处理，界面给的是可续说明，不是「失败」。
+- **一个字都没发出去时自动重试一次**：连接在首字之前被掐断，重发是安全的（用户屏幕上还是空白）。
+  已经吐出内容再断开**不重试** —— 否则界面上会出现重复段落。
+- 解析（`parseSse`）挪进重试循环内部，重试才能真正重发请求体；这一点被既有单测
+  `retries without an unsupported reasoning control` 反向验证过（它当初抓到了我把编码提到循环外的错误）。
+
+**验证**：新增两条真实流测试 —— 首块之前断开 → 第 2 次请求成功、内容为 `ok`；先收到「半句」再断开 → **不重发**。
+`abortReason.test.ts` 里那条「terminated 不算中止」的旧断言按新结论改写，并写清为什么。
+全量 **1,294 条单测 + 76 个守护脚本全绿**。
+
 ## 0.4.12
 
 ### 「卡住」把整轮 agent 停掉了（用户 2026-11-09 13:57）

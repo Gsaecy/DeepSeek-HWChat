@@ -41,7 +41,40 @@ function errorChain(error: unknown): unknown[] {
  *  - 错误本身就是字符串 `'aborted'`（fetch 以 abort 原因拒绝时就是这个）；
  *  - 消息**整体**等于 `aborted`（而不是「某段文字里出现 abort」）。
  */
+/**
+ * 连接被对端关掉（不是我们取消、也不是服务端返回 4xx/5xx）。
+ *
+ * 现场（用户 2026-11-09 14:03）：一次正常的运行中途弹出
+ * 「请求失败：terminated」——`terminated` 是 undici 在 socket 被提前关闭时抛的
+ * 通用错误，字面上什么都没说，而且被当成「失败」让 agent 停下了。
+ * 它其实是**可以接着做**的中断：已经写出来的内容、执行过的步骤都在。
+ */
+const TRANSPORT_ERROR_TEXT = /^(?:terminated|other side closed|socket hang up|premature close|aborted)$/i;
+const TRANSPORT_ERROR_CODES = new Set([
+  'UND_ERR_SOCKET',
+  'UND_ERR_CLOSED',
+  'UND_ERR_RES_CONTENT_LENGTH_MISMATCH',
+  'ECONNRESET',
+  'EPIPE',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+]);
+
+/** 这条错误是不是「连接被掐断」这一类（含 undici 的 `terminated`）。 */
+export function isTransportDropError(error: unknown): boolean {
+  return errorChain(error).some((item) => {
+    if (!(item instanceof Error)) return false;
+    if (TRANSPORT_ERROR_TEXT.test(item.message.trim())) return true;
+    const code = (item as { code?: unknown }).code;
+    if (typeof code === 'string' && TRANSPORT_ERROR_CODES.has(code)) return true;
+    const cause = (item as { cause?: unknown }).cause;
+    if (cause && cause !== item) return isTransportDropError(cause);
+    return false;
+  });
+}
+
 export function isAbortLikeError(error: unknown): boolean {
+  if (isTransportDropError(error)) return true;
   return errorChain(error).some((item) => {
     if (typeof item === 'string') return item.trim().toLowerCase() === 'aborted';
     if (item instanceof Error) {

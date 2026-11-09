@@ -8,6 +8,21 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.13
+
+### "request failed: terminated" — a healthy run aborted itself (reported 2026-11-09 14:03)
+
+A perfectly normal run (44 commands, 6 files changed) stopped mid-way with "request failed: terminated".
+
+- `terminated` is the generic error undici throws when the **socket is closed early by the peer**; the word itself says nothing.
+- Worse, it was classified as a **business failure**, so the whole turn ended. The user's experience: "it was running fine, then interrupted itself".
+
+- **Transport drops are now recognised**: `terminated` / `other side closed` / `socket hang up` / `premature close`, plus `UND_ERR_SOCKET` / `UND_ERR_CLOSED` / `ECONNRESET` / `EPIPE` / `ECONNABORTED` (including undici's `cause`-wrapped form). These count as an **interruption**: content, steps and unstarted messages are kept, and replying "continue" carries on.
+- **One automatic retry when nothing was emitted yet** (the screen is still blank, so resending is safe). If content already streamed, it does **not** retry — that would duplicate text on screen.
+- SSE parsing moved inside the retry loop so a retry actually resends the request body.
+
+Verified: two new real-stream tests (drop before the first chunk → second request succeeds; "half a sentence" then drop → no retry). **1,294 unit tests + 76 guard scripts green.**
+
 ## What's new in 0.4.12
 
 ### "Stalled" stopped the whole agent (reported 2026-11-09 13:57)
