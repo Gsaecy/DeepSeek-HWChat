@@ -55,8 +55,65 @@ test('把只读命令归为 safe', () => {
   }
 });
 
+test('只读命令串起来（&& / | / ;）仍然是只读 —— 每一段都只读才算', () => {
+  /*
+   * 用户现场（2026-11-09，Autopilot）：一条纯读命令被要求确认。
+   *
+   *   cd "…/src-tauri/src" && grep -rn 'IAsyncOperation\|…' shot/ocr.rs | head -20;
+   *   echo '=== rustup targets ==='; rustup target list --installed 2>/dev/null
+   *
+   * 旧实现只要文本里出现 `|`、`&&`、`;` 就整条降级成 standard，于是 Autopilot 下
+   * 这种「只看不写」的命令也要逐条点确认。现在按段判定：每段都只读 ⇒ 整条 safe。
+   */
+  for (const command of [
+    'ls && echo done',
+    'grep -rn "foo" src | head -20',
+    'git status; git diff',
+    'cd src && cargo --version',
+    'rustup target list --installed 2>/dev/null',
+    'cd "…/共享工程/src-tauri/src" && grep -rn \'IAsyncOperation\\|\\.get()\\|TimeSpan\' shot/ocr.rs | head -20; echo \'=== rustup targets ===\'; rustup target list --installed 2>/dev/null',
+    'grep -rn x . 2>&1 | head',
+    // 引号里的分隔符不参与切分：分号在单引号里就是字面量。
+    'grep \'a;b\' file',
+    'echo "a | b"',
+  ]) {
+    assert.equal(classifyCommandTier(command), 'safe', command);
+  }
+});
+
+test('只要有一段不是只读，整条就不是 safe', () => {
+  for (const command of [
+    'ls && npm install',
+    'grep -rn x . | sh',
+    'ls; rm -rf build',
+    'cd x && node build.mjs',
+    'cat f > /etc/passwd',
+    'cat f >> out.txt',
+    'grep x f | head > /tmp/out',
+    'ls & npm test',
+  ]) {
+    assert.notEqual(classifyCommandTier(command), 'safe', command);
+  }
+});
+
+test('静态判不准的一律不自动放行（命令替换 / 变量 / 子 shell / 输入重定向）', () => {
+  for (const command of [
+    'cd "$(echo /etc)" && ls',
+    'grep `whoami` file',
+    'ls ${HOME}',
+    'grep $PATTERN file',
+    '(cd /etc && ls)',
+    'grep x <<< "a"',
+    'grep x <<EOF',
+    'ls "$(pwd)"',
+    'grep "a`whoami`b" file',
+  ]) {
+    assert.notEqual(classifyCommandTier(command), 'safe', command);
+  }
+});
+
 test('把常规构建/安装命令归为 standard', () => {
-  for (const command of ['npm install', 'npm test', 'npm run compile', 'git commit -m "x"', 'git fetch origin', 'node scripts/build.mjs', 'mkdir -p out', 'ls && echo done', 'git config user.name "x"', 'curl --version', 'wget --version']) {
+  for (const command of ['npm install', 'npm test', 'npm run compile', 'git commit -m "x"', 'git fetch origin', 'node scripts/build.mjs', 'mkdir -p out', 'git config user.name "x"', 'curl --version', 'wget --version']) {
     assert.equal(classifyCommandTier(command), 'standard', command);
   }
 });

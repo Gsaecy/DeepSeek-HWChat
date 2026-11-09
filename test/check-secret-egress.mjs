@@ -52,13 +52,17 @@ check(
   '通道三补：真实密钥在客户端解析处登记',
   /registerKnownSecret\(apiKey\)/.test(read('src/providers/deepseekClient.ts')),
 );
+/*
+ * 「桥接工具输出也参与污点」那两条断言随污点机制一起删掉了。
+ *
+ * 原因（用户 2026-11-09 决定）：污点会把预设里的 allow 悄悄改成 ask，导致选了
+ * Autopilot 仍然被逐条确认 —— 用户判定这就是「权限预设失效」。现在权限只由预设决定，
+ * 这条链路不再存在，所以不再断言它。
+ * 出站治理本身没有放松：下面三条通道（模型 / 向量 / 审计）的断言一条没动。
+ */
 check(
-  '桥接工具输出也参与污点（之前只覆盖内置工具）',
-  /run\.scope\.untrustedIngested = true/.test(PANEL),
-);
-check(
-  '污点会写回共享作用域（否则只存活一次工具调用）',
-  /if \(callScope\.untrustedIngested && options\.scope\) options\.scope\.untrustedIngested = true;/.test(read('src/agent/agentRunner.ts')),
+  '出站治理不依赖权限降级（预设是唯一权威）',
+  !/untrustedIngested/.test(PANEL) && !/untrustedIngested/.test(read('src/agent/agentRunner.ts')),
 );
 
 /* ── 2. 判据真跑：正例 / 反例 ─────────────────────────────────── */

@@ -3,7 +3,7 @@ import { after, before, test } from 'node:test';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ToolExecutor, commandShellLabel, type ToolApprovalRequest } from '../agent/toolExecutor';
+import { ToolExecutor, commandShellLabel, type ToolApprovalRequest, type ToolExecutionScope } from '../agent/toolExecutor';
 import { AuditLog } from '../agent/auditLog';
 import { ChatSettings, PermissionPreset, ToolCall, ToolExecutionResult } from '../core/types';
 import { PERMISSION_PRESET_PROFILES } from '../core/permissions';
@@ -115,7 +115,7 @@ function recorder(decision: boolean | ((request: ToolApprovalRequest) => boolean
 async function run(
   name: string,
   args: Record<string, unknown>,
-  options: { preset?: PermissionPreset; mode?: 'chat' | 'agent' | 'plan'; approve?: boolean } = {},
+  options: { preset?: PermissionPreset; mode?: 'chat' | 'agent' | 'plan'; approve?: boolean; scope?: ToolExecutionScope } = {},
 ): Promise<{ result: ToolExecutionResult; requests: ToolApprovalRequest[] }> {
   const recorded = recorder(options.approve ?? true);
   const result = await executor.execute(
@@ -123,6 +123,8 @@ async function run(
     options.mode ?? 'agent',
     settings(options.preset ?? 'review'),
     recorded.requestApproval,
+    undefined,
+    options.scope,
   );
   return { result, requests: recorded.seen };
 }
@@ -236,6 +238,88 @@ test('autopilot 预设：危险命令自动执行，不再确认', async () => {
   const { result, requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'DeepSeek-HWChat' }, { preset: 'autopilot' });
   assert.equal(requests.length, 0, 'autopilot 不应再询问');
   assert.equal(result.status, 'success', `${result.status} / ${result.summary}`);
+});
+
+// ── 4b. 预设 = 唯一权威：开关怎么写，表现就必须怎么样 ─────────────────────
+/*
+ * 用户 2026-11-09 的原话：「我只看管理权限预设的设置和实际效果是不是一致，没有借口」。
+ *
+ * 这一组用例的期望值**从 `PERMISSION_PRESET_PROFILES` 直接读**，不在这里另抄一份
+ * —— 抄一份的话，以后改预设表、测试仍然全绿，等于什么都没守住。
+ *
+ * 一旦有人在执行链路上又加一层「隐式加严/放宽」（例如曾经的污点降级、
+ * 自启动文件强制确认），这几条会立刻红。
+ */
+const ACTIONS: Array<{
+  label: string;
+  tool: string;
+  args: Record<string, unknown>;
+  /** 该用预设表里的哪一列当期望值。 */
+  column: keyof typeof PERMISSION_PRESET_PROFILES['askAll'];
+}> = [
+  { label: '读取普通文件', tool: 'read_file', args: { path: 'DeepSeek-HWChat/package.json' }, column: 'fileReadPolicy' },
+  { label: '读取敏感文件 .env', tool: 'read_file', args: { path: 'DeepSeek-HWChat/.env' }, column: 'sensitiveFilePolicy' },
+  { label: '写入普通文件', tool: 'write_file', args: { path: 'DeepSeek-HWChat/notes.tmp.md', content: 'x' }, column: 'fileWritePolicy' },
+  {
+    label: '写入会被自动执行的文件（.vscode/tasks.json）',
+    tool: 'write_file',
+    args: { path: 'DeepSeek-HWChat/.vscode/tasks.json', content: '{}' },
+    column: 'fileWritePolicy',
+  },
+  { label: '只读命令（git status）', tool: 'run_command', args: { command: 'git status', cwd: 'DeepSeek-HWChat' }, column: 'readOnlyCommandPolicy' },
+  { label: '常规命令（npm run compile）', tool: 'run_command', args: { command: 'npm run compile', cwd: 'DeepSeek-HWChat' }, column: 'commandPolicy' },
+  { label: '危险命令（chmod 777）', tool: 'run_command', args: { command: 'chmod 777 ./sandbox', cwd: 'DeepSeek-HWChat' }, column: 'dangerousCommandPolicy' },
+];
+
+test('预设与表现逐项一致（四个预设 × 七类动作）', async () => {
+  const mismatches: string[] = [];
+  for (const preset of ['askAll', 'review', 'autopilot', 'full'] as PermissionPreset[]) {
+    const profile = PERMISSION_PRESET_PROFILES[preset];
+    for (const action of ACTIONS) {
+      const expected = profile[action.column];
+      const { result, requests } = await run(action.tool, action.args, { preset, approve: false });
+      if (expected === 'ask') {
+        if (requests.length !== 1) mismatches.push(`${preset}/${action.label}：预设说「逐次确认」，实际 ${requests.length} 次确认`);
+      } else if (expected === 'allow') {
+        // allow 的判定还要排除是被别的闸门拒了 —— 那同样属于"预设说了不算"。
+        if (requests.length !== 0) mismatches.push(`${preset}/${action.label}：预设说「自动允许」，实际仍要求确认`);
+        if (result.status === 'denied') mismatches.push(`${preset}/${action.label}：预设说「自动允许」，实际被拒绝（${result.summary}）`);
+      } else {
+        if (requests.length !== 0) mismatches.push(`${preset}/${action.label}：预设说「禁止」，却还弹了确认`);
+        if (result.status !== 'denied') mismatches.push(`${preset}/${action.label}：预设说「禁止」，实际 ${result.status}`);
+      }
+    }
+  }
+  assert.deepEqual(mismatches, [], `预设与表现不一致：\n${mismatches.join('\n')}`);
+});
+
+test('Autopilot：用户截图里那条只读命令不再要求确认', async () => {
+  /*
+   * 用户现场（2026-11-09）的原始命令。当时它被要求确认，用户判定「权限预设失效」。
+   * 现在预设说什么就是什么：Autopilot 的常规命令策略是 allow，这条命令不会再问。
+   */
+  const command = `cd "${rootB}" && grep -rn 'IAsyncOperation\\|\\.get()\\|\\.join()\\|TimeSpan\\|CoInitializeEx' src/agent/commandPaths.ts | head -20; echo '=== rustup targets ==='; rustup target list --installed 2>/dev/null`;
+  const { requests } = await run('run_command', { command, cwd: 'DeepSeek-HWChat' }, { preset: 'autopilot', approve: false });
+  assert.equal(requests.length, 0, 'Autopilot 下这条只读命令不该再要求确认');
+});
+
+test('一条对话里读过外部网页，不会改变任何后续动作的权限判定', async () => {
+  /*
+   * 这就是用户判定「预设失效」的那条链路：浏览网页之后所有命令都要确认。
+   * 现在不再有这一层 —— 权限只由预设决定（要更严就选更严的预设）。
+   */
+  const scope: ToolExecutionScope = {};
+  const first = await run('run_command', { command: 'npm run compile', cwd: 'DeepSeek-HWChat' }, { preset: 'autopilot', scope, approve: false });
+  const second = await run('run_command', { command: 'npm run compile', cwd: 'DeepSeek-HWChat' }, { preset: 'autopilot', scope, approve: false });
+  assert.equal(first.requests.length, 0);
+  assert.equal(second.requests.length, 0, '同一条对话里后续命令的判定不能被前面的工具调用影响');
+  assert.deepEqual(Object.keys(scope), [], '执行器不该往作用域里塞任何"隐式加严"的标记');
+});
+
+test('预设说「禁止」就是拒绝，不会退化成「再问一次」', async () => {
+  const { result, requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'DeepSeek-HWChat' }, { preset: 'askAll' });
+  assert.equal(requests.length, 0);
+  assert.equal(result.status, 'denied');
 });
 
 // ── 5. 敏感文件 ──────────────────────────────────────────────────────────

@@ -384,13 +384,6 @@ export class AgentRunner {
             options.conversationId,
             callScope,
           );
-        /*
-         * 污点必须写回**共享的** run 作用域。
-         *
-         * `callScope` 是每次调用复制出来的新对象（见上），只在它上面置位的话，
-         * 标记会随这次调用一起消失 —— 「摄入外部内容后降级」等于没实现。
-         */
-        if (callScope.untrustedIngested && options.scope) options.scope.untrustedIngested = true;
         if (extra?.skill) {
           await options.callbacks.onSkillUsed?.(extra.skill);
         }

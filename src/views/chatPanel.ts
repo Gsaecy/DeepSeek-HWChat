@@ -2097,12 +2097,6 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
               (request) => this.requestToolApproval(request.summary, request.detail, request.risk, run),
               conversationId!,
             );
-            /*
-             * 桥接工具的输出同样不可信（第三方扩展拿到的网页/终端内容），
-             * 所以也要参与污点：本 run 之后的命令与写入重新确认。
-             * 之前只在内置工具里置位，这条通道是漏的。
-             */
-            if (bridged) run.scope.untrustedIngested = true;
             return bridged;
           },
           takeTaskUpdate: async (phase) => {

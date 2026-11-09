@@ -148,9 +148,15 @@ const DICTIONARY: Record<string, Entry> = {
   'matrix.regularCommand': { zh: '正常命令', en: 'Regular commands' },
   'matrix.dangerousCommand': { zh: '危险命令', en: 'Dangerous commands' },
   'matrix.sensitive': { zh: '敏感文件', en: 'Sensitive files' },
+  /*
+   * 这张表的承诺必须能被验证：**除了下面这两条硬边界，没有任何隐藏的加严或放宽**。
+   * 用户 2026-11-09 的原话：「我只看管理权限预设的设置和实际效果是不是一致」。
+   * 曾经存在两处隐式加严（读过外部网页后把 allow 改成 ask、写自启动文件时强制确认），
+   * 都已删除 —— 所以这里可以这样写。
+   */
   'matrix.hardBoundary': {
-    zh: '硬边界不受预设影响：未受信任工作区禁止写入与命令；工作区外路径隔离。危险命令指提权、破坏性删除、磁盘擦写、推送远端、把网络脚本管道给 shell 等操作。',
-    en: 'Hard limits ignore the preset: untrusted workspaces block writes and commands, and paths outside the workspace are isolated. Dangerous commands cover privilege escalation, destructive deletion, disk wiping, pushing to a remote, and piping remote scripts into a shell.',
+    zh: '上表之外没有隐藏的加严或放宽：选了「自动允许」就一定不会弹确认，选了「逐次确认」就一定弹。唯二的硬边界不看预设，且都是「直接拒绝并说明原因」，不会伪装成再问你一次 —— ① 未受信任的工作区禁止写入与执行；② 工作区外的路径被隔离。危险命令指提权、破坏性删除、磁盘擦写、推送远端、把网络脚本管道给 shell 等操作。',
+    en: 'Nothing beyond this table tightens or loosens the rule: "Allow" never prompts, "Ask" always does. Only two hard limits ignore the preset, and both are outright denials with an explanation rather than a surprise prompt: (1) untrusted workspaces block writes and command execution; (2) paths outside the workspace are isolated. Dangerous commands cover privilege escalation, destructive deletion, disk wiping, pushing to a remote, and piping remote scripts into a shell.',
   },
   'matrix.askEvery': { zh: '逐次确认', en: 'Ask' },
   'matrix.allow': { zh: '自动允许', en: 'Allow' },
@@ -1019,6 +1025,15 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.approvalModifyFile': { zh: '修改文件：{path}', en: 'Modify file: {path}' },
   'tool.approvalReadData': { zh: '读取工作区数据：{name}', en: 'Read workspace data: {name}' },
   'tool.detailSeverePrefix': { zh: '严重风险命令：提权、破坏性删除、磁盘擦写或不可逆操作。\n\n', en: 'Severe risk: privilege escalation, destructive deletion, disk wiping or an irreversible operation.\n\n' },
+
+  /*
+   * 只在「预设本来就要问」的卡片上出现，用来提醒这个文件会被别的程序自动执行。
+   * 它**不改变**要不要问 —— 那个决定只由权限预设给出（用户 2026-11-09 明确要求）。
+   */
+  'tool.detailAutoExecFile': {
+    zh: '注意：这个文件会被 VS Code / 构建脚本自动执行（如 .vscode/tasks.json、postinstall、git hook），写入它等于提前安排了一次执行。',
+    en: 'Note: this file is executed automatically by VS Code or build tooling (.vscode/tasks.json, postinstall, git hooks). Writing it schedules an execution.',
+  },
   'tool.detailWriteFile': { zh: '目标：{path}\n写入内容：{chars} 字符', en: 'Target: {path}\nContent: {chars} characters' },
   'tool.detailReplaceInFile': { zh: '目标：{path}\n精确替换：{old} -> {new} 字符', en: 'Target: {path}\nExact replace: {old} -> {new} characters' },
   'tool.detailRenameFile': { zh: '来源：{from}\n目标：{to}', en: 'From: {from}\nTo: {to}' },

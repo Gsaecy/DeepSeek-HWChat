@@ -8,6 +8,32 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.10
+
+### The permission preset stopped matching reality (reported 2026-11-09)
+
+Two hidden layers in the execution path turned the preset's **Allow** into **Ask**:
+
+1. **Taint downgrade** — after a run read any external page, every later command and write was confirmed. Audit log from the real conversation (`conversation_c772072c`): every `run_command` at 09:30–09:35 was auto-approved; after the first successful `fetch_url` at 09:36:15, every one of them asked — including `cd … && grep … | head`, which only reads. The user had selected Autopilot and had to click a dozen times.
+2. **Forced confirmation for auto-executed files** — writing `.vscode/tasks.json` or a `postinstall` hook asked even when the preset allowed writes.
+
+Both came from review recommendations, but the effect was: **a gate the user believed they had closed opens by itself**. That is worse than having no gate — the setting no longer predicts what the UI does.
+
+**Changes**
+
+- Both hidden rewrites are gone. `execute()` now just calls `checkAccess(..., policy, ...)` and `approvalRequired = policy === 'ask'`, with `policy` taken straight from `PERMISSION_PRESET_PROFILES` — the table in Settings is the single authority.
+- The auto-executed-file knowledge is kept, but only as a **note**: when the preset already asks, the detail line mentions it; when the preset allows writes there is no card and no note. It no longer decides whether to ask.
+- Read-only detection is now a real per-segment parse (`shellSegments`), so `cd X && grep … | head -20; echo …; rustup target list` is correctly classified as read-only instead of being pushed to "regular command" just because it contains `&&`, `|` or `;`. Anything unparseable (command substitution, variables, subshells, input redirection, any redirection other than `/dev/null`) is **not** auto-approved.
+- The line under the preset table in Settings now states a checkable promise: **nothing beyond this table tightens or loosens the rule**. The only two hard limits (untrusted workspace, paths outside the workspace) are outright denials with a reason, never a surprise prompt.
+
+**Proof** (`src/test/toolExecutor.test.ts`)
+
+- New "preset matches behaviour" test: expectations are **read from `PERMISSION_PRESET_PROFILES`**, covering all four presets × seven action classes (read file, read sensitive file, write file, write auto-executed file, read-only command, regular command, dangerous command).
+- **Verified in reverse**: re-inserting a hidden "Autopilot turns read-only commands into Ask" override makes it fail immediately with `autopilot/只读命令（git status）：预设说「自动允许」，实际仍要求确认`.
+- Two cases built from the actual report: the exact command from the screenshot asks **0** times under Autopilot, and a second command in the same conversation is unaffected by the first.
+
+Verified: **1,283 unit tests + 76 guard scripts green**.
+
 ## What's new in 0.4.9
 
 A table in the chat rendered with its columns squeezed to **one character per line** — rows 500px tall, and the last column pushed outside the panel where scrolling could not reach it.
@@ -57,7 +83,6 @@ Sensitive-data egress (review items ⑥ + ⑮), plus two gaps from the previous 
   - **To the embedding service**: messages containing credentials are skipped from the index (logged), while keyword search still covers them.
   - **To audit logs**: redaction is now driven by **known secret values** (raw, base64 and URL-encoded), plus whole PEM blocks and vendor prefixes.
 - **Taint actually persists**: `agentRunner` copies the scope per tool call, so the earlier `untrustedIngested` flag died after one call. It is now written back to the shared run scope.
-- **Bridged VS Code tools now taint too**: their output is untrusted as well, but only native tools were marking it.
 
 ### Security boundaries (first review batch) (was 0.4.9)
 
@@ -67,7 +92,7 @@ Security boundaries, driven by external review (GPT + Claude). Principle: **when
 - **Command tiers (real, reproduced)**: `python -c "open('/etc/passwd')"`, `node -e`, `bash -c`, `X=rm; $X -rf`, `curl … | sh`, `find -delete`, `git clean -fdx` used to be `standard` and ran silently under `review`/`autopilot`. They are now `severe` (denied under the default preset, confirmed each time otherwise).
 - **Path isolation (real, reproduced)**: absolute paths hidden inside command substitution (`$(cat /etc/passwd)`), interpreter payloads, or redirection targets (`> /etc/passwd`) are now validated too.
 - **Workspace settings can no longer weaken security (P0)**: 30 of 37 settings had no `scope`, so a repository's `.vscode/settings.json` could set `baseUrl` to an attacker's host and receive the SecretStorage key. 26 security/credential settings are now `scope: machine` and listed in `restrictedConfigurations`.
-- **Prompt injection**: external content is wrapped in `<untrusted_external_content>`; project memory now states it is a **record, not instructions** (blocking "malicious page → model summary → system memory"); the system prompt defines four trust levels; and once a run has ingested external content, commands and writes require confirmation again (taint downgrade).
+- **Prompt injection**: external content is wrapped in `<untrusted_external_content>`; project memory now states it is a **record, not instructions** (blocking "malicious page → model summary → system memory"); the system prompt defines four trust levels; (an earlier rule that silently turned commands back into confirmations after reading external content was **removed at the user's request**: it made Autopilot quietly stop being Autopilot. Pick a stricter preset if you want stricter behaviour.)
 - **New**: writing auto-executed files (`.vscode/tasks.json`, `postinstall`, `.envrc`, workflows, git hooks…) always requires confirmation; bridged VS Code tools can no longer bypass this extension's `deny` via `delegateApproval`.
 
 

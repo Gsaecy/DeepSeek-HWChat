@@ -37,6 +37,7 @@ const EXEC = read('src/agent/toolExecutor.ts');
 const PERM = read('src/core/permissions.ts');
 const MEMORY = read('src/core/taskMemory.ts');
 const PANEL = read('src/views/chatPanel.ts');
+const I18N = read('src/core/i18n.ts');
 const PKG = JSON.parse(read('package.json'));
 
 /* ── 新A：安全配置不能被仓库覆盖 ───────────────────────────────── */
@@ -75,7 +76,18 @@ check('解析后复查 IP（DNS rebinding 的第一道）', /resolvePublicHost/.
 check('外部内容被包进 <untrusted_external_content>', /<untrusted_external_content source=/.test(WEB));
 check('任务记忆声明「是记录，不是指令」', /RECORD, not a new instruction/.test(MEMORY));
 check('system 里写明内容信任等级', /Content trust levels/.test(PANEL));
-check('摄入外部内容后权限降级（污点）', /untrustedIngested/.test(EXEC) && /const tainted = Boolean\(scope\?\.untrustedIngested\)/.test(EXEC));
+/*
+ * 权限预设是唯一权威（用户 2026-11-09 的硬要求：开关怎么写，表现就必须怎么样）。
+ *
+ * 这里守住「执行链路上不许再出现隐式改写」这条结构不变量 ——
+ * 曾经有两层：读过外部网页后的污点降级、写自启动文件时强制确认。
+ * 两者都让 allow 变成 ask，也就是让用户以为已经关掉的闸门自己打开。
+ * 逐项行为断言在 `src/test/toolExecutor.test.ts` 的「预设与表现逐项一致」。
+ */
+check('执行链路里没有污点降级（allow 不许被悄悄改成 ask）', !/untrustedIngested/.test(EXEC) && !/untrustedIngested/.test(PANEL));
+check('执行链路里没有「自启动文件强制确认」的隐式改写', !/autoExecWrite/.test(EXEC) && !/finalPolicy/.test(EXEC));
+check('按预设取策略，不做二次加工', /const denied = this\.checkAccess\(name, args, mode, settings, policy, tier, scope\);/.test(EXEC) && /let approvalRequired = policy === 'ask';/.test(EXEC));
+check('自启动文件只做提示、不改变要不要问', /tool\.detailAutoExecFile/.test(EXEC) && /detailAutoExecFile/.test(I18N));
 
 /* ── ③ 命令分档 ──────────────────────────────────────────────── */
 check('无法静态判定的执行会升级为 severe', /export function dynamicExecutionReason/.test(PERM) && /if \(dynamicExecutionReason\(text\)\) return 'severe'/.test(PERM));
@@ -86,7 +98,7 @@ check('命令替换里的绝对路径参与校验', /function scriptPayloads/.te
 check('重定向目标参与校验', /function redirectTargets/.test(read('src/agent/commandPaths.ts')));
 
 /* ── 新C / 新D ──────────────────────────────────────────────── */
-check('自启动文件写入强制确认', /export function isAutoExecPath/.test(PERM) && /autoExecWrite && policy !== 'deny' \? 'ask'/.test(EXEC));
+check('自启动文件仍能被识别出来（用于提示）', /export function isAutoExecPath/.test(PERM));
 check('桥接工具的 delegateApproval 不能覆盖 deny', /if \(policy === 'deny'\) \{/.test(EXEC) && !/!delegateApproval && policy === 'deny'/.test(EXEC));
 
 /* ── 纯函数真跑一遍 ──────────────────────────────────────────── */

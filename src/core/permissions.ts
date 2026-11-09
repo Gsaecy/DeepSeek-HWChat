@@ -370,21 +370,112 @@ const SAFE_VERSION_EXECUTABLES = new Set([
 ]);
 
 const VERSION_ONLY_ARGUMENT = /^(?:--version|-v|--help|-h)$/;
-const SHELL_CHAINING = /[\n;&|<>`]|\$\(/;
 const FIND_SIDE_EFFECT = /-(?:exec|execdir|ok|okdir|delete|fprint|fprintf|fls)\b/;
 const GIT_OUTPUT_FLAG = /--output(?:=|\s)/;
 
-function isSafeCommand(text: string): boolean {
-  if (SHELL_CHAINING.test(text)) return false;
-  const tokens = text.split(/\s+/).filter(Boolean);
+/**
+ * 只读的「子命令型」命令（像 git 那样要看完第二个词才知道干不干净）。
+ *
+ * 用户现场（2026-11-09）：`rustup target list --installed 2>/dev/null` 因为不在白名单里
+ * 落到 `standard`，于是 Autopilot 下也要确认一次 —— 但它只是打印已安装的 target。
+ */
+const SAFE_READONLY_SUBCOMMANDS: readonly RegExp[] = [
+  /^rustup\s+(?:show|which|target\s+list|toolchain\s+list|component\s+list|--version|-V|--help|-h)(?:\s|$)/i,
+  /^rustup\s+--version$/i,
+];
+
+/**
+ * 切不动就返回 `null`：这是**安全**判定，解析失败必须当成「不可自动放行」。
+ *
+ * 为什么需要它：以前 `SHELL_CHAINING` 一见到 `|`、`&&`、`;` 就整条降级到 `standard`，
+ * 于是 `cd X && grep -rn … | head -20; echo …` 这种纯读命令在 Autopilot 下也要逐个确认
+ * （用户 2026-11-09 的实际困扰）。现在把它切开，**每一段都只读**才算只读。
+ *
+ * 明确拒绝（返回 null）的东西：反引号 / `$(` / `${…}` / `$VAR`（动态执行或动态内容）、
+ * 子 shell `( )`、输入重定向 `<`、除 `/dev/null` 之外的输出重定向、未闭合的引号。
+ * 这些正是「静态判不准」的部分 —— 宁可让人看一眼。
+ */
+function shellSegments(text: string): string[] | null {
+  const segments: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (quote === "'") {
+      current += char;
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (char === '\\') {
+      // 单引号里反斜杠是字面量（上面已经 continue 掉了），这里只在引号外/双引号内转义。
+      const next = text[index + 1];
+      if (next === undefined) return null;
+      current += char + next;
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      quote = quote === '"' ? null : '"';
+      current += char;
+      continue;
+    }
+    if (char === "'") {
+      quote = "'";
+      current += char;
+      continue;
+    }
+    if (quote === '"') {
+      // 双引号里仍然会发生替换与命令执行。
+      if (char === '`' || char === '$') return null;
+      current += char;
+      continue;
+    }
+    if (char === '`' || char === '$') return null;
+    if (char === '(' || char === ')') return null;
+    if (char === '<') return null;
+    if (char === '>') {
+      // 只接受「把噪音丢掉」的那几种重定向；写文件一律不算只读。
+      const rest = text.slice(index);
+      const allowed = /^(?:[12]?>&[12]|&>{1,2}\s*\/dev\/null|[12]?>{1,2}\s*\/dev\/null)/.exec(rest);
+      if (!allowed) return null;
+      current += ` ${allowed[0]} `;
+      index += allowed[0].length - 1;
+      continue;
+    }
+    if (char === ';' || char === '\n' || char === '&' || char === '|') {
+      // `&&` / `||` / `|&` 一并吃掉，其余单个连接符本身就是分隔符。
+      const pair = text.slice(index, index + 2);
+      segments.push(current);
+      current = '';
+      index += pair === '&&' || pair === '||' || pair === '|&' ? 1 : 0;
+      continue;
+    }
+    current += char;
+  }
+  if (quote) return null;
+  segments.push(current);
+  return segments;
+}
+
+/** 单个命令段是否只读。`cd` / `echo` / `printf` 这类没有副作用的也在这里放行。 */
+function isSafeSegment(segment: string): boolean {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean);
   const head = tokens[0]?.toLocaleLowerCase();
   if (!head) return false;
+  // `X=rm` 之后再 `$X` 属于动态执行（那一类由 `VARIABLE_AS_COMMAND` 判 severe），
+  // 单纯的赋值也不该算只读。
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(head)) return false;
+  // 引号包起来的命令名、路径前缀（`./x`、`/bin/x`）都不在「可判定」范围内。
+  if (head.includes('"') || head.includes("'")) return false;
   const rest = tokens.slice(1);
+
+  if (head === 'cd' || head === 'echo' || head === 'printf' || head === ':' || head === 'true') return true;
+  if (SAFE_READONLY_SUBCOMMANDS.some((pattern) => pattern.test(segment.trim()))) return true;
 
   if (head === 'git') {
     const subcommand = rest[0]?.toLocaleLowerCase();
     if (!subcommand || !SAFE_GIT_SUBCOMMANDS.has(subcommand)) return false;
-    if (GIT_OUTPUT_FLAG.test(text)) return false;
+    if (GIT_OUTPUT_FLAG.test(segment)) return false;
     if (subcommand === 'branch' && rest.some((token) => /^-(?:d|D|m|M|c|C|f)(?:$|\s)/.test(token))) return false;
     if (subcommand === 'remote' && rest.some((token) => /^(?:add|remove|rename|set-url|prune|update)$/i.test(token))) return false;
     return true;
@@ -395,8 +486,23 @@ function isSafeCommand(text: string): boolean {
   }
 
   if (!SAFE_EXECUTABLES.has(head)) return false;
-  if (head === 'find' && FIND_SIDE_EFFECT.test(text)) return false;
+  if (head === 'find' && FIND_SIDE_EFFECT.test(segment)) return false;
   return true;
+}
+
+/**
+ * 「这条命令只读吗」——**逐段**判定，每一段都必须只读。
+ *
+ * 用户现场（2026-11-09，Autopilot）：`cd … && grep -rn '…' shot/ocr.rs | head -20;
+ * echo '=== rustup targets ==='; rustup target list --installed 2>/dev/null`
+ * 整条只看不写，却因为含有 `&&` / `|` / `;` 被旧实现判成 `standard`。
+ */
+function isSafeCommand(text: string): boolean {
+  const segments = shellSegments(text);
+  if (!segments) return false;
+  const meaningful = segments.map((segment) => segment.trim()).filter(Boolean);
+  if (!meaningful.length) return false;
+  return meaningful.every(isSafeSegment);
 }
 
 /**

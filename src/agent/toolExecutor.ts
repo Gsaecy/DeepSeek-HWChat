@@ -73,13 +73,6 @@ export interface ToolExecutionScope {
   /** 诊断用：本次运行的标识，和工具调用 id 配对写入结构化日志。 */
   turnId?: string;
   /**
-   * 本次 run 是否已经摄入过外部不可信内容（联网工具 / 桥接工具输出）。
-   *
-   * 一旦为真，后续的 `run_command` 与写入即使预设允许也要重新确认 ——
-   * 这是提示注入最便宜的闸门：模型可以读到恶意网页，但不能因此获得额外权限。
-   */
-  untrustedIngested?: boolean;
-  /**
    * 命令运行期的进度回调（每秒一次 + 停滞/超时事件）。
    * 由面板接上后，界面才能区分「在跑」和「卡住」——没有这条回调时，
    * 一条永久挂起的命令在界面上和正常运行长得一模一样。
@@ -404,31 +397,29 @@ export class ToolExecutor implements vscode.Disposable {
       ? 'allow' as PermissionPolicy
       : policyFor(risk, settings, tier);
     /*
-     * 自启动文件（`.vscode/tasks.json`、`package.json` 的 postinstall、
-     * `.envrc`、workflow、git hook…）写一次就等于把执行推到闸门外，
-     * 所以即使预设允许写入，也要再确认一次。
+     * **权限预设是唯一权威**（用户 2026-11-09 明确要求：预设与实际效果必须一致，
+     * 不接受任何隐藏的加严/放宽）。
+     *
+     * 这里曾经有两层隐式改写，都已删除：
+     *  1. 「污点降级」：本 run 读过外部网页后，把 allow 改成 ask。用户选了 Autopilot
+     *     却被连问十几条只读命令，第一反应就是「权限预设失效了」—— 他没有看错。
+     *     一个用户以为已经关掉的闸门，其实随时会自己打开，比没有这道闸门更糟。
+     *  2. 「自启动文件强制确认」：写 `.vscode/tasks.json` 时把 allow 改成 ask。
+     *     它保护的东西是真的（评审新C），但它同样伪装成了预设之外的行为。
+     *     现在改为**只在预设本来就要问的时候**在详情里加一句提示（见 `approvalDetail`），
+     *     不再改变"要不要问"这个决定。
+     *
+     * 剩下的硬边界（未受信任工作区、Plan 模式、工作区外路径）都是**拒绝**并且给出原因，
+     * 不会伪装成"再问你一次"，也不会因为预设不同而改变。
      */
-    const autoExecWrite = risk === 'write'
-      && isAutoExecPath(String(args.path ?? args.from ?? args.to ?? ''));
-    const effectivePolicy: PermissionPolicy = autoExecWrite && policy !== 'deny' ? 'ask' : policy;
-    /*
-     * 污点降级：一旦本 run 摄入过外部不可信内容（联网工具），
-     * 之后的命令与写入即使预设允许，也要重新确认。
-     * 这是「提示注入」最便宜也最有效的一道闸（见架构评审手册 ②）。
-     */
-    if (scope && isResearchTool(name)) scope.untrustedIngested = true;
-    const tainted = Boolean(scope?.untrustedIngested);
-    const finalPolicy: PermissionPolicy = tainted && (risk === 'command' || risk === 'write') && effectivePolicy === 'allow'
-      ? 'ask'
-      : effectivePolicy;
-    const denied = this.checkAccess(name, args, mode, settings, finalPolicy, tier, scope);
+    const denied = this.checkAccess(name, args, mode, settings, policy, tier, scope);
     if (denied) {
       const result = deniedResult(denied);
       await this.auditResult(call, result, conversationId);
       return result;
     }
 
-    let approvalRequired = finalPolicy === 'ask';
+    let approvalRequired = policy === 'ask';
     let approvalRequest: ToolApprovalRequest | undefined = approvalRequired
       ? {
         callId: call.id,
@@ -2077,6 +2068,16 @@ function approvalDetail(name: string, args: Record<string, unknown>, tier?: Comm
   const prefix = tier === 'severe'
     ? tt('tool.detailSeverePrefix')
     : '';
+  /*
+   * 自启动文件的信息提示：**只加一句说明，不改变要不要问**（要不要问完全由预设决定）。
+   * 预设本来就允许写入时不会有这张卡片，也就不会有这句话 —— 这正是「预设说了算」。
+   */
+  if ((name === 'write_file' || name === 'replace_in_file')) {
+    const target = String(args.path ?? '');
+    if (isAutoExecPath(target)) {
+      return `${prefix}${tt('tool.detailAutoExecFile', { path: target })}\n${tt('tool.detailWriteFile', { path: target, chars: String(args.content ?? '').length.toLocaleString() })}`;
+    }
+  }
   if (name === 'write_file') return `${prefix}${tt('tool.detailWriteFile', { path: String(args.path ?? ''), chars: String(args.content ?? '').length.toLocaleString() })}`;
   if (name === 'replace_in_file') return `${prefix}${tt('tool.detailReplaceInFile', { path: String(args.path ?? ''), old: String(args.oldText ?? '').length.toLocaleString(), new: String(args.newText ?? '').length.toLocaleString() })}`;
   if (name === 'rename_file') return `${prefix}${tt('tool.detailRenameFile', { from: String(args.from ?? ''), to: String(args.to ?? '') })}`;
