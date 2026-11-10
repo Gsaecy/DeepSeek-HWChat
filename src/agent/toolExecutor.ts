@@ -18,7 +18,7 @@ import {
 import { AuditLog, redact } from './auditLog';
 import { commandPathViolation, maskPatternFlagArguments, missingPathsInCommandOutput } from './commandPaths';
 import { safeSlice } from '../core/textSafety';
-import { gitScopeVerdict, isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath, samePath } from './workspacePaths';
+import { isPathWithin, normalizeWorkspaceGlob, resolveWorkspacePath, samePath } from './workspacePaths';
 import { isAutoExecPath } from '../core/permissions';
 import { projectDocMode } from '../core/settings';
 import {
@@ -39,7 +39,7 @@ import { effectiveTimeoutSeconds, timeoutAdvice, timeoutClampNotice, timeoutClam
 import { commandEnvironmentHint, selfNestedCdHint, stripRedundantLeadingCd } from './commandHints';
 import { diagnoseMissingOldText, findAlreadyApplied, findIndentTolerantWindow, renderMissingOldTextDiagnosis, shiftIndent } from './replaceDiagnostics';
 import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
-import { gitWriteOperation, GIT_VERBS_WITHOUT_INTENT } from './conversationScope';
+import { gitWriteOperation } from './conversationScope';
 import { detectVersionBump, versionBumpCommand } from './releasePolicy';
 import { CommandQueueFullError, CommandScheduler } from './commandScheduler';
 import { SearchQueueFullError, SearchResourceBusyError } from './searchScheduler';
@@ -494,14 +494,6 @@ export class ToolExecutor implements vscode.Disposable {
       };
     }
 
-    /*
-     * 用户亲手点了「允许」是**最强**的授权信号，必须记下来传给后续的守卫。
-     *
-     * 真实故障（2026-11-03）：让 HWChat 克隆仓库时弹出了确认卡片，点了确认仍然失败 ——
-     * 因为「用户没有要求 git 写操作」这道闸门在**确认之后**才执行，它只看关键词，
-     * 看不见用户刚刚点的那个按钮。人的明确授权不能被子串匹配否决。
-     */
-    const userApproved = Boolean(approvalRequest);
     if (approvalRequest) {
       const approved = await requestApproval(approvalRequest);
       if (!approved) {
@@ -578,7 +570,7 @@ export class ToolExecutor implements vscode.Disposable {
           result = await this.updateProjectDoc(args, settings, scope);
           break;
         case 'run_command':
-          result = await this.runCommand(args, settings, scope, metrics, userApproved);
+          result = await this.runCommand(args, settings, scope, metrics);
           break;
         default:
           result = deniedResult(tt('tool.unknownTool', { name }));
@@ -1384,8 +1376,6 @@ export class ToolExecutor implements vscode.Disposable {
     settings: ChatSettings,
     scope?: ToolExecutionScope,
     metrics?: CallMetrics,
-    /** 这一次命令是用户在确认卡片上点过「允许」的（见 `execute` 里的说明）。 */
-    userApproved = false,
   ): Promise<ToolExecutionResult> {
     const command = stringArg(args, 'command');
     if (!command || command.length > 4_000) throw new Error(tt('tool.commandEmpty'));
@@ -1402,10 +1392,6 @@ export class ToolExecutor implements vscode.Disposable {
     const strippedCd = stripRedundantLeadingCd(command, resolvedCwd.fsPath, existsSync);
     const effectiveCommand = strippedCd.command;
     const gitWrite = gitWriteOperation(effectiveCommand);
-    if (gitWrite) {
-      const blocked = await this.gitWriteBlockReason(gitWrite.verb, resolvedCwd, explicitCwd, scope, userApproved);
-      if (blocked) return deniedResult(blocked);
-    }
     // 版本号同理：`npm version` / `standard-version` 会直接改写清单并提交，未授权一律拒绝。
     const versionTool = versionBumpCommand(effectiveCommand);
     if (versionTool && !scope?.versionBumpAllowed) {
@@ -1652,61 +1638,6 @@ export class ToolExecutor implements vscode.Disposable {
     };
     child.once('close', release);
     child.once('error', release);
-  }
-
-  /**
-   * git 写操作的闸门。
-   *
-   * 设计原则（2026-11-03 按用户要求「放开 git 权限，不要影响 git 正常功能」重写）：
-   *
-   * 1. **用户点过确认就不再拦**。确认卡片上写的就是完整命令，人已经看过了；
-   *    再拿关键词匹配去否决人类刚做的决定，只会让「点了确认还是失败」。
-   * 2. **不改变远端历史、也不建立新仓库归属的操作不需要「用户开口」**：
-   *    `clone` / `init` 是凭空造一个仓库，`fetch` / `pull` 是把远端拿下来 ——
-   *    它们不会把别人的改动提交出去，误用也只是本地可恢复。以前这几条同样要求
-   *    「用户本轮明确要求 git 写操作」，于是「克隆仓库」这种再正常不过的需求被拦。
-   * 3. **`clone` / `init` 不做仓库归属检查**：目标仓库此刻还不存在（或刚建），
-   *    拿「上一级没有仓库」「项目根没绑定」去否它是自相矛盾的。
-   * 4. **只有一个工作区根时不需要先绑定项目**：`'.'` 只有一种解释，没有歧义。
-   *    多根工作区才需要显式 cwd ——那才是「可能提交错项目」的真实风险。
-   */
-  private async gitWriteBlockReason(
-    verb: string,
-    cwd: ResolvedPath,
-    explicitCwd: string | undefined,
-    scope?: ToolExecutionScope,
-    userApproved = false,
-  ): Promise<string | undefined> {
-    const needsIntent = !GIT_VERBS_WITHOUT_INTENT.has(verb);
-    if (needsIntent && !scope?.gitWriteAllowed && !userApproved) {
-      return tt('tool.gitWriteNotRequested', { operation: verb });
-    }
-
-    // 新建仓库：没有既存项目可冲突，也没有「上一级仓库」可查。
-    if (verb === 'clone' || verb === 'init') return undefined;
-
-    const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => resolve(folder.uri.fsPath));
-    let projectRoot = scope?.projectRoot ? resolve(scope.projectRoot) : undefined;
-    if (!projectRoot) {
-      // 未绑定项目根：单根工作区没有歧义，直接用 cwd 所在根；多根才要求显式 cwd。
-      if (!explicitCwd && roots.length > 1) return tt('tool.gitProjectUnknown');
-      projectRoot = resolve(cwd.folder.uri.fsPath);
-      this.bindProjectRoot(scope, cwd);
-    }
-
-    const repoRoot = await gitRepositoryRoot(cwd.fsPath);
-    if (!repoRoot) return tt('tool.gitNotRepository', { path: cwd.relativePath });
-
-    const [repo, project] = await Promise.all([safeRealpath(repoRoot), safeRealpath(projectRoot)]);
-    // 判定抽成纯函数（`gitScopeVerdict`）：路径身份必须忽略大小写差异，见那里的注释。
-    const verdict = gitScopeVerdict({ roots, repo, project });
-    if (verdict.kind === 'mismatch') {
-      return tt('tool.gitProjectMismatch', { repo: verdict.repo, project: verdict.project });
-    }
-    if (verdict.kind === 'foreign') {
-      return tt('tool.gitForeignProject', { project: verdict.foreignRoot, repo: verdict.repo });
-    }
-    return undefined;
   }
 
   /** 首次确定项目归属时写回对话存档；已绑定时不再改动，避免被后续读操作带偏。 */
@@ -2308,45 +2239,6 @@ async function safeRealpath(value: string): Promise<string> {
     if (parent === value) return resolve(value);
     return resolve(await safeRealpath(parent), value.slice(parent.length + 1));
   }
-}
-
-/**
- * 取 git 仓库根。
- *
- * 用途是给 git 写操作划定边界：命令的 cwd 可能是一个仓库里的子目录，
- * 也可能根本不在仓库里（那就直接拒绝写操作）。用 `--show-toplevel` 而不是
- * 自己往上找 `.git`，是因为 worktree / submodule / `GIT_DIR` 环境变量这些
- * 情形下只有 git 自己知道真实边界。
- */
-async function gitRepositoryRoot(cwd: string): Promise<string | undefined> {
-  return new Promise((resolvePromise) => {
-    const child = spawn('git', ['rev-parse', '--show-toplevel'], {
-      cwd,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    let output = '';
-    let settled = false;
-    const finish = (value: string | undefined): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolvePromise(value);
-    };
-    // 网络盘 / 索引损坏时 git 可能长时间不返回；这里不该拖住整个工具调用。
-    const timer = setTimeout(() => {
-      killProcessTree(child, 'SIGKILL');
-      finish(undefined);
-    }, 5_000);
-    timer.unref?.();
-    child.stdout?.on('data', (chunk: Buffer | string) => {
-      output += String(chunk);
-    });
-    child.on('error', () => finish(undefined));
-    child.on('close', (code) => {
-      const value = output.trim();
-      finish(code === 0 && value ? value : undefined);
-    });
-  });
 }
 
 /**

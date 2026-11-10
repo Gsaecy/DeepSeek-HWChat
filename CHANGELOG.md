@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.18（2026-11-10）
+
+### 删除 git 写操作闸门（用户要求：拦截策略有问题，直接删掉）
+
+**现场**：工作区根是 `D:\AI projects`，真实仓库在下一层 `D:\AI projects\Personal-Workstation-OS`。
+用户已明确说「提交并推送」，`git add/commit/push` 仍被 `gitWriteBlockReason()` 判为跨项目
+（`gitScopeVerdict` 返回 `mismatch`：project 绑到工作区根，repo 在它内部，规则 2 要求
+repo 本身是工作区根），于是读操作放行、写操作一律拒绝，只能让用户手动跑。
+
+**改动**：
+
+- 删除 `ToolExecutor.gitWriteBlockReason()`：不再按「用户是否明确要求」与「仓库/项目归属」拦截 git 写操作。
+- 删除桥接通道的同一道闸门（`chatPanel` 里的 `argumentsMentionGitWrite` 判断与 `gitWriteBlockedResult()`）。
+- 删除随之无用的 `gitRepositoryRoot()` 辅助函数、`GIT_VERBS_WITHOUT_INTENT` / `gitScopeVerdict` 依赖。
+- `resolvePermissionPreset` 等权限预设、敏感文件保护、未受信任工作区限制**保持不变**。
+
+**测试**：删除仅覆盖该闸门的 `src/test/gitGate.test.ts`。
+
 ## 0.4.16
 
 ### 升级后老对话的「预设 / 步数」不再被重置（用户 2026-11-09，Windows 现场）

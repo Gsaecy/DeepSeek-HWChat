@@ -47,7 +47,7 @@ test('boundary: workspace.findFiles is only called by the search scheduler entry
 });
 
 test('boundary: child processes are only spawned by the command executor', async () => {
-  assert.deepEqual(await filesMatching(/\bspawn\s*\(\s*['"`]/), ['agent/toolExecutor.ts']);
+  assert.deepEqual(await filesMatching(/\bspawn\s*\(/), ['agent/toolExecutor.ts']);
   assert.deepEqual(await filesMatching(/from 'node:child_process'/), ['agent/toolExecutor.ts']);
 });
 

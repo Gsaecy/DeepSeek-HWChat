@@ -22,7 +22,7 @@ import { resolveResumeScope } from '../agent/resumeScope';
 import { ToolExecutor, type ToolExecutionScope } from '../agent/toolExecutor';
 import { VscodeToolBridge } from '../agent/vscodeTools';
 import { searchWorkspace } from '../agent/workspaceSearch';
-import { gitWriteAuthorization, argumentsMentionGitWrite } from '../agent/conversationScope';
+import { gitWriteAuthorization } from '../agent/conversationScope';
 import { VERSION_RULE_PROMPT, argumentsMentionVersionBump, versionBumpAuthorization } from '../agent/releasePolicy';
 import { TODO_LIST_PROMPT } from '../agent/todoPrompt';
 import { droppedCompletedTodos, hasTodoReplanIntent, splitTodoScope } from '../agent/todoScope';
@@ -2095,11 +2095,6 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
               const loaded = await this.skills.executeLoad(call, preparedSkills.routableIds);
               return { result: loaded.result, skill: loaded.usage };
             }
-            // 桥接工具委托给 VS Code 审批，可能因此绕过 HWChat 的 git 闸门；
-            // 未获授权时在这里直接拒绝，让两条通道口径一致。
-            if (!run.scope.gitWriteAllowed && argumentsMentionGitWrite(call.function.arguments)) {
-              return { result: this.gitWriteBlockedResult() };
-            }
             // 版本升级同理：`run_in_terminal` 跑 `npm version` 也不能绕过闸门。
             if (!run.scope.versionBumpAllowed && argumentsMentionVersionBump(call.function.arguments)) {
               return { result: this.versionBumpBlockedResult() };
@@ -3655,15 +3650,6 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   /** 未获授权的 git 写操作：统一拒绝结果，模型据此向用户说明。 */
-  private gitWriteBlockedResult(): ToolExecutionResult {
-    return {
-      status: 'denied',
-      summary: tt('tool.gitWriteNotRequested', { operation: 'commit / push' }),
-      content: tt('tool.gitWriteNotRequested', { operation: 'commit / push' }),
-      approval: 'not-required',
-    };
-  }
-
   /**
    * 未获授权的版本升级：拒绝并明确「去问用户」。
    *
