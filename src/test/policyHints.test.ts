@@ -41,6 +41,29 @@ test('maskPatternFlagArguments：读文件的选项保持原样', () => {
   assert.equal(maskPatternFlagArguments("grep -f '.env' file.txt"), "grep -f '.env' file.txt");
 });
 
+test('maskPatternFlagArguments：PowerShell 的 -Filter 是掩码，不是文件', () => {
+  /*
+   * 真实故障（2026-11-18）：模型只是想知道签名证书在不在，
+   *   Get-ChildItem '…\\installer\\out' -Filter '*.pfx' | …
+   * 被敏感文件守卫判成「引用了敏感文件名」直接拒绝，换了写法又被拒，
+   * 最后和两条真实失败一起凑成「连续 3 轮工具调用全部失败」停机。
+   * `-Filter '*.pfx'` 只是通配掩码，并没有读任何证书内容。
+   */
+  assert.equal(
+    maskPatternFlagArguments("Get-ChildItem 'D:\\项目\\out' -Filter '*.pfx' -ErrorAction SilentlyContinue"),
+    "Get-ChildItem 'D:\\项目\\out' -Filter pattern -ErrorAction SilentlyContinue",
+  );
+  assert.equal(
+    maskPatternFlagArguments('Get-ChildItem -Recurse -Include *.pem,.key'),
+    'Get-ChildItem -Recurse -Include pattern',
+  );
+  // 真正指向文件的参数仍然保留，守卫照样拦得住
+  assert.equal(
+    maskPatternFlagArguments("Get-Content 'C:\\Users\\a\\.ssh\\id_rsa'"),
+    "Get-Content 'C:\\Users\\a\\.ssh\\id_rsa'",
+  );
+});
+
 test('每个模式选项都在名单里（防止只修 --exclude 一个）', () => {
   for (const flag of SENSITIVE_FLAGS) {
     const masked = maskPatternFlagArguments(`cmd ${flag} '.env' target`);

@@ -24,6 +24,7 @@ import {
   ResearchHit,
 } from '../core/research';
 import { extractReadableContent } from './webExtract';
+import { decodeWebText } from './fileEncoding';
 import { KEYLESS_SOURCES, mergeHits, relaxedQueries, sourceQueries } from './searchFallbacks';
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
@@ -150,7 +151,11 @@ async function readCapped(response: Response): Promise<string> {
     merged.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder('utf-8', { fatal: false }).decode(merged);
+  /*
+   * 按**声明的**编码解：不少中文站点仍然输出 GBK / GB2312，一律按 UTF-8 解会得到
+   * 一整页乱码，模型拿着它回答用户等于没有资料（与命令输出乱码是同一类问题）。
+   */
+  return decodeWebText(merged, response.headers.get('content-type') || '');
 }
 
 function describeHttpError(status: number): string {

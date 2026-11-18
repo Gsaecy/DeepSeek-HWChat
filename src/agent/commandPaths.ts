@@ -435,6 +435,21 @@ const PATTERN_VALUE_FLAGS = new Set([
 ]);
 
 /**
+ * PowerShell 的同名参数（大小写不敏感）。
+ *
+ * `Get-ChildItem -Filter '*.pfx'` 里的 `*.pfx` 是**掩码**，不是要读的文件。
+ * 不遮掉它，一条只列目录的命令会被敏感文件守卫拒绝（真实故障 2026-11-18：
+ * 模型只是想确认签名证书在不在，连续被拒后停机）。
+ */
+const POWERSHELL_PATTERN_FLAGS = new Set(['-filter', '-include', '-exclude', '-like', '-match']);
+
+function isPatternFlag(text: string): boolean {
+  if (PATTERN_VALUE_FLAGS.has(text)) return true;
+  // 只有 PowerShell 那一组按大小写不敏感处理：`find -name` 这类 POSIX 参数是分大小写的
+  return POWERSHELL_PATTERN_FLAGS.has(text.toLowerCase());
+}
+
+/**
  * 把「模式选项的值」替换成占位词，使它们不再被当成文件路径或敏感文件名。
  *
  * 支持三种写法：`--exclude .env`、`--exclude=.env`、`-name '.env'`。
@@ -446,11 +461,11 @@ export function maskPatternFlagArguments(command: string): string {
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]!;
     const equals = token.text.indexOf('=');
-    if (equals > 0 && PATTERN_VALUE_FLAGS.has(token.text.slice(0, equals))) {
+    if (equals > 0 && isPatternFlag(token.text.slice(0, equals))) {
       masked.push({ start: token.start, end: token.end });
       continue;
     }
-    if (!PATTERN_VALUE_FLAGS.has(token.text)) continue;
+    if (!isPatternFlag(token.text)) continue;
     const value = tokens[index + 1];
     if (!value) continue;
     masked.push({ start: value.start, end: value.end });

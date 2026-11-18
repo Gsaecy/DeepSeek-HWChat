@@ -409,3 +409,31 @@ test('只有需要时才切 /bin/bash；Windows 不切', () => {
   assert.equal(shellFor('ls -la', 'darwin'), true);
   assert.equal(shellFor('diff <(a) <(b)', 'win32'), true);
 });
+
+test('PowerShell 调用后面跟引号外的管道 → 交给 PowerShell 解析', () => {
+  /*
+   * 真实故障（2026-11-18）：
+   *   powershell -File "…\pack-iap.ps1" 2>&1 | Select-Object -Last 25
+   * 交给 cmd 时 `|` 被 cmd 切开，`Select-Object` 变成 cmd 命令 → 0.0s 返回 255。
+   */
+  assert.equal(
+    shellFor('powershell -NoProfile -ExecutionPolicy Bypass -File "x.ps1" 2>&1 | Select-Object -Last 25', 'win32'),
+    'powershell.exe',
+  );
+  assert.equal(shellFor('pwsh -File x.ps1 2>&1 | Select-Object -Last 5', 'win32'), 'powershell.exe');
+  // 引号内的管道本来就由 PowerShell 自己解析，cmd 原样传递，不需要再套一层
+  assert.equal(shellFor('powershell -NoProfile -Command "cargo check 2>&1 | Select-Object -Last 45"', 'win32'), true);
+  assert.equal(shellFor('powershell -NoProfile -Command "Get-Content a.txt"', 'win32'), true);
+});
+
+test('裸 PowerShell cmdlet 也交给 PowerShell（否则 cmd 一定 255）', () => {
+  assert.equal(shellFor('cargo check --quiet 2>&1 | Select-Object -Last 60', 'win32'), 'powershell.exe');
+  assert.equal(shellFor('Get-ChildItem . -Filter *.rs', 'win32'), 'powershell.exe');
+  // 普通 cmd 命令保持原样（不改变现有行为）
+  assert.equal(shellFor('dir /b out', 'win32'), true);
+  assert.equal(shellFor('git status', 'win32'), true);
+  assert.equal(shellFor('npm test', 'win32'), true);
+  assert.equal(shellFor('echo "Select-Object"', 'win32'), true, '引号里的名字不该误判');
+  // 非 Windows 不做 PowerShell 推断
+  assert.equal(shellFor('cargo check 2>&1 | Select-Object -Last 60', 'darwin'), true);
+});

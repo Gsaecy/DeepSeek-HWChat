@@ -19,6 +19,10 @@ test('merges related guidance before starting queued task branches', async () =>
   const related = await queue.take('replan', onChange);
   assert.equal(related.length, 1);
   assert.match(String(related[0]?.request.content), /任务树更新：相关指导/);
+  // 新消息必须让 agent 先停手、做综合分析，并用 update_todos 提交调整后的整份清单。
+  assert.match(String(related[0]?.request.content), /暂停/);
+  assert.match(String(related[0]?.request.content), /update_todos/);
+  assert.match(String(related[0]?.request.content), /已完成项不许丢弃/);
   assert.match(String(related[0]?.request.content), /共享刷新任务/);
   assert.equal(related[0]?.userMessageId, 'user-related');
   assert.equal(related[0]?.assistantMessageId, 'assistant-related');
@@ -43,6 +47,28 @@ test('merges related guidance before starting queued task branches', async () =>
 test('uses a conservative local fallback when relation classification fails', () => {
   assert.equal(fallbackTaskRelation('修改 src/auth.ts 登录刷新', '继续调整 auth.ts 的错误处理'), 'related');
   assert.equal(fallbackTaskRelation('修改 src/auth.ts 登录刷新', '新增支付结果页面'), 'queued');
+});
+
+test('运行中的新消息直接并入当前分支：不分类、立刻可被取走', async () => {
+  const queue = new AgentTaskQueue('修复登录刷新并发问题');
+  const node = queue.enqueueRelated(
+    '登录页少了三个按钮',
+    { role: 'user', content: '登录页少了三个按钮' },
+    () => undefined,
+    { userMessageId: 'user-steer', assistantMessageId: 'assistant-steer' },
+  );
+
+  assert.equal(node.status, 'merged');
+  assert.equal(node.relation, 'related');
+  const state = queue.state();
+  assert.equal(state.nodes.find((item) => item.id === node.id)?.pending, true, '界面显示「待执行」直到被取走');
+
+  const taken = await queue.take('replan', () => undefined);
+  assert.equal(taken.length, 1, '同一轮边界就要交给 agent，不能等整条分支结束');
+  assert.equal(taken[0]?.userMessageId, 'user-steer');
+  assert.match(String(taken[0]?.request.content), /任务树更新：相关指导/);
+  assert.match(String(taken[0]?.request.content), /登录页少了三个按钮/);
+  assert.equal(queue.classifierUsage(), undefined, '没有分类就不产生分类用量');
 });
 
 test('续跑语义只作用在续跑根分支，换到排队分支后自动失效', async () => {

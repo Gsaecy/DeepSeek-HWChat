@@ -43,6 +43,8 @@ import { gitWriteOperation } from './conversationScope';
 import { detectVersionBump, versionBumpCommand } from './releasePolicy';
 import { CommandQueueFullError, CommandScheduler } from './commandScheduler';
 import { SearchQueueFullError, SearchResourceBusyError } from './searchScheduler';
+import { CommandOutputDecoder } from './commandEncoding';
+import { canEncodeTextFile, decodeTextFile, encodeTextFile, encodingLabel, type DecodedTextFile } from './fileEncoding';
 import { disposeWorkspaceSearch, invalidateWorkspaceSearch, searchWorkspace, workspaceSearchGeneration, workspaceSearchStats } from './workspaceSearch';
 import {
   OperationCancelledError,
@@ -1070,7 +1072,15 @@ export class ToolExecutor implements vscode.Disposable {
     if (stat.size > settings.maxReadBytes) {
       throw new Error(tt('tool.readFileTooLarge', { size: formatBytes(stat.size), max: formatBytes(settings.maxReadBytes) }));
     }
-    let text = decodeText(await vscode.workspace.fs.readFile(resolved.uri));
+    const decoded = decodeTextWithEncoding(await vscode.workspace.fs.readFile(resolved.uri));
+    let text = decoded.text;
+    /*
+     * 非 UTF-8 文件（GBK 等）：正文照样给模型（已按真实编码解出来），但要说明两件事 ——
+     * 编辑会被拒绝（避免把中文写坏），以及不要按 UTF-8 去猜字节偏移。
+     */
+    const encodingNotice = decoded.encoding === 'utf8' || decoded.encoding === 'utf8-bom'
+      ? ''
+      : `\n\n${tt('tool.encodingNotice', { encoding: encodingLabel(decoded.encoding) })}`;
     const startLine = Math.max(1, numberArg(args, 'startLine', 1));
     const endLine = Math.max(startLine, numberArg(args, 'endLine', Number.MAX_SAFE_INTEGER));
     if (startLine > 1 || endLine < Number.MAX_SAFE_INTEGER) {
@@ -1101,7 +1111,7 @@ export class ToolExecutor implements vscode.Disposable {
     return {
       status: 'success',
       summary: tt('tool.readSummary', { path: resolved.relativePath, size: formatBytes(stat.size) }),
-      content: text,
+      content: `${text}${encodingNotice}`,
       approval: 'not-required',
     };
   }
@@ -1214,12 +1224,20 @@ export class ToolExecutor implements vscode.Disposable {
     const release = await tryFileLock(lockPath, { staleMs: 15_000 });
     try {
       const uri = vscode.Uri.file(docPath);
-      const current = await Promise.resolve(vscode.workspace.fs.readFile(uri)).then(decodeText).catch(() => '');
+      const existing = await Promise.resolve(vscode.workspace.fs.readFile(uri))
+        .then(decodeTextWithEncoding)
+        .catch(() => undefined);
+      /*
+       * 文档是我们自己的 UTF-8 文件；万一它被别的编辑器存成了 GBK，也**不能**用
+       * UTF-8 覆盖写 —— 那会把已有条目整段写坏。此时宁可不追加。
+       */
+      if (existing && !canEncodeTextFile(existing.encoding)) return { added: 0, skipped: entries.length };
+      const current = existing?.text ?? '';
       const base = isProjectDoc(current) ? current : emptyProjectDoc(basename(dirname(docPath)) || 'project');
       const next = appendProjectDoc(base, entries);
       if (!next.added) return { added: 0, skipped: next.skipped };
       await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(docPath)));
-      await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(next.text));
+      await vscode.workspace.fs.writeFile(uri, encodeTextFile(next.text, existing?.encoding ?? 'utf8') ?? new TextEncoder().encode(next.text));
       invalidateWorkspaceSearch();
       return { added: next.added, skipped: next.skipped };
     } finally {
@@ -1276,13 +1294,27 @@ export class ToolExecutor implements vscode.Disposable {
     }
     await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(resolved.fsPath)));
     const previousStat = await Promise.resolve(vscode.workspace.fs.stat(resolved.uri)).catch(() => undefined);
-    const previous = previousStat && previousStat.size <= maxWriteBytes
-      ? await Promise.resolve(vscode.workspace.fs.readFile(resolved.uri)).then(decodeText).catch(() => '')
-      : '';
+    const previousFile = previousStat && previousStat.size <= maxWriteBytes
+      ? await Promise.resolve(vscode.workspace.fs.readFile(resolved.uri)).then(decodeTextWithEncoding).catch(() => undefined)
+      : undefined;
+    const previous = previousFile?.text ?? '';
+    /*
+     * 已有文件不是 UTF-8 时**不许**用 UTF-8 覆盖：那样中文正文会被整段写成替换字符。
+     * 规则与 `replace_in_file` 一致（见 `fileEncoding.ts`）。
+     */
+    if (previousFile && !canEncodeTextFile(previousFile.encoding)) {
+      throw new Error(tt('tool.encodingNotWritable', {
+        encoding: encodingLabel(previousFile.encoding),
+        path: resolved.relativePath,
+      }));
+    }
     // 版本号是用户的决定：未被要求就不许改版本清单里的 version 字段。
     const bump = versionBumpBlockReason(resolved, previous, content, scope);
     if (bump) return bump;
-    await vscode.workspace.fs.writeFile(resolved.uri, new TextEncoder().encode(content));
+    await vscode.workspace.fs.writeFile(
+      resolved.uri,
+      encodeTextFile(content, previousFile?.encoding ?? 'utf8') ?? new TextEncoder().encode(content),
+    );
     invalidateWorkspaceSearch();
     this.recordProjectRoot(scope, resolved);
     const summary = previousStat
@@ -1302,7 +1334,18 @@ export class ToolExecutor implements vscode.Disposable {
     if (stat.size > settings.maxReadBytes) {
       throw new Error(tt('tool.replaceTooLarge', { size: formatBytes(stat.size), max: formatBytes(settings.maxReadBytes) }));
     }
-    const current = decodeText(await vscode.workspace.fs.readFile(resolved.uri));
+    const original = decodeTextWithEncoding(await vscode.workspace.fs.readFile(resolved.uri));
+    /*
+     * 非 UTF-8（GBK）文件不能走「解成文本 → 改 → 用 UTF-8 写回」：那一圈会把
+     * 文件里所有中文变成替换字符。宁可拒绝并告诉用户转一次编码。
+     */
+    if (!canEncodeTextFile(original.encoding)) {
+      throw new Error(tt('tool.encodingNotWritable', {
+        encoding: encodingLabel(original.encoding),
+        path: resolved.relativePath,
+      }));
+    }
+    const current = original.text;
     const plan = planReplacement(current, oldText, newText);
     const occurrences = plan.occurrences;
     if (occurrences < 1) {
@@ -1334,7 +1377,10 @@ export class ToolExecutor implements vscode.Disposable {
     const next = plan.apply(Boolean(args.replaceAll));
     const bump = versionBumpBlockReason(resolved, current, next, scope);
     if (bump) return bump;
-    await vscode.workspace.fs.writeFile(resolved.uri, new TextEncoder().encode(next));
+    await vscode.workspace.fs.writeFile(
+      resolved.uri,
+      encodeTextFile(next, original.encoding) ?? new TextEncoder().encode(next),
+    );
     invalidateWorkspaceSearch();
     this.recordProjectRoot(scope, resolved);
     const summary = tt('tool.replaceSummary', { path: resolved.relativePath, count: Boolean(args.replaceAll) ? occurrences : 1 });
@@ -1585,11 +1631,13 @@ export class ToolExecutor implements vscode.Disposable {
     if (child.pid) this.backgroundChildren.set(id, { child, command, startedAt: Date.now() });
     let outText: BoundedText = EMPTY_BOUNDED_TEXT;
     let errText: BoundedText = EMPTY_BOUNDED_TEXT;
+    const outDecoder = new CommandOutputDecoder();
+    const errDecoder = new CommandOutputDecoder();
     let exited = false;
     let code: number | null = null;
     const limit = 32_000;
-    child.stdout?.on('data', (chunk) => { outText = appendBoundedText(outText, String(chunk), limit); });
-    child.stderr?.on('data', (chunk) => { errText = appendBoundedText(errText, String(chunk), limit); });
+    child.stdout?.on('data', (chunk) => { outText = appendBoundedText(outText, outDecoder.decode(chunk), limit); });
+    child.stderr?.on('data', (chunk) => { errText = appendBoundedText(errText, errDecoder.decode(chunk), limit); });
     const cleanup = (): void => {
       this.backgroundChildren.delete(id);
     };
@@ -1606,6 +1654,10 @@ export class ToolExecutor implements vscode.Disposable {
     scope?.signal?.addEventListener('abort', () => this.stopBackground(id), { once: true });
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     if (metrics && !exited) metrics.errorCode = undefined;
+    const outTail = outDecoder.flush();
+    const errTail = errDecoder.flush();
+    if (outTail) outText = appendBoundedText(outText, outTail, limit);
+    if (errTail) errText = appendBoundedText(errText, errTail, limit);
     return { id, pid: child.pid, stdout: renderBoundedText(outText), stderr: renderBoundedText(errText), exited, code };
   }
 
@@ -2064,13 +2116,55 @@ export function bashOnlySyntax(command: string): string | undefined {
 }
 
 /**
+ * 已经是一条 PowerShell 调用（`powershell …` / `pwsh …`，可带完整路径）。
+ *
+ * 真实故障（2026-11-18 用户贴回）：模型写
+ *
+ *     powershell -NoProfile -ExecutionPolicy Bypass -File "…\pack-iap.ps1" 2>&1 | Select-Object -Last 25
+ *
+ * 执行器用 cmd.exe 解析整行，`|` 被 cmd 切开，于是 `Select-Object` 变成一个 cmd 命令，
+ * 0.0 秒返回 255「'Select-Object' 不是内部或外部命令」—— 明明包对了还是失败。
+ */
+const POWERSHELL_INVOCATION = /^(?:"[^"]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s|$)/i;
+
+/**
+ * 只有 PowerShell 认识的 cmdlet / 参数。
+ *
+ * `cargo check 2>&1 | Select-Object -Last 60` 这类「直接写 PowerShell 管道」的命令，
+ * 交给 cmd 一定 255；识别出来就换 PowerShell，模型不用为此白烧一轮。
+ */
+const POWERSHELL_ONLY_SYNTAX = /\b(?:Select-Object|Where-Object|ForEach-Object|Sort-Object|Group-Object|Measure-Object|Select-String|Get-ChildItem|Get-Content|Set-Content|Add-Content|Out-File|Out-Null|Get-Item|Get-ItemProperty|Set-ItemProperty|New-Item|Remove-Item|Copy-Item|Move-Item|Rename-Item|Test-Path|Join-Path|Split-Path|Resolve-Path|Start-Sleep|Start-Process|Stop-Process|Invoke-WebRequest|Invoke-RestMethod|ConvertTo-Json|ConvertFrom-Json|Get-Command|Get-Process)\b|\s-(?:ErrorAction|NoProfile|ExecutionPolicy|LiteralPath)\b/;
+
+/** 去掉引号里的内容：引号内的 `|`、cmdlet 名都不该影响 shell 选择。 */
+function withoutQuoted(command: string): string {
+  return command.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
+}
+
+/**
  * 该用哪个 shell。
  *
- * 只有在**确实需要** bash 时才切过去：默认仍然是平台默认 shell，
- * 免得改变用户已经在用的引号/展开行为。Windows 没有 `/bin/bash`，保持原状。
+ * 只有在**确实需要**时才切过去：默认仍然是平台默认 shell，
+ * 免得改变用户已经在用的引号/展开行为。Windows 没有 `/bin/bash`，保持原状；
+ * 但 Windows 上有 PowerShell —— 命令本身就是 PowerShell 调用、或用了只有 PowerShell
+ * 认识的 cmdlet 时，交给 cmd 只会得到「不是内部或外部命令」。
+ * 与 POSIX 上「发现 bash 专有语法就切 /bin/bash」同一条原则：误判代价很小，
+ * 漏判的代价是整轮失败。
  */
 export function shellFor(command: string, platform: string = process.platform): string | true {
-  if (platform === 'win32') return true;
+  if (platform === 'win32') {
+    const trimmed = command.trim();
+    const outsideQuotes = withoutQuoted(trimmed);
+    if (POWERSHELL_INVOCATION.test(trimmed)) {
+      /*
+       * 调用后面还有**引号外**的管道/重定向：那是给 PowerShell 的，不是给 cmd 的。
+       * 全都包在引号里的（`powershell -Command "a | b"`）保持原样 —— cmd 本来就会把
+       * 整段引号内容原样交给 PowerShell，没必要再套一层。
+       */
+      return /[|<>]/.test(outsideQuotes) ? 'powershell.exe' : true;
+    }
+    if (POWERSHELL_ONLY_SYNTAX.test(outsideQuotes)) return 'powershell.exe';
+    return true;
+  }
   if (!bashOnlySyntax(command)) return true;
   return existsSync('/bin/bash') ? '/bin/bash' : true;
 }
@@ -2398,7 +2492,22 @@ function spliceAt(text: string, ranges: ReadonlyArray<readonly [number, number]>
 
 function decodeText(bytes: Uint8Array): string {
   if (bytes.includes(0)) throw new Error(tt('tool.binaryFile'));
-  return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  return decodeTextFile(bytes).text;
+}
+
+/**
+ * 读一个工作区文本文件，连同它的编码一起返回。
+ *
+ * 与 `decodeText` 的区别只有一个：写回时要知道原编码，才能**保持**它。
+ * 见 `fileEncoding.ts` 里「GBK 文件被 UTF-8 写回毁掉中文」的现场说明。
+ *
+ * BOM 开头（UTF-16）的文件先放行：UTF-16 的每个 ASCII 字符都带一个 0x00，
+ * 被 `includes(0)` 当成二进制挡掉的话，这类文件就永远读不了、也改不了。
+ */
+function decodeTextWithEncoding(bytes: Uint8Array): DecodedTextFile {
+  const hasBom = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff);
+  if (!hasBom && bytes.includes(0)) throw new Error(tt('tool.binaryFile'));
+  return decodeTextFile(bytes);
 }
 
 /**
@@ -2689,10 +2798,15 @@ export function spawnCommand(
       // 主动断开管道。孙进程还活着时 Node 会一直等流关闭，这是永久挂起的直接原因。
       child.stdout?.destroy();
       child.stderr?.destroy();
+      // 把跨 chunk 暂存的半个字符吐出来（GBK/UTF-8 都可能被切断）。
+      const outTail = stdoutDecoder.flush();
+      const errTail = stderrDecoder.flush();
+      if (outTail) stdout = appendBoundedText(stdout, outTail, maxOutputBytes);
+      if (errTail) stderr = appendBoundedText(stderr, errTail, maxOutputBytes);
       resolvePromise({ code, stdout: renderBoundedText(stdout), stderr: renderBoundedText(stderr), timedOut, cancelled });
     };
     const collect = (target: 'stdout' | 'stderr', chunk: Buffer | string) => {
-      const text = String(chunk);
+      const text = (target === 'stdout' ? stdoutDecoder : stderrDecoder).decode(chunk);
       lastOutputAt = Date.now();
       if (target === 'stdout') {
         stdout = appendBoundedText(stdout, text, maxOutputBytes);
@@ -2702,6 +2816,12 @@ export function spawnCommand(
         outputBytes = Math.max(outputBytes, stderr.totalBytes);
       }
     };
+    /*
+     * 每个流各自的解码器：Windows 上 cmd 按代码页（中文系统 936）输出，
+     * 一律按 UTF-8 解会得到乱码，模型读不懂报错就会反复撞同一条命令。
+     */
+    const stdoutDecoder = new CommandOutputDecoder();
+    const stderrDecoder = new CommandOutputDecoder();
     child.stdout?.on('data', (chunk) => collect('stdout', chunk));
     child.stderr?.on('data', (chunk) => collect('stderr', chunk));
     options.onSpawn?.(child);

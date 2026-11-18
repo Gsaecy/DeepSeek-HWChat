@@ -1,4 +1,4 @@
-import { AgentTaskQueue, TaskRelation, userTextOfTaskRequest } from './taskQueue';
+import { AgentTaskQueue, TaskRelation, withAnalysisInstruction, type AgentTaskUpdate, userTextOfTaskRequest } from './taskQueue';
 import { AgentTaskTreeState } from '../core/types';
 
 export interface ReviewOutcome {
@@ -6,6 +6,13 @@ export interface ReviewOutcome {
   merged: string[];
   /** 判为「独立任务」、继续排队的消息。 */
   kept: string[];
+  /**
+   * 判为独立、但要交给模型**先分析一遍**的消息（仍在队列里，之后照常执行）。
+   *
+   * 只在暂停点产生：用户发来新消息主动打断了执行，那条消息必须被读到并给出判断，
+   * 不能因为分类器一句「独立任务」就压到整条分支结束。
+   */
+  analysis: AgentTaskUpdate[];
 }
 
 export interface ReviewOptions {
@@ -15,6 +22,8 @@ export interface ReviewOptions {
   liveContext: () => string | Promise<string>;
   onChange: (state: AgentTaskTreeState) => void | Promise<void>;
   signal?: AbortSignal;
+  /** 这次重判是不是「刚被新消息打断」之后的暂停点；是的话把独立消息也交给模型分析。 */
+  deliverAnalysis?: boolean;
 }
 
 /**
@@ -39,7 +48,7 @@ export interface ReviewOptions {
  * 下个边界会再试 —— 宁可多问一次，也不能把用户的话静默当成「已处理」。
  */
 export async function reviewQueuedTasks(queue: AgentTaskQueue, options: ReviewOptions): Promise<ReviewOutcome> {
-  const outcome: ReviewOutcome = { merged: [], kept: [] };
+  const outcome: ReviewOutcome = { merged: [], kept: [], analysis: [] };
   if (!queue.isAccepting()) return outcome;
   // 先等在途分类落定：刚落库的那条要先被分进 related / queued，才轮得到边界重判。
   await queue.awaitRouting();
@@ -62,7 +71,24 @@ export async function reviewQueuedTasks(queue: AgentTaskQueue, options: ReviewOp
     // settle / 撤单 / 编辑都可能在判定期间发生，逐条重新确认它还在队列里。
     const resolved = await queue.resolveReview(task.nodeId, relation, options.onChange);
     if (resolved === 'merged') outcome.merged.push(task.nodeId);
-    else outcome.kept.push(task.nodeId);
+    else {
+      outcome.kept.push(task.nodeId);
+      /*
+       * 暂停点：判成独立也要让模型读一遍。
+       *
+       * 分类器只看到分支标题和清单摘要，用户的原话往往更具体 —— 「登录页少了三个
+       * 按钮」看着像独立需求，实际可能就是清单里那一条。交给模型判断，它要么调整
+       * 清单接着说清楚，要么一句话确认排到后面。消息本身仍在队列里，不会丢。
+       */
+      if (options.deliverAnalysis) {
+        outcome.analysis.push({
+          ...task,
+          relation: 'queued',
+          analysis: true,
+          request: withAnalysisInstruction(task.request),
+        });
+      }
+    }
   }
   return outcome;
 }

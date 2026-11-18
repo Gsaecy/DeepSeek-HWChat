@@ -277,6 +277,58 @@ test('agent loop: consecutive failing rounds stop the automatic retry', async ()
   assert.match(result.content, /全部失败|all failed/);
 });
 
+test('agent loop: policy denials alone never trigger the no-progress stop', async () => {
+  /*
+   * 真实故障（2026-11-18）：两条命令真失败 + 一条敏感文件被拒 → 凑满「连续 3 轮
+   * 全部失败」停机。拒绝是确定性的策略结果，不是「环境坏了」，不该把整轮任务掐掉。
+   */
+  const client = endlessClient((round) => ({ name: 'read_file', args: `{"path":"${round}.txt"}` }));
+  const tools = {
+    definitions: () => [],
+    async execute(): Promise<ToolExecutionResult> {
+      return { status: 'denied', summary: 'blocked', content: 'denied by policy', approval: 'not-required' };
+    },
+  };
+
+  const result = await runAgent({ client, tools, steps: 6 });
+
+  assert.notEqual(result.stopReason, 'noProgress', '只有拒绝时不该停机');
+  assert.ok(client.rounds > 3, `应当继续跑过 3 轮，实际 ${client.rounds} 轮`);
+});
+
+test('agent loop: a denied call does not mask a real error in the same round', async () => {
+  // 每一轮里既有真实失败、又有一次被拒绝：仍然算「这一轮没有成功步骤」→ 三轮后停。
+  let round = 0;
+  const client = {
+    async streamChat(_settings: unknown, _messages: unknown, options: { onDelta?: (delta: { content?: string }) => unknown }) {
+      round += 1;
+      await options.onDelta?.({ content: '' });
+      return {
+        content: '',
+        reasoning: '',
+        toolCalls: [
+          { id: `err_${round}`, type: 'function' as const, function: { name: 'read_file', arguments: `{"path":"${round}.txt"}` } },
+          { id: `deny_${round}`, type: 'function' as const, function: { name: 'read_file', arguments: `{"path":"secret-${round}.txt"}` } },
+        ],
+      };
+    },
+  };
+  let call = 0;
+  const tools = {
+    definitions: () => [],
+    async execute(): Promise<ToolExecutionResult> {
+      call += 1;
+      return call % 2 === 1
+        ? { status: 'error', summary: 'failed', content: 'ENOENT', approval: 'not-required' }
+        : { status: 'denied', summary: 'blocked', content: 'denied', approval: 'not-required' };
+    },
+  };
+
+  const result = await runAgent({ client, tools, steps: 40 });
+
+  assert.equal(result.stopReason, 'noProgress', '有真实失败且没有成功步骤时仍要停');
+});
+
 test('loop guard: argument key order does not hide a duplicate call', () => {
   const guard = new ToolLoopGuard();
   const first = guard.observe({ id: '1', type: 'function', function: { name: 'search_files', arguments: '{"query":"a","glob":"b"}' } });

@@ -21,3 +21,6 @@ resources/icon.svg
 .DS_Store
 # 截图构建脚本与图片只服务于仓库文档（README 用绝对地址引用），不进安装包
 docs/**
+# 本地临时工作目录：tmp-* 只在 .gitignore 里，vsce 不认，必须在这里再排一次
+# （0.4.19 第一次打包时把 tmp-app-guidelines/ 的 9428 个文件一起打了进去）
+tmp-*/**

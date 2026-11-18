@@ -18,14 +18,14 @@
 |---|---|
 | 形态 | VS Code 扩展，单 webview 面板（辅助侧栏），无自建后端 |
 | 语言/构建 | TypeScript → esbuild → `out/extension.js`；无框架、无运行时依赖注入 |
-| 规模 | 203 个 `.ts` / 52,837 行 + webview 资源 ~9.5k 行（0.4.15 实测） |
-| 最大单文件 | `src/views/chatPanel.ts` 6,621 行；`src/agent/toolExecutor.ts` 2,892；`src/core/storage.ts` 2,482 |
+| 规模 | 209 个 `.ts` / 50,831 行 + webview 资源 ~9.2k 行（0.4.20 实测） |
+| 最大单文件 | `src/views/chatPanel.ts` 6,463 行；`src/agent/toolExecutor.ts` 2,726；`src/core/storage.ts` 2,436 |
 | 对外接口 | 任意 OpenAI 兼容端点（chat / images / models / embeddings） |
 | 密钥 | 只在 `SecretStorage`（`src/core/apiKeys.ts`），不进 settings.json |
 | 权限 | 四档预设 × 三档命令风险 × 敏感文件，默认 `askAll`（最严） |
 | 配置项 | 38 个 `contributes.configuration` |
 | 命令 | 19 个 |
-| 质量 | 1,318 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
+| 质量 | 1,338 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
 
 ---
 
@@ -33,14 +33,14 @@
 
 ```
 VS Code Extension Host (Node)
-├── src/extension.ts (449)      激活、命令注册、cleanupScheduler
+├── src/extension.ts (445)      激活、命令注册、cleanupScheduler
 ├── src/views/                  面板宿主（不直接碰网络/磁盘）
-│   ├── chatPanel.ts (6385)     消息协议、上下文组装、状态机
-│   ├── settingsPanel.ts (655)  设置读写、探针
+│   ├── chatPanel.ts (6463)     消息协议、上下文组装、状态机
+│   ├── settingsPanel.ts (656)  设置读写、探针
 │   ├── webview.ts              HTML 外壳、nonce、CSP
 │   └── messageSignature.ts     渲染签名（决定增量还是全量重绘）
-├── src/agent/ (43 文件)        执行层：主循环、工具、守卫
-├── src/core/ (29 文件)         领域层：设置、权限、存储、记忆、i18n
+├── src/agent/ (46 文件)        执行层：主循环、工具、守卫
+├── src/core/ (36 文件)         领域层：设置、权限、存储、记忆、i18n
 └── src/providers/ (7 文件)     网络层：流式、代理、重试、诊断
 
 Webview (media/, 无 Node 权限)
@@ -91,13 +91,31 @@ Webview (media/, 无 Node 权限)
   → taskReview（完成度复核）→ 版本号/提交询问（releasePolicy）
 ```
 
+**运行中插入新消息（`src/agent/steering.ts`）**：按 Copilot 的对话模式，发消息＝打断这一轮。
+
+```
+Panel.queueRunningMessage
+  → taskQueue.enqueueRelated()      同步并入当前分支（**不调分类模型**，没有等分类的空窗）
+  → steering.request()              立刻 abort 当前流式生成
+  → 落库 + bind 消息 id             runner 在暂停点取任务前等 pauseRegistry
+Runner
+  ｜生成中被 abort → 识别为「暂停」：不结束运行、不扣步数、半截正文补进历史
+  ｜工具执行中 → 每个工具结束后检查 steering，剩余调用记「已暂停」并收手
+  → takeTaskUpdate('replan', { paused: true }) → 拿到新消息（前缀要求先综合分析再 update_todos）
+  → 下一轮请求继续
+```
+
+任务清单前缀（`taskQueue.ts` 的 `TASK_INSTRUCTION_PREFIXES.related`）是硬要求：
+综合分析（目标 / 清单 / 已完成步骤 / 被打断时在做什么 / 新消息）→ `update_todos` 提交
+整份调整后的清单（保留已完成项）→ 才继续。被打断的那一轮不计入「连续失败」。
+
 | 限制 | 值 | 位置 |
 |---|---|---|
 | 步数 | `agentMaxSteps` 默认 24 | `settings` |
 | 队列续期 | 有待处理消息时追加预算，最多 10 次 | `agentRunner.ts:216` |
 | 单轮工具数 | 12（超出排队下一步） | `agentRunner.ts:63` |
 | 重复调用 | 同一工具同样参数 3 次 → `loopDetected` | `agentRunner.ts:70` |
-| 无进展 | 连续 3 轮失败 → `noProgress` | `agentRunner.ts:72` |
+| 无进展 | 连续 3 轮「有真实 error 且无任何成功步骤」→ `noProgress`（策略拒绝不计入） | `agentRunner.ts:72` |
 | 运行内工具全文 | 只留最近 3 条 | `agentRunner.ts:536` |
 
 终止原因会翻译成人话（`agentRunner.ts:76`），并区分「超时 / 卡住 / 断网 / 用户取消」四态（`src/agent/abortReason.ts:73`）。
@@ -110,7 +128,7 @@ Webview (media/, 无 Node 权限)
 
 | 工具 | 备注 |
 |---|---|
-| `read_file` / `write_file` / `replace_in_file` / `delete_file` / `rename_file` | 写入走版本号检出版（`releasePolicy`） |
+| `read_file` / `write_file` / `replace_in_file` / `delete_file` / `rename_file` | 写入走版本号检出版（`releasePolicy`）；读写都按**文件自身编码**（见 4.5） |
 | `list_directory` / `list_files` / `search_files` | 全仓搜索带排除规则 |
 | `run_command` | 前台/后台、超时、输出上限、路径隔离、shell 选择 |
 | `open_file` / `get_diagnostics` / `list_workspace_roots` | 编辑器交互 |
@@ -135,6 +153,21 @@ Webview (media/, 无 Node 权限)
 - bash 专有语法（进程替换 `<(…)`、`[[ ]]`、`=~`）自动切 `/bin/bash`（`toolExecutor.ts` 的 `bashOnlySyntax` / `shellFor`）。
 - 路径隔离：`commandPathViolation`（`src/agent/commandPaths.ts:135`），`/tmp` 等被改写为工作区内 `tmp/`（按 cwd 所属根选取，带 `mkdir -p`）。
 - 超时（120s）、输出上限（200KB）、后台进程表、进程树 kill。
+- **输出编码**（`src/agent/commandEncoding.ts`）：Windows 的 `cmd` / `dir` / `findstr` 按控制台代码页（936＝GBK）输出，`String(chunk)` 一律按 UTF-8 解会把中文报错变成乱码，模型读不懂就只能重复同一条命令。现在每个流各一个 `CommandOutputDecoder`：默认 UTF-8（`stream: true`，跨 chunk 的半个汉字不会误判），解出 U+FFFD 就切到本地编码（GBK → gb18030 → big5 → shift_jis → euc-kr → windows-1252），收尾 flush。
+- **shell 选择**（`shellFor`）：Windows 上默认 cmd.exe；但「以 `powershell` / `pwsh` 开头且引号外还有管道/重定向」或「直接写了只 PowerShell 认识的 cmdlet」时整行交给 PowerShell。否则 `powershell … | Select-Object` 会被 cmd 切开（0.0s 退出 255）。与 POSIX 上切换 `/bin/bash` 同一条原则。
+
+### 4.5 文本编码（`src/agent/fileEncoding.ts`）
+
+「UTF-8 读 → UTF-8 写」在 GBK 文件上不只是乱码，**写回会把文件里的中文变成 `EF BF BD`**。
+所以：
+
+- **读**：BOM 优先（UTF-8 / UTF-16 LE / UTF-16 BE），否则严格 UTF-8（`fatal: true`）试一次，
+  失败按 GBK 解；非 UTF-8 文件在 `read_file` 结果末尾附编码说明。UTF-16 不再被
+  `includes(0)` 当成二进制。
+- **写**：按原编码写回（UTF-8 / UTF-8 BOM / UTF-16 逐字节一致）；GBK 没有可用的编码器，
+  **拒绝写**并给出「先另存为 UTF-8」的说明，绝不静默毁数据。
+- **网页**（`decodeWebText`）：认 `content-type` 的 charset 与 HTML 的 `<meta charset>`，
+  gb2312 / gb18030 统一按 GBK 解；无声明时先 UTF-8，只有出现替换字符才回退。
 
 ---
 
@@ -256,7 +289,7 @@ Webview (media/, 无 Node 权限)
 
 ## 10. 质量保障
 
-- **1,318 条单测**（`src/test/`）。
+- **1,338 条单测**（`src/test/`）。
 - **79 个 `test/check-*.mjs` 守护脚本**，其中若干不是静态断言，而是**真跑**：
   - 真实 Chromium：量按钮宽高、真点按钮、走完整交互（`check-settings-layout`、`check-image-attachment`、`check-capsule-*` …）；
   - 真实文件系统：大小写不同拼写是否算同一目录（`check-path-identity`）；
@@ -493,7 +526,7 @@ Webview (media/, 无 Node 权限)
 # 类型检查
 npx tsc -p ./ --noEmit
 
-# 单测（1,318 条）
+# 单测（1,338 条）
 npm test
 
 # 全部守护脚本（79 个；含真实 Chromium / 真实文件系统 / 真实命令）

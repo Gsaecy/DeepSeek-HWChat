@@ -12,6 +12,7 @@ import {
 } from '../core/types';
 import { tt } from '../core/i18n';
 import { searchWorkspace } from './workspaceSearch';
+import { decodeTextFile } from './fileEncoding';
 import {
   QUICK_LAUNCH_EXTENSION_ID,
   isMissingFileError,
@@ -577,7 +578,7 @@ export class SkillRegistry implements vscode.Disposable {
   }): Promise<SkillRecord | undefined> {
     const bytes = await vscode.workspace.fs.readFile(candidate.uri);
     if (bytes.byteLength === 0 || bytes.byteLength > MAX_SKILL_BYTES || containsBinary(bytes)) return undefined;
-    const raw = new TextDecoder().decode(bytes).replace(/\r\n/g, '\n').trim();
+    const raw = decodeTextFile(bytes).text.replace(/\r\n/g, '\n').trim();
     if (!raw) return undefined;
     const frontmatter = parseFrontmatter(raw);
     const fallback = candidate.quickLaunchName

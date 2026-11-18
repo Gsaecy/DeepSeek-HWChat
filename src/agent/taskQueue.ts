@@ -21,6 +21,14 @@ export interface AgentTaskUpdate extends AgentTaskBinding {
   nodeId: string;
   request: ChatRequestMessage;
   relation: TaskRelation;
+  /**
+   * 这条更新只交给模型**分析**，不代表它开始执行。
+   *
+   * 用途：运行中发来的消息即使被判成「独立任务」，也要在暂停点交给模型读一遍 ——
+   * 它可能只是被标题判歪了，实际属于当前任务。面板收到这种更新时不切换回复气泡，
+   * 那条消息在任务树里仍然显示「还没执行」，之后照样按顺序执行。
+   */
+  analysis?: boolean;
 }
 
 interface PendingTask extends AgentTaskUpdate {
@@ -307,6 +315,37 @@ export class AgentTaskQueue {
   }
 
   /**
+   * 把运行中收到的新消息**直接并进当前分支**，不调用分类模型。
+   *
+   * 参考 Copilot 的对话模式：运行中发消息＝打断并调整这一轮，不是另开一个任务。
+   * 为什么去掉分类：分类是一次完整的模型请求，它挡在「暂停 → 交给模型分析」之间，
+   * 用户实测就是「等了半天什么也没发生」。现在入队是同步的，暂停信号随后就到，
+   * agent 回到循环顶部立刻把这条消息交给模型做综合分析与 `update_todos` 调整。
+   *
+   * 任务树仍然保留每个节点（合并状态），用户看得见自己说过什么、在什么时候插话。
+   */
+  enqueueRelated(
+    title: string,
+    request: ChatRequestMessage,
+    onChange: (state: AgentTaskTreeState) => void | Promise<void>,
+    binding: AgentTaskBinding = {},
+  ): AgentTaskNode {
+    if (!this.accepting) throw new Error('当前 Agent 已进入收尾阶段。');
+    const node: AgentTaskNode = {
+      id: createId('task'),
+      parentId: this.currentNodeId,
+      title: shortTitle(title, '新消息'),
+      status: 'merged',
+      relation: 'related',
+    };
+    this.nodes.push(node);
+    this.bindings.set(node.id, { ...binding });
+    this.related.push({ nodeId: node.id, request, relation: 'related', reviewedFor: [], seq: ++this.seq, ...binding });
+    void onChange(this.state());
+    return { ...node };
+  }
+
+  /**
    * 改一条**还没被执行**的排队消息。
    *
    * 排队中的任务只是队列里的一条 request，agent 还没读过它，所以这里直接换掉
@@ -542,8 +581,35 @@ export class AgentTaskQueue {
  * 会不会被认出来，就取决于它是不是刚好处在某个前缀后面）。
  */
 export const TASK_INSTRUCTION_PREFIXES = {
-  related: '[任务树更新：相关指导]\n立即重新评估当前分支。保留已经完成且仍有效的工作，取消尚未执行且与新要求冲突的旧步骤，并根据这条消息调整计划：\n',
+  /*
+   * 用户的要求：「每次新发送消息，正在执行的任务会被暂停，然后综合分析新消息，
+   * 再调整任务清单和任务。」
+   *
+   * 所以这段说明必须明确三件事，缺一件就会退化成「把新消息当成一句补充继续往下写」：
+   * 1. 先停手（执行已经被暂停，不要接着写原来的内容）；
+   * 2. 做综合分析（目标 + 清单 + 已完成步骤 + 被打断时正在做的事 + 新消息）；
+   * 3. 用 update_todos 提交整份调整后的清单，然后才继续 —— 清单是用户看得见的计划。
+   */
+  related: '[任务树更新：相关指导]\n你刚才的执行已被用户的新消息暂停。先不要接着写原来的内容，做一次综合分析再动手：\n'
+    + '1. 对照：当前任务的目标、任务清单（最近一次 update_todos 的内容）、已经完成的步骤、被打断时正在做的事，以及这条新消息的完整要求。\n'
+    + '2. 判断它的影响：是修正做法、补充要求、更换目标，还是与当前任务无关。只采纳真正属于当前任务的部分。\n'
+    + '3. 调整任务清单：如果当前任务有多步、或面板上已经有清单，调用 update_todos 提交**整份**清单——保留仍然有效且已完成的项目（已完成项不许丢弃），取消与新要求冲突且尚未执行的步骤，补上新的步骤，并把接下来要做的一项标成 in_progress；清单即使不需要变化，也重新提交一次，让用户看到你核对过。只有一步的任务不要凭空造清单。\n'
+    + '4. 更新完清单再继续执行；回复里用一两句话说明这次调整了什么、为什么。\n'
+    + '用户消息：\n',
   queued: '[任务树分支：排队任务]\n前一个分支已经完成。现在开始处理这个独立任务，不要把它与上一分支的目标混淆：\n',
+  /*
+   * 暂停点的综合分析（见 `AgentTaskUpdate.analysis`）。
+   *
+   * 与 `related` 的区别：这条消息**还没有**被并进当前任务，它仍在队里等着按顺序执行。
+   * 交给模型读一遍的目的，是让它自己判断「这个判定对不对」—— 分类器只有标题和清单
+   * 摘要，用户的话往往比摘要具体得多。所以这里必须明说：不许现在就动手。
+   */
+  analysis: '[任务树：暂停时的综合分析]\n用户在你执行途中发来这条消息，你的执行已经暂停。先做一次综合分析，再决定怎么走：\n'
+    + '1. 对照当前目标、任务清单（最近一次 update_todos 的内容）与已经完成的步骤，判断这条消息的真实影响。\n'
+    + '2. 如果它改变当前任务的做法、范围或先后顺序：调用 update_todos 提交**整份**调整后的清单（保留已完成项、取消冲突且尚未执行的步骤、补上新步骤），然后接着做当前任务。\n'
+    + '3. 如果它确实是一件独立的事：**现在不要开始做**，也不要把它写进当前清单；用一句话说明它已排在当前任务之后，然后继续当前任务。\n'
+    + '4. 先用一两句话说明你的判断，再动手。\n'
+    + '用户消息：\n',
 } as const;
 
 /**
@@ -581,6 +647,19 @@ export function userTextOfTaskRequest(request: ChatRequestMessage): string {
 
 function withTaskInstruction(request: ChatRequestMessage, relation: TaskRelation): ChatRequestMessage {
   const prefix = relation === 'related' ? TASK_INSTRUCTION_PREFIXES.related : TASK_INSTRUCTION_PREFIXES.queued;
+  return withPrefix(request, prefix);
+}
+
+/**
+ * 把一条**仍在队列里**的消息包成「暂停点综合分析」请求。
+ *
+ * 只用于交给模型读一遍：它不会离开队列，之后轮到时仍按 `queued` 前缀正常执行。
+ */
+export function withAnalysisInstruction(request: ChatRequestMessage): ChatRequestMessage {
+  return withPrefix(request, TASK_INSTRUCTION_PREFIXES.analysis);
+}
+
+function withPrefix(request: ChatRequestMessage, prefix: string): ChatRequestMessage {
   if (typeof request.content === 'string') return { ...request, content: `${prefix}${request.content}` };
   const parts = request.content.map((part) => part.type === 'text' ? { ...part } : { ...part, image_url: { ...part.image_url } });
   const text = parts.find((part): part is Extract<typeof part, { type: 'text' }> => part.type === 'text');

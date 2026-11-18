@@ -9,8 +9,9 @@ import {
   ToolExecutionResult,
   UsageInfo,
 } from '../core/types';
-import { DeepSeekClient } from '../providers/deepseekClient';
+import { DeepSeekClient, type StreamChatResult } from '../providers/deepseekClient';
 import { redact } from './auditLog';
+import type { AgentSteering } from './steering';
 import type { AgentTaskUpdate } from './taskQueue';
 import type { RequestApproval, ToolExecutionScope, ToolExecutor } from './toolExecutor';
 import { tt } from '../core/i18n';
@@ -151,7 +152,15 @@ export class AgentRunner {
      */
     toolAllowList?: readonly string[];
     executeExtraTool?: (call: import('../core/types').ToolCall) => Promise<{ result: ToolExecutionResult; skill?: SkillUsage } | undefined>;
-    takeTaskUpdate?: (phase: 'replan' | 'complete') => Promise<AgentTaskUpdate[]> | AgentTaskUpdate[];
+    takeTaskUpdate?: (phase: 'replan' | 'complete', info?: { paused?: boolean }) => Promise<AgentTaskUpdate[]> | AgentTaskUpdate[];
+    /**
+     * 运行中新消息的暂停通道（见 `steering.ts`）。
+     *
+     * 只打断**正在生成的回答**：工具执行仍只听主 `signal`，不会被一条中途发来的
+     * 消息连坐。暂停后回到循环顶部，由 `takeTaskUpdate('replan')` 把新消息交给模型
+     * 重新分析并调整任务清单。
+     */
+    steering?: AgentSteering;
     /**
      * 任务队列里还有没有「没被读过的用户消息」。
      *
@@ -215,6 +224,13 @@ export class AgentRunner {
     /** 因「队列里还有消息」而追加的预算次数上限：防御模型无限调用工具导致的死循环。 */
     const MAX_BUDGET_EXTENSIONS = 10;
     let budgetExtensions = 0;
+    /**
+     * 上一段是「因为用户发来新消息而暂停」结束的。
+     *
+     * 循环顶部要把它告诉 `takeTaskUpdate`：面板据此把那条消息交给模型做综合分析
+     * （即使它被判定成独立任务，也要读到并给出判断）。
+     */
+    let pauseHandled = false;
     while (true) {
       if (step >= maxSteps) {
         /*
@@ -232,26 +248,80 @@ export class AgentRunner {
         stopReason = 'complete';
         stopNotice = '';
       }
+      /*
+       * 上一段工具执行期间收到的暂停请求：那时没有正在生成的回答，暂停已经成立，
+       * 在这里消费掉并把「刚才暂停过」传给面板。不消费的话，下一轮请求会因为
+       * 信号已 abort 而立刻失败，白白多一次往返。
+       */
+      let paused = pauseHandled;
+      pauseHandled = false;
+      if (options.steering?.consume()) paused = true;
       step += 1;
       this.assertRunning(options.signal);
-      const beforeRound = await options.takeTaskUpdate?.('replan') ?? [];
+      const beforeRound = await options.takeTaskUpdate?.('replan', { paused }) ?? [];
       for (const update of beforeRound) {
         await options.callbacks.onTaskUpdate?.(update);
         requestMessages.push(update.request);
       }
-      const round = await this.client.streamChat(options.settings, requestMessages, {
-        signal: options.signal,
-        tools: definitions,
-        onDelta: async (delta) => {
-          if (delta.content) content += delta.content;
-          if (delta.reasoning) reasoning += delta.reasoning;
-          await options.callbacks.onDelta({
-            content: delta.content,
-            reasoning: delta.reasoning,
-            usage: delta.usage,
-          });
-        },
-      });
+      /*
+       * 这一轮单独统计正文：用户中途发来新消息时，本轮没有 `round` 结果，
+       * 只能把已经流出去的文字补回历史，模型下一轮才知道自己停在哪里。
+       */
+      let roundContent = '';
+      let roundReasoning = '';
+      const linked = options.steering ? linkAbortSignals(options.signal, options.steering.signal) : undefined;
+      let round: StreamChatResult;
+      try {
+        round = await this.client.streamChat(options.settings, requestMessages, {
+          signal: linked?.signal ?? options.signal,
+          tools: definitions,
+          onDelta: async (delta) => {
+            if (delta.content) {
+              roundContent += delta.content;
+              content += delta.content;
+            }
+            if (delta.reasoning) {
+              roundReasoning += delta.reasoning;
+              reasoning += delta.reasoning;
+            }
+            await options.callbacks.onDelta({
+              content: delta.content,
+              reasoning: delta.reasoning,
+              usage: delta.usage,
+            });
+          },
+        });
+      } catch (error) {
+        if (options.signal.aborted) throw error;
+        /*
+         * 用户在这次生成中途发来新消息 —— 这是「暂停」，不是失败。
+         *
+         * 判定条件刻意不看错误类型：暂停可能发生在「还没拿到响应头」的阶段，那时
+         * 网络层已经把 AbortError 包装成了普通的连接错误。真出现硬错误也不要紧 ——
+         * 暂停已被消费，下一轮会把同一个错误如实报出来。
+         *
+         * 半截正文必须留在历史里：下一轮模型据此知道自己停在哪，用户看到的气泡
+         * 也不是被截断后从零重来；不补这一条，模型会把已经展示过的内容再写一遍。
+         */
+        if (options.steering?.hasPending()) {
+          options.steering.consume();
+          pauseHandled = true;
+          if (roundContent) {
+            requestMessages.push({
+              role: 'assistant',
+              content: roundContent,
+              reasoning_content: roundReasoning || undefined,
+            });
+          }
+          // 被打断的这一轮不算一步：暂停不该消耗用户的步数预算。
+          step = Math.max(0, step - 1);
+          consecutiveFailedRounds = 0;
+          continue;
+        }
+        throw error;
+      } finally {
+        linked?.dispose();
+      }
       usage = addUsage(usage, round.usage);
       await options.callbacks.onRoundComplete?.(round.usage);
 
@@ -281,6 +351,28 @@ export class AgentRunner {
           }
           continue;
         }
+        /*
+         * 收尾那一刻用户刚好发来消息：暂停请求可能还没被消费。
+         *
+         * 不能直接结束 —— 那条消息会被留到下一轮，用户看到的是「我发了消息，任务却
+         * 停了」。这里再取一次，能取到就接着做；取不到（消息其实还没入队）才真的收尾。
+         */
+        if (options.steering?.hasPending()) {
+          options.steering.consume();
+          const late = await options.takeTaskUpdate?.('replan', { paused: true }) ?? [];
+          if (late.length) {
+            requestMessages.push({
+              role: 'assistant',
+              content: round.content,
+              reasoning_content: round.reasoning || undefined,
+            });
+            for (const update of late) {
+              await options.callbacks.onTaskUpdate?.(update);
+              requestMessages.push(update.request);
+            }
+            continue;
+          }
+        }
         return { content, reasoning, usage, tools: executions, stoppedByStepLimit: false, stopReason: 'complete' };
       }
 
@@ -305,7 +397,16 @@ export class AgentRunner {
       // 无上限执行等于把「单轮预算」变成了摆设。
       const accepted = round.toolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND);
       const overflow = round.toolCalls.slice(MAX_TOOL_CALLS_PER_ROUND);
-      let roundFailed = accepted.length > 0;
+      /*
+       * 「这一轮算不算失败」要分开看两件事：
+       *  - `error`：工具真的失败了（命令报错、文件不存在、网络断了）→ 计入失败连击；
+       *  - `denied`：被策略拒绝、审批拒绝、或因为暂停/合并被跳过 → **不算失败**。
+       *
+       * 以前两者一视同仁：模型碰上两条命令失败 + 一条敏感文件拒绝就凑满 3 轮停机
+       * （真实故障 2026-11-18），而拒绝本身是确定性的、与「环境坏了」不是一回事。
+       */
+      let roundHadError = false;
+      let roundHadSuccess = false;
       let stopAfterRound = false;
 
       for (let callIndex = 0; callIndex < accepted.length; callIndex += 1) {
@@ -421,10 +522,35 @@ export class AgentRunner {
          * 预算按 token 上限反推字节（4 字符 ≈ 1 token），与对话长度进度条同口径。
          */
         pruneToolPayloads(requestMessages, TOOL_PAYLOAD_KEEP, DEFAULT_CONTEXT_TOKEN_BUDGET * 4);
-        if (result.status !== 'error' && result.status !== 'denied') roundFailed = false;
+        if (result.status === 'error') roundHadError = true;
+        else if (result.status !== 'denied') roundHadSuccess = true;
 
         // 工具刚被取消：不要等到下一轮才反应，立刻停下。
         this.assertRunning(options.signal);
+
+        /*
+         * 用户在这个工具刚跑完时发来新消息：**立刻停下这一批**。
+         *
+         * 真实反馈（2026-11-18）：「我发新消息，任务没暂停然后综合新收到的消息再分析
+         * 再执行」。只打断生成是不够的 —— 模型常常一口气发起十几个命令，那时没有
+         * 正在生成的回答，暂停要等到整批跑完（实测 16 条命令）才生效。这里在**每个
+         * 工具结束后**看一眼：有新消息就记下剩余的调用「已跳过」，把新消息交给模型
+         * 先做综合分析，再回来继续。
+         */
+        if (options.steering?.hasPending() && options.steering.consume()) {
+          for (const skippedCall of round.toolCalls.slice(callIndex + 1)) {
+            await this.recordSkippedCall(skippedCall, executions, requestMessages, options, 'agent.pausedSkipped');
+          }
+          await options.callbacks.onToolsChanged(cloneExecutions(executions));
+          for (const update of await options.takeTaskUpdate?.('replan', { paused: true }) ?? []) {
+            await options.callbacks.onTaskUpdate?.(update);
+            requestMessages.push(update.request);
+          }
+          // 暂停不是失败：否则连发几条消息就会被判成「连续 3 轮全部失败」而停机。
+          roundHadError = false;
+          roundHadSuccess = true;
+          break;
+        }
 
         const guidance = await options.takeTaskUpdate?.('replan') ?? [];
         if (guidance.length) {
@@ -436,6 +562,9 @@ export class AgentRunner {
             await options.callbacks.onTaskUpdate?.(update);
             requestMessages.push(update.request);
           }
+          // 被打断不是失败：否则「新消息合并」会悄悄把连续失败计数推向 3 轮停机。
+          roundHadError = false;
+          roundHadSuccess = true;
           break;
         }
       }
@@ -454,7 +583,7 @@ export class AgentRunner {
       if (overflow.length) await options.callbacks.onToolsChanged(cloneExecutions(executions));
       if (stopAfterRound) break;
 
-      consecutiveFailedRounds = roundFailed ? consecutiveFailedRounds + 1 : 0;
+      consecutiveFailedRounds = roundHadError && !roundHadSuccess ? consecutiveFailedRounds + 1 : 0;
       if (consecutiveFailedRounds >= MAX_FAILED_ROUNDS_WITHOUT_PROGRESS) {
         stopReason = 'noProgress';
         break;
@@ -524,6 +653,30 @@ export class AgentRunner {
     });
     await options.callbacks.onToolsChanged(cloneExecutions(executions));
   }
+}
+
+/**
+ * 合并两个取消信号，并允许调用方在本次请求结束后拆掉监听。
+ *
+ * 不能只 `addEventListener` 不管：`options.signal` 活整轮运行，一次长任务有上百轮
+ * 生成，监听器会一直攒着（Node 的 EventTarget 超过 10 个就开始告警）。
+ */
+function linkAbortSignals(primary: AbortSignal, secondary: AbortSignal): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  if (primary.aborted || secondary.aborted) {
+    controller.abort();
+    return { signal: controller.signal, dispose: () => undefined };
+  }
+  const abort = (): void => controller.abort();
+  primary.addEventListener('abort', abort, { once: true });
+  secondary.addEventListener('abort', abort, { once: true });
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      primary.removeEventListener('abort', abort);
+      secondary.removeEventListener('abort', abort);
+    },
+  };
 }
 
 /**

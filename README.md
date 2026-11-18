@@ -8,6 +8,28 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.20
+
+### A message sent mid-run now interrupts the task the way Copilot does, then re-analyses and continues
+
+Sending a message no longer waits on a "related or separate?" classification first — it **steers the current run**: the message joins the current branch synchronously, the pause signal follows immediately, and the agent stops what it is doing (the answer being generated is cut at once; a batch of commands halts as soon as the running one finishes and the rest are marked *paused*). The partial text stays in the conversation, so the model knows exactly where it stopped and your bubble is not silently truncated.
+
+It then re-reads the whole picture — goal, task list, completed steps, what it was doing when interrupted, your message — and **calls `update_todos` with the adjusted full list before continuing** (keeping completed items, dropping stale steps that conflict with the new request, adding new ones). Work it decides to do later is written into the list instead of being silently dropped — you never end up with a message that quietly sits in a queue.
+
+The pause never kills the command that is already running (a half-written file or half-run migration is worse than a few seconds of waiting), but it stops the moment that command ends, and a toast tells you the run was paused for analysis. Stopping the run still wins over a pause. Every message stays an individual node in the task tree (shown as *merged* when sent mid-run), so you can always see when you stepped in.
+
+This release also fixes a group of encoding bugs that made the agent fail for no good reason — or lose data: **command output, workspace files and fetched web pages are no longer mojibake**.
+
+- Command output: Chinese errors from `dir` / `findstr` (`系统找不到指定的路径`) used to come back as `ϵͳ�Ҳ���ָ����·����`, so the model could not read the error, retried the same command, and stopped after three failed rounds. Output is now decoded with its real encoding (GBK / UTF-8 auto-detected), and a round interrupted by a new message no longer counts as a failure.
+- Workspace files: the tools used to read as UTF-8 and write as UTF-8. For a GBK file that not only read as garbage — **writing it back destroyed the file's Chinese text for good**. Files are now read and written with their own encoding; because GBK has no usable encoder here, such a file is **refused for editing** with an actionable message (re-save as UTF-8), never silently corrupted. UTF-16 files work too.
+- Web pages: GBK / GB2312 sites no longer come back as a page of garbage; both `content-type` and `<meta charset>` are honoured.
+
+Three more bugs that made commands fail for no good reason are fixed too:
+
+- **A PowerShell pipeline is no longer parsed by cmd**: `powershell … -File x.ps1 2>&1 | Select-Object -Last 25` used to be split by cmd and exit 255; such a line now goes to PowerShell, and bare cmdlets like `Select-Object` trigger the switch automatically (plain cmd commands are untouched).
+- **A policy denial no longer counts as a failed tool round**: sensitive-file and approval denials, and skipped steps from a pause, no longer push the agent toward the "3 rounds all failed" stop — only real errors in a round with no successful step do.
+- **`-Filter '*.pfx'` is treated as a mask, not as reading a certificate**: directory listings are no longer blocked by the sensitive-file guard, while commands that really read `id_rsa` and friends are still blocked.
+
 ## What's new in 0.4.14
 
 ### Project decision record: earlier decisions stop getting lost
@@ -26,6 +48,17 @@ One row in Settings under Permissions & privacy: **maintain automatically / ask 
 
 Verified: **1,316 unit tests + 79 guard scripts green** (at the time of 0.4.14).
 
+### The project badge showed a project name for a brand-new conversation (reported on Windows)
+
+After installing 0.4.12 on Windows, a **new conversation** showed `Personal Workstation OS` where it should show "No project yet".
+
+- **Root cause**: path resolution infers "with a single root there is no ambiguity" (`roots.length === 1 ? roots[0] : undefined`) — legitimate for git and relative paths, but the badge treated that guess as "this conversation belongs to that project", painting a guessed folder name as fact.
+- **Why only on Windows**: a multi-root workspace never hits that inference, so macOS kept showing "No project yet"; Windows with one folder open always hits it.
+- **Fix**: the two are now separate. Path resolution keeps the inference; the badge goes through `badgeBinding()`, which only accepts evidence — an explicitly stored `projectRoot`, or a project actually touched. No evidence means "No project yet".
+- **Hint text corrected too**: it claimed git writes would be refused, which is not true in a single-root workspace.
+
+Verified: **1,307 unit tests + 78 guard scripts green**, including the new `check-project-badge-binding.mjs`, verified in reverse (re-adding the old logic turns it red).
+
 ## What's new in 0.4.15
 
 ### The decision record, finished properly: the host records work itself, and the model is told from turn one
@@ -37,21 +70,6 @@ Verified: **1,316 unit tests + 79 guard scripts green** (at the time of 0.4.14).
 - **The system prompt mentions the file from turn one.** The old note was only attached when a document already existed, so on a fresh project the model never knew where to write — and turn-one decisions were lost.
 
 Verified: **1,318 unit tests + 79 guard scripts green**; the guard was reverse-checked by removing the teardown call.
-
-## What's new in 0.4.14
-
-### Project decision record
-
-### The project badge showed a project name for a brand-new conversation (reported on Windows)
-
-After installing 0.4.12 on Windows, a **new conversation** showed `Personal Workstation OS` where it should show "No project yet".
-
-- **Root cause**: path resolution infers "with a single root there is no ambiguity" (`roots.length === 1 ? roots[0] : undefined`) — legitimate for git and relative paths, but the badge treated that guess as "this conversation belongs to that project", painting a guessed folder name as fact.
-- **Why only on Windows**: a multi-root workspace never hits that inference, so macOS kept showing "No project yet"; Windows with one folder open always hits it.
-- **Fix**: the two are now separate. Path resolution keeps the inference; the badge goes through `badgeBinding()`, which only accepts evidence — an explicitly stored `projectRoot`, or a project actually touched. No evidence means "No project yet".
-- **Hint text corrected too**: it claimed git writes would be refused, which is not true in a single-root workspace.
-
-Verified: **1,307 unit tests + 78 guard scripts green**, including the new `check-project-badge-binding.mjs`, verified in reverse (re-adding the old logic turns it red).
 
 ## What's new in 0.4.12
 
@@ -311,7 +329,7 @@ If what you actually want to silence is **a confirmation box on every command**,
 - **The panel opens instantly**: activation only *hydrates* (reads the two local skill directories plus the paths saved by the previous scan — 17ms measured, 4ms with a warm cache) and never traverses the workspace; the real scan runs in the background and pushes newly added or removed skills into the panel when it finishes. None of the three interactive entry points (open panel, new chat, send) waits for it. Measured first paint **335ms** on a real 60.9MB / 1473-message archive, where a single scan used to cost 6754ms (and much more in a fresh VS Code window).
 - **Your message appears in the list on the same frame you hit send**
 - **Your message appears in the list on the same frame you hit send** — it does not wait for the extension to persist it, scan skills or assemble context (measured ~1ms synchronously; the old order put all of that ahead of the paint and reached 2-3s in a 200-message conversation). The extension then replaces that optimistic bubble with the real message, appending nodes instead of rebuilding the whole list (14ms measured at 200 messages). If the send is rejected (data-flow consent missing, no API key, archived conversation), the bubble is removed and your text goes back into the composer; switching conversations or a state refresh mid-flight never leaves behind a message that does not exist on disk.
-- The composer stays editable while the agent runs. **Every new message is re-judged at each sub-task boundary**: if it belongs to the branch that is running, it is merged on the spot (the task tree turns it from *queued* to *merged* and hands it to the agent **at that same boundary**, together with the usual "re-evaluate this branch and adjust the plan" instruction), skipping conflicting pending steps; if it is a separate deliverable it stays in the visible task-tree queue and continues automatically when the current branch finishes. The judgement is not based on the branch title alone — it gets live context (task-list progress, the item being worked on, the last few steps), so **how many messages separate it from the running one does not affect whether it gets read**. Previously the relation was decided once, at send time, and a `queued` verdict parked it until the whole branch ended. Cost is bounded: each message is re-judged at most once per branch.
+- The composer stays editable while the agent runs. **Every new message pauses what is running**: the answer being generated is cut immediately, and a batch of commands already issued stops as soon as the running one finishes (the rest are marked paused). The partial text stays in the conversation. The agent then re-reads the whole picture (goal, task list, completed steps, what it was doing when interrupted, the new message) and calls `update_todos` with the **adjusted full list** before continuing — keeping completed items, dropping stale steps that conflict with the new request, adding new ones. A message the classifier judged to be a separate deliverable is still handed to the agent at that pause point: it either folds the work into the current list or says in one sentence that it comes after the current task, and the message stays queued so it still runs later. The judgement is not based on the branch title alone — it gets live context (task-list progress, the item being worked on, the last few steps), so **how many messages separate it from the running one does not affect whether it gets read**. Cost is bounded: each message is re-judged at most once per branch. The pause never kills the command that is already running, but it stops the moment that command ends.
 - Every question you insert while the agent is running immediately gets its own queued reply slot, and the answer ends up under that question instead of being prepended to the previous reply.
 - Streaming redraws **only what is still growing**. Each delta re-renders just the block that is still being written (a plain-text tail is appended in place, so existing nodes, hover state and transitions are untouched); blocks above it keep their exact DOM nodes, so already-emitted text cannot flicker. The tail is also **completed before it is rendered** — an unfinished `**bold`, `` `code `` or `[text](htt` is closed for that frame, the same trick Streamdown/`remend` use, so half-written markup appears in its final shape instead of showing literal asterisks and then jumping into bold. The message area opts out of browser scroll anchoring (`overflow-anchor: none`) because HWChat drives `scrollTop` itself each frame, and the two compensations otherwise fight and read as a small jitter (MDN's scroll-anchoring guide: only opt out when you drive scrolling yourself). Both decisions live in pure, unit-tested modules: `media/inline-append.js` (`canAppendPlainText` — any inline marker, extension-like `.xx`, or a path split across two frames falls back to re-rendering) and `media/stream-repair.js` (`repairStreamingMarkdown` / `needsRepair` — star runs paired by width instead of counted modulo two, a single `~` treated as a literal `20~25`, nothing completed inside fences). File chips keep one fixed label for the whole stream: the verification result is cached per project root, so a rebuilt chip is never briefly short before growing into the real path.
 - You can scroll freely through history while the agent runs; streaming only auto-follows while you are at the bottom. During execution the send button becomes a **red highlighted stop button** (danger background, breathing halo, solid square icon) so it is obvious the task is running and how to stop it; the animation is skipped when the system reduced-motion preference is on. Pressing stop **really stops**: the whole process group is sent `SIGKILL` (plus one follow-up after 250 ms) instead of polite `SIGTERM` and a grace period, and the run is aborted right after the kill, so a command that ignores `SIGTERM` still disappears in well under a second. Children are tracked per conversation, so stopping one thread never kills another conversation's commands.

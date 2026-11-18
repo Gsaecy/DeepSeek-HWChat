@@ -148,3 +148,40 @@ test('编排：判定期间被撤单的那条不会被误合并', async () => {
   assert.equal(outcome.merged.length, 0);
   assert.equal(queue.state().nodes.find((node) => node.id === nodeIds[0])?.status, 'cancelled');
 });
+
+/* ── 暂停点：判成独立的也要让模型读一遍（用户 2026-11-18） ───────────────── */
+
+test('暂停点：判成独立的消息也交给模型分析，但它仍然留在队列里没被执行', async () => {
+  const { queue, nodeIds } = await queueWith(['登录页少了最小化/最大化/关闭按钮']);
+  const outcome = await reviewQueuedTasks(queue, {
+    classify: async () => 'queued',
+    liveContext: () => 'Task list: 2/5 completed.',
+    onChange: () => undefined,
+    deliverAnalysis: true,
+  });
+
+  assert.deepEqual(outcome.kept, [nodeIds[0]], '分类结论不变：它仍然是排队任务');
+  assert.equal(outcome.analysis.length, 1);
+  const [analysis] = outcome.analysis;
+  assert.equal(analysis?.analysis, true, '面板据此不切换回复气泡');
+  assert.equal(analysis?.nodeId, nodeIds[0]);
+  assert.match(String(analysis?.request.content), /暂停时的综合分析/);
+  assert.match(String(analysis?.request.content), /现在不要开始做/);
+  assert.match(String(analysis?.request.content), /登录页少了最小化/, '用户原话要一字不差地带给模型');
+
+  assert.equal(queue.pendingTaskCount(), 1, '分析不等于执行：它还在队列里等下一轮');
+  const pending = queue.state().nodes.find((node) => node.id === nodeIds[0]);
+  assert.equal(pending?.status, 'queued');
+  assert.equal(pending?.pending, true);
+  assert.equal(pending?.editing, false);
+});
+
+test('暂停点之外（普通边界）不重复把独立消息塞给模型', async () => {
+  const { queue } = await queueWith(['无关的设置页']);
+  const outcome = await reviewQueuedTasks(queue, {
+    classify: async () => 'queued',
+    liveContext: () => '',
+    onChange: () => undefined,
+  });
+  assert.equal(outcome.analysis.length, 0, '没有暂停就不额外喂一遍，避免每一步都多花一次上下文');
+});

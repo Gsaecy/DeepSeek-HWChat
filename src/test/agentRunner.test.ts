@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AgentRunner } from '../agent/agentRunner';
+import { AgentSteering } from '../agent/steering';
 import { ChatRequestMessage, ChatSettings, ToolExecutionResult } from '../core/types';
 
 const settings: ChatSettings = {
@@ -418,6 +419,172 @@ test('工具失败时把自动回查结果并进 tool 结果（不新增对话�
   assert.match(content, /ENOENT/, '原始报错要留着');
   assert.match(content, /<auto_recall>/, '回查片段要并进同一个 tool 结果');
   assert.equal(secondRound.filter((message) => message.role === 'system').length, 0, '不要在运行中途插 system 消息');
+});
+
+/* ── 运行中新消息：暂停当前生成、保留半截正文、下一轮重新规划 ───────────── */
+
+test('新消息会暂停正在生成的回答，保留半截正文并在下一轮重新规划', async () => {
+  const requests: ChatRequestMessage[][] = [];
+  const steering = new AgentSteering();
+  let round = 0;
+  const client = {
+    async streamChat(
+      _settings: ChatSettings,
+      messages: ChatRequestMessage[],
+      options: { signal?: AbortSignal; onDelta: (delta: { content?: string }) => unknown },
+    ) {
+      requests.push(structuredClone(messages));
+      round += 1;
+      if (round === 1) {
+        await options.onDelta({ content: '先检查配置。' });
+        // 用户此刻在界面上发来一条新消息：面板会走 AgentSteering.request()。
+        steering.request();
+        await new Promise<never>((_resolve, reject) => {
+          const fail = (): void => {
+            const error = new Error('cancelled');
+            error.name = 'RequestCancelledError';
+            reject(error);
+          };
+          if (options.signal?.aborted) fail();
+          else options.signal?.addEventListener('abort', fail, { once: true });
+        });
+      }
+      await options.onDelta({ content: '已按新消息调整清单并继续。' });
+      return { content: '已按新消息调整清单并继续。', reasoning: '', usage: undefined, toolCalls: [] };
+    },
+  };
+  let replans = 0;
+  const runner = new AgentRunner(client as never, { definitions: () => [], execute: async () => undefined } as never);
+  const result = await runner.run({
+    settings: { ...settings, agentMaxSteps: 1 },
+    messages: [{ role: 'user', content: '检查并修复配置' }],
+    mode: 'agent',
+    signal: new AbortController().signal,
+    conversationId: 'steering-pause',
+    steering,
+    takeTaskUpdate: async (phase) => {
+      if (phase !== 'replan') return [];
+      replans += 1;
+      return replans === 2
+        ? [{
+          nodeId: 'task-steer',
+          relation: 'related' as const,
+          request: { role: 'user' as const, content: '[任务树更新：相关指导]\n改用新的配置结构。' },
+        }]
+        : [];
+    },
+    callbacks: { onDelta: () => undefined, onToolsChanged: () => undefined, requestApproval: async () => true },
+  });
+
+  assert.equal(requests.length, 2, '暂停后应当重新发起一次请求，而不是把这一轮当失败结束');
+  const second = requests[1]!;
+  assert.equal(second.find((message) => message.role === 'assistant')?.content, '先检查配置。', '半截正文要留在历史里，模型才知道自己停在哪');
+  assert.ok(
+    second.some((message) => message.role === 'user' && String(message.content).includes('改用新的配置结构')),
+    '暂停之后要由任务队列把新消息交给模型重新分析',
+  );
+  assert.equal(result.content, '先检查配置。已按新消息调整清单并继续。');
+  assert.equal(result.stopReason, 'complete');
+  assert.equal(steering.hasPending(), false, '暂停请求要被消费掉，下一次消息才能再暂停');
+});
+
+test('用户点停止优先于暂停：不会被误当成新消息引起的暂停', async () => {  const controller = new AbortController();
+  const steering = new AgentSteering();
+  const client = {
+    async streamChat() {
+      steering.request();
+      controller.abort();
+      const error = new Error('cancelled');
+      error.name = 'RequestCancelledError';
+      throw error;
+    },
+  };
+  const runner = new AgentRunner(client as never, { definitions: () => [], execute: async () => undefined } as never);
+  await assert.rejects(
+    () => runner.run({
+      settings,
+      messages: [{ role: 'user', content: '长任务' }],
+      mode: 'agent',
+      signal: controller.signal,
+      conversationId: 'steering-stop',
+      steering,
+      callbacks: { onDelta: () => undefined, onToolsChanged: () => undefined, requestApproval: async () => true },
+    }),
+    /cancelled/,
+  );
+});
+
+test('工具执行期间发来的新消息：这批剩下的调用立刻跳过，先做综合分析', async () => {
+  const requests: ChatRequestMessage[][] = [];
+  const steering = new AgentSteering();
+  let round = 0;
+  let executed = 0;
+  const client = {
+    async streamChat(_settings: ChatSettings, messages: ChatRequestMessage[], options: { onDelta: (delta: { content?: string }) => unknown }) {
+      requests.push(structuredClone(messages));
+      round += 1;
+      if (round === 1) {
+        return {
+          content: '',
+          reasoning: '',
+          usage: undefined,
+          // 一口气 4 个命令：真实现场就是这种「一批 16 条命令」，暂停必须能在中间生效。
+          toolCalls: [1, 2, 3, 4].map((index) => ({
+            id: `call_${index}`,
+            type: 'function' as const,
+            function: { name: 'read_file', arguments: `{"path":"src/${index}.ts"}` },
+          })),
+        };
+      }
+      await options.onDelta({ content: '收到，我先调整计划再继续。' });
+      return { content: '收到，我先调整计划再继续。', reasoning: '', usage: undefined, toolCalls: [] };
+    },
+  };
+  const tools = {
+    definitions: () => [],
+    execute: async () => {
+      executed += 1;
+      // 第一个命令跑完时，用户在界面上发来新消息（面板走 steering.request()）。
+      if (executed === 1) steering.request();
+      return { status: 'success', summary: '读取完成', content: 'ok', approval: 'not-required' } satisfies ToolExecutionResult;
+    },
+  };
+  const runner = new AgentRunner(client as never, tools as never);
+  const pausedFlags: Array<boolean | undefined> = [];
+  const result = await runner.run({
+    settings,
+    messages: [{ role: 'user', content: '依次检查四个文件' }],
+    mode: 'agent',
+    signal: new AbortController().signal,
+    conversationId: 'steering-during-tools',
+    steering,
+    takeTaskUpdate: async (_phase, info) => {
+      pausedFlags.push(info?.paused);
+      if (info?.paused) {
+        return [{
+          nodeId: 'task-analysis',
+          relation: 'queued' as const,
+          analysis: true,
+          request: { role: 'user' as const, content: '[任务树：暂停时的综合分析]\n登录页少了三个按钮\n用户消息：\n登录页少了三个按钮' },
+        }];
+      }
+      return [];
+    },
+    callbacks: { onDelta: () => undefined, onToolsChanged: () => undefined, requestApproval: async () => true },
+  });
+
+  assert.equal(executed, 1, '第一个命令跑完后就要停，不把整批跑完');
+  assert.equal(requests.length, 2, '暂停后立刻重开一轮做综合分析');
+  assert.ok(pausedFlags.includes(true), '要把「刚暂停过」告诉面板');
+  const skipped = result.tools.filter((tool) => tool.status === 'denied');
+  assert.equal(skipped.length, 3, '本批剩余 3 个调用要记成「已跳过」');
+  assert.match(skipped[0]?.summary ?? '', /已暂停/);
+  assert.ok(
+    requests[1]?.some((message) => message.role === 'user' && String(message.content).includes('登录页少了三个按钮')),
+    '新消息要在下一轮被模型读到',
+  );
+  assert.match(result.content, /先调整计划再继续/);
+  assert.equal(steering.hasPending(), false);
 });
 
 /* ── 请求体总预算：超预算时从最旧的工具输出开始折（方案 A） ─────────────── */
