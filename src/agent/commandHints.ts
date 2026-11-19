@@ -89,6 +89,24 @@ export interface EnvironmentHint {
   values?: Record<string, string | number>;
 }
 
+/**
+ * Windows 的 cmd 不认识 PowerShell cmdlet 时的提示。
+ *
+ * `'Select-String' 不是内部或外部命令` / `'Select-String' is not recognized as an
+ * internal or external command`：说明这条命令用了 cmdlet，但整条仍被 cmd 解析
+ * （例如与 `&&` 混写 —— 那种写法 cmd 和 PowerShell 都不可能全对）。
+ * 说清「要么全用 cmd，要么把 PowerShell 部分包成 powershell -Command "…"」，
+ * 比让模型再撞一次便宜。
+ */
+const POWER_SHELL_CMDLET_NAME = /^(?:Get|Set|New|Remove|Add|Copy|Move|Rename|Start|Stop|Select|Where|ForEach|Sort|Group|Measure|Test|Join|Split|Resolve|Invoke|ConvertTo|ConvertFrom|Out|Write|Clear|Wait|Update|Enable|Disable|Import|Export|Install|Uninstall|Push|Pop)-[A-Za-z]/;
+
+function powerShellCmdletInCmd(output: string, platform: string): string | undefined {
+  if (platform !== 'win32') return undefined;
+  const match = /'([A-Za-z][\w-]*)'\s*(?:不是内部或外部命令|is not recognized as an internal or external command)/i.exec(output);
+  const name = match?.[1];
+  return name && POWER_SHELL_CMDLET_NAME.test(name) ? name : undefined;
+}
+
 /** macOS / Linux 的 `timeout` 存在性差异（只看命令文本，不探测系统路径）。 */
 export function commandEnvironmentHint(command: string, output: string, platform: string = process.platform): EnvironmentHint | undefined {
   const text = `${command}\n${output}`;
@@ -106,5 +124,7 @@ export function commandEnvironmentHint(command: string, output: string, platform
   if (/screencapture\b/.test(command) && /capture error|无法完成|could not create image/i.test(output)) {
     return { key: 'tool.runCommand.screenCapturePermission' };
   }
+  const cmdlet = powerShellCmdletInCmd(output, platform);
+  if (cmdlet) return { key: 'tool.runCommand.powerShellCmdlet', values: { name: cmdlet } };
   return undefined;
 }

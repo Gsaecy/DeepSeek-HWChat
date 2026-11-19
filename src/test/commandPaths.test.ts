@@ -410,6 +410,24 @@ test('只有需要时才切 /bin/bash；Windows 不切', () => {
   assert.equal(shellFor('diff <(a) <(b)', 'win32'), true);
 });
 
+test('shell selection: cmd 专属串联（& / && / ||）一律留在 cmd', () => {
+  /*
+   * 真实故障（2026-11-19）：`powershell -File x.ps1 > out 2>&1 & type out` 被路由给
+   * PowerShell 后报「不允许使用与号(&)」——PowerShell 只认 `;`，路由反而制造语法错误。
+   */
+  assert.equal(
+    shellFor('powershell -NoProfile -ExecutionPolicy Bypass -File tmp\\secscan.ps1 > tmp\\secscan.out.txt 2>&1 & type tmp\\secscan.out.txt', 'win32'),
+    true,
+  );
+  assert.equal(shellFor('git fetch origin --quiet & git rev-parse HEAD & git rev-parse origin/main', 'win32'), true);
+  assert.equal(shellFor('git status && Select-String pat', 'win32'), true, 'cmd 串联 + cmdlet 也是矛盾写法，留在 cmd');
+  assert.equal(shellFor('npm test || echo failed', 'win32'), true);
+  // 只有重定向、没有管道：cmd 本来就对，不该多套一层
+  assert.equal(shellFor('powershell -NoProfile -File x.ps1 > out.txt 2>&1', 'win32'), true);
+  // 管道 + PowerShell 调用：仍然需要 PowerShell
+  assert.equal(shellFor('powershell -NoProfile -File x.ps1 2>&1 | Select-Object -Last 5', 'win32'), 'powershell.exe');
+});
+
 test('PowerShell 调用后面跟引号外的管道 → 交给 PowerShell 解析', () => {
   /*
    * 真实故障（2026-11-18）：

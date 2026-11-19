@@ -30,6 +30,7 @@ Three more bugs that made commands fail for no good reason are fixed too:
 - **A policy denial no longer counts as a failed tool round**: sensitive-file and approval denials, and skipped steps from a pause, no longer push the agent toward the "3 rounds all failed" stop — only real errors in a round with no successful step do.
 - **`-Filter '*.pfx'` is treated as a mask, not as reading a certificate**: directory listings are no longer blocked by the sensitive-file guard, while commands that really read `id_rsa` and friends are still blocked.
 - **A guessed documentation URL no longer stops the whole task**: an HTTP 404/403 from `fetch_url` is a definite answer from the server, not a network failure, so it no longer counts toward the "3 rounds all failed" stop — and the result now says what to do next (do not invent paths; use `search_web` to find the real address). 408 timeouts and 429 rate limits still count as environmental.
+- **cmd-style `&` chaining is no longer handed to PowerShell**: `cmd1 & cmd2` and `a && b` stay on cmd (PowerShell only understands `;`); only a real pipeline outside quotes switches shells, and a cmdlet used inside cmd chaining now returns an explanation plus the two correct ways to write it.
 
 ## What's new in 0.4.14
 

@@ -141,6 +141,33 @@
 确定答案、500/503/429/408 仍算环境故障、正常页面不受影响）与 `agentLoop.test.ts`
 1 条（连续 `decisive` 失败不会触发 `noProgress`）。
 
+### shell 选择不能把 cmd 的 `&` 交给 PowerShell（2026-11-19 第三次现场）
+
+**现场**（同一轮里连着三条失败）：
+
+```
+powershell -File tmp\secscan.ps1 > tmp\secscan.out.txt 2>&1 & type tmp\secscan.out.txt
+→ 不允许使用与号(&)。& 运算符是为将来使用而保留的
+```
+
+`cmd1 & cmd2` 是 cmd 的串联写法，而上一版为了修「`powershell … | Select-Object` 被
+cmd 切开」，把「调用后面有 `|` **或 `>`**」整行交给了 PowerShell —— 于是 `&` 变成
+PowerShell 的语法错误，路由反而制造了一个新故障。
+
+**修法**（`shellFor`）：
+
+- 只认**引号外的管道** `|` 才需要 PowerShell；只有重定向（`> out 2>&1`）的命令留在
+  cmd —— 那种写法 cmd 本来就对；
+- 出现 cmd 专属串联（`&`、`&&`、`||`，`2>&1` 这种描述符重定向不算）时**一律留在
+  cmd**：PowerShell 只认 `;`，路由过去不可能成功；
+- 新增提示（`commandEnvironmentHint`）：cmd 里报「'Select-String' 不是内部或外部命令」
+  且名字是 PowerShell cmdlet 时，直接说明「`&`/`&&` 与 cmdlet 混写怎么都不对」，
+  并给出两种改法（整段交给 `powershell -Command "…"`，或全用 cmd 工具）。
+
+**测试**：`commandPaths.test.ts` 新增 1 组 shell 选择（`&` / `&&` / `||` / 纯重定向
+留在 cmd，管道才切 PowerShell）；`commandEnvironment.test.ts` 新增 2 条（cmdlet
+误用给出做法，普通命令缺失与非 Windows 不误报）。
+
 **顺带修掉的连带问题**：暂停 / 合并新消息打断的那一轮不再计入「连续失败」——
 以前被打断的那批调用会被记成 `denied`，如果正好三轮都被打断，就会莫名触发
 「连续 3 轮工具调用全部失败」停机。现在打断会把失败连击清零（暂停不是失败）。
@@ -157,7 +184,7 @@
 `Get-Content id_rsa` 仍拦）；`agentLoop.test.ts` 3 条（只有拒绝不停机、拒绝不能掩盖
 同一轮里的真实失败、`decisive` 失败不计入连击）；`webFetch.test.ts` 4 条（404 带可执行
 建议、403/410/400 都算确定答案、500/503/429/408 仍算环境故障、正常页面不受影响）。
-全量 1343 条：1302 通过，39 条失败与改动前基线逐条一致（Windows 平台既有失败，
+全量 1346 条：1305 通过，39 条失败与改动前基线逐条一致（Windows 平台既有失败，
 用 git stash 前后各跑一遍核对）。
 
 ## 0.4.18（2026-11-10）

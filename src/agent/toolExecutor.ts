@@ -2141,6 +2141,20 @@ function withoutQuoted(command: string): string {
 }
 
 /**
+ * 这条命令用了 **cmd 专属的串联写法**（引号外）。
+ *
+ * `cmd1 & cmd2`、`a && b`、`a || b` 在 cmd.exe 里都是合法的串联，而 PowerShell
+ * **只认 `;`**：`&` 在那里是「调用运算符」，`a & b` 会直接报
+ * 「不允许使用与号(&)。& 运算符是为将来使用而保留的」。所以只要出现这种写法，
+ * 这条命令就只能是 cmd 的，绝不能路由给 PowerShell。
+ *
+ * `2>&1` 这种描述符重定向两边都合法，`&` 前面是 `>`，不算串联。
+ * 真实故障（2026-11-19）：`powershell -File x.ps1 > out 2>&1 & type out` 被路由给
+ * PowerShell 后，`&` 变成语法错误，连续三轮失败停机。
+ */
+const CMD_ONLY_CHAIN = /&&|\|\||(?:^|[^>&])&(?!>|&)/;
+
+/**
  * 该用哪个 shell。
  *
  * 只有在**确实需要**时才切过去：默认仍然是平台默认 shell，
@@ -2149,20 +2163,27 @@ function withoutQuoted(command: string): string {
  * 认识的 cmdlet 时，交给 cmd 只会得到「不是内部或外部命令」。
  * 与 POSIX 上「发现 bash 专有语法就切 /bin/bash」同一条原则：误判代价很小，
  * 漏判的代价是整轮失败。
+ *
+ * 两条边界（都是实测踩出来的）：
+ *  - **只用重定向不算需要 PowerShell**：`powershell -File x.ps1 > out 2>&1` 在 cmd 里
+ *    本来就对，多套一层反而会碰上 cmd 的 `&` 语法；
+ *  - **cmd 专属串联（`&` / `&&` / `||`）一律留在 cmd**：PowerShell 不认这些分隔符，
+ *    路由过去只会得到语法错误。
  */
 export function shellFor(command: string, platform: string = process.platform): string | true {
   if (platform === 'win32') {
     const trimmed = command.trim();
     const outsideQuotes = withoutQuoted(trimmed);
+    const cmdChaining = CMD_ONLY_CHAIN.test(outsideQuotes);
     if (POWERSHELL_INVOCATION.test(trimmed)) {
       /*
-       * 调用后面还有**引号外**的管道/重定向：那是给 PowerShell 的，不是给 cmd 的。
+       * 调用后面还有**引号外的管道**：那条管道是给 PowerShell 的，不是给 cmd 的。
        * 全都包在引号里的（`powershell -Command "a | b"`）保持原样 —— cmd 本来就会把
        * 整段引号内容原样交给 PowerShell，没必要再套一层。
        */
-      return /[|<>]/.test(outsideQuotes) ? 'powershell.exe' : true;
+      return !cmdChaining && outsideQuotes.includes('|') ? 'powershell.exe' : true;
     }
-    if (POWERSHELL_ONLY_SYNTAX.test(outsideQuotes)) return 'powershell.exe';
+    if (!cmdChaining && POWERSHELL_ONLY_SYNTAX.test(outsideQuotes)) return 'powershell.exe';
     return true;
   }
   if (!bashOnlySyntax(command)) return true;

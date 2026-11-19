@@ -34,3 +34,33 @@ test('无关失败不误报', () => {
   assert.equal(commandEnvironmentHint('npm test', '/bin/sh: npm: command not found', 'darwin'), undefined);
   assert.equal(commandEnvironmentHint('ls', 'ls: no such file or directory', 'darwin'), undefined);
 });
+
+test('Windows：cmd 下的 PowerShell cmdlet 给出「别混写」的做法', () => {
+  /*
+   * 真实故障（2026-11-19）：`git fetch --quiet; "…" ; (git status | Measure-Object).Count`
+   * 与 `a & b` 混写，cmd 里报「'Select-String' 不是内部或外部命令」，
+   * 模型只能换个写法再撞一次。
+   */
+  const hint = commandEnvironmentHint(
+    "git status --porcelain | Select-String pat",
+    "'Select-String' 不是内部或外部命令，也不是可运行的程序或批处理文件。",
+    'win32',
+  );
+  assert.equal(hint?.key, 'tool.runCommand.powerShellCmdlet');
+  assert.equal(hint?.values?.name, 'Select-String');
+
+  const english = commandEnvironmentHint('x | Where-Object', "'Where-Object' is not recognized as an internal or external command", 'win32');
+  assert.equal(english?.key, 'tool.runCommand.powerShellCmdlet');
+});
+
+test('Windows：cmd 自己的命令缺失不算 cmdlet 误报', () => {
+  assert.equal(
+    commandEnvironmentHint('foo', "'foo' 不是内部或外部命令，也不是可运行的程序或批处理文件。", 'win32'),
+    undefined,
+  );
+  // 非 Windows 平台不触发
+  assert.equal(
+    commandEnvironmentHint('x | Select-String pat', "'Select-String' is not recognized as an internal or external command", 'darwin'),
+    undefined,
+  );
+});
