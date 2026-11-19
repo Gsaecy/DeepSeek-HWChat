@@ -114,26 +114,52 @@
 `.vscodeignore` 里也补了 `tmp-*/**`（见上一条）。`run_command` 的工具描述同步改写：
 只用于 PowerShell 的 cmdlet 会自动切换，不必再自己套一层。
 
+### 猜错文档地址不再把整轮任务停机（2026-11-19）
+
+**现场**：一次提问里模型连着猜了四个 `learn.microsoft.com` 的文档路径，全部 404：
+
+```
+读取 https://learn.microsoft.com/en-us/windows/apps/publish/add-on-submissions 失败：HTTP 404（地址不存在，检查 URL 是否拼错）
+…同一个站点又猜了三条…
+→ 连续 3 轮工具调用全部失败，已停止继续自动重试
+```
+
+**两处问题**：
+
+1. **404 被当成环境故障**。`AgentRunner` 的「连续 3 轮工具调用全部失败」是为止住
+   环境性死循环（工具缺失、网络不通）而设的。猜错地址是模型该换策略的事，把它算进
+   失败连击，等于「猜错三次 URL 就停机」。
+   现在 `ToolExecutionResult` 增加 `decisive` 标记：HTTP 4xx（除 408 / 429）这类
+   **服务器给出的确定答案**不计入失败连击 —— 换地址才有用，重试同一个地址没有意义。
+   408（超时）与 429（限流）仍是环境问题，保持原行为。
+2. **提示只说「检查 URL 是否拼错」**，模型唯一能做的就是再猜一个。现在 4xx 的返回里
+   直接写出下一步：不要凭印象猜同级/相邻路径 → 改用 `search_web` 搜关键词拿真实地址
+   → 或先读能确认结构的入口页；文档站还会额外说明「路径由产品 / 版本 / 语言段拼成，
+   猜中率很低」。`fetch_url` 的工具描述也同步加上这条约束。
+
+**测试**：新增 `src/test/webFetch.test.ts` 4 条（404 带可执行建议、403/410/400 都算
+确定答案、500/503/429/408 仍算环境故障、正常页面不受影响）与 `agentLoop.test.ts`
+1 条（连续 `decisive` 失败不会触发 `noProgress`）。
+
 **顺带修掉的连带问题**：暂停 / 合并新消息打断的那一轮不再计入「连续失败」——
 以前被打断的那批调用会被记成 `denied`，如果正好三轮都被打断，就会莫名触发
 「连续 3 轮工具调用全部失败」停机。现在打断会把失败连击清零（暂停不是失败）。
 
-**测试**：新增 `commandEncoding.test.ts` 4 条（GBK 中文、ASCII/UTF-8 原样、
-跨 chunk 汉字不被误判、切到 GBK 后 ASCII 仍可读）与 `fileEncoding.test.ts` 7 条
+**测试汇总**：`steering.test.ts` 3 条（打断、合并、消费后换新锁）；`agentRunner.test.ts`
+3 条（生成中被暂停保留半截正文并重新规划、工具批中间被暂停后剩余调用跳过、停止优先
+于暂停）；`taskReview.test.ts` 2 条（暂停点把独立消息交给模型但仍在队列里、普通边界
+不重复喂）；`taskQueue.test.ts` 新增「运行中的新消息直接并入当前分支：不分类、立刻可被
+取走」并钉住新的相关指导前缀；`commandEncoding.test.ts` 4 条（GBK 中文、ASCII/UTF-8
+原样、跨 chunk 汉字不被误判、切到 GBK 后 ASCII 仍可读）；`fileEncoding.test.ts` 7 条
 （UTF-8 / UTF-8 BOM / GBK 拒绝写回 / UTF-16 LE、BE 写回逐字节一致 / 网页 charset
-三种声明方式）。
-
-**测试**：`src/test/steering.test.ts` 3 条（打断、合并、消费后换新锁）；
-`agentRunner.test.ts` 3 条（生成中被暂停保留半截正文并重新规划、工具批中间被暂停后
-剩余调用跳过、停止优先于暂停）；`taskReview.test.ts` 2 条（暂停点把独立消息交给模型
-但仍在队列里、普通边界不重复喂）；`taskQueue.test.ts` 新增「运行中的新消息直接并入
-当前分支：不分类、立刻可被取走」并钉住新的相关指导前缀；`commandEncoding.test.ts`
-4 条 + `fileEncoding.test.ts` 7 条（见上）；`commandPaths.test.ts` 2 条 shell 选择
-（PowerShell 管道/裸 cmdlet，普通 cmd 命令不受影响）；`policyHints.test.ts` 1 条
-（`-Filter '*.pfx'` 是掩码，`Get-Content id_rsa` 仍拦）；`agentLoop.test.ts` 2 条
-（只有拒绝不停机、拒绝不能掩盖同一轮里的真实失败）。
-全量 1338 条：1297 通过，39 条失败与改动前基线逐条一致（Windows 平台既有失败，
+三种声明方式）；`commandPaths.test.ts` 2 条 shell 选择（PowerShell 管道/裸 cmdlet，
+普通 cmd 命令不受影响）；`policyHints.test.ts` 1 条（`-Filter '*.pfx'` 是掩码，
+`Get-Content id_rsa` 仍拦）；`agentLoop.test.ts` 3 条（只有拒绝不停机、拒绝不能掩盖
+同一轮里的真实失败、`decisive` 失败不计入连击）；`webFetch.test.ts` 4 条（404 带可执行
+建议、403/410/400 都算确定答案、500/503/429/408 仍算环境故障、正常页面不受影响）。
+全量 1343 条：1302 通过，39 条失败与改动前基线逐条一致（Windows 平台既有失败，
 用 git stash 前后各跑一遍核对）。
+
 ## 0.4.18（2026-11-10）
 
 ### 删除 git 写操作闸门（用户要求：拦截策略有问题，直接删掉）

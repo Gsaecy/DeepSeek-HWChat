@@ -532,7 +532,7 @@ export class ToolExecutor implements vscode.Disposable {
           const outcome = await fetchUrl(stringArg(args, 'url'), typeof args.maxChars === 'number' ? args.maxChars : undefined);
           result = outcome.ok
             ? success(outcome.summary, outcome.content)
-            : { status: 'error', summary: outcome.summary, content: outcome.content, approval: 'not-required' };
+            : { status: 'error', summary: outcome.summary, content: outcome.content, approval: 'not-required', ...(outcome.decisive ? { decisive: true } : {}) };
           break;
         }
         case 'list_workspace_roots':

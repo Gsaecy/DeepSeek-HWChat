@@ -522,8 +522,19 @@ export class AgentRunner {
          * 预算按 token 上限反推字节（4 字符 ≈ 1 token），与对话长度进度条同口径。
          */
         pruneToolPayloads(requestMessages, TOOL_PAYLOAD_KEEP, DEFAULT_CONTEXT_TOKEN_BUDGET * 4);
-        if (result.status === 'error') roundHadError = true;
-        else if (result.status !== 'denied') roundHadSuccess = true;
+        /*
+         * 只有**环境性**失败才计入失败连击：
+         *  - `error`：工具真的失败了（命令报错、文件不存在、网络断了）；
+         *  - `denied`：被策略拒绝、审批拒绝、或因为暂停/合并被跳过；
+         *  - `error` + `decisive`：服务器给了确定答案（HTTP 404 等），换个地址才有用。
+         * 后两种都是「模型该换策略」，不是「环境坏了」，把它们算进连击会让
+         * 「连猜三个 URL」直接停机（真实故障 2026-11-19）。
+         */
+        if (result.status === 'error') {
+          if (!result.decisive) roundHadError = true;
+        } else if (result.status !== 'denied') {
+          roundHadSuccess = true;
+        }
 
         // 工具刚被取消：不要等到下一轮才反应，立刻停下。
         this.assertRunning(options.signal);

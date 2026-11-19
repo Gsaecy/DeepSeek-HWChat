@@ -41,6 +41,15 @@ export interface WebFetchOutcome {
   summary: string;
   /** 给模型的正文。 */
   content: string;
+  /**
+   * 服务器给出了**确定答案**（4xx：页面不存在 / 需要登录 / 被限流），不是环境故障。
+   *
+   * 为什么要区分：`AgentRunner` 的「连续 3 轮工具调用全部失败」是用来止住环境性
+   * 死循环的。模型凭印象猜 URL 拿到 404 属于它自己该换策略的事，把它也算进失败
+   * 连击，就会出现「猜错三个文档地址 → 整轮任务被停机」——真实现场（2026-11-19）
+   * 一次提问里连猜四个 learn.microsoft.com 路径，任务直接停在 3 轮。
+   */
+  decisive?: boolean;
 }
 
 /** 最多跟几跳重定向：够用，又不会被无限跳转拖住。 */
@@ -167,6 +176,45 @@ function describeHttpError(status: number): string {
 }
 
 /**
+ * 这个状态码是不是「确定的答案」而不是环境故障。
+ *
+ * 4xx = 服务器明确回答了「没有 / 不给」，重试同样的请求不会有不同结果；
+ * 408（超时）与 429（限流）是明确的「等一会再来」，仍算环境问题。
+ */
+function isDecisiveStatus(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+/**
+ * 4xx 之后该怎么做 —— 说清楚「不要再猜了」。
+ *
+ * 真实情况（2026-11-19）：模型连着猜了四个 learn.microsoft.com 路径全部 404，
+ * 每轮都只拿到「检查 URL 是否拼错」，它唯一能做的就是再猜一个。把下一步写出来，
+ * 它才会换成检索。
+ */
+function decisiveAdvice(url: string, status: number): string {
+  const host = hostOf(url);
+  const docsLike = /learn\.microsoft\.com|docs\.|developer\.|support\./i.test(host);
+  const lines = [
+    status === 404
+      ? '这是「页面不存在」，不是网络或权限问题：不要再凭印象猜同级或相邻的路径。'
+      : '服务器明确拒绝了这次请求：不要用同样的地址重试。',
+    '改用 `search_web` 搜关键词（把想要的标题或一句话放进去）拿到真实地址，再 `fetch_url` 那一条；',
+    '或者先读能确认结构的入口页（站点首页 / 文档目录 / sitemap）。',
+  ];
+  if (docsLike) lines.push(`${host} 这类文档站的路径由产品、版本、语言段拼成，猜路径的命中率很低。`);
+  return lines.join('');
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+/**
  * 取一个 URL 并转成可读文本。
  *
  * 内容类型决定怎么处理：HTML → 去标签正文；JSON / 纯文本 / Markdown → 原样（截断）。
@@ -186,7 +234,13 @@ export async function fetchUrl(rawUrl: string, maxChars = MAX_TEXT_CHARS, deps: 
   try {
     const response = await request(checked.url, { headers: { 'user-agent': USER_AGENT, accept: 'text/html,application/json,text/plain;q=0.9,*/*;q=0.5' } }, FETCH_TIMEOUT_MS, deps);
     if (!response.ok) {
-      return { ok: false, summary: describeHttpError(response.status), content: `读取 ${checked.url} 失败：${describeHttpError(response.status)}。` };
+      const decisive = isDecisiveStatus(response.status);
+      return {
+        ok: false,
+        summary: describeHttpError(response.status),
+        content: `读取 ${checked.url} 失败：${describeHttpError(response.status)}。${decisive ? ` ${decisiveAdvice(checked.url, response.status)}` : ''}`,
+        ...(decisive ? { decisive } : {}),
+      };
     }
     const contentType = (response.headers.get('content-type') || '').toLowerCase();
     const body = await readCapped(response);

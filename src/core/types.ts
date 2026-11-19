@@ -614,6 +614,14 @@ export interface ToolExecutionResult {
   content: string;
   approval: 'not-required' | 'approved' | 'denied';
   changedFiles?: string[];
+  /**
+   * 这次失败是**确定的答案**，不是环境故障（例：HTTP 404 页面不存在）。
+   *
+   * 它不计入「连续 N 轮工具调用全部失败」：那个闸是为止住环境性死循环（工具缺失、
+   * 网络不通）而设的；模型猜错地址属于它自己该换策略的事，把两者混在一起会让
+   * 「连猜三个 URL」直接停机（真实故障 2026-11-19）。
+   */
+  decisive?: boolean;
 }
 
 /** 推给 webview 的审批请求：面板内一张卡片，替代会锁死整个窗口的模态框。 */

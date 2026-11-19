@@ -29,6 +29,7 @@ Three more bugs that made commands fail for no good reason are fixed too:
 - **A PowerShell pipeline is no longer parsed by cmd**: `powershell … -File x.ps1 2>&1 | Select-Object -Last 25` used to be split by cmd and exit 255; such a line now goes to PowerShell, and bare cmdlets like `Select-Object` trigger the switch automatically (plain cmd commands are untouched).
 - **A policy denial no longer counts as a failed tool round**: sensitive-file and approval denials, and skipped steps from a pause, no longer push the agent toward the "3 rounds all failed" stop — only real errors in a round with no successful step do.
 - **`-Filter '*.pfx'` is treated as a mask, not as reading a certificate**: directory listings are no longer blocked by the sensitive-file guard, while commands that really read `id_rsa` and friends are still blocked.
+- **A guessed documentation URL no longer stops the whole task**: an HTTP 404/403 from `fetch_url` is a definite answer from the server, not a network failure, so it no longer counts toward the "3 rounds all failed" stop — and the result now says what to do next (do not invent paths; use `search_web` to find the real address). 408 timeouts and 429 rate limits still count as environmental.
 
 ## What's new in 0.4.14
 

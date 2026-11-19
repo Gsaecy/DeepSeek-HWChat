@@ -296,6 +296,25 @@ test('agent loop: policy denials alone never trigger the no-progress stop', asyn
   assert.ok(client.rounds > 3, `应当继续跑过 3 轮，实际 ${client.rounds} 轮`);
 });
 
+test('agent loop: a decisive error (HTTP 404) never counts toward the no-progress stop', async () => {
+  /*
+   * 真实故障（2026-11-19）：模型凭印象猜文档 URL，连吃三个 404 → 整轮任务被停机。
+   * 4xx 是服务器的确定答案，换个地址才有用；把它算进失败连击等于惩罚「尝试」。
+   */
+  const client = endlessClient((round) => ({ name: 'fetch_url', args: `{"url":"https://example.com/${round}"}` }));
+  const tools = {
+    definitions: () => [],
+    async execute(): Promise<ToolExecutionResult> {
+      return { status: 'error', summary: 'HTTP 404', content: 'not found', approval: 'not-required', decisive: true };
+    },
+  };
+
+  const result = await runAgent({ client, tools, steps: 6 });
+
+  assert.notEqual(result.stopReason, 'noProgress');
+  assert.ok(client.rounds > 3, `应当继续跑过 3 轮，实际 ${client.rounds} 轮`);
+});
+
 test('agent loop: a denied call does not mask a real error in the same round', async () => {
   // 每一轮里既有真实失败、又有一次被拒绝：仍然算「这一轮没有成功步骤」→ 三轮后停。
   let round = 0;
