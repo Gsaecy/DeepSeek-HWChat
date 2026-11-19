@@ -12,7 +12,7 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 
 架构与功能实现清单（含 12 个待评审漏洞点及**代码坐标**、以及「刻意取舍」清单）见 [docs/ARCHITECTURE-REVIEW.md](docs/ARCHITECTURE-REVIEW.md) —— 这份文档就是为外部评审（Claude / GPT）准备的，可直接整份贴出去。
 
-## 0.4.20 更新了什么
+## 0.4.21 更新了什么
 
 ### 运行中发消息＝像 Copilot 那样打断当前任务，重新综合分析再继续
 

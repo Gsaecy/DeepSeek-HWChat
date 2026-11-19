@@ -8,7 +8,7 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
-## What's new in 0.4.20
+## What's new in 0.4.21
 
 ### A message sent mid-run now interrupts the task the way Copilot does, then re-analyses and continues
 
