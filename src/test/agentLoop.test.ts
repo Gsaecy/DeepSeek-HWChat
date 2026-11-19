@@ -266,7 +266,8 @@ test('agent loop: consecutive failing rounds stop the automatic retry', async ()
   const tools = {
     definitions: () => [],
     async execute(): Promise<ToolExecutionResult> {
-      return { status: 'error', summary: 'failed', content: 'ENOENT', approval: 'not-required' };
+      // 一个字都没回：这才是「环境可能坏了」的证据（见 `noOutput`）。
+      return { status: 'error', summary: 'failed', content: 'ENOENT', approval: 'not-required', noOutput: true };
     },
   };
 
@@ -275,6 +276,26 @@ test('agent loop: consecutive failing rounds stop the automatic retry', async ()
   assert.equal(result.stopReason, 'noProgress');
   assert.equal(client.rounds, 3);
   assert.match(result.content, /全部失败|all failed/);
+});
+
+test('agent loop: failures that still produced output never trigger the stop', async () => {
+  /*
+   * 真实故障（2026-11-19）：三轮命令其实都拿到了正确输出（还在跑的 cargo 进程列表、
+   * verify-mail 的检查结果），但 PowerShell 让退出码变成 1 → 被判「连续 3 轮全部失败」
+   * 停机。退出码在 Windows 上不可靠，有输出就说明工具在工作。
+   */
+  const client = endlessClient((round) => ({ name: 'run_command', args: `{"command":"echo ${round}"}` }));
+  const tools = {
+    definitions: () => [],
+    async execute(): Promise<ToolExecutionResult> {
+      return { status: 'error', summary: 'exit code 1', content: 'cargo 4852 running', approval: 'not-required' };
+    },
+  };
+
+  const result = await runAgent({ client, tools, steps: 6 });
+
+  assert.notEqual(result.stopReason, 'noProgress');
+  assert.ok(client.rounds > 3, `应当继续跑过 3 轮，实际 ${client.rounds} 轮`);
 });
 
 test('agent loop: policy denials alone never trigger the no-progress stop', async () => {
@@ -338,7 +359,7 @@ test('agent loop: a denied call does not mask a real error in the same round', a
     async execute(): Promise<ToolExecutionResult> {
       call += 1;
       return call % 2 === 1
-        ? { status: 'error', summary: 'failed', content: 'ENOENT', approval: 'not-required' }
+        ? { status: 'error', summary: 'failed', content: 'ENOENT', approval: 'not-required', noOutput: true }
         : { status: 'denied', summary: 'blocked', content: 'denied', approval: 'not-required' };
     },
   };

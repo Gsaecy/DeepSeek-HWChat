@@ -1577,11 +1577,25 @@ export class ToolExecutor implements vscode.Disposable {
     const advice = result.timedOut
       ? timeoutAdvice(timeoutPlan, { t: tt, settingKey: COMMAND_TIMEOUT_SETTING, maxSeconds: COMMAND_TIMEOUT_MAX })
       : undefined;
+    /*
+     * 「命令自己说了忽略错误」的退出码 1 不算失败。
+     *
+     * 见 `toleratedPowerShellExit`：PowerShell 把被 `-ErrorAction SilentlyContinue`
+     * 吞掉的错误仍反映到 `$?`，于是输出完全正确也退出 1；三轮就会误触发「连续 3 轮
+     * 工具调用全部失败」。这里只改**判定**，退出码与输出照原样呈现给模型与用户，
+     * 并补一句说明，避免它以为这条命令真的成功了。
+     */
+    const tolerated = result.code !== 0 && !result.timedOut
+      && toleratedPowerShellExit(effectiveCommand, result.code, result.stderr, shellFor(effectiveCommand));
+    const toleratedNote = tolerated ? tt('tool.runCommand.ignoredErrorExit', { code: String(result.code) }) : undefined;
+    const failed = !( (result.code === 0 || tolerated) && !result.timedOut );
     return {
-      status: result.code === 0 && !result.timedOut ? 'success' : 'error',
+      status: failed ? 'error' : 'success',
+      // 失败但一个字都没输出：这才是「环境可能坏了」的证据（见 `noOutput` 的说明）。
+      ...(failed && !output ? { noOutput: true } : {}),
       summary: `${commandSummary(effectiveCommand, result, timeout, Date.now() - commandStartedAt)}${clampSummary}`,
       content: truncate(
-        redact([strippedNote, clampNotice, output || tt('tool.noOutput'), nestedCdHint, missingPath, environmentHint, advice].filter(Boolean).join('\n\n')),
+        redact([strippedNote, clampNotice, output || tt('tool.noOutput'), toleratedNote, nestedCdHint, missingPath, environmentHint, advice].filter(Boolean).join('\n\n')),
         settings.maxToolOutputBytes,
       ),
       approval: 'approved',
@@ -1620,9 +1634,8 @@ export class ToolExecutor implements vscode.Disposable {
     metrics?: CallMetrics,
   ): Promise<{ id: string; pid?: number; stdout: string; stderr: string; exited: boolean; code: number | null }> {
     const id = `bg-${++this.backgroundSequence}`;
-    const child = spawn(command, {
+    const child = spawnShellCommand(command, {
       cwd,
-      shell: shellFor(command),
       windowsHide: true,
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -2133,9 +2146,22 @@ const POWERSHELL_INVOCATION = /^(?:"[^"]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=
  * `cargo check 2>&1 | Select-Object -Last 60` 这类「直接写 PowerShell 管道」的命令，
  * 交给 cmd 一定 255；识别出来就换 PowerShell，模型不用为此白烧一轮。
  */
-const POWERSHELL_ONLY_SYNTAX = /\b(?:Select-Object|Where-Object|ForEach-Object|Sort-Object|Group-Object|Measure-Object|Select-String|Get-ChildItem|Get-Content|Set-Content|Add-Content|Out-File|Out-Null|Get-Item|Get-ItemProperty|Set-ItemProperty|New-Item|Remove-Item|Copy-Item|Move-Item|Rename-Item|Test-Path|Join-Path|Split-Path|Resolve-Path|Start-Sleep|Start-Process|Stop-Process|Invoke-WebRequest|Invoke-RestMethod|ConvertTo-Json|ConvertFrom-Json|Get-Command|Get-Process)\b|\s-(?:ErrorAction|NoProfile|ExecutionPolicy|LiteralPath)\b/;
+/**
+ * PowerShell cmdlet 的识别：`Verb-Noun`。
+ *
+ * 以前这里是一个**手写的名字清单**，结果 `Out-String`、`Format-Table` 这些漏掉了 ——
+ * `git diff … | Out-String -Width 200` 被留在 cmd 里，报「'Out-String' 不是内部或
+ * 外部命令」（真实故障 2026-11-19）。改成动词表之后，任何标准动词开头的 cmdlet 都认。
+ */
+const POWERSHELL_CMDLET = /\b(?:Get|Set|New|Remove|Add|Copy|Move|Rename|Start|Stop|Select|Where|ForEach|Sort|Group|Measure|Test|Join|Split|Resolve|Invoke|ConvertTo|ConvertFrom|Out|Write|Clear|Wait|Update|Enable|Disable|Import|Export|Install|Uninstall|Push|Pop|Format|Tee|Compare|Expand|Register|Unregister|Show|Read|Receive|Send|Save|Restore|Backup|Lock|Unlock|Watch|Debug|Trace|Suspend|Resume|Restart|Step|Switch|Enter|Exit|Hide|Optimize|Repair|Reset|Search|Mount|Dismount|Assert|Connect|Disconnect|Initialize|Compress|Publish|Unpublish|Use|Protect|Unprotect)-[A-Z][A-Za-z]+\b/;
 
-/** 去掉引号里的内容：引号内的 `|`、cmdlet 名都不该影响 shell 选择。 */
+/** 只有 PowerShell 认识的参数写法。 */
+const POWERSHELL_ARGUMENT = /\s-(?:ErrorAction|NoProfile|NonInteractive|ExecutionPolicy|LiteralPath|Recurse|Width|Tail)\b/;
+
+/** cmd 的变量展开：PowerShell 不认，只能留给 cmd。 */
+const CMD_VARIABLE = /%(?:[A-Za-z_][\w]*|~[a-z]+|\d+)%/;
+
+/** 去掉引号里的内容：引号内的 `|`、`;`、cmdlet 名都不该影响 shell 选择。 */
 function withoutQuoted(command: string): string {
   return command.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
 }
@@ -2164,11 +2190,15 @@ const CMD_ONLY_CHAIN = /&&|\|\||(?:^|[^>&])&(?!>|&)/;
  * 与 POSIX 上「发现 bash 专有语法就切 /bin/bash」同一条原则：误判代价很小，
  * 漏判的代价是整轮失败。
  *
- * 两条边界（都是实测踩出来的）：
+ * 三条边界（都是实测踩出来的）：
  *  - **只用重定向不算需要 PowerShell**：`powershell -File x.ps1 > out 2>&1` 在 cmd 里
  *    本来就对，多套一层反而会碰上 cmd 的 `&` 语法；
  *  - **cmd 专属串联（`&` / `&&` / `||`）一律留在 cmd**：PowerShell 不认这些分隔符，
- *    路由过去只会得到语法错误。
+ *    路由过去只会得到语法错误；
+ *  - **`a; b` 分号串联交给 PowerShell**：cmd 把 `;` 当**参数分隔符**，
+ *    `git log --oneline -3; git stash list` 会变成 `git log "-3;"` 并报
+ *    `fatal: '3;': not an integer`（真实故障 2026-11-19，连着三条命令都栽在这上面）。
+ *    依赖 cmd 变量展开（`%VAR%`）的命令例外 —— PowerShell 不认 `%VAR%`。
  */
 export function shellFor(command: string, platform: string = process.platform): string | true {
   if (platform === 'win32') {
@@ -2183,11 +2213,85 @@ export function shellFor(command: string, platform: string = process.platform): 
        */
       return !cmdChaining && outsideQuotes.includes('|') ? 'powershell.exe' : true;
     }
-    if (!cmdChaining && POWERSHELL_ONLY_SYNTAX.test(outsideQuotes)) return 'powershell.exe';
+    // cmd 的串联写法只有 cmd 认，先拦下来。
+    if (cmdChaining) return true;
+    if (POWERSHELL_CMDLET.test(outsideQuotes) || POWERSHELL_ARGUMENT.test(outsideQuotes)) return 'powershell.exe';
+    if (outsideQuotes.includes(';') && !CMD_VARIABLE.test(outsideQuotes)) return 'powershell.exe';
     return true;
   }
   if (!bashOnlySyntax(command)) return true;
   return existsSync('/bin/bash') ? '/bin/bash' : true;
+}
+
+/**
+ * 交给 PowerShell 之前，先把**它自己的控制台编码**固定成 UTF-8。
+ *
+ * 为什么（真实故障 2026-11-19）：`node … 2>&1 | Select-Object -Last 40` 里，PowerShell
+ * 会把原生命令的 stderr 包成自己的 ErrorRecord，这一步按 `[Console]::OutputEncoding`
+ * （中文系统是 936 = GBK）解码 —— 而 node 写的是 UTF-8，于是同一条输出被劈成两种编码：
+ * PowerShell 自己的 `所在位置 行:1` 是对的，嵌进去的正文变成
+ * `鉁?淇℃伅涓績鏈?7 澶勯��鍖栵細`。任何单一编码的解码器都救不回来（我们已经踩过一次）。
+ *
+ * 固定成 UTF-8 之后，解码与输出两端一致；node / git / cargo / pnpm 本来就输出 UTF-8。
+ * 代价：若某条命令特意跑**只输出 GBK** 的旧工具，它会显示成乱码 —— 因此这类命令
+ * （`findstr`、`type`、`dir` 等 cmd 内建）在没有 cmdlet、没有分号时仍留在 cmd。
+ */
+export const POWERSHELL_UTF8_PRELUDE = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $ProgressPreference='SilentlyContinue'; ";
+
+/** 把一条命令包成「先固定编码再执行」。 */
+export function powerShellCommand(command: string): string {
+  return `${POWERSHELL_UTF8_PRELUDE}${command}`;
+}
+
+/**
+ * 按选定的 shell 起进程。
+ *
+ * PowerShell 走**参数数组**而不是 `shell: 'powershell.exe'`：后者会把命令再交给一次
+ * 字符串解析（引号、反引号都可能被吃掉），而且没法插入编码前置。
+ */
+function spawnShellCommand(
+  command: string,
+  options: {
+    cwd: string;
+    windowsHide: boolean;
+    detached: boolean;
+    stdio: ['ignore', 'pipe', 'pipe'];
+    env: NodeJS.ProcessEnv;
+  },
+): ChildProcess {
+  const shell = shellFor(command);
+  if (shell === 'powershell.exe') {
+    return spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', powerShellCommand(command)], options);
+  }
+  return spawn(command, { ...options, shell });
+}
+
+/**
+ * 命令自己要求「忽略错误」：`-ErrorAction SilentlyContinue` / `-ea Ignore`。
+ *
+ * 真实故障（2026-11-19）：`Start-Sleep 45; Get-Process instindex,cargo,rustc -ErrorAction
+ * SilentlyContinue | Format-Table` 的输出完全正确（列出仍在跑的 cargo），但 PowerShell
+ * 因为「instindex 不存在」把 `$?` 置 false，退出码仍是 1。三轮下来被判「连续 3 轮工具
+ * 调用全部失败」停机 —— 而它其实每轮都拿到了想要的答案。
+ */
+const IGNORES_ERRORS = /-(?:ErrorAction|ea)\s+(?:SilentlyContinue|Ignore)\b/i;
+
+/**
+ * 这次非零退出码是「按用户要求忽略的错误」造成的，不该算失败。
+ *
+ * 判定刻意窄：只认 PowerShell、退出码 1、**stderr 为空**（错误被真的吞掉了），
+ * 且命令里明确写了忽略错误。原生命令的失败（npm test 之类）不走这条。
+ */
+export function toleratedPowerShellExit(
+  command: string,
+  code: number | null,
+  stderr: string,
+  shell: string | true,
+): boolean {
+  return shell === 'powershell.exe'
+    && code === 1
+    && !stderr.trim()
+    && IGNORES_ERRORS.test(command);
 }
 
 /**
@@ -2776,9 +2880,8 @@ export function spawnCommand(
   }
   return new Promise((resolvePromise, reject) => {
     const detached = process.platform !== 'win32';
-    const child = spawn(command, {
+    const child = spawnShellCommand(command, {
       cwd,
-      shell: shellFor(command),
       windowsHide: true,
       detached,
       stdio: ['ignore', 'pipe', 'pipe'],

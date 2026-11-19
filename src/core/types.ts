@@ -622,6 +622,15 @@ export interface ToolExecutionResult {
    * 「连猜三个 URL」直接停机（真实故障 2026-11-19）。
    */
   decisive?: boolean;
+  /**
+   * 这次失败**什么也没返回**（命令没有任何 stdout / stderr）。
+   *
+   * 「连续 N 轮全部失败」只统计这种：有输出就说明工具真的在工作，模型能据此改进；
+   * 而 Windows 上退出码经常不可靠（PowerShell 的 `$?`、`-ErrorAction SilentlyContinue`、
+   * `2>&1 | cmdlet` 的原生 stderr），拿它当「环境坏了」的证据会误停任务
+   * （真实故障 2026-11-19：三轮都在正确读取构建进程，却被判全部失败）。
+   */
+  noOutput?: boolean;
 }
 
 /** 推给 webview 的审批请求：面板内一张卡片，替代会锁死整个窗口的模态框。 */

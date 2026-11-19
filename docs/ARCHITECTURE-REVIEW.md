@@ -18,14 +18,14 @@
 |---|---|
 | 形态 | VS Code 扩展，单 webview 面板（辅助侧栏），无自建后端 |
 | 语言/构建 | TypeScript → esbuild → `out/extension.js`；无框架、无运行时依赖注入 |
-| 规模 | 209 个 `.ts` / 50,831 行 + webview 资源 ~9.2k 行（0.4.21 实测） |
+| 规模 | 209 个 `.ts` / 50,831 行 + webview 资源 ~9.2k 行（0.4.22 实测） |
 | 最大单文件 | `src/views/chatPanel.ts` 6,463 行；`src/agent/toolExecutor.ts` 2,726；`src/core/storage.ts` 2,436 |
 | 对外接口 | 任意 OpenAI 兼容端点（chat / images / models / embeddings） |
 | 密钥 | 只在 `SecretStorage`（`src/core/apiKeys.ts`），不进 settings.json |
 | 权限 | 四档预设 × 三档命令风险 × 敏感文件，默认 `askAll`（最严） |
 | 配置项 | 38 个 `contributes.configuration` |
 | 命令 | 19 个 |
-| 质量 | 1,346 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
+| 质量 | 1,352 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
 
 ---
 
@@ -154,8 +154,8 @@ Runner
 - 路径隔离：`commandPathViolation`（`src/agent/commandPaths.ts:135`），`/tmp` 等被改写为工作区内 `tmp/`（按 cwd 所属根选取，带 `mkdir -p`）。
 - 超时（120s）、输出上限（200KB）、后台进程表、进程树 kill。
 - **输出编码**（`src/agent/commandEncoding.ts`）：Windows 的 `cmd` / `dir` / `findstr` 按控制台代码页（936＝GBK）输出，`String(chunk)` 一律按 UTF-8 解会把中文报错变成乱码，模型读不懂就只能重复同一条命令。现在每个流各一个 `CommandOutputDecoder`：默认 UTF-8（`stream: true`，跨 chunk 的半个汉字不会误判），解出 U+FFFD 就切到本地编码（GBK → gb18030 → big5 → shift_jis → euc-kr → windows-1252），收尾 flush。
-- **shell 选择**（`shellFor`）：Windows 上默认 cmd.exe；**只有引号外的真管道**（或裸 PowerShell cmdlet）才切 PowerShell，且出现 cmd 专属串联（`&` / `&&` / `||`）时一律留在 cmd —— PowerShell 只认 `;`，路由过去只会得到语法错误。否则 `powershell … | Select-Object` 会被 cmd 切开（0.0s 退出 255）。与 POSIX 上切换 `/bin/bash` 同一条原则。
-- **失败分类**（`ToolExecutionResult.decisive`）：4xx（除 408 / 429）是服务器给出的确定答案，`fetch_url` 把它标成 `decisive`，不计入「连续 N 轮全部失败」；408 / 429 / 5xx 与网络错误仍按环境故障处理。4xx 的返回里直接写明下一步（改用 `search_web` 拿真实地址），因为「检查 URL 是否拼错」只会让模型再猜一次。
+- **shell 选择**（`shellFor` + `spawnShellCommand`）：Windows 上默认 cmd.exe，只在需要时切 PowerShell —— ① 引号外的真管道 + `powershell` 调用；② 任何标准动词的 `Verb-Noun` cmdlet（动词表，不是手写清单）；③ 引号外的 `;` 串联（cmd 把 `;` 当参数分隔符）。cmd 专属串联（`&` / `&&` / `||`）与 `%VAR%` 展开则一律留在 cmd。切过去时用参数数组调用，并先执行 `[Console]::OutputEncoding = UTF8` 前置（否则 PowerShell 会把原生命令的 UTF-8 stderr 当 GBK 解码）。
+- **失败分类**：`ToolExecutionResult` 有两个标记 —— `decisive`（4xx 这类确定答案，`fetch_url` 会设置）与 `noOutput`（失败且一个字都没返回）。「连续 N 轮全部失败」只在**这一轮有真实 error、没有任何成功步骤、且没有任何输出**时才计数：Windows 的退出码太不可靠（`$?`、`-ErrorAction SilentlyContinue`、`2>&1 | cmdlet`），有输出就说明工具在工作。4xx 的返回里直接写明下一步（改用 `search_web` 拿真实地址）。
 
 ### 4.5 文本编码（`src/agent/fileEncoding.ts`）
 
@@ -290,7 +290,7 @@ Runner
 
 ## 10. 质量保障
 
-- **1,346 条单测**（`src/test/`）。
+- **1,352 条单测**（`src/test/`）。
 - **79 个 `test/check-*.mjs` 守护脚本**，其中若干不是静态断言，而是**真跑**：
   - 真实 Chromium：量按钮宽高、真点按钮、走完整交互（`check-settings-layout`、`check-image-attachment`、`check-capsule-*` …）；
   - 真实文件系统：大小写不同拼写是否算同一目录（`check-path-identity`）；
@@ -527,7 +527,7 @@ Runner
 # 类型检查
 npx tsc -p ./ --noEmit
 
-# 单测（1,346 条）
+# 单测（1,352 条）
 npm test
 
 # 全部守护脚本（79 个；含真实 Chromium / 真实文件系统 / 真实命令）

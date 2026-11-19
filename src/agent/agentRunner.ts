@@ -407,6 +407,8 @@ export class AgentRunner {
        */
       let roundHadError = false;
       let roundHadSuccess = false;
+      /** 这一轮有没有任何工具吐出过内容（输出说明工具在工作，不算「卡死」）。 */
+      let roundHadOutput = false;
       let stopAfterRound = false;
 
       for (let callIndex = 0; callIndex < accepted.length; callIndex += 1) {
@@ -532,8 +534,10 @@ export class AgentRunner {
          */
         if (result.status === 'error') {
           if (!result.decisive) roundHadError = true;
+          if (!result.noOutput) roundHadOutput = true;
         } else if (result.status !== 'denied') {
           roundHadSuccess = true;
+          roundHadOutput = true;
         }
 
         // 工具刚被取消：不要等到下一轮才反应，立刻停下。
@@ -560,6 +564,7 @@ export class AgentRunner {
           // 暂停不是失败：否则连发几条消息就会被判成「连续 3 轮全部失败」而停机。
           roundHadError = false;
           roundHadSuccess = true;
+          roundHadOutput = true;
           break;
         }
 
@@ -576,6 +581,7 @@ export class AgentRunner {
           // 被打断不是失败：否则「新消息合并」会悄悄把连续失败计数推向 3 轮停机。
           roundHadError = false;
           roundHadSuccess = true;
+          roundHadOutput = true;
           break;
         }
       }
@@ -594,7 +600,19 @@ export class AgentRunner {
       if (overflow.length) await options.callbacks.onToolsChanged(cloneExecutions(executions));
       if (stopAfterRound) break;
 
-      consecutiveFailedRounds = roundHadError && !roundHadSuccess ? consecutiveFailedRounds + 1 : 0;
+      /*
+       * 什么算「这一轮没有进展」：
+       *  - 这一轮**有真实 error**（不是被拒绝、不是 `decisive` 的确定答案）；
+       *  - 而且**没有任何成功步骤**；
+       *  - 而且**连输出都没有**（有输出说明工具在工作，模型能据此改进）。
+       *
+       * 第三条是 2026-11-19 补的：Windows 上退出码经常不可靠（PowerShell 的 `$?`、
+       * 被 `-ErrorAction SilentlyContinue` 吞掉的错误、`2>&1 | cmdlet` 的原生 stderr），
+       * 三轮「其实每次都拿到了正确输出」的命令就这样被判「全部失败」停机。
+       */
+      consecutiveFailedRounds = roundHadError && !roundHadSuccess && !roundHadOutput
+        ? consecutiveFailedRounds + 1
+        : 0;
       if (consecutiveFailedRounds >= MAX_FAILED_ROUNDS_WITHOUT_PROGRESS) {
         stopReason = 'noProgress';
         break;

@@ -35,6 +35,17 @@ test('无关失败不误报', () => {
   assert.equal(commandEnvironmentHint('ls', 'ls: no such file or directory', 'darwin'), undefined);
 });
 
+test('Windows：pnpm 的 corepack 缺失给出可执行的替代做法', () => {
+  const hint = commandEnvironmentHint(
+    'pnpm verify:mail',
+    "Error: Cannot find module 'C:\\Program Files\\nodejs\\node_modules\\corepack\\dist\\pnpm.js'",
+    'win32',
+  );
+  assert.equal(hint?.key, 'tool.runCommand.corepackMissing');
+  // 普通模块缺失不算
+  assert.equal(commandEnvironmentHint('node x.mjs', "Cannot find module './y.mjs'", 'win32'), undefined);
+});
+
 test('Windows：cmd 下的 PowerShell cmdlet 给出「别混写」的做法', () => {
   /*
    * 真实故障（2026-11-19）：`git fetch --quiet; "…" ; (git status | Measure-Object).Count`

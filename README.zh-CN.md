@@ -12,6 +12,18 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 
 架构与功能实现清单（含 12 个待评审漏洞点及**代码坐标**、以及「刻意取舍」清单）见 [docs/ARCHITECTURE-REVIEW.md](docs/ARCHITECTURE-REVIEW.md) —— 这份文档就是为外部评审（Claude / GPT）准备的，可直接整份贴出去。
 
+## 0.4.22 更新了什么
+
+### 又修掉一组会把任务误判「全部失败」的问题
+
+一次任务里 93 条命令之后被判「连续 3 轮工具调用全部失败」，逐条核对下来只有 1 条是真失败，其余都是执行器的问题：
+
+- **`a; b` 分号串联**：cmd 把 `;` 当参数分隔符，`git log --oneline -3; git stash list` 会变成 `git log "-3;"`（`fatal: '3;': not an integer`）。现在这类命令自动交给 PowerShell；引号内的分号、用了 `&`/`&&`/`%变量%` 的命令不受影响。
+- **`Out-String` / `Format-Table` 这类 cmdlet 漏判**：识别改用动词表，任何标准动词开头的 `Verb-Noun` 都认。
+- **`node … 2>&1 | Select-Object` 的中文变成乱码**：PowerShell 按 GBK 解码原生命令的 UTF-8 stderr，同一条输出被劈成两种编码。现在路由到 PowerShell 时先把它自己的控制台编码固定为 UTF-8。
+- **退出码 1 但其实成功**：命令里写了 `-ErrorAction SilentlyContinue` 时，被吞掉的错误仍让 PowerShell 返回 1；这类退出码不再算失败（并附一句说明）。
+- **「连续 3 轮全部失败」只统计「什么也没返回」的失败**：有输出就说明工具在工作。Windows 的退出码太不可靠，拿它当「环境坏了」的证据会误停任务。
+- **`pnpm` 因 corepack 缺失起不来**：提示里直接给出 `npm run <script>` / `npx pnpm@<版本>` / `npm i -g corepack` 三条可执行路径。
 ## 0.4.21 更新了什么
 
 ### 运行中发消息＝像 Copilot 那样打断当前任务，重新综合分析再继续

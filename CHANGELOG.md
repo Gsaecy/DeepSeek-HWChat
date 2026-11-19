@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.4.22（2026-11-19）
+
+### 同一轮现场第三次：3 条「失败」里 2 条是 shell 路由与退出码造成的（全部修掉）
+
+**现场**：一次任务里 93 条命令，最后判「连续 3 轮工具调用全部失败」停机。逐条核对：
+
+| 命令 | 现象 | 真实原因 |
+|---|---|---|
+| `cd "D:\…\Personal-Workstation-OS"; git fetch …` | `系统找不到指定的路径` | cmd 把 `;` 当**参数分隔符**，`cd` 收到一串参数 |
+| `git fetch …; echo "---"; git rev-list …` | `error: unknown option '-AHEAD-BEHIND---;'` | 同上，`;` 之后的整段成了前一条命令的参数 |
+| `git log --oneline -3; git stash list` | `fatal: '3;': not an integer` | 同上 |
+| ``git diff … \| Out-String -Width 200`` | `'Out-String' 不是内部或外部命令` | cmdlet 识别用的是**手写清单**，漏了 `Out-String` / `Format-Table` |
+| `node … 2>&1 \| Select-Object` | 中文变成 `鉁?淇℃伅涓績鏈?…` | PowerShell 按 GBK 解码原生命令的 UTF-8 stderr，同一条输出被劈成两种编码 |
+| `Start-Sleep 45; Get-Process … -ErrorAction SilentlyContinue` | 退出码 1，但输出完全正确 | PowerShell 把被吞掉的错误反映到 `$?` |
+| `pnpm verify:mail` | `Cannot find module …corepack\dist\pnpm.js` | 机器上没装 corepack（不是项目问题） |
+
+**修法**：
+
+1. **`;` 串联交给 PowerShell**（`shellFor`）：cmd 把 `;` 当参数分隔符，`a; b` 在 cmd 里
+   必然是错的。现在引号外出现 `;`、且没有 cmd 专属串联（`&`/`&&`/`||`）、也没用
+   `%VAR%` 展开时，整行交给 PowerShell。引号内的分号（`findstr /c:"a;b"`）不受影响。
+2. **cmdlet 识别改用动词表**：任何标准动词开头的 `Verb-Noun` 都认，不再漏
+   `Out-String` / `Format-Table` / `Tee-Object` / `Compare-Object`。
+3. **路由到 PowerShell 时先固定编码**：以参数数组调用
+   `powershell.exe -NoProfile -NonInteractive -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; <命令>"`，
+   同一段输出不再被劈成「PS 自己的中文是对的、嵌进去的正文是乱码」。
+   （代价：只输出 GBK 的老工具在 PowerShell 分支下会乱码 —— 这类命令没有 cmdlet、
+   没有分号时仍留在 cmd。）
+4. **「命令自己说了忽略错误」的退出码 1 不算失败**（`toleratedPowerShellExit`）：
+   仅限 PowerShell + 退出码 1 + **stderr 为空** + 命令里写了
+   `-ErrorAction SilentlyContinue`；结果附一句说明，退出码照旧显示。
+5. **「连续 N 轮全部失败」只统计「什么也没返回」的失败**（`ToolExecutionResult.noOutput`）：
+   有输出就说明工具在工作、模型能据此改进。Windows 上退出码太不可靠（`$?`、
+   `SilentlyContinue`、`2>&1 | cmdlet`），拿它当「环境坏了」的证据会误停任务。
+6. **cmd 里误用 cmdlet 的提示重写**：说清两种成因（与 `&`/`&&` 混写、或依赖 `%VAR%`），
+   并给出「全用 cmd 工具」/「全用 PowerShell 语法」两条具体改法。
+7. **新增环境提示**：`pnpm` 因 corepack 缺失起不来时，直接给出 `npm run <script>` /
+   `npx pnpm@<版本>` / `npm i -g corepack` 三条可执行路径。
+
+**测试**：`commandPaths.test.ts` 新增（分号串联、动词表 cmdlet、编码前置与退出码容忍）；
+`agentLoop.test.ts` 新增「有输出的失败不计入停机」；`commandEnvironment.test.ts` 新增
+2 条（corepack 缺失提示、cmdlet 误用提示）。全量 1352 条：1311 通过，39 条失败与改动前
+基线逐条一致（Windows 平台既有失败）。
 ## 0.4.21（2026-11-19）
 
 ### 运行中发消息＝像 Copilot 那样打断当前任务，重新综合分析再继续（用户要求）

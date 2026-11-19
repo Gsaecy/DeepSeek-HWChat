@@ -92,13 +92,13 @@ export interface EnvironmentHint {
 /**
  * Windows 的 cmd 不认识 PowerShell cmdlet 时的提示。
  *
- * `'Select-String' 不是内部或外部命令` / `'Select-String' is not recognized as an
- * internal or external command`：说明这条命令用了 cmdlet，但整条仍被 cmd 解析
- * （例如与 `&&` 混写 —— 那种写法 cmd 和 PowerShell 都不可能全对）。
- * 说清「要么全用 cmd，要么把 PowerShell 部分包成 powershell -Command "…"」，
- * 比让模型再撞一次便宜。
+ * `'Out-String' 不是内部或外部命令` / `'Out-String' is not recognized as an internal
+ * or external command`：说明这条命令用了 cmdlet，但整条仍被 cmd 解析。
+ * 最常见的两种成因：① 与 cmd 专属串联（`&` / `&&` / `||`）混写 —— 那种写法 cmd 和
+ * PowerShell 都不可能全对；② 依赖 `%VAR%` 展开（PowerShell 不认），只能留在 cmd。
+ * 两种情况都给出做法，别只报事实。
  */
-const POWER_SHELL_CMDLET_NAME = /^(?:Get|Set|New|Remove|Add|Copy|Move|Rename|Start|Stop|Select|Where|ForEach|Sort|Group|Measure|Test|Join|Split|Resolve|Invoke|ConvertTo|ConvertFrom|Out|Write|Clear|Wait|Update|Enable|Disable|Import|Export|Install|Uninstall|Push|Pop)-[A-Za-z]/;
+const POWER_SHELL_CMDLET_NAME = /^(?:Get|Set|New|Remove|Add|Copy|Move|Rename|Start|Stop|Select|Where|ForEach|Sort|Group|Measure|Test|Join|Split|Resolve|Invoke|ConvertTo|ConvertFrom|Out|Write|Clear|Wait|Update|Enable|Disable|Import|Export|Install|Uninstall|Push|Pop|Format|Tee|Compare|Expand)-[A-Za-z]/;
 
 function powerShellCmdletInCmd(output: string, platform: string): string | undefined {
   if (platform !== 'win32') return undefined;
@@ -126,5 +126,14 @@ export function commandEnvironmentHint(command: string, output: string, platform
   }
   const cmdlet = powerShellCmdletInCmd(output, platform);
   if (cmdlet) return { key: 'tool.runCommand.powerShellCmdlet', values: { name: cmdlet } };
+  /*
+   * `pnpm` 在 Windows 上是 `pnpm.ps1` → corepack → `node_modules/corepack/dist/pnpm.js`。
+   * Node 安装时没勾选 corepack（或用 nvm 换过版本）就会出现
+   * `Cannot find module 'C:\Program Files\nodejs\node_modules\corepack\dist\pnpm.js'`。
+   * 这不是项目的问题，换 `npm run <script>`、`npx pnpm …` 都行 —— 直接说出来。
+   */
+  if (/corepack[\\/]dist[\\/]pnpm\.js/i.test(output) && /Cannot find module/i.test(output)) {
+    return { key: 'tool.runCommand.corepackMissing' };
+  }
   return undefined;
 }

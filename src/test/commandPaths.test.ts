@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { commandPathViolation } from '../agent/commandPaths';
-import { bashOnlySyntax, pathRewriteSuggestion, shellFor } from '../agent/toolExecutor';
+import { bashOnlySyntax, pathRewriteSuggestion, shellFor, powerShellCommand, toleratedPowerShellExit } from '../agent/toolExecutor';
 
 const roots = [
   '/Users/test/AI projects/DeepSeek-HWChat',
@@ -428,7 +428,67 @@ test('shell selection: cmd 专属串联（& / && / ||）一律留在 cmd', () =>
   assert.equal(shellFor('powershell -NoProfile -File x.ps1 2>&1 | Select-Object -Last 5', 'win32'), 'powershell.exe');
 });
 
-test('PowerShell 调用后面跟引号外的管道 → 交给 PowerShell 解析', () => {
+test('交给 PowerShell 之前先固定控制台编码（否则 native stderr 会被当 GBK 解成乱码）', () => {
+  /*
+   * 真实故障（2026-11-19）：`node … 2>&1 | Select-Object -Last 40` 的输出里，
+   * PowerShell 自己的「所在位置 行:1」是对的，嵌进去的正文却是
+   * `鉁?淇℃伅涓績鏈?7 澶勯��鍖栵細` —— 同一段 stderr 被劈成两种编码。
+   */
+  const wrapped = powerShellCommand('node a.mjs 2>&1 | Select-Object -Last 5');
+  assert.match(wrapped, /^\[Console\]::OutputEncoding=\[Text\.Encoding\]::UTF8;/);
+  assert.ok(wrapped.endsWith('node a.mjs 2>&1 | Select-Object -Last 5'), '原命令必须原样保留在末尾');
+});
+
+test('exit code 1 由「命令自己要求忽略错误」造成时不算失败', () => {
+  /*
+   * 真实故障（2026-11-19）：`Start-Sleep 45; Get-Process instindex,cargo,rustc
+   * -ErrorAction SilentlyContinue | Format-Table` 输出正确（列出还在跑的 cargo），
+   * 但 instindex 不存在让 `$?` 变 false → 退出码 1。三轮后被判「连续 3 轮全部失败」停机。
+   */
+  const cmd = 'Start-Sleep -Seconds 45; Get-Process instindex,cargo -ErrorAction SilentlyContinue | Format-Table';
+  assert.equal(toleratedPowerShellExit(cmd, 1, '', 'powershell.exe'), true);
+  // stderr 里确实有报错 → 不算「被忽略」
+  assert.equal(toleratedPowerShellExit(cmd, 1, 'Access denied', 'powershell.exe'), false);
+  // 没写忽略错误、不是 PowerShell、退出码不是 1 → 都不放行
+  assert.equal(toleratedPowerShellExit('Get-Process instindex | Format-Table', 1, '', 'powershell.exe'), false);
+  assert.equal(toleratedPowerShellExit(cmd, 1, '', true), false);
+  assert.equal(toleratedPowerShellExit(cmd, 2, '', 'powershell.exe'), false);
+  // 原生命令的失败照旧算失败
+  assert.equal(toleratedPowerShellExit('npm test -ErrorAction SilentlyContinue', 1, '', true), false);
+});
+
+test('shell selection: 分号串联交给 PowerShell（cmd 把 ; 当参数分隔符）', () => {
+  /*
+   * 真实故障（2026-11-19），连着三条：
+   *   cd "D:\…\Personal-Workstation-OS"; git fetch …   → 系统找不到指定的路径
+   *   git fetch …; echo "---"; git rev-list …          → error: unknown option `-AHEAD-BEHIND---;'
+   *   git log --oneline -3; git stash list             → fatal: '3;': not an integer
+   */
+  assert.equal(shellFor('git log --oneline -3; git stash list', 'win32'), 'powershell.exe');
+  assert.equal(shellFor('cd "D:\\AI projects\\x"; git fetch --all --prune 2>&1; echo done', 'win32'), 'powershell.exe');
+  // 引号里的分号、cmd 变量、cmd 串联都不该触发切换
+  assert.equal(shellFor('findstr /n /c:"a;b" file.txt', 'win32'), true);
+  assert.equal(shellFor('echo %PATH%; dir', 'win32'), true, '%VAR% 只有 cmd 认');
+  assert.equal(shellFor('a & b; c', 'win32'), true, 'cmd 串联优先');
+  // 单个分号都没有的普通命令不受影响
+  assert.equal(shellFor('git status', 'win32'), true);
+});
+
+test('shell selection: 任何标准动词开头的 cmdlet 都认（不要漏 Out-String / Format-Table）', () => {
+  /*
+   * 真实故障（2026-11-19）：`git diff … | Out-String -Width 200` 被留在 cmd，
+   * 报「'Out-String' 不是内部或外部命令」—— 手写清单只列了 Out-File / Out-Null。
+   */
+  assert.equal(shellFor('git --no-pager diff -U3 -- "a.ts" | Out-String -Width 200', 'win32'), 'powershell.exe');
+  assert.equal(shellFor('Get-Process x | Format-Table -AutoSize', 'win32'), 'powershell.exe');
+  assert.equal(shellFor('Get-Content a.txt | Tee-Object b.txt', 'win32'), 'powershell.exe');
+  assert.equal(shellFor('Compare-Object $a $b', 'win32'), 'powershell.exe');
+  // 普通命令（没有 Verb-Noun）不受影响
+  assert.equal(shellFor('node -e "console.log(1)"', 'win32'), true);
+  assert.equal(shellFor('git log --oneline -3', 'win32'), true);
+});
+
+test('shell selection: PowerShell 调用后面跟引号外的管道 → 交给 PowerShell 解析', () => {
   /*
    * 真实故障（2026-11-18）：
    *   powershell -File "…\pack-iap.ps1" 2>&1 | Select-Object -Last 25

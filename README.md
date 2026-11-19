@@ -8,6 +8,18 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.22
+
+### Another group of bugs that made working commands look like failures
+
+After 93 commands a task was stopped with "3 rounds of tool calls all failed" — checking them one by one, only one was a real failure:
+
+- **`a; b` chaining**: cmd treats `;` as an *argument* separator, so `git log --oneline -3; git stash list` becomes `git log "-3;"` (`fatal: '3;': not an integer`). Such commands now go to PowerShell; quoted semicolons and commands using `&` / `&&` / `%VAR%` are untouched.
+- **`Out-String` / `Format-Table` were not detected as cmdlets**: detection now matches any standard `Verb-Noun` instead of a hand-written list.
+- **Chinese output from `node … 2>&1 | Select-Object` came out as mojibake**: PowerShell decoded the native command's UTF-8 stderr as GBK, splitting one stream into two encodings. Commands routed to PowerShell now start by pinning its console encoding to UTF-8.
+- **Exit code 1 while the command actually succeeded**: an error swallowed by `-ErrorAction SilentlyContinue` still flips `$?`; that exit code no longer counts as a failure (the result says so explicitly).
+- **"3 rounds all failed" now only counts failures that returned nothing at all**: output means the tool is working. Windows exit codes are too unreliable to serve as evidence that "the environment is broken".
+- **`pnpm` failing because corepack is missing**: the hint now gives `npm run <script>` / `npx pnpm@<version>` / `npm i -g corepack` as concrete next steps.
 ## What's new in 0.4.21
 
 ### A message sent mid-run now interrupts the task the way Copilot does, then re-analyses and continues
