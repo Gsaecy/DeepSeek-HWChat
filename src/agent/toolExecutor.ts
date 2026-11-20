@@ -38,7 +38,7 @@ import { shouldAutoBackground } from './serverCommands';
 import { effectiveTimeoutSeconds, timeoutAdvice, timeoutClampNotice, timeoutClampSummary } from './commandTimeout';
 import { commandEnvironmentHint, selfNestedCdHint, stripRedundantLeadingCd } from './commandHints';
 import { diagnoseMissingOldText, findAlreadyApplied, findIndentTolerantWindow, renderMissingOldTextDiagnosis, shiftIndent } from './replaceDiagnostics';
-import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, sensitiveFilePolicyFor } from '../core/permissions';
+import { CommandRiskTier, classifyCommandTier, commandPolicyFor, isAutonomousPreset, presetAsksAboutCredentials, sensitiveFilePolicyFor } from '../core/permissions';
 import { gitWriteOperation } from './conversationScope';
 import { detectVersionBump, versionBumpCommand } from './releasePolicy';
 import { CommandQueueFullError, CommandScheduler } from './commandScheduler';
@@ -1090,28 +1090,39 @@ export class ToolExecutor implements vscode.Disposable {
     /*
      * 内容处理层（2026-11-08 外部评审 ⑥）：文件名白名单挡不住
      * `config.json`、`notes.md`、`backup.txt` 里的明文密钥。
-     * 命中时先问一次「这段内容会发给模型提供商」—— `askAll` 下本来就是 ask，
-     * 这里补的是 `review`/`autopilot` 下读敏感内容的那一次确认。
+     *
+     * 但这条扫描只能**在用户要求被问的档位**弹窗（askAll / review）：它按正则判断，
+     * 登录页里的 `password: newPassword` 这种变量引用也会命中，Autopilot 下每次读
+     * 都弹一次等于把「自动」变成「每次询问」（真实反馈 2026-11-20）。
+     * 自动 / 完全访问档位改为在读到的正文末尾附一句提示：内容照常给模型，但用户和
+     * 模型都知道这里出现过疑似凭据。
      */
     const findings = scanSecrets(text);
-    if (findings.length && sensitiveFilePolicyFor(settings) !== 'allow') {
-      const kinds = secretKinds(findings).join(tt('common.listSeparator'));
-      const approved = approval
-        ? await approval.request({
-          callId: approval.callId,
-          name: 'read_file',
-          risk: 'read',
-          summary: tt('tool.readSecretSummary', { path: resolved.relativePath, kinds }),
-          detail: tt('tool.readSecretDetail', { count: findings.length, kinds }),
-        })
-        : true;
-      if (!approved) return deniedResult(tt('tool.readSecretDenied'));
+    let secretNotice = '';
+    if (findings.length) {
+      const kinds = secretKinds(findings)
+        .map((kind) => tt(`chat.secretKind.${kind}`))
+        .join(tt('common.listSeparator'));
+      if (presetAsksAboutCredentials(settings.permissionPreset)) {
+        const approved = approval
+          ? await approval.request({
+            callId: approval.callId,
+            name: 'read_file',
+            risk: 'read',
+            summary: tt('tool.readSecretSummary', { path: resolved.relativePath, kinds }),
+            detail: tt('tool.readSecretDetail', { count: findings.length, kinds }),
+          })
+          : true;
+        if (!approved) return deniedResult(tt('tool.readSecretDenied'));
+      } else {
+        secretNotice = `\n\n${tt('tool.readSecretNotice', { count: findings.length, kinds })}`;
+      }
     }
     text = truncate(redact(text), settings.maxToolOutputBytes);
     return {
       status: 'success',
       summary: tt('tool.readSummary', { path: resolved.relativePath, size: formatBytes(stat.size) }),
-      content: `${text}${encodingNotice}`,
+      content: `${text}${encodingNotice}${secretNotice}`,
       approval: 'not-required',
     };
   }

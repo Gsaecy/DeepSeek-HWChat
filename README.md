@@ -20,6 +20,7 @@ After 93 commands a task was stopped with "3 rounds of tool calls all failed" �
 - **Exit code 1 while the command actually succeeded**: an error swallowed by `-ErrorAction SilentlyContinue` still flips `$?`; that exit code no longer counts as a failure (the result says so explicitly).
 - **"3 rounds all failed" now only counts failures that returned nothing at all**: output means the tool is working. Windows exit codes are too unreliable to serve as evidence that "the environment is broken".
 - **`pnpm` failing because corepack is missing**: the hint now gives `npm run <script>` / `npx pnpm@<version>` / `npm i -g corepack` as concrete next steps.
+- **Autopilot and Full access no longer prompt for "suspected credentials"**: reading a login page (`password: newPassword`, a variable reference) used to raise a confirmation card. Content scanning now only prompts under *Ask every time* / *Ask on risky actions*; the other presets just append a note. The false positive itself is fixed too (an unquoted bare identifier counts as a variable reference). **Full access no longer asks before reading sensitive files either** — use Autopilot (which blocks them outright, without a prompt) if you want that guard.
 ## What's new in 0.4.21
 
 ### A message sent mid-run now interrupts the task the way Copilot does, then re-analyses and continues
@@ -540,7 +541,7 @@ Skills from other sources (`.hwchat/skills`, `.agents/skills`, `.claude/skills`,
 | Ask every time | Ask | Ask | Ask | Ask | Deny outright | Blocked |
 | Ask on risky actions | Allow | Allow (in workspace) | Allow | Allow | Ask | Blocked |
 | Autopilot | Allow | Allow (in workspace) | Allow | Allow | Allow | Blocked |
-| Full access | Allow | Allow (in workspace) | Allow | Allow | Allow | Ask |
+| Full access | Allow | Allow (in workspace) | Allow | Allow | Allow | Allow |
 
 - Read-only commands are side-effect-free (`ls`, `git status`, `grep`…); regular commands are everyday operations (install, build, commit…); dangerous commands cover privilege escalation, destructive deletion, disk wiping, pushes to a remote and piping remote scripts into a shell.
 - **`git push` is always a dangerous command** (not only a forced push): `Ask every time` denies it outright, `Ask on risky actions` confirms it, `Autopilot` / `Full access` run it unattended. The check skips git's global options, so `git -C . push`, `git --no-pager push`, `git -c k=v push` and `bash -c "git push"` are caught just like `git push`. **`git pull` / `git fetch` / `git clone` are not in that tier**: they are regular commands and run without asking from `Ask on risky actions` upwards (the default preset still asks).

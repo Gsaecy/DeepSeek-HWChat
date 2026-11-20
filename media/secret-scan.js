@@ -197,7 +197,18 @@
    * 只在这条路径上用：固定格式密钥（`AKIA…`、`sk-…`）由前缀规则判定，
    * 它们本身就是密钥形状，绝不能被「看起来像变量名」放过。
    */
-  function isReferenceValue(value) {
+  /**
+   * 不带引号的**裸标识符**是变量引用（`password: newPassword`），不是字面量。
+   *
+   * 真实误报（2026-11-20）：登录页 `Gate.tsx` 里的 `password: newPassword` 被当成
+   * 明文密码，每读一次该文件就弹一次「疑似凭据」。只对不带引号的值生效 ——
+   * `password: 'plaintextsecret'` 是字面量，带数字的 `hunter2abc` 也是，照旧报出来。
+   */
+  const BARE_IDENTIFIER = /^[A-Za-z_$][A-Za-z]*$/;
+
+  function isReferenceValue(value, quoted) {
+    const text = String(value == null ? '' : value);
+    if (!quoted && BARE_IDENTIFIER.test(text)) return true;
     return isReference(value);
   }
 
@@ -260,7 +271,7 @@
       const value = match[2] || match[4] || '';
       // 值总在匹配串末尾（前面是字段名、分隔符与可选引号），用它定位值本身。
       const valueStart = match.index + match[0].lastIndexOf(value);
-      if (value && !isReferenceValue(value) && claim(valueStart, valueStart + value.length) && !isPlaceholder(value)) {
+      if (value && !isReferenceValue(value, /["'`]/.test(match[0])) && claim(valueStart, valueStart + value.length) && !isPlaceholder(value)) {
         findings.push({
           kind: ASSIGNMENT_RULE.kind,
           field: String(field).toLowerCase(),

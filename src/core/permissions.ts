@@ -91,7 +91,14 @@ export const PERMISSION_PRESET_PROFILES: Record<PermissionPreset, PermissionPres
     readOnlyCommandPolicy: 'allow',
     commandPolicy: 'allow',
     dangerousCommandPolicy: 'allow',
-    sensitiveFilePolicy: 'ask',
+    /*
+     * 完全访问 = 用户明确接受全部风险、不要再被打断。
+     *
+     * 旧值是 'ask'：读 `.env` 之类会弹一次确认 —— 名字叫「完全访问」却还在问，
+     * 用户实测后直接质疑（2026-11-20）。真要保护敏感文件请用 Autopilot（那里是
+     * `deny`，直接拒绝、不弹窗）或更严的预设。
+     */
+    sensitiveFilePolicy: 'allow',
   },
 };
 
@@ -171,6 +178,20 @@ export function commandPolicyFor(settings: ChatSettings, tier: CommandRiskTier):
 /** 敏感文件读取的最终策略：允许 / 逐次确认 / 禁止。 */
 export function sensitiveFilePolicyFor(settings: ChatSettings): GuardedPolicy {
   return PERMISSION_PRESET_PROFILES[settings.permissionPreset].sensitiveFilePolicy;
+}
+
+/**
+ * 这个预设要不要为「文件**内容**里有疑似凭据」停下来问一次。
+ *
+ * 与「敏感**文件**」是两件事：路径守卫（`.env`、`id_rsa`）按 `sensitiveFilePolicy`
+ * 走，而这里是内容扫描 —— 它天然有误报（登录页里 `password: newPassword` 就是变量
+ * 引用），只适合在用户明确要求「问我」的档位弹窗。
+ *
+ * 真实反馈（2026-11-20）：Autopilot 下读 `Gate.tsx` 仍弹「文件里有疑似凭据」，
+ * 用户一问「自动模式为什么还问？」—— 自动 / 完全访问的语义就是不要打断。
+ */
+export function presetAsksAboutCredentials(preset: PermissionPreset): boolean {
+  return preset === 'askAll' || preset === 'review';
 }
 
 /** 嵌套 shell / 解释器的 `-c` 载荷：静态无法判定它会做什么。 */

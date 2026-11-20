@@ -42,6 +42,38 @@
 **测试**：`commandPaths.test.ts` 新增（分号串联、动词表 cmdlet、编码前置与退出码容忍）；
 `agentLoop.test.ts` 新增「有输出的失败不计入停机」；`commandEnvironment.test.ts` 新增
 2 条（corepack 缺失提示、cmdlet 误用提示）。全量 1352 条：1311 通过，39 条失败与改动前
+
+（本轮后续补的权限修复见下一节。）
+
+### 权限预设：自动 / 完全访问不再为「疑似凭据」弹窗（用户 2026-11-20）
+
+**现场**：用户切成 Autopilot，读 `共享工程/src/app/Gate.tsx`（登录页）时仍弹出
+「允许 Agent 读取文件？文件里有疑似凭据（credentialAssignment）」；切到完全访问后
+同样会弹。用户连问两次：自动模式为什么还问、完全访问为什么也问。
+
+**三个问题一起修掉**：
+
+1. **内容扫描在自动档位不该弹窗**。`read_file` 的内容扫描（`scanSecrets`）命中时，
+   旧逻辑是「只要预设不是 allow 就弹卡片」，而 autopilot / review / full 的
+   `sensitiveFilePolicy` 都不是 allow —— 于是「自动」档位每读一次登录页都要点一次。
+   现在只有 `askAll` / `review` 会为内容命中弹窗（`presetAsksAboutCredentials`）；
+   Autopilot / 完全访问改为在正文末尾附一句提示（内容照常给模型，用户与模型都知道
+   这里出现过疑似凭据）。
+2. **完全访问的敏感文件策略改为 allow**。旧值是 `ask`，所以读 `.env` 这类文件还会
+   弹一次确认 —— 名字叫「完全访问」却仍在打断用户。现在四档语义统一：
+   `askAll` 敏感文件禁止、`review` / `autopilot` 禁止（不弹窗）、`full` 允许。
+   预设说明与中英文对照表同步改写（矩阵由策略值推导，不会再出现文案与行为不一致）。
+3. **误报本身也修了**：`Gate.tsx` 命中的是 `password: newPassword` —— 值是不带引号的
+   驼峰**变量名**，旧判据把它当成明文密码。现在「不带引号的裸标识符」视为变量引用
+   （宿主 `core/secretScan` 与界面 `media/secret-scan.js` 两份实现同时改）；
+   `password: 'plaintextsecret'`、`password = hunter2abc` 这类字面量照旧报出来，
+   并有单测钉住两份实现不分叉。
+
+**测试**：`permissions.test.ts` 改为断言「完全访问不再询问」并新增
+`presetAsksAboutCredentials` 四档断言；`toolExecutor.test.ts` 改为断言完全访问下
+零确认、Autopilot 下敏感文件直接拒绝且不弹窗；`secretScan.test.ts` 新增误报回归 +
+宿主/界面两份实现一致性比对。全量 1355 条：1314 通过，39 条失败与改动前基线逐条一致。
+
 基线逐条一致（Windows 平台既有失败）。
 ## 0.4.21（2026-11-19）
 

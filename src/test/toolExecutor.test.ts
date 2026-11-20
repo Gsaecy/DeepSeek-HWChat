@@ -349,13 +349,17 @@ test('review 预设：敏感文件直接拒绝，且不泄漏内容', async () =
   assert.doesNotMatch(result.content, /abcdef123456/);
 });
 
-test('完全访问预设：敏感文件逐次确认，拒绝后读不到', async () => {
-  const denied = await run('read_file', { path: 'DeepSeek-HWChat/.env' }, { preset: 'full', approve: false });
-  assert.equal(denied.requests.length, 1);
-  assert.equal(denied.result.status, 'denied');
-
-  const allowed = await run('read_file', { path: 'DeepSeek-HWChat/.env' }, { preset: 'full', approve: true });
+test('完全访问预设：敏感文件也不再询问，直接读（用户 2026-11-20 反馈）', async () => {
+  // 完全访问的语义是「全部自动执行、不再打断」。要保护敏感文件请用 Autopilot（那里是 deny）。
+  const allowed = await run('read_file', { path: 'DeepSeek-HWChat/.env' }, { preset: 'full', approve: false });
+  assert.equal(allowed.requests.length, 0, '完全访问下不该再弹确认框');
   assert.equal(allowed.result.status, 'success');
+});
+
+test('Autopilot 预设：敏感文件直接拒绝（不弹窗，也不是放行）', async () => {
+  const { result, requests } = await run('read_file', { path: 'DeepSeek-HWChat/.env' }, { preset: 'autopilot' });
+  assert.equal(requests.length, 0, '拒绝是确定性的，不该弹窗');
+  assert.equal(result.status, 'denied');
 });
 
 test('敏感文件内容在工具输出里被脱敏', async () => {

@@ -136,8 +136,8 @@ const DICTIONARY: Record<string, Entry> = {
   },
   'preset.full.label': { zh: '完全访问', en: 'Full access' },
   'preset.full.summary': {
-    zh: '全部自动执行（含危险命令），读取敏感文件时逐次确认',
-    en: 'Everything runs automatically, dangerous commands included; reading sensitive files needs confirmation',
+    zh: '全部自动执行（含危险命令与敏感文件），任何操作都不再询问',
+    en: 'Everything runs automatically — dangerous commands and sensitive files included; nothing is asked',
   },
 
   // 权限预设：对照表表头与单元格
@@ -954,6 +954,7 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.readSecretSummary': { zh: '读取 {path}：文件里有疑似凭据（{kinds}）', en: 'Read {path}: the file contains suspected credentials ({kinds})' },
   'tool.readSecretDetail': { zh: '命中 {count} 处疑似凭据（{kinds}）。继续读取会把这段内容发给模型提供商。放行之前请确认：这确实是你要处理的内容，而不是别人的密钥/隐私数据。只想看结构就改用 search_files 或只读片段。', en: 'Found {count} suspected secret(s) ({kinds}). Continuing sends this content to the model provider. Confirm this is content you intend to process, not someone else\'s credentials or private data; if you only need the structure, use search_files or read a narrower range.' },
   'tool.readSecretDenied': { zh: '已取消读取：文件含疑似凭据，未发送给模型。', en: 'Read cancelled: the file contains suspected secrets, so nothing was sent to the model.' },
+  'tool.readSecretNotice': { zh: '（提示：这段内容里有 {count} 处疑似凭据（{kinds}）。当前预设不会因此打断你，但请只引用必要的片段，不要把凭据原文复制到回复里。）', en: '(Note: this content contains {count} suspected secret(s) ({kinds}). The current preset does not prompt for this, but quote only what you need and never copy the secret itself into the reply.)' },
   'tool.readSummary': { zh: '读取 {path}（{size}）', en: 'Read {path} ({size})' },
   'tool.encodingNotice': {
     zh: '注意：这个文件的编码是 {encoding}（不是 UTF-8）。上面的正文已按真实编码解码，可以直接阅读；但本工具拒绝改写它 —— 用 UTF-8 覆盖写会把文件里的中文变成乱码。需要修改时请先让用户在编辑器里另存为 UTF-8，或由用户手动改。',

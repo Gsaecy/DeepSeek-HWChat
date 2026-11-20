@@ -76,6 +76,18 @@ const REFERENCE_PATTERNS: readonly RegExp[] = [
   /^(?:undefined|null|true|false)$/i,
 ];
 
+/**
+ * 裸标识符：`password: newPassword`、`token = formData` 这类**变量引用**。
+ *
+ * 真实误报（2026-11-20）：登录页 `Gate.tsx` 里写着 `password: newPassword`，
+ * 值 `newPassword` 不带引号、是个驼峰变量名，于是被当成明文密码 —— 每读一次这个
+ * 文件就弹一次「文件里有疑似凭据」，Autopilot 下也一样。
+ *
+ * 只对**不带引号**的值生效：`password: 'plaintextsecret'` 是字面量，照旧报出来。
+ * 一旦出现数字、连字符这类密钥特征（`hunter2`、`aB3xK9pQ`），也照旧报出来。
+ */
+const BARE_IDENTIFIER = /^[A-Za-z_$][A-Za-z]*$/;
+
 function isReference(value: string): boolean {
   return !value || REFERENCE_PATTERNS.some((pattern) => pattern.test(value));
 }
@@ -171,6 +183,8 @@ export function scanSecrets(text: string): SecretFinding[] {
     const value = match[2] ?? match[4] ?? '';
     if (!field || !value) continue;
     if (isPlaceholder(value) || isReference(value)) continue;
+    // 不带引号的裸标识符是变量引用（`password: newPassword`），不是字面量。
+    if (!/["'`]/.test(match[0]) && BARE_IDENTIFIER.test(value)) continue;
     const start = match.index ?? 0;
     const end = start + match[0].length;
     if (!claim(start, end)) continue;

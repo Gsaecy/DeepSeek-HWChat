@@ -9,6 +9,7 @@ import {
   isAutonomousPreset,
   PERMISSION_PRESET_DETAILS,
   PERMISSION_PRESET_PROFILES,
+  presetAsksAboutCredentials,
   sensitiveFilePolicyFor,
 } from '../core/permissions';
 import { ChatSettings, PermissionPreset } from '../core/types';
@@ -191,13 +192,21 @@ test('每次询问逐次确认所有命令，危险命令直接拒绝', () => {
   assert.equal(sensitiveFilePolicyFor(askAll), 'deny');
 });
 
-test('完全访问自动执行危险命令，但读取敏感文件要逐次确认', () => {
+test('完全访问自动执行危险命令与敏感文件，不再询问任何确认', () => {
   const full = settings('full');
   assert.equal(commandPolicyFor(full, 'safe'), 'allow');
   assert.equal(commandPolicyFor(full, 'standard'), 'allow');
   assert.equal(commandPolicyFor(full, 'severe'), 'allow');
-  assert.equal(sensitiveFilePolicyFor(full), 'ask');
-  assert.equal(PERMISSION_PRESET_PROFILES.full.sensitiveFilePolicy, 'ask');
+  // 完全访问的语义就是「不要再打断」（用户 2026-11-20 实测反馈：都切成完全访问了还弹框）
+  assert.equal(sensitiveFilePolicyFor(full), 'allow');
+  assert.equal(PERMISSION_PRESET_PROFILES.full.sensitiveFilePolicy, 'allow');
+});
+
+test('只有「每次询问 / 风险操作询问」会为文件内容里的疑似凭据打断', () => {
+  assert.equal(presetAsksAboutCredentials('askAll'), true);
+  assert.equal(presetAsksAboutCredentials('review'), true);
+  assert.equal(presetAsksAboutCredentials('autopilot'), false);
+  assert.equal(presetAsksAboutCredentials('full'), false);
 });
 
 test('自定义档位已移除：策略完全由预设决定，单项策略不再生效', () => {

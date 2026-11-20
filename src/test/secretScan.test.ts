@@ -294,3 +294,35 @@ test('但真的贴了密码/密钥照样要报（放宽不能放宽到这里）'
     assert.notEqual(kindsOf(text).join(','), '', `必须报：${text}`);
   }
 });
+test('源码里的变量引用不算明文凭据（password: newPassword）', () => {
+  /*
+   * 真实误报（2026-11-20）：登录页 Gate.tsx 里的 `password: newPassword` 被当成明文密码，
+   * 每读一次该文件就弹一次「文件里有疑似凭据」，Autopilot 下也一样。
+   * 宿主侧（core/secretScan）与界面侧（media/secret-scan.js）两份实现必须一致。
+   */
+  const safe = [
+    'password: newPassword',
+    'password: formData.password',
+    'token = refreshToken',
+    'apiKey: settings.apiKey',
+  ];
+  for (const text of safe) {
+    assert.equal(kindsOf(text).join(','), '', `不该触发：${text}`);
+  }
+  // 引号里的字面量、带数字的值照旧要报 —— 放宽不能放宽到这里
+  const real = [
+    "password: 'plaintextsecret'",
+    'password = hunter2abc',
+    'pwd: MyPassw0rd',
+  ];
+  for (const text of real) {
+    assert.notEqual(kindsOf(text).join(','), '', `必须报：${text}`);
+  }
+
+  // 两份实现不能分叉：同一批文本必须给出一模一样的结果。
+  const { scanSecrets: hostScan } = require('../core/secretScan') as { scanSecrets: (text: string) => Array<{ kind: string }> };
+  for (const text of [...safe, ...real]) {
+    const host = hostScan(text).map((finding) => finding.kind).join(',');
+    assert.equal(host, kindsOf(text).join(','), `宿主与界面的判定分叉了：${text}`);
+  }
+});

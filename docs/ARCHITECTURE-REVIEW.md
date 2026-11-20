@@ -25,7 +25,7 @@
 | 权限 | 四档预设 × 三档命令风险 × 敏感文件，默认 `askAll`（最严） |
 | 配置项 | 38 个 `contributes.configuration` |
 | 命令 | 19 个 |
-| 质量 | 1,352 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
+| 质量 | 1,355 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
 
 ---
 
@@ -180,7 +180,7 @@ Runner
 |---|---|---|---|---|---|---|
 | `askAll`（默认） | ask | ask | ask | ask | deny | deny |
 | `review` | allow | allow | allow | allow | ask | deny |
-| `autopilot` | allow | allow | allow | allow | ask | deny |
+| `autopilot` | allow | allow | allow | allow | allow | deny |
 | `full` | allow | allow | allow | allow | allow | allow |
 
 ### 5.2 硬边界（不随预设放宽）
@@ -206,6 +206,7 @@ Runner
 | 设施 | 位置 | 作用 |
 |---|---|---|
 | 敏感文件名单 | `toolExecutor.ts:204-205` | `.env` / `.npmrc` / `id_rsa` / `*.pem` / `.git` / `.ssh` / `.aws` 等 |
+| 内容扫描 | ead_file + core/secretScan | 只在 skAll / eview 弹窗（presetAsksAboutCredentials）；Autopilot / 完全访问只附一句提示。不带引号的裸标识符（password: newPassword）算变量引用，不报。 |
 | 界面层敏感信息提示 | `media/secret-scan.js` | 识别凭据/隐私，只报类型与长度，排除占位符 |
 | URL 可抓取性 | `src/core/research.ts:47` | 拒非 http(s)、URL 内凭据、回环/内网/单标签主机 |
 | 审计脱敏 | `src/agent/auditLog.ts:115` | Bearer / `sk-…` / `KEY=` / query 参数 / JSON 字段 |
@@ -290,7 +291,7 @@ Runner
 
 ## 10. 质量保障
 
-- **1,352 条单测**（`src/test/`）。
+- **1,355 条单测**（`src/test/`）。
 - **79 个 `test/check-*.mjs` 守护脚本**，其中若干不是静态断言，而是**真跑**：
   - 真实 Chromium：量按钮宽高、真点按钮、走完整交互（`check-settings-layout`、`check-image-attachment`、`check-capsule-*` …）；
   - 真实文件系统：大小写不同拼写是否算同一目录（`check-path-identity`）；
@@ -527,7 +528,7 @@ Runner
 # 类型检查
 npx tsc -p ./ --noEmit
 
-# 单测（1,352 条）
+# 单测（1,355 条）
 npm test
 
 # 全部守护脚本（79 个；含真实 Chromium / 真实文件系统 / 真实命令）

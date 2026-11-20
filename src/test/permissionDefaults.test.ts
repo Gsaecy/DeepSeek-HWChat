@@ -182,7 +182,7 @@ test('切换后的权限只看当前预设，切换前（全局）那一份不�
   assert.equal(widened.permissionPreset, 'full');
   assert.equal(widened.fileWritePolicy, 'allow');
   assert.equal(widened.dangerousCommandPolicy, 'allow');
-  assert.equal(widened.sensitiveFilePolicy, 'ask');
+  assert.equal(widened.sensitiveFilePolicy, 'allow');
 });
 
 /** 取一个类方法的方法体（到下一个同级方法声明为止），用于源码级接线断言。 */
