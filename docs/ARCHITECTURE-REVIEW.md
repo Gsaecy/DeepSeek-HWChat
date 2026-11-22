@@ -25,7 +25,7 @@
 | 权限 | 四档预设 × 三档命令风险 × 敏感文件，默认 `askAll`（最严） |
 | 配置项 | 38 个 `contributes.configuration` |
 | 命令 | 19 个 |
-| 质量 | 1,384 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
+| 质量 | 1,388 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
 
 ---
 
@@ -128,6 +128,7 @@ Runner
 | 命令输出 | 单条最多 32 KB，头 60% + 尾 40%，中间折叠并给出收窄写法 | `toolExecutor.ts`（`COMMAND_OUTPUT_WINDOW_BYTES`） |
 | 工作集钉住 | 每个文件保留最近一次载荷，最多 4 个 / 64 KB，优先被回头读过的路径 | `agentRunner.ts`（`pruneToolPayloads`） |
 | 折叠批量 | 攒够 keep+6 条才折（保护 DeepSeek 前缀缓存），活跃载荷 >160 KB 才按体积续折 | `agentRunner.ts`（`FOLD_BATCH`） |
+| 技能注入 | agent / plan 只下发清单（id+摘要+触发词），正文由 `load_skill` 按需取；清单上限 8 KB；chat 档位内联全文 | `skillRegistry.ts`（`prepareOnDemand`） |
 
 终止原因会翻译成人话（`agentRunner.ts:76`），并区分「超时 / 卡住 / 断网 / 用户取消」四态（`src/agent/abortReason.ts:73`）。
 
@@ -302,7 +303,7 @@ Runner
 
 ## 10. 质量保障
 
-- **1,384 条单测**（`src/test/`）。
+- **1,388 条单测**（`src/test/`）。
 - **79 个 `test/check-*.mjs` 守护脚本**，其中若干不是静态断言，而是**真跑**：
   - 真实 Chromium：量按钮宽高、真点按钮、走完整交互（`check-settings-layout`、`check-image-attachment`、`check-capsule-*` …）；
   - 真实文件系统：大小写不同拼写是否算同一目录（`check-path-identity`）；
@@ -539,7 +540,7 @@ Runner
 # 类型检查
 npx tsc -p ./ --noEmit
 
-# 单测（1,384 条）
+# 单测（1,388 条）
 npm test
 
 # 全部守护脚本（79 个；含真实 Chromium / 真实文件系统 / 真实命令）

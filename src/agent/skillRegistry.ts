@@ -53,6 +53,22 @@ export interface PreparedSkillContext {
   bytes: number;
 }
 
+/**
+ * 技能注入策略。
+ *
+ * `inline`：把技能全文写进系统提示词（旧行为）。**只在 chat 模式使用** —— 那个模式
+ * 没有工具，模型无法自己 `load_skill`，不内联就等于技能完全用不上。
+ * `on-demand`：只给一份带触发词的清单，要求模型在动手前用 `load_skill` 取全文。
+ *
+ * 为什么默认改成 `on-demand`（用户 2026-11-22 明确要求）：启用一个 `SKILL.md` 就有
+ * 几万字符进系统提示词，而系统提示词**每轮都要重发** —— 一个 40 KB 的技能在 20 步的
+ * 任务里等于重复发 800 KB。Copilot Chat 也是按需加载：清单常驻，正文只在用到时取。
+ */
+export type SkillInjectionMode = 'inline' | 'on-demand';
+
+/** 按需加载时，清单本身的字节上限（防止「一百个技能」把清单也撑爆）。 */
+const MAX_INDEX_BYTES = 8 * 1024;
+
 const WORKSPACE_PATTERNS = [
   '.hwchat/skills/*.md',
   '.agents/skills/**/SKILL.md',
@@ -387,6 +403,13 @@ export class SkillRegistry implements vscode.Disposable {
     const activationMode = vscode.workspace.getConfiguration('skillQuickLaunch').get<string>('activationMode', 'route') === 'always'
       ? 'always'
       : 'route';
+    /*
+     * chat 模式没有工具，模型无法 `load_skill` —— 那时必须内联全文，否则启用的技能
+     * 等于没启用。有工具的档位一律按需加载（见 `SkillInjectionMode` 的说明）。
+     */
+    if (mode !== 'chat') {
+      return this.prepareOnDemand(selected, query, activationMode);
+    }
     const preload: SkillRecord[] = [];
     const routable: SkillRecord[] = [];
 
@@ -394,8 +417,8 @@ export class SkillRegistry implements vscode.Disposable {
       const quickLaunchRoute = activationMode === 'route' && skill.source === 'copilot' && skill.defaultEnabled;
       if (!quickLaunchRoute) {
         preload.push(skill);
-      } else if (mode === 'chat') {
-        if (routeMatches(skill, query)) preload.push(skill);
+      } else if (routeMatches(skill, query)) {
+        preload.push(skill);
       } else {
         routable.push(skill);
       }
@@ -435,6 +458,63 @@ export class SkillRegistry implements vscode.Disposable {
       prompt: promptParts.join('\n\n'),
       preloaded,
       routableIds: routeTable.map((skill) => skill.id),
+      bytes,
+    };
+  }
+
+  /**
+   * 按需加载：清单常驻、正文不进提示词。
+   *
+   * 清单里每一行都带 id、名称、摘要、适用场景与触发词 —— 这些正是模型判断
+   * 「要不要用、用哪一个」所需的全部信息；正文由 `load_skill` 在动手前取回。
+   *
+   * `preloaded` 恒为空：没有内联就谈不上「已使用」，界面只会显示模型真正加载过的技能。
+   * `routableIds` 包含**全部**被选中的技能，保证 `load_skill` 认这些 id（否则模型
+   * 照着清单调用会被判「未知技能」，那是最糟的一种失败）。
+   */
+  private prepareOnDemand(
+    selected: SkillRecord[],
+    query: string,
+    activationMode: 'route' | 'always',
+  ): PreparedSkillContext {
+    if (!selected.length) return { prompt: '', preloaded: [], routableIds: [], bytes: 0 };
+    /*
+     * 排序：与本轮请求相关的排前面。
+     *
+     * 不相关的不是删掉（用户既然启用了，就该一直可见），只是让模型先看到更可能的
+     * 那几个 —— 清单超过十几个时，这一点直接影响它挑得对不对。
+     */
+    const ranked = [...selected].sort((left, right) => {
+      const relevant = (skill: SkillRecord): number => {
+        if (activationMode === 'route' && skill.source === 'copilot' && skill.defaultEnabled && !routeMatches(skill, query)) return 1;
+        return routeMatches(skill, query) ? 2 : 0;
+      };
+      return relevant(right) - relevant(left);
+    });
+    const lines: string[] = [];
+    let bytes = 0;
+    let dropped = 0;
+    for (const skill of ranked) {
+      const line = skillRouteLine(skill);
+      const lineBytes = Buffer.byteLength(line) + 1;
+      if (bytes + lineBytes > MAX_INDEX_BYTES) {
+        dropped += 1;
+        continue;
+      }
+      lines.push(line);
+      bytes += lineBytes;
+    }
+    const header = [
+      'The user enabled the following local skills. Their full instructions are NOT in this prompt.',
+      'Before acting on a task that matches one of them, call load_skill with its id and follow the returned instructions.',
+      'A skill the user selected for this request must be loaded before you act on that work — skipping it means ignoring what they asked for. Do not load unrelated skills.',
+    ].join(' ');
+    return {
+      prompt: [header, ...lines, dropped ? `…(${dropped} more skill(s) not listed; use load_skill by id if needed)` : '']
+        .filter(Boolean)
+        .join('\n'),
+      preloaded: [],
+      routableIds: selected.map((skill) => skill.id),
       bytes,
     };
   }

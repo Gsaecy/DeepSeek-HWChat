@@ -56,6 +56,12 @@ With the same model, smoothness comes down to two things: how many tokens each r
 - **The prompts that ship every round are shorter.** `TODO_LIST_PROMPT`, `NOTICE_PROMPT` and `REPLY_SHAPE_PROMPT` kept every rule but lost their repeated explanations — together about 5,600 → 4,500 characters, paid on every round of every task.
 - **Context folding now happens in batches.** DeepSeek caches by **prefix**, so changing an early message invalidates everything after it. The old code folded the oldest tool payload once per new result — precisely at an early position — so **every round broke the cache**, making a 20-step task 20 full recomputations. Folding now waits until `keep + 6` payloads accumulate and then folds down to `keep` at once; a separate 160 KB live-budget check handles genuinely large outputs. The rounds in between keep an identical prefix and actually hit the cache.
 
+### Skills load on demand instead of shipping their full text
+
+Enabling a skill used to inline its **entire** `SKILL.md` into the system prompt, and the system prompt is re-sent on every round — local skills are typically 10–40 KB, so one 40 KB skill cost ~800 KB of repeated input across a 20-step task.
+
+Now agent and plan modes get a **manifest only** (id, name, summary, when to use it, trigger words) and the model calls `load_skill` before acting; the full text enters the conversation only when it is actually used. Chat mode still inlines the text, because that mode has no tools and could never load it. The manifest itself is capped at 8 KB — extra skills are summarised as "N more, load by id" while every selected id stays loadable — and the "used" badge now only appears for skills that were really loaded.
+
 ## What's new in 0.4.22
 
 ### Another group of bugs that made working commands look like failures
