@@ -127,6 +127,7 @@ Runner
 | 读取窗口 | `read_file` 默认 600 行 / 48 KB，带行号 + 继续读起点 | `toolExecutor.ts`（`READ_WINDOW_LINES`） |
 | 命令输出 | 单条最多 32 KB，头 60% + 尾 40%，中间折叠并给出收窄写法 | `toolExecutor.ts`（`COMMAND_OUTPUT_WINDOW_BYTES`） |
 | 工作集钉住 | 每个文件保留最近一次载荷，最多 4 个 / 64 KB，优先被回头读过的路径 | `agentRunner.ts`（`pruneToolPayloads`） |
+| 折叠批量 | 攒够 keep+6 条才折（保护 DeepSeek 前缀缓存），活跃载荷 >160 KB 才按体积续折 | `agentRunner.ts`（`FOLD_BATCH`） |
 
 终止原因会翻译成人话（`agentRunner.ts:76`），并区分「超时 / 卡住 / 断网 / 用户取消」四态（`src/agent/abortReason.ts:73`）。
 

@@ -608,12 +608,23 @@ function toolContentAt(messages: readonly ChatRequestMessage[], index: number): 
   return String(messages[index]?.content ?? '');
 }
 
-test('按条数折：只保留最近 keep 条原文', () => {
-  const messages = [0, 1, 2, 3, 4].map((index) => toolPayload(index, 100));
-  const folded = pruneToolPayloads(messages);
-  assert.equal(folded, 2, '5 条保留 3 条 → 折 2 条');
-  assert.match(toolContentAt(messages, 0), /"folded":true/);
-  assert.doesNotMatch(toolContentAt(messages, 4), /"folded":true/);
+test('按条数折：攒够一批才折，且一次折到 keep（保住前缀缓存）', () => {
+  /*
+   * 旧实现每来一条就折一条最旧的 —— 那正好在历史靠前的位置，DeepSeek 的前缀缓存
+   * 每轮都被打断，二十几步的任务等于二十几次全量重算。现在攒够 keep + FOLD_BATCH
+   * 才折叠一次。
+   */
+  const short = [0, 1, 2, 3, 4].map((index) => toolPayload(index, 100));
+  assert.equal(pruneToolPayloads(short), 0, '5 条还没到阈值，一个字都不该动');
+
+  const many = Array.from({ length: 12 }, (_, index) => toolPayload(index, 100));
+  const folded = pruneToolPayloads(many);
+  assert.ok(folded >= 6, `越过阈值后要一次折掉一批，实际 ${folded}`);
+  assert.match(toolContentAt(many, 0), /"folded":true/);
+  assert.doesNotMatch(toolContentAt(many, 11), /"folded":true/, '最新一条永远不折');
+  // 剩下的原文条数就是 keep 的量级，不会把最近的几步也折掉。
+  const unfolded = many.filter((message) => !/"folded":true/.test(String(message.content)));
+  assert.ok(unfolded.length >= 3, `最近几步要保留原文，实际 ${unfolded.length}`);
 });
 
 test('超预算时从最旧的继续折，直到装得下', () => {
@@ -635,7 +646,7 @@ test('已经装得下时一条都不多折', () => {
 });
 
 test('折叠保留结论与改动文件（不丢可用的信息）', () => {
-  const messages = [toolPayload(0, 500), toolPayload(1, 500), toolPayload(2, 500), toolPayload(3, 500)];
+  const messages = Array.from({ length: 10 }, (_, index) => toolPayload(index, 500));
   pruneToolPayloads(messages, 1);
   const first = JSON.parse(toolContentAt(messages, 0)) as { summary?: string; folded?: boolean; changedFiles?: string[] };
   assert.equal(first.changedFiles?.[0], 'file-0.ts');
@@ -657,12 +668,14 @@ test('按路径钉住：回头读过的文件，其内容不会被后续读取�
     content: JSON.stringify({ status: 'success', summary: `读取 ${path}`, result: 'x'.repeat(bytes), path }),
   });
   const messages: ChatRequestMessage[] = [read('a.ts'), read('b.ts'), read('c.ts'), read('d.ts'), read('e.ts'), read('a.ts')];
-  pruneToolPayloads(messages, 3);
+  // 先把历史撑到越过批量阈值，再检查「最近一次读取」是否被保住。
+  for (const name of ['f.ts', 'g.ts', 'h.ts', 'i.ts', 'j.ts', 'k.ts']) messages.push(read(name));
+  pruneToolPayloads(messages, 1);
 
   const folded = messages.map((message) => /"folded":true/.test(String(message.content)));
   assert.equal(folded[0], true, 'a.ts 的第一次读取（重复）可以折');
   assert.equal(folded[5], false, 'a.ts 最近一次读取必须留住（它是工作集）');
-  assert.equal(folded[4], false, '最新一条永远不折');
+  assert.equal(folded[folded.length - 1], false, '最新一条永远不折');
 });
 
 test('钉住也有字节上限：大文件不会把预算吃光', () => {

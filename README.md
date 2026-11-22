@@ -49,6 +49,13 @@ Copilot Chat only hands the model a **curated** set (a dozen or so tools with sh
 
 Now `toolSurface.ts` decides by intent: bridged tools are only included when the message explicitly needs an extension-side capability (browser, web preview, terminal, command palette, symbol navigation, extension-provided commands). Everything else gets the native tool set only — `open_file`, `read_file` and `run_command` already cover day-to-day work. A bridged tool that already succeeded in this conversation stays available, and if the list still grows past 28 entries the bridged ones are dropped first. The log shows the result: `[tools] 35 → 23 (bridged tools hidden: not requested)`.
 
+### Fewer characters per round, and no more cache-busting every round
+
+With the same model, smoothness comes down to two things: how many tokens each round must read, and whether the server can reuse its cached prefix.
+
+- **The prompts that ship every round are shorter.** `TODO_LIST_PROMPT`, `NOTICE_PROMPT` and `REPLY_SHAPE_PROMPT` kept every rule but lost their repeated explanations — together about 5,600 → 4,500 characters, paid on every round of every task.
+- **Context folding now happens in batches.** DeepSeek caches by **prefix**, so changing an early message invalidates everything after it. The old code folded the oldest tool payload once per new result — precisely at an early position — so **every round broke the cache**, making a 20-step task 20 full recomputations. Folding now waits until `keep + 6` payloads accumulate and then folds down to `keep` at once; a separate 160 KB live-budget check handles genuinely large outputs. The rounds in between keep an identical prefix and actually hit the cache.
+
 ## What's new in 0.4.22
 
 ### Another group of bugs that made working commands look like failures

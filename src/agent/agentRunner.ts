@@ -945,6 +945,19 @@ function payloadPathFor(name: string, rawArguments: string): string {
 const PINNED_PATHS = 4;
 /** 被钉住的载荷总字节上限：工作集可以留在上下文里，但不能把预算吃光。 */
 const MAX_PINNED_BYTES = 64 * 1024;
+/**
+ * 折叠**批量**做，而不是每来一条就折一条。
+ *
+ * 这直接决定「一次任务要等多久」。DeepSeek 的上下文缓存按**前缀**命中：一旦请求里
+ * 靠前的位置变了，从那里往后全部重新计算。旧实现每轮只折一条最旧载荷 —— 那正好在
+ * 历史靠前的位置，于是**每一轮都把缓存打断**，二十几轮的任务等于二十几次全量重算。
+ *
+ * 现在攒够 `keep + FOLD_BATCH` 条才折一次，而且一次折到 `keep`：折叠频率降到原来的
+ * 几分之一，中间那几轮请求的前缀完全不变，缓存能真正命中也就能明显更快。
+ */
+const FOLD_BATCH = 6;
+/** 活跃载荷总字节上限：超过才动手，避免「每轮都在改历史」。 */
+const MAX_LIVE_TOOL_BYTES = 160 * 1024;
 
 export function pruneToolPayloads(
   messages: ChatRequestMessage[],
@@ -985,11 +998,32 @@ export function pruneToolPayloads(
     pinned.add(index);
   }
   let folded = 0;
-  const cutoff = toolIndexes.length - Math.max(0, keep);
-  for (let index = 0; index < Math.max(0, cutoff); index += 1) {
+  /*
+   * 按条数折叠：**攒够一批才折**（见 `FOLD_BATCH`）。
+   *
+   * 旧实现每次都折到 `keep`，于是每来一条新载荷就要改一次历史靠前的位置，DeepSeek 的
+   * 前缀缓存每轮都被打断。现在只有超过 `keep + FOLD_BATCH` 才动手，且一次折到 `keep`。
+   */
+  if (toolIndexes.length > Math.max(0, keep) + FOLD_BATCH) {
+    const cutoff = toolIndexes.length - Math.max(0, keep);
+    for (let index = 0; index < Math.max(0, cutoff); index += 1) {
+      const at = toolIndexes[index]!;
+      if (pinned.has(at)) continue;
+      if (foldToolPayloadAt(messages, at)) folded += 1;
+    }
+  }
+  /*
+   * 活跃载荷体积上限：超过才折，理由同上（不必要时别动历史）。
+   * 这里只折最旧的、且不折钉住的，够用就停。
+   */
+  let liveBytes = toolIndexes.reduce((total, at) => total + toolPayloadBytes(messages[at]!), 0);
+  for (let index = 0; index < toolIndexes.length - 1 && liveBytes > MAX_LIVE_TOOL_BYTES; index += 1) {
     const at = toolIndexes[index]!;
     if (pinned.has(at)) continue;
-    if (foldToolPayloadAt(messages, at)) folded += 1;
+    const before = toolPayloadBytes(messages[at]!);
+    if (!foldToolPayloadAt(messages, at)) continue;
+    liveBytes -= before - toolPayloadBytes(messages[at]!);
+    folded += 1;
   }
   if (budgetBytes <= 0) return folded;
   /*
