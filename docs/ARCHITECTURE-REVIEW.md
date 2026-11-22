@@ -25,7 +25,7 @@
 | 权限 | 四档预设 × 三档命令风险 × 敏感文件，默认 `askAll`（最严） |
 | 配置项 | 38 个 `contributes.configuration` |
 | 命令 | 19 个 |
-| 质量 | 1,364 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
+| 质量 | 1,366 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
 
 ---
 
@@ -119,6 +119,8 @@ Runner
 | 重复调用 | 相邻同参数 3 次 → `loopDetected`；同参数**输出**连续 3 次逐字节相同 → 拦下，撞满 `MAX_FUTILE_SKIPS` = 4 次 → `stalled` | `agentRunner.ts`（`ToolLoopGuard`） |
 | 无进展 | 连续 3 轮「有真实 error 且无任何成功步骤」→ `noProgress`（策略拒绝与 `decisive` 的 4xx 不计入） | `agentRunner.ts:72` |
 | 清单全绿 | 必须有本轮除 `update_todos` 外的成功调用，否则拒绝写入（`todo.unverifiedNotice`） | `chatPanel.ts`（`updateTodos`） |
+| 搜索退出码 1 | `findstr` / `grep` / `rg` 无匹配（stdout+stderr 皆空）→ 记为成功；真报错仍失败 | `toolExecutor.ts`（`noMatchExit`） |
+| 路径校验 | 正则字面量 `/…/flags` 跳过；真路径照旧校验 | `commandPaths.ts`（`looksLikeRegexLiteral`） |
 | 运行内工具全文 | 只留最近 3 条 | `agentRunner.ts:536` |
 
 终止原因会翻译成人话（`agentRunner.ts:76`），并区分「超时 / 卡住 / 断网 / 用户取消」四态（`src/agent/abortReason.ts:73`）。
@@ -294,7 +296,7 @@ Runner
 
 ## 10. 质量保障
 
-- **1,364 条单测**（`src/test/`）。
+- **1,366 条单测**（`src/test/`）。
 - **79 个 `test/check-*.mjs` 守护脚本**，其中若干不是静态断言，而是**真跑**：
   - 真实 Chromium：量按钮宽高、真点按钮、走完整交互（`check-settings-layout`、`check-image-attachment`、`check-capsule-*` …）；
   - 真实文件系统：大小写不同拼写是否算同一目录（`check-path-identity`）；
@@ -531,7 +533,7 @@ Runner
 # 类型检查
 npx tsc -p ./ --noEmit
 
-# 单测（1,364 条）
+# 单测（1,366 条）
 npm test
 
 # 全部守护脚本（79 个；含真实 Chromium / 真实文件系统 / 真实命令）

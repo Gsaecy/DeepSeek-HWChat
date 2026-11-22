@@ -1599,14 +1599,24 @@ export class ToolExecutor implements vscode.Disposable {
     const tolerated = result.code !== 0 && !result.timedOut
       && toleratedPowerShellExit(effectiveCommand, result.code, result.stderr, shellFor(effectiveCommand));
     const toleratedNote = tolerated ? tt('tool.runCommand.ignoredErrorExit', { code: String(result.code) }) : undefined;
-    const failed = !( (result.code === 0 || tolerated) && !result.timedOut );
+    /*
+     * 搜索命令的退出码 1 是「没找到」，不是失败。
+     *
+     * 见 `noMatchExit`：`findstr` / `grep` / `rg` 找到 0 处时退出 1 且什么都不打印。
+     * 旧逻辑把它当成「失败且无输出」，连着三条就把整轮任务判成「连续 3 轮全部失败」
+     * 停机（用户 2026-11-22 的现场）。判定为成功是符合事实的：命令正常执行完了，
+     * 结论就是「没有匹配」，并补一句说明模型不必再换写法重试。
+     */
+    const noMatch = !result.timedOut && noMatchExit(effectiveCommand, result.code, result.stdout, result.stderr);
+    const noMatchNote = noMatch ? tt('tool.runCommand.noMatch') : undefined;
+    const failed = !(((result.code === 0 || tolerated || noMatch)) && !result.timedOut);
     return {
       status: failed ? 'error' : 'success',
       // 失败但一个字都没输出：这才是「环境可能坏了」的证据（见 `noOutput` 的说明）。
       ...(failed && !output ? { noOutput: true } : {}),
       summary: `${commandSummary(effectiveCommand, result, timeout, Date.now() - commandStartedAt)}${clampSummary}`,
       content: truncate(
-        redact([strippedNote, clampNotice, output || tt('tool.noOutput'), toleratedNote, nestedCdHint, missingPath, environmentHint, advice].filter(Boolean).join('\n\n')),
+        redact([strippedNote, clampNotice, output || tt('tool.noOutput'), toleratedNote, noMatchNote, nestedCdHint, missingPath, environmentHint, advice].filter(Boolean).join('\n\n')),
         settings.maxToolOutputBytes,
       ),
       approval: 'approved',
@@ -2303,6 +2313,34 @@ export function toleratedPowerShellExit(
     && code === 1
     && !stderr.trim()
     && IGNORES_ERRORS.test(command);
+}
+
+/**
+ * 以「退出码 1 = 没找到匹配」为约定的搜索命令。
+ *
+ * 现场（用户 2026-11-22）：模型用 `findstr` 找一个词，找到 0 处就退出 1、什么都不打印。
+ * 旧逻辑按「失败且无输出」计数，于是连续三轮「找不到」被判成
+ * 「连续 3 轮工具调用全部失败」并停机 —— 可它每一条都正常执行完毕，得到的正是
+ * 「这个项目里没有这个词」这个**确定答案**。
+ *
+ * `grep` / `rg` / `git grep` 都是同一套约定（1 = no match，2 = 真错误），所以这里按
+ * 命令头识别。判定还要求 stdout / stderr **都为空**：真报错时它们会写 `grep: …: No such file`，
+ * 那种仍然算失败。
+ */
+const NO_MATCH_COMMANDS = /^(?:findstr(?:\.exe)?|grep|egrep|fgrep|rg|ag|ack|git\s+grep)\b/i;
+
+export function noMatchExit(
+  command: string,
+  code: number | null,
+  stdout: string,
+  stderr: string,
+): boolean {
+  if (code !== 1) return false;
+  if (stdout.trim() || stderr.trim()) return false;
+  // 只看管道里**第一条**命令：`findstr … | findstr /v …` 的退出码来自最后一条，
+  // 但两边都是搜索命令，取第一条足够判定。
+  const first = command.trim().replace(/^[(&]\s*/, '').split(/[|;&]/)[0]?.trim() ?? '';
+  return NO_MATCH_COMMANDS.test(first);
 }
 
 /**

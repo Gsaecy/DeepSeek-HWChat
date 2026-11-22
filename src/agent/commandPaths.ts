@@ -204,6 +204,17 @@ export function commandPathViolation(
   for (const raw of candidates) {
     const candidate = raw.replace(/[.,;:)\]]+$/, '');
     if (!candidate) continue;
+    /*
+     * 正则字面量不是文件路径。
+     *
+     * 现场（用户 2026-11-22）：一条带 `/\r?\n/` 的脚本被拦成
+     * 「路径 /\r?\n/ 不在当前工作区内」，模型看不懂、换写法又撞，最后被判
+     * 「连续 3 轮工具调用全部失败」。`/…/` 在 JS / Perl 里是正则，在 shell 里
+     * 也常出现在 `-replace`、`split` 这类参数里，它永远不会是一次文件访问。
+     * 判定要求「以 / 开头、以 / 加可选 flags 结尾、且中间含正则元字符」，
+     * 所以真正的 `/etc/hosts`、`/tmp/` 这类路径照旧参与隔离校验。
+     */
+    if (looksLikeRegexLiteral(candidate)) continue;
     if (isWindowsCommandSwitch(candidate, platform)) continue;
     if (HARMLESS_DEVICE_PATH.test(candidate.replaceAll('\\', '/'))) continue;
     const resolved = resolve(candidate);
@@ -264,6 +275,19 @@ function redirectTargets(command: string): string[] {
 /** 判断一个“绝对路径”候选其实是不是正则表达式片段。 */
 function looksLikeRegex(candidate: string): boolean {
   return /[\^$]/.test(candidate) || /\/[^/]*,[^/]*\//.test(candidate);
+}
+
+/**
+ * 形如 `/…/flags` 的正则字面量（`/\r?\n/`、`/[a-z]+/gi`）。
+ *
+ * 与 `looksLikeRegex` 分开：那个只用来把提示文案说清楚，这个用于**直接跳过**
+ * 候选 —— 正则字面量不可能是文件访问。
+ */
+export function looksLikeRegexLiteral(candidate: string): boolean {
+  if (!candidate.startsWith('/')) return false;
+  const match = /^\/([\s\S]*)\/([a-z]*)$/.exec(candidate);
+  if (!match) return false;
+  return /[\\^$*+?()[\]{}|]/.test(match[1] ?? '');
 }
 
 /**

@@ -1245,6 +1245,7 @@ const DICTIONARY: Record<string, Entry> = {
   'agent.commandStalled': { zh: '有命令已 {seconds} 秒没有输出，可能卡在等待密码或确认。HWChat 无法替你输入，可在该步骤上点停止；到达 {timeout} 秒上限会自动终止。', en: 'A command has produced no output for {seconds}s and may be waiting for a password or confirmation. HWChat cannot type it for you; stop that step if needed. It will be killed automatically at the {timeout}s cap.' },
   'agent.mergedGuidance': { zh: '收到相关新消息，已跳过尚未执行的旧步骤', en: 'New guidance arrived; pending steps were skipped' },
   'agent.pausedSkipped': { zh: '已暂停：新消息到达，本步剩余调用不再执行，先做综合分析', en: 'Paused: a new message arrived, so the rest of this step was skipped for re-analysis' },
+  'tool.runCommand.noMatch': { zh: '退出码 1 表示**没有找到匹配**（findstr / grep / rg 的约定），命令本身执行成功了 —— 结论是这里没有这个内容，不必换写法重试。', en: 'Exit code 1 means **no match was found** (the findstr / grep / rg convention), not a failure — the command ran fine and the answer is that the content is not there. No need to retry with different syntax.' },
   'agent.mergedGuidanceOutput': { zh: '任务树已合并用户的新指导，Agent 将先重新规划。', en: 'The task tree merged your new guidance; the agent will re-plan first.' },
   'agent.progress.list_workspace_roots': { zh: '正在读取 VS Code 工作区根目录', en: 'Reading VS Code workspace roots' },
   'agent.progress.list_directory': { zh: '正在列出目录', en: 'Listing a directory' },

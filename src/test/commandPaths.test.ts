@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { commandPathViolation } from '../agent/commandPaths';
-import { bashOnlySyntax, pathRewriteSuggestion, shellFor, powerShellCommand, toleratedPowerShellExit } from '../agent/toolExecutor';
+import { commandPathViolation, looksLikeRegexLiteral } from '../agent/commandPaths';
+import { bashOnlySyntax, noMatchExit, pathRewriteSuggestion, shellFor, powerShellCommand, toleratedPowerShellExit } from '../agent/toolExecutor';
 
 const roots = [
   '/Users/test/AI projects/DeepSeek-HWChat',
@@ -455,6 +455,47 @@ test('exit code 1 由「命令自己要求忽略错误」造成时不算失败',
   assert.equal(toleratedPowerShellExit(cmd, 2, '', 'powershell.exe'), false);
   // 原生命令的失败照旧算失败
   assert.equal(toleratedPowerShellExit('npm test -ErrorAction SilentlyContinue', 1, '', true), false);
+});
+
+test('搜索命令的退出码 1 = 没找到匹配，不算失败', () => {
+  /*
+   * 真实故障（用户 2026-11-22）：模型连续用 findstr 找词（learn: / AI 与智能 / 编程 /
+   * 理财），每条都找不到、退出 1 且无输出，于是被算成「失败且无输出」，连撞三轮后
+   * 整轮任务被判「连续 3 轮工具调用全部失败」停机。
+   */
+  assert.equal(noMatchExit('findstr /s /n /i /c:"learn:" src-tauri\\src\\*.rs', 1, '', ''), true);
+  assert.equal(noMatchExit('findstr /s /n /i /c:"learn:" src-tauri\\src\\*.rs 2>nul', 1, '', ''), true);
+  assert.equal(noMatchExit('grep -rn "foo" src', 1, '', ''), true);
+  assert.equal(noMatchExit('rg "foo" src', 1, '', ''), true);
+  assert.equal(noMatchExit('git grep "foo"', 1, '', ''), true);
+  // 真报错仍然算失败：stderr 有内容，或退出码不是 1
+  assert.equal(noMatchExit('grep -rn "foo" src', 1, '', 'grep: src: No such file or directory'), false);
+  assert.equal(noMatchExit('grep -rn "foo" src', 2, '', ''), false);
+  assert.equal(noMatchExit('npm test', 1, '', ''), false, '非搜索命令的退出码 1 该算失败');
+});
+
+test('路径隔离：正则字面量不会被当成绝对路径', () => {
+  /*
+   * 真实故障（用户 2026-11-22）：一条带 `/\r?\n/` 的脚本被拦成
+   * 「命令被路径隔离策略拦截：路径 /\r?\n/ 不在当前工作区内」。
+   */
+  assert.equal(looksLikeRegexLiteral('/\\r?\\n/'), true);
+  assert.equal(looksLikeRegexLiteral('/[a-z]+/gi'), true);
+  assert.equal(looksLikeRegexLiteral('/^\\/api/u'), true);
+  // 真正的路径照旧参与校验
+  assert.equal(looksLikeRegexLiteral('/etc/hosts'), false);
+  assert.equal(looksLikeRegexLiteral('/tmp/'), false);
+  assert.equal(
+    commandPathViolation('node -e "x.split(/\\r?\\n/)"', roots),
+    undefined,
+    '解释器载荷里的正则字面量不是文件访问',
+  );
+  assert.equal(
+    commandPathViolation('powershell -NoProfile -Command "$c -split /\\r?\\n/"', [...roots, '/etc']),
+    undefined,
+    '正则里的 \\r?\\n 不是路径，不该被拦',
+  );
+  assert.match(String(commandPathViolation('cat /etc/hosts', roots)), /不在当前工作区内/, '真路径仍然要拦');
 });
 
 test('shell selection: 分号串联交给 PowerShell（cmd 把 ; 当参数分隔符）', () => {

@@ -20,6 +20,11 @@ Three reports from real use, each traced to a different root cause.
 
 **"It often fakes the work: says it is done, and nothing was executed."** A fully ticked list is archived into a capsule immediately, which reads as "finished" — and the old code only required the model to *submit* that list. `update_todos` now requires evidence: turning a list from unfinished to fully completed needs at least one successful tool call other than `update_todos` in that run (reading, writing and running commands all count, so read-only tasks are unaffected). Without it the update is refused, nothing is written, and the model is told to actually do the work first. Re-submitting an already-complete list is not affected. The system prompt and task-list rules gained the matching hard rule: a self-written check script, a plan, a summary or a read-only look is not "done".
 
+Two more executor bugs came back from the same session and are fixed in this version:
+
+- **Exit code 1 from a search command means "no match", not failure.** `findstr` / `grep` / `rg` return 1 with empty output when nothing matched; that used to be counted as a failed step with no output, so three "not found" results in a row stopped the whole run. It is now a successful negative result (with a note saying so), and real errors (`grep: …: No such file`) still fail because they write to stderr.
+- **A regex literal is no longer treated as an absolute path.** A script containing `/\r?\n/` was rejected with "path `/\r?\n/` is outside the current workspace". Any candidate shaped `/…/flags` whose body contains regex metacharacters is skipped, while real paths such as `/etc/hosts` or `/tmp/` are still checked.
+
 ## What's new in 0.4.22
 
 ### Another group of bugs that made working commands look like failures
