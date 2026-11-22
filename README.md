@@ -43,6 +43,8 @@ You cannot always switch to a stronger tool-calling model, so the near-misses ar
 
 A missing argument now says what was received and tells the model to retry the same tool instead of switching tools to work around it, and `replace_in_file` / `run_command` carry a one-line argument list plus a minimal JSON example.
 
+## What's new in 0.4.25
+
 ### The real difference: dozens of tools were sent on every request
 
 Copilot Chat only hands the model a **curated** set (a dozen or so tools with short names and small schemas). HWChat used to convert **every** language-model tool registered by **every** VS Code extension into a `hwchat_vscode_*` tool and send them all — the limit was literally **400**, i.e. none. With Copilot and other extensions installed that is dozens of tools and thousands of characters of JSON schema on every request, and a good share of those bridged tools cannot work at all in HWChat's invocation context.

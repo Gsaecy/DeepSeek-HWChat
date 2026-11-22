@@ -45,6 +45,9 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 
 缺参数时现在会告诉模型「这次收到了哪些键」，并要求它补齐后重试同一个工具，而不是换个工具绕开；`replace_in_file` / `run_command` 的描述里也各加了一行参数清单 + 最小 JSON 示例。
 
+## 0.4.25 更新了什么
+
+
 ### 真正的原因：每次请求都下发了几十个工具
 
 Copilot Chat 只给模型一份**精选**工具（十几个，名字短、schema 小）。HWChat 之前把 VS Code 里**每一个**扩展注册的语言模型工具都转成 `hwchat_vscode_*` 一起下发 —— 上限写的是 **400**，等于不设限。装上 Copilot 和其它扩展之后，每次请求就是几十个工具、几千字符的 JSON schema，而且其中不少桥接工具在 HWChat 的调用上下文里根本调不通。
