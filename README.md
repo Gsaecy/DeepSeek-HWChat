@@ -8,6 +8,18 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.23
+
+### The run now finishes the task list before it stops — and stops pretending it did the work
+
+Three reports from real use, each traced to a different root cause.
+
+**"It stops before finishing the task in the panel — every time."** Even with *max steps: unlimited*, the loop ended as soon as the model answered without calling a tool, and nothing ever compared that against the task list — so a run could wrap up with five items still unticked. Now, when the model tries to close the run while the list still has unfinished items, the agent puts the list state back in front of it with an explicit "keep going, verify, then tick" instruction and continues (at most 3 nudges, so a stubborn model cannot spin forever). For the finite step presets, an exhausted budget also extends itself while the list is unfinished. Loop / repetition / no-progress / stop-button guards are unchanged — "finish before stopping" is not "never stops".
+
+**"A one-line task (translate a page, switch the language) ran hundreds of commands and still was not done."** Measured from the local history of that exact run: **207 tool calls**, including `read_file Icon.tsx` **53 times**, `read_file Gate.tsx` **31 times** and the same `Get-Content` command **51 times**. The loop guard only counted *consecutive* identical calls, so alternating between two files reset the counter every time. The guard now also compares **output**: the same call (tool + normalized arguments) returning byte-identical results three times is blocked with an instruction to change approach (`search_files`, read a smaller range, or edit the file). Four such blocks in one run stop the agent with a `stalled` notice instead of burning hundreds of calls. Judging by output means "read → edit → read again" is never punished — the content changes, so the counter resets.
+
+**"It often fakes the work: says it is done, and nothing was executed."** A fully ticked list is archived into a capsule immediately, which reads as "finished" — and the old code only required the model to *submit* that list. `update_todos` now requires evidence: turning a list from unfinished to fully completed needs at least one successful tool call other than `update_todos` in that run (reading, writing and running commands all count, so read-only tasks are unaffected). Without it the update is refused, nothing is written, and the model is told to actually do the work first. Re-submitting an already-complete list is not affected. The system prompt and task-list rules gained the matching hard rule: a self-written check script, a plan, a summary or a read-only look is not "done".
+
 ## What's new in 0.4.22
 
 ### Another group of bugs that made working commands look like failures

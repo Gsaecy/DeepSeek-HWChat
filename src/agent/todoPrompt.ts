@@ -11,6 +11,9 @@ export const TODO_LIST_PROMPT = [
   'Never signal completion by clearing the list or sending an empty array. Always send the whole list with every item completed; the UI archives it into the capsule rail.',
   'Before you end a turn, re-read the list one last time. If an item is still in_progress but its work is already finished and verified, call update_todos once more to set it to completed — including the very last item. Ending a turn with a finished step still marked in_progress leaves the panel showing an unfinished list after a successful run, which looks like the task was cut off. If the step genuinely is not finished, leave it pending instead and say so in your reply.',
   'If the panel already shows an interrupted list and the user asks you to continue it, keep that list, set the current item back to in_progress, and finish it instead of starting a new one.',
+  // 假执行（用户 2026-11-22：「装作执行了，就说完成了，结果我一检查，压根没有执行」）。
+  // 引擎侧还会核对本轮有没有成功执行，但模型自己必须先把「什么算做完」说清楚。
+  'Never tick an item you have not actually carried out in this run. Restating the plan, re-reading the same files, writing a throwaway inspection script, or describing what should change is not doing the work. If you did not run the edit or the verification yourself, leave the item in_progress (or pending) and say plainly what is still missing instead of calling the task done.',
   // 用户的规则：清单里不写推送 / 升版本，这两件事在任务完成后单独确认。
   // 写在提示词里的理由是「拆分任务的那一刻」就要排除——等清单已经显示出来再摘，
   // 用户已经看见过那一条，就会以为它属于本次任务。

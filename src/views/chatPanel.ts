@@ -2136,7 +2136,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
               return { result: { status: 'denied', summary: tt('tool.playbookBlocked'), content: blockedByPlaybook, approval: 'not-required' } };
             }
             if (call.function.name === 'update_todos') {
-              return { result: await this.updateTodos(conversationId!, call, hasTodoReplanIntent(content) || run.todoReplanRequested === true) };
+              return {
+                result: await this.updateTodos(
+                  conversationId!,
+                  call,
+                  hasTodoReplanIntent(content) || run.todoReplanRequested === true,
+                  this.runHasExecutionEvidence(run),
+                ),
+              };
             }
             if (call.function.name === 'ask_user_choice') {
               return { result: await this.askUserChoice(call, run) };
@@ -2205,6 +2212,15 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
            * （见 `agentRunner` 的 `while` 顶部）。这里只需要如实回答「还有没执行的吗」。
            */
           hasPendingTasks: () => taskQueue.pendingTaskCount() > 0,
+          /*
+           * 清单还没做完就不能收尾：步数预算用尽时续一份预算继续跑
+           * （见 `agentRunner` 循环顶部）。用户 2026-11-22：
+           * 「没有执行完对话框里面的任务就停下来了，每次都是这样」。
+           */
+          hasUnfinishedTodos: async () => {
+            const current = await this.storage.getConversation(conversationId).catch(() => undefined);
+            return (current?.todos ?? []).some((todo) => todo.status !== 'completed');
+          },
           callbacks: {
             onTaskUpdate: async (update) => {
               this.authorizeFollowUp(run, update);
@@ -4607,12 +4623,37 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   /**
+   * 本轮有没有「真的执行过」的证据。
+   *
+   * 判据刻意宽松：只要除 `update_todos` 之外有任意一次成功的工具调用（读文件、搜索、
+   * 跑命令、改文件都算）就认为有证据。这样只读型任务不会被误判成假执行，而
+   * 「只调了 update_todos 就把清单打全绿」这种确凿的假执行会被拦住。
+   */
+  private runHasExecutionEvidence(run: ConversationRun): boolean {
+    return run.globalTools.some((tool) => tool.name !== 'update_todos' && tool.status === 'success');
+  }
+
+  /**
    * `update_todos`：把模型给的整份清单落库并推给面板。
    *
    * 这里是清单的唯一写入口——面板不自己算状态，避免出现“界面已完成、存档还是执行中”。
    * 每次调用都要求模型传整份清单（不是增量），所以直接整体替换即可。
+   *
+   * `hasExecutionEvidence`：**本轮**除 `update_todos` 外有没有成功的工具调用。
+   *
+   * 真实反馈（用户 2026-11-22）：「经常遇到假执行任务，装作执行了，就说完成了，结果
+   * 我一检查，压根没有执行」。提示词里一直写着「只有核实后才能打勾」，但它拦不住
+   * 模型直接提交一份全绿清单 —— 而全绿的清单会当场归档成胶囊，界面上看起来就是
+   * 「做完了」。所以这里加一道事实校验：一次执行记录都没有，就不接受「全部完成」，
+   * 清单原样保留并告诉模型先去做。读一次文件、跑一次测试都算证据，所以正常的
+   * 只读任务不会被误拦。
    */
-  private async updateTodos(conversationId: string, call: ToolCall, allowReplan = false): Promise<ToolExecutionResult> {
+  private async updateTodos(
+    conversationId: string,
+    call: ToolCall,
+    allowReplan = false,
+    hasExecutionEvidence = true,
+  ): Promise<ToolExecutionResult> {
     const args = parseToolArguments(call.function.arguments);
     const submitted = normalizeTodos(args.todos);
     if (!submitted.length) {
@@ -4662,6 +4703,21 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       };
     }
     const archivable = allTodosCompleted(previous?.todos) ? createTodoArchive(previous?.todos) : undefined;
+    /*
+     * 「全部完成」必须有一次真实执行的支撑。
+     *
+     * 只拦「这一次提交把清单打到全绿、但本轮没有任何执行」的组合：清单本来就全绿
+     * （重复提交、续跑收尾）不算，免得把正常收尾判成假执行。
+     */
+    const completingNow = allTodosCompleted(todos) && !allTodosCompleted(previous?.todos);
+    if (completingNow && !hasExecutionEvidence) {
+      return {
+        status: 'denied',
+        summary: tt('todo.unverifiedSummary'),
+        content: tt('todo.unverifiedNotice', { total: todos.length }),
+        approval: 'not-required',
+      };
+    }
     let archives = archivable ? appendTodoArchive(previous?.todoArchives, archivable) : previous?.todoArchives;
     /**
      * 全部完成的清单**当场**归档成胶囊，不留在面板上。
@@ -5855,6 +5911,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       // 任务清单：多步任务必须先列清单再动手，面板才会跟着走。
       TODO_LIST_PROMPT,
       'Never claim a file changed or a command passed unless the corresponding tool returned success.',
+      /*
+       * 假执行的另一种形状：模型自己写一个「检查脚本」、跑通它，然后宣布任务完成。
+       * 那只是自证，目标文件可能一个字都没动。用户 2026-11-22 的原话：
+       * 「经常遇到假执行任务，装作执行了，就说完成了，结果我一检查，压根没有执行」。
+       */
+      'Before reporting a task as done, check that the change the user asked for actually exists: the target files were edited through write_file or replace_in_file, or the requested command/test was run and passed. A helper script you wrote yourself, a plan, a summary, or a read-only inspection does not prove the work was done — if you have not made the change, say so and name the missing step.',
       // git 写操作的两条硬规则：不主动提交、不跨项目提交。执行器里还有对应的运行时拦截，
       // 提示词只负责让模型不要尝试，真正的边界由 toolExecutor 强制。
       'Never run git write commands (git add, commit, push, tag, reset, clean, merge, rebase, checkout, restore, stash) unless the user explicitly asked for it in this conversation, or an enabled skill rule instructs you to commit after finishing a task. Do not treat committing as a routine finishing step, and do not commit on your own initiative. Read-only inspection (git status, diff, log, show) is always allowed.',

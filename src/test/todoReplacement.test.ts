@@ -117,14 +117,17 @@ async function submitTodoList(
   previous: TodoItem[] | undefined,
   submitted: unknown[],
   allowReplan = false,
-): Promise<{ status: string; content: string; writes: number; todos: TodoItem[] | undefined }> {
+  hasExecutionEvidence = true,
+): Promise<{ status: string; content: string; writes: number; todos: TodoItem[] | undefined; archives: unknown[] | undefined }> {
   let todos = previous ? previous.map((todo) => ({ ...todo })) : previous;
+  let archives: unknown[] | undefined;
   let writes = 0;
   const storage = {
-    getConversation: async () => ({ id: 'c1', todos }),
-    updateConversation: async (_id: string, patch: { todos?: TodoItem[] | null }) => {
+    getConversation: async () => ({ id: 'c1', todos, todoArchives: archives }),
+    updateConversation: async (_id: string, patch: { todos?: TodoItem[] | null; todoArchives?: unknown[] }) => {
       writes += 1;
       if (patch.todos !== undefined) todos = patch.todos ?? [];
+      if (patch.todoArchives !== undefined) archives = patch.todoArchives;
     },
   };
   const skills = {
@@ -139,13 +142,13 @@ async function submitTodoList(
   // 面板推送走 post，这里没有 webview，直接吞掉。
   (panel as unknown as { post: () => Promise<void> }).post = async () => undefined;
   const call = panel as unknown as {
-    updateTodos: (id: string, call: { function: { name: string; arguments: string } }, allow?: boolean) =>
+    updateTodos: (id: string, call: { function: { name: string; arguments: string } }, allow?: boolean, evidence?: boolean) =>
       Promise<{ status: string; content: string }>;
   };
   const result = await call.updateTodos('c1', {
     function: { name: 'update_todos', arguments: JSON.stringify({ todos: submitted }) },
-  }, allowReplan);
-  return { status: result.status, content: result.content, writes, todos };
+  }, allowReplan, hasExecutionEvidence);
+  return { status: result.status, content: result.content, writes, todos, archives };
 }
 
 test('updateTodos：丢掉已完成项的清单被拒绝，且不写库', async () => {
@@ -188,4 +191,42 @@ test('updateTodos：第一份清单（没有旧清单）不受守卫影响', asy
   ]);
   assert.equal(outcome.status, 'success');
   assert.equal(outcome.todos?.length, 2);
+});
+
+/**
+ * 假执行（用户 2026-11-22：「装作执行了，就说完成了，结果我一检查，压根没有执行」）。
+ *
+ * 全绿的清单会当场归档成胶囊，界面上看起来就是「做完了」。所以「本轮除 update_todos
+ * 外一次成功调用都没有」时不能接受这个结论。
+ */
+test('updateTodos：没有任何执行记录就把清单打全绿 → 拒绝并保持原样', async () => {
+  const outcome = await submitTodoList(
+    [{ content: '翻译设置页文案', status: 'in_progress' }],
+    [{ content: '翻译设置页文案', status: 'completed' }],
+    false,
+    false,
+  );
+  assert.equal(outcome.status, 'denied', '这不是策略拒绝，但它确实没有执行，不能报 success');
+  assert.equal(outcome.writes, 0, '拒绝就必须一个字都不写');
+  assert.equal(outcome.todos?.[0]?.status, 'in_progress', '清单保持原样，不能显示成已完成');
+  assert.match(outcome.content, /成功的工具调用|successful tool call/);
+  assert.match(outcome.content, /再提交一次|submit the list again/, '要给出能成功的下一步');
+});
+
+test('updateTodos：有执行记录支撑时正常归档', async () => {
+  const outcome = await submitTodoList(
+    [{ content: '翻译设置页文案', status: 'in_progress' }],
+    [{ content: '翻译设置页文案', status: 'completed' }],
+    false,
+    true,
+  );
+  assert.equal(outcome.status, 'success');
+  assert.equal(outcome.todos?.length, 0, '全部完成应当归档并从面板撤掉');
+  assert.equal(outcome.archives?.length, 1);
+});
+
+test('updateTodos：已完成的清单被重复提交时不再要求执行证据', async () => {
+  const done: TodoItem[] = [{ content: '翻译设置页文案', status: 'completed' }];
+  const outcome = await submitTodoList(done, done, false, false);
+  assert.equal(outcome.status, 'success', '清单本来就是全绿，重复提交不该被判成假执行');
 });

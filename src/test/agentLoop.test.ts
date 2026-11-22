@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   AgentRunner,
+  MAX_FUTILE_SKIPS,
   MAX_IDENTICAL_TOOL_CALLS,
+  MAX_TODO_NUDGES,
   MAX_TOOL_CALLS_PER_ROUND,
   ToolLoopGuard,
 } from '../agent/agentRunner';
@@ -67,6 +69,8 @@ async function runAgent(options: {
   steps: number;
   signal?: AbortSignal;
   messages?: ChatRequestMessage[];
+  hasUnfinishedTodos?: () => boolean | Promise<boolean>;
+  hasPendingTasks?: () => boolean | Promise<boolean>;
 }) {
   const runner = new AgentRunner(options.client as never, options.tools as never);
   return runner.run({
@@ -75,6 +79,8 @@ async function runAgent(options: {
     mode: 'agent',
     signal: options.signal ?? new AbortController().signal,
     conversationId: 'loop-test',
+    hasUnfinishedTodos: options.hasUnfinishedTodos,
+    hasPendingTasks: options.hasPendingTasks,
     callbacks: { onDelta: () => undefined, onToolsChanged: () => undefined, requestApproval: async () => true },
   });
 }
@@ -487,4 +493,136 @@ test('agent loop: 没有待执行消息时，步数用尽照常收尾', async ()
   });
   assert.equal(result.stopReason, 'stepLimit');
   assert.equal(client.rounds, 2);
+});
+
+/**
+ * 换着花样原地打转（用户 2026-11-22）。
+ *
+ * 现场：一个「翻译一下」的任务跑出 207 个工具调用 —— `read_file Icon.tsx` 53 次、
+ * `read_file Gate.tsx` 31 次、同一条 `Get-Content` 51 次，中间夹着别的调用。
+ * 旧的「连续相同调用」判定永远不触发，于是一直转圈到用户手动停止。
+ * 新的守卫不看相邻，而看**输出**：同样的调用连续三次拿到逐字节相同的结果就拦下。
+ */
+test('agent loop: 交替重复的调用也会被拦下（按输出判定，不要求相邻）', async () => {
+  const client = endlessClient((round) => ({
+    name: 'read_file',
+    args: round % 2 === 1 ? '{"path":"Icon.tsx"}' : '{"path":"Gate.tsx"}',
+  }));
+  const tools = {
+    definitions: () => [],
+    async execute(call: { function: { arguments: string } }): Promise<ToolExecutionResult> {
+      // 内容恒定的两个文件：怎么读都是同一份内容。
+      return { status: 'success', summary: 'ok', content: `content of ${call.function.arguments}`, approval: 'not-required' };
+    },
+  };
+
+  const result = await runAgent({ client, tools, steps: 100 });
+
+  assert.equal(result.stopReason, 'stalled', `应当被判定为空转，实际 ${result.stopReason}`);
+  assert.ok(client.rounds < 12, `不该再跑几十上百轮（实际 ${client.rounds} 轮）`);
+  assert.match(result.content, /完全相同的结果|byte-identical/);
+  assert.ok(
+    result.tools.filter((item) => item.status === 'denied').length >= MAX_FUTILE_SKIPS - 1,
+    '被拦下的调用要留在执行记录里，用户能看见停在哪',
+  );
+});
+
+test('agent loop: 输出变了就不算空转（读 → 改 → 再读 照常放行）', async () => {
+  // 交替两个路径，避开「相邻重复」判定，只考验按输出判定的那层守卫。
+  const client = endlessClient((round) => ({
+    name: 'read_file',
+    args: round % 2 === 1 ? '{"path":"Icon.tsx"}' : '{"path":"Gate.tsx"}',
+  }));
+  let revision = 0;
+  const tools = {
+    definitions: () => [],
+    async execute(): Promise<ToolExecutionResult> {
+      revision += 1;
+      // 每次都是同一个调用，但文件内容一直在变（模型改过）→ 不算空转。
+      return { status: 'success', summary: 'ok', content: `revision ${revision}`, approval: 'not-required' };
+    },
+  };
+
+  const result = await runAgent({ client, tools, steps: 5 });
+
+  assert.equal(result.stopReason, 'stepLimit', '真实推进时不该被空转守卫拦下');
+  assert.equal(client.rounds, 5);
+  assert.equal(result.tools.filter((item) => item.status === 'denied').length, 0);
+});
+
+/**
+ * 清单没做完就不能收尾（用户 2026-11-22：「没有执行完对话框里面的任务就停下来了」）。
+ */
+test('agent loop: 步数用尽但清单还有未完成项 → 自动续预算继续跑', async () => {
+  let round = 0;
+  const seen: string[] = [];
+  const client = {
+    async streamChat(_settings: unknown, messages: Array<{ role: string; content: string }>) {
+      round += 1;
+      seen.push(messages[messages.length - 1]?.content ?? '');
+      if (round > 4) return { content: 'done', reasoning: '', toolCalls: [] };
+      return {
+        content: '',
+        reasoning: '',
+        toolCalls: [{ id: `c${round}`, type: 'function' as const, function: { name: 'read_file', arguments: `{"path":"${round}.txt"}` } }],
+      };
+    },
+  };
+  const tools = countingTools();
+
+  const result = await runAgent({ client, tools, steps: 2, hasUnfinishedTodos: () => true });
+
+  assert.equal(result.stopReason, 'complete', '清单没做完时不能报步数上限');
+  assert.equal(tools.calls.length, 4, '预算续上之后要把剩下的步骤跑完');
+  assert.ok(
+    seen.some((text) => /未完成项|unfinished items/.test(text)),
+    '续预算时要告诉模型继续做清单，而不是总结收尾',
+  );
+});
+
+test('agent loop: 清单做完后仍按步数上限收尾', async () => {
+  const client = endlessClient((round) => ({ name: 'read_file', args: `{"path":"${round}.txt"}` }));
+  const tools = countingTools();
+
+  const result = await runAgent({ client, tools, steps: 2, hasUnfinishedTodos: () => false });
+
+  assert.equal(result.stopReason, 'stepLimit');
+  assert.equal(client.rounds, 2);
+});
+
+/**
+ * 用户把最大步数设成「不限制」时，卡点就不在预算上了 —— 是模型自己写总结收尾，
+ * 清单里还留着没打勾的项。现场原话：「没有执行完对话框里面的任务就停下来了，
+ * 每次都是这样」，并明确「我在输入框下面选择了最大步数不限制」。
+ */
+test('agent loop: 不限制步数时，模型想收尾但清单没做完 → 催它继续', async () => {
+  let round = 0;
+  const seen: string[] = [];
+  const client = {
+    async streamChat(_settings: unknown, messages: Array<{ role: string; content: string }>) {
+      round += 1;
+      seen.push(messages[messages.length - 1]?.content ?? '');
+      // 每一轮都只写总结、不调工具 —— 这正是「看着像做完了」的那种收尾。
+      return { content: '已完成', reasoning: '', toolCalls: [] };
+    },
+  };
+
+  const result = await runAgent({ client, tools: countingTools(), steps: 0, hasUnfinishedTodos: () => true });
+
+  assert.equal(round, MAX_TODO_NUDGES + 1, '催满次数后必须停机，不能无限循环');
+  assert.equal(result.stopReason, 'complete');
+  assert.ok(
+    seen.some((text) => /未完成项|unfinished items/.test(text)),
+    '每次催促都要把「清单还有未完成项」明确说出来',
+  );
+});
+
+test('agent loop: 清单已经做完时不再多催一轮', async () => {
+  let rounds = 0;
+  const client = { async streamChat() { rounds += 1; return { content: 'done', reasoning: '', toolCalls: [] }; } };
+
+  const result = await runAgent({ client, tools: countingTools(), steps: 0, hasUnfinishedTodos: () => false });
+
+  assert.equal(result.stopReason, 'complete');
+  assert.equal(rounds, 1, '清单已做完就直接收尾，不该多一次往返');
 });

@@ -43,7 +43,7 @@ export interface AgentRunCallbacks {
 }
 
 /** 一次 Agent 运行为什么停下来。 */
-export type AgentStopReason = 'complete' | 'stepLimit' | 'loopDetected' | 'noProgress' | 'cancelled';
+export type AgentStopReason = 'complete' | 'stepLimit' | 'loopDetected' | 'stalled' | 'noProgress' | 'cancelled';
 
 export interface AgentRunResult {
   content: string;
@@ -71,13 +71,37 @@ export { MAX_TOOL_CALLS_PER_RUN } from '../core/agentLimits';
 export const MAX_IDENTICAL_TOOL_CALLS = 3;
 /** 连续多少轮「所有工具都失败」就停下，不再让模型空转。 */
 export const MAX_FAILED_ROUNDS_WITHOUT_PROGRESS = 3;
+/**
+ * 一次运行里，允许被「重复空转守卫」拦下多少次。
+ *
+ * 拦下的每一次都会告诉模型「换方法」，正常情况下它第一次就会改。连着撞到这么多次
+ * 说明它已经不会自己换路子了，只能停下来把决定权交回用户。
+ */
+export const MAX_FUTILE_SKIPS = 4;
+/**
+ * 模型「想收尾」但任务清单还没做完时，最多催几次。
+ *
+ * 每次催都会把「清单还有未完成项」重新摆到它面前并明确要求继续。正常模型第一次就会
+ * 接着做；如果连着几次都只写总结不动手，说明它已经认定做完了（或者不会做），
+ * 这时候继续催只会烧 token，交给用户判断更诚实。
+ */
+export const MAX_TODO_NUDGES = 3;
 
-function stopNoticeFor(reason: AgentStopReason, context: { maxSteps: number; loopToolName: string }): string {
+function stopNoticeFor(
+  reason: AgentStopReason,
+  context: { maxSteps: number; loopToolName: string },
+): string {
   switch (reason) {
     case 'stepLimit':
       return tt('agent.stepLimit', { steps: context.maxSteps });
     case 'loopDetected':
       return tt('agent.loopDetected', { count: MAX_IDENTICAL_TOOL_CALLS, tool: context.loopToolName || 'unknown_tool' });
+    case 'stalled':
+      return tt('agent.stalled', {
+        count: MAX_IDENTICAL_TOOL_CALLS,
+        skips: MAX_FUTILE_SKIPS,
+        tool: context.loopToolName || 'unknown_tool',
+      });
     case 'noProgress':
       return tt('agent.noProgress', { rounds: MAX_FAILED_ROUNDS_WITHOUT_PROGRESS });
     default:
@@ -86,19 +110,31 @@ function stopNoticeFor(reason: AgentStopReason, context: { maxSteps: number; loo
 }
 
 /**
- * 连续相同工具调用的检测器。
+ * 反复空转的检测器。
  *
  * 只统计「紧挨着的完全相同的调用」（工具名 + 规范化后的参数）：这类重复
  * 在真实会话里几乎只有一种含义——模型没有拿到新信息却在下同一个指令。
  * 把它们挡在第三次之前执行，既不会误伤「反复读不同文件」这种正常行为，
  * 也堵死了「搜索失败 → 原样重试」的死循环。
+ *
+ * 但**只看相邻**远远不够。真实故障（用户 2026-11-22）：一个「翻译一下」的任务跑出
+ * 207 个工具调用 —— `read_file Icon.tsx` 53 次、`read_file Gate.tsx` 31 次、
+ * 同样的 `powershell Get-Content` 51 次，中间夹着别的调用，于是相邻判定永远不触发，
+ * 一直在原地打转却停不下来。
+ *
+ * 所以再加一层按**输出**判定的守卫：同一个调用（工具 + 参数）连续三次返回**逐字节
+ * 相同**的结果，就说明再执行一次也不会有新信息 —— 后面的调用直接拦下并告诉模型换方法。
+ * 用输出而不是次数，是为了不误伤「读 → 改 → 再读」这种正常来回：文件改过之后
+ * 输出就变了，计数自动归零。
  */
 export class ToolLoopGuard {
   private lastSignature: string | undefined;
   private repeatCount = 0;
+  /** 每个调用签名最近一次的输出指纹，以及「连续多少次输出一模一样」。 */
+  private readonly outputs = new Map<string, { fingerprint: string; same: number }>();
 
   observe(call: ToolCall): { blocked: boolean; count: number; tool: string } {
-    const signature = `${call.function.name}\u0000${canonicalToolArguments(call.function.arguments)}`;
+    const signature = callSignature(call);
     if (signature === this.lastSignature) this.repeatCount += 1;
     else {
       this.lastSignature = signature;
@@ -106,7 +142,36 @@ export class ToolLoopGuard {
     }
     return { blocked: this.repeatCount >= MAX_IDENTICAL_TOOL_CALLS, count: this.repeatCount, tool: call.function.name };
   }
+
+  /**
+   * 这个调用是否已经「证明」跑不出新东西：同样的参数连续多次拿到同样的结果。
+   *
+   * 判定在**执行前**进行，所以用的是已经记录过的历史结果。
+   */
+  futile(call: ToolCall): boolean {
+    const entry = this.outputs.get(callSignature(call));
+    return Boolean(entry && entry.same >= MAX_IDENTICAL_TOOL_CALLS);
+  }
+
+  /** 记录一次真实执行的结果，供 `futile()` 判定。 */
+  record(call: ToolCall, status: string, content: string): void {
+    const key = callSignature(call);
+    const fingerprint = `${status}\u0000${content}`;
+    const entry = this.outputs.get(key);
+    if (!entry) {
+      this.outputs.set(key, { fingerprint, same: 1 });
+      return;
+    }
+    this.outputs.set(key, entry.fingerprint === fingerprint
+      ? { fingerprint, same: entry.same + 1 }
+      : { fingerprint, same: 1 });
+  }
 }
+
+function callSignature(call: ToolCall): string {
+  return `${call.function.name}\u0000${canonicalToolArguments(call.function.arguments)}`;
+}
+
 
 /** 参数规范化：JSON 键顺序不同也视为同一次调用。 */
 export function canonicalToolArguments(raw: string): string {
@@ -169,6 +234,17 @@ export class AgentRunner {
      */
     hasPendingTasks?: () => boolean | Promise<boolean>;
     /**
+     * 任务清单里还有没有没打勾的项。
+     *
+     * 步数预算用尽时，只要清单还没做完就**续一份预算继续跑**，而不是原地收尾等用户
+     * 回「继续」。用户 2026-11-22 的原话：「没有执行完对话框里面的任务就停下来了，
+     * 每次都是这样，能不能让 agent 执行完再停止」。
+     *
+     * 续跑仍然有上限（`MAX_BUDGET_EXTENSIONS`），并且死循环 / 重复空转 / 连续无进展
+     * / 用户取消这几道闸都还在，所以「跑完再停」不等于「停不下来」。
+     */
+    hasUnfinishedTodos?: () => boolean | Promise<boolean>;
+    /**
      * 工具**失败**时，按这段报错的原文去完整记录里回查相关旧片段。
      *
      * 用户 2026-11-07 追问的缺口：「检索仍要靠模型主动调用」。开局那次自动检索看不到
@@ -224,6 +300,10 @@ export class AgentRunner {
     /** 因「队列里还有消息」而追加的预算次数上限：防御模型无限调用工具导致的死循环。 */
     const MAX_BUDGET_EXTENSIONS = 10;
     let budgetExtensions = 0;
+    /** 「重复空转守卫」拦下的次数。有进展就归零；撞满 `MAX_FUTILE_SKIPS` 才停。 */
+    let futileSkips = 0;
+    /** 因为「清单还没做完」而催模型继续的次数（见 `MAX_TODO_NUDGES`）。 */
+    let todoNudges = 0;
     /**
      * 上一段是「因为用户发来新消息而暂停」结束的。
      *
@@ -240,13 +320,22 @@ export class AgentRunner {
          * 旧实现整轮共用一份 `maxSteps`：前面那条分支跑满预算，后面排队的消息一步都
          * 轮不到，循环直接退出，它们就成了「未执行」。这里给它一份新预算继续跑 ——
          * 用户发的每一句都要被读过，除非他自己删掉。
+         *
+         * 任务清单还没做完时同理（用户 2026-11-22：「没有执行完对话框里面的任务就停下来了」）：
+         * 面板上还挂着没打勾的项目，就说明这一次运行的目标没达成，续一份预算接着做，
+         * 而不是把「还剩 5 项」交回给用户手动点继续。
          */
-        const pending = budgetExtensions < MAX_BUDGET_EXTENSIONS && (await options.hasPendingTasks?.() ?? false);
-        if (!pending) break;
+        const canExtend = budgetExtensions < MAX_BUDGET_EXTENSIONS;
+        const pending = canExtend && (await options.hasPendingTasks?.() ?? false);
+        const unfinished = !pending && canExtend && (await options.hasUnfinishedTodos?.() ?? false);
+        if (!pending && !unfinished) break;
         budgetExtensions += 1;
         step = 0;
         stopReason = 'complete';
         stopNotice = '';
+        if (unfinished) {
+          requestMessages.push({ role: 'user', content: tt('agent.continueForTodos') });
+        }
       }
       /*
        * 上一段工具执行期间收到的暂停请求：那时没有正在生成的回答，暂停已经成立，
@@ -352,6 +441,25 @@ export class AgentRunner {
           continue;
         }
         /*
+         * 模型想收尾，但任务清单还没做完 —— 不能就这么结束。
+         *
+         * 用户 2026-11-22：「没有执行完对话框里面的任务就停下来了，每次都是这样」，
+         * 而且他已经在工具条上选了「最大步数：不限制」。所以卡点不在步数预算：
+         * 是模型自己不再调用工具、直接写总结收尾，清单里还留着没打勾的项。
+         * 这里把清单状态摆回去，明确要求继续做剩下的条目；最多催 `MAX_TODO_NUDGES` 次，
+         * 免得模型认死理时把一次运行拖成无限循环。
+         */
+        if (options.mode !== 'chat' && todoNudges < MAX_TODO_NUDGES && (await options.hasUnfinishedTodos?.() ?? false)) {
+          todoNudges += 1;
+          requestMessages.push({
+            role: 'assistant',
+            content: round.content,
+            reasoning_content: round.reasoning || undefined,
+          });
+          requestMessages.push({ role: 'user', content: tt('agent.unfinishedTodos') });
+          continue;
+        }
+        /*
          * 收尾那一刻用户刚好发来消息：暂停请求可能还没被消费。
          *
          * 不能直接结束 —— 那条消息会被留到下一轮，用户看到的是「我发了消息，任务却
@@ -424,6 +532,25 @@ export class AgentRunner {
           await this.recordSkippedCall(call, executions, requestMessages, options, 'agent.loopSkipped', repeat.count);
           break;
         }
+        /*
+         * 换着花样原地打转：同一个调用已经连续 3 次拿到一模一样的输出。
+         *
+         * 与上面的「相邻重复」不同，这里能抓住中间夹着别的调用的绕圈子 ——
+         * 真实故障里 `read_file Icon.tsx` / `read_file Gate.tsx` / 同一条
+         * `Get-Content` 交替出现几十次，相邻判定永远不触发，一跑就是 200 多个调用。
+         * 拦下这一次并明确要求换方法；模型连续撞满 `MAX_FUTILE_SKIPS` 次才停机。
+         */
+        if (loopGuard.futile(call)) {
+          futileSkips += 1;
+          loopToolName = call.function.name;
+          await this.recordSkippedCall(call, executions, requestMessages, options, 'agent.repeatSkipped');
+          if (futileSkips >= MAX_FUTILE_SKIPS) {
+            stopReason = 'stalled';
+            stopAfterRound = true;
+            break;
+          }
+          continue;
+        }
 
         const execution: ToolExecution = {
           callId: call.id,
@@ -490,6 +617,11 @@ export class AgentRunner {
         if (extra?.skill) {
           await options.callbacks.onSkillUsed?.(extra.skill);
         }
+        // 记下这次的结果指纹：同一个调用反复拿到相同输出时，后面的调用会被拦下。
+        loopGuard.record(call, result.status, result.content);
+        // 真的拿到了新结果（成功）就说明模型在推进，重复空转的计数归零。
+        // `update_todos` 不算：它只是记账，不产出信息，否则模型可以靠反复更新清单把计数刷回 0。
+        if (result.status === 'success' && call.function.name !== 'update_todos') futileSkips = 0;
         execution.status = result.status;
         execution.summary = result.summary;
         execution.output = truncateLocal(result.content);

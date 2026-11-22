@@ -18,14 +18,14 @@
 |---|---|
 | 形态 | VS Code 扩展，单 webview 面板（辅助侧栏），无自建后端 |
 | 语言/构建 | TypeScript → esbuild → `out/extension.js`；无框架、无运行时依赖注入 |
-| 规模 | 209 个 `.ts` / 50,831 行 + webview 资源 ~9.2k 行（0.4.22 实测） |
+| 规模 | 209 个 `.ts` / 50,831 行 + webview 资源 ~9.2k 行（0.4.23 实测） |
 | 最大单文件 | `src/views/chatPanel.ts` 6,463 行；`src/agent/toolExecutor.ts` 2,726；`src/core/storage.ts` 2,436 |
 | 对外接口 | 任意 OpenAI 兼容端点（chat / images / models / embeddings） |
 | 密钥 | 只在 `SecretStorage`（`src/core/apiKeys.ts`），不进 settings.json |
 | 权限 | 四档预设 × 三档命令风险 × 敏感文件，默认 `askAll`（最严） |
 | 配置项 | 38 个 `contributes.configuration` |
 | 命令 | 19 个 |
-| 质量 | 1,355 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
+| 质量 | 1,364 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
 
 ---
 
@@ -87,7 +87,7 @@ Webview (media/, 无 Node 权限)
   → 主循环：
        流式请求 → 解析 tool_calls → 审批 → 执行 → 回灌 → 下一轮
        每轮最多 MAX_TOOL_CALLS_PER_ROUND = 12 个工具
-  → 终止：complete | stepLimit | loopDetected | noProgress | cancelled
+  → 终止：complete | stepLimit | loopDetected | stalled | noProgress | cancelled
   → taskReview（完成度复核）→ 版本号/提交询问（releasePolicy）
 ```
 
@@ -111,11 +111,14 @@ Runner
 
 | 限制 | 值 | 位置 |
 |---|---|---|
-| 步数 | `agentMaxSteps` 默认 24 | `settings` |
+| 步数 | `agentMaxSteps` 默认 24；「不限制」= `Infinity` | `settings` |
 | 队列续期 | 有待处理消息时追加预算，最多 10 次 | `agentRunner.ts:216` |
+| 清单续期 | 步数用尽但清单还有未完成项 → 追加预算并注入「继续做清单」指令 | `agentRunner.ts`（`hasUnfinishedTodos`） |
+| 提前收尾 | 模型想结束但清单没做完 → 最多催 `MAX_TODO_NUDGES` = 3 次 | `agentRunner.ts` |
 | 单轮工具数 | 12（超出排队下一步） | `agentRunner.ts:63` |
-| 重复调用 | 同一工具同样参数 3 次 → `loopDetected` | `agentRunner.ts:70` |
+| 重复调用 | 相邻同参数 3 次 → `loopDetected`；同参数**输出**连续 3 次逐字节相同 → 拦下，撞满 `MAX_FUTILE_SKIPS` = 4 次 → `stalled` | `agentRunner.ts`（`ToolLoopGuard`） |
 | 无进展 | 连续 3 轮「有真实 error 且无任何成功步骤」→ `noProgress`（策略拒绝与 `decisive` 的 4xx 不计入） | `agentRunner.ts:72` |
+| 清单全绿 | 必须有本轮除 `update_todos` 外的成功调用，否则拒绝写入（`todo.unverifiedNotice`） | `chatPanel.ts`（`updateTodos`） |
 | 运行内工具全文 | 只留最近 3 条 | `agentRunner.ts:536` |
 
 终止原因会翻译成人话（`agentRunner.ts:76`），并区分「超时 / 卡住 / 断网 / 用户取消」四态（`src/agent/abortReason.ts:73`）。
@@ -291,7 +294,7 @@ Runner
 
 ## 10. 质量保障
 
-- **1,355 条单测**（`src/test/`）。
+- **1,364 条单测**（`src/test/`）。
 - **79 个 `test/check-*.mjs` 守护脚本**，其中若干不是静态断言，而是**真跑**：
   - 真实 Chromium：量按钮宽高、真点按钮、走完整交互（`check-settings-layout`、`check-image-attachment`、`check-capsule-*` …）；
   - 真实文件系统：大小写不同拼写是否算同一目录（`check-path-identity`）；
@@ -528,7 +531,7 @@ Runner
 # 类型检查
 npx tsc -p ./ --noEmit
 
-# 单测（1,355 条）
+# 单测（1,364 条）
 npm test
 
 # 全部守护脚本（79 个；含真实 Chromium / 真实文件系统 / 真实命令）
