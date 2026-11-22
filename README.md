@@ -37,6 +37,12 @@ Three measurable gaps behind "why is Copilot Chat so smooth and HWChat so heavy"
 - **Command output kept only the beginning** — up to 200 KB, head 75% only, which cut off the failing tests and the final error line, so the model re-ran the command (the same command ran **51 times**). Output is now capped at 32 KB for the model and keeps both the head and the tail with an explicit "bytes omitted" marker plus concrete narrowing advice (`| Select-Object -Last 100`, `| Select-String`).
 - **Context folding kept only the last 3 tool payloads** — reading a fourth file dropped the first, and coming back to it meant re-reading, which dropped another. `pruneToolPayloads` now pins the latest payload of up to 4 files (≤ 64 KB total), preferring paths the model has returned to, and only folds them when the total budget genuinely requires it.
 
+### Fixing the entry point instead of the model: argument normalisation
+
+You cannot always switch to a stronger tool-calling model, so the near-misses are repaired before the tool runs. `normalizeToolArguments` maps the shapes weaker models actually produce onto the real schema: `file` / `filePath` / `file_path` → `path`, `start_line` → `startLine` (with `"10"` → `10`), `oldString` / `newString` → `oldText` / `newText`, Claude-style `pattern` / `replacement` → `oldText` / `newText` for `replace_in_file` (and to `query` for `search_files`, `glob` for `list_files`), `"true"` → `true`, and a number passed as a path becomes a string. Aliases only fill a **missing** argument — they never overwrite a value the model actually wrote — and body text such as `oldText` is never trimmed, because its whitespace is part of the exact match.
+
+A missing argument now says what was received and tells the model to retry the same tool instead of switching tools to work around it, and `replace_in_file` / `run_command` carry a one-line argument list plus a minimal JSON example.
+
 ## What's new in 0.4.22
 
 ### Another group of bugs that made working commands look like failures

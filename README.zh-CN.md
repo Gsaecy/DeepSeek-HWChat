@@ -39,6 +39,12 @@ HWChat 是一个在 VS Code 内直接编码的 DeepSeek / OpenAI 兼容 Agent �
 - **命令输出只留开头**：上限 200 KB、只保留前 75%，`npm test` 的失败列表和最后那句报错被切掉，模型只能重跑（同一条命令跑了 **51 次**）。现在给模型的输出上限 32 KB，并且**头尾都留**、中间注明省略字节数，直接给出收窄写法（`| Select-Object -Last 100`、`| Select-String`）。
 - **上下文折叠只留最近 3 条**：读到第 4 个文件时第 1 个被折掉，回头又要重读，于是轮流被折、轮流重读。现在 `pruneToolPayloads` 按路径钉住最多 4 个文件（总 ≤ 64 KB）的最近一次载荷，优先「被回头读过」的路径，真的超预算才折它们。
 
+### 换不了模型就把入口修好：参数归一化
+
+没法总换到工具调用更强的模型，所以把它「差一点」的输入在入口处修好。`normalizeToolArguments` 会把弱模型真实写出来的形状补成规范参数：`file` / `filePath` / `file_path` → `path`，`start_line` → `startLine`（`"10"` 也转成 `10`），`oldString` / `newString` → `oldText` / `newText`，Claude 风格的 `pattern` / `replacement` 在 `replace_in_file` 里当作旧/新文本（在 `search_files` 里归 `query`、在 `list_files` 里归 `glob`），`"true"` → `true`，数字当路径会转成字符串。别名**只补缺席的参数**，绝不覆盖模型真正写的值；`oldText` 这类正文**永不去空白**，因为空白是精确匹配的一部分。
+
+缺参数时现在会告诉模型「这次收到了哪些键」，并要求它补齐后重试同一个工具，而不是换个工具绕开；`replace_in_file` / `run_command` 的描述里也各加了一行参数清单 + 最小 JSON 示例。
+
 ## 0.4.22 更新了什么
 
 ### 又修掉一组会把任务误判「全部失败」的问题

@@ -408,7 +408,7 @@ export class ToolExecutor implements vscode.Disposable {
     const name = call.function.name;
     let args: Record<string, unknown>;
     try {
-      args = parseArguments(call.function.arguments);
+      args = normalizeToolArguments(name, parseArguments(call.function.arguments));
     } catch (error) {
       const result: ToolExecutionResult = {
         status: 'error',
@@ -2147,9 +2147,106 @@ function parseArguments(raw: string): Record<string, unknown> {
   }
 }
 
+/**
+ * 参数归一化：把弱模型最常见的「差一点」修好，而不是让它再猜一次。
+ *
+ * 背景（用户 2026-11-22）：「没法换工具调用更强的模型，能不能优化工具调用结构、参数」。
+ * 换不了模型，就只能在入口处把它的输入修到能用。实测里反复出现的写法差异：
+ *
+ *   `{"file": "src/a.ts"}`            ← 参数名不对（应为 path）
+ *   `{"path": "src/a.ts", "start_line": 10}` ← 蛇形命名
+ *   `{"path": 123}`                   ← 数字当路径
+ *   `{"oldString": "...", "newString": "..."}` ← Claude 习惯的命名
+ *   `{"query": "...", "include": "src/**"}`    ← glob 写成 include
+ *
+ * 规则：**只在目标参数缺席时**补位（不覆盖模型真正写的值），字符串统一去首尾空白，
+ * 数字/布尔字符串转成对应类型。全部是纯函数，可单测。
+ */
+const GLOBAL_ARG_ALIASES: Record<string, readonly string[]> = {
+  path: ['file', 'filePath', 'file_path', 'filepath', 'filename', 'fileName', 'target', 'targetPath', 'target_path'],
+  query: ['pattern', 'keyword', 'keywords', 'searchTerm', 'search_term', 'q'],
+  command: ['cmd', 'shellCommand', 'shell_command'],
+  content: ['contents', 'body'],
+  oldText: ['old_text', 'oldString', 'old_string', 'oldstr', 'find', 'search'],
+  newText: ['new_text', 'newString', 'new_string', 'newstr', 'replacement', 'replace'],
+  startLine: ['start_line', 'lineFrom', 'line_from', 'begin'],
+  endLine: ['end_line', 'lineTo', 'line_to', 'stop'],
+  glob: ['include', 'includes', 'filter', 'files', 'filePattern', 'file_pattern'],
+  from: ['source', 'fromPath', 'from_path', 'oldPath', 'old_path'],
+  to: ['destination', 'dest', 'toPath', 'to_path', 'newPath', 'new_path'],
+  todoId: ['todo_id', 'id'],
+  url: ['href', 'link'],
+};
+
+export function normalizeToolArguments(name: string, raw: Record<string, unknown>): Record<string, unknown> {
+  const args: Record<string, unknown> = { ...raw };
+  /*
+   * 先处理「同一个键在不同工具里含义不同」的情况，再走通用别名。
+   *
+   * - `replace_in_file`：`pattern` 是「要找的旧文本」（Claude 风格），不是搜索词；
+   * - `list_files`：`pattern` 指通配符，对应 `glob`。
+   * 通用别名表把 `pattern` 归到 `query`，所以这两条必须抢在前面。
+   */
+  if (name === 'replace_in_file' && (args.oldText === undefined || args.oldText === null) && typeof args.pattern === 'string' && args.pattern.trim()) {
+    args.oldText = args.pattern;
+    delete args.pattern;
+  }
+  if (name === 'list_files' && (args.glob === undefined || args.glob === null) && typeof args.pattern === 'string' && args.pattern.trim()) {
+    args.glob = args.pattern;
+    delete args.pattern;
+  }
+  for (const [canonical, aliases] of Object.entries(GLOBAL_ARG_ALIASES)) {
+    if (args[canonical] !== undefined && args[canonical] !== null) continue;
+    for (const alias of aliases) {
+      const value = args[alias];
+      if (value === undefined || value === null) continue;
+      args[canonical] = value;
+      delete args[alias];
+      break;
+    }
+  }
+  for (const key of ['startLine', 'endLine', 'limit']) {
+    const value = args[key];
+    if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) args[key] = Number(value);
+  }
+  for (const key of ['caseSensitive', 'replaceAll', 'background', 'preview']) {
+    const value = args[key];
+    if (value === 'true') args[key] = true;
+    else if (value === 'false') args[key] = false;
+  }
+  /*
+   * 只对「标识符类」参数去首尾空白。
+   *
+   * 正文类参数（oldText / newText / content / command）绝不能 trim：oldText 的首尾空白
+   * 与缩进是精确匹配的一部分，trim 掉就再也匹配不上（实测把一条跨 CRLF/LF 混合区的
+   * 替换用例弄挂了）。
+   */
+  const TRIMMABLE = new Set(['path', 'glob', 'query', 'url', 'from', 'to', 'todoId', 'language', 'title', 'cwd', 'kind']);
+  for (const [key, value] of Object.entries(args)) {
+    if (TRIMMABLE.has(key) && typeof value === 'string') args[key] = value.trim();
+  }
+  return args;
+}
+
+/** 见 `normalizeToolArguments`：同一参数在不同工具里的名称差异集中在这里处理。 */
+
 function stringArg(args: Record<string, unknown>, key: string, fallback?: string): string {
   const value = args[key];
-  if (value === undefined && fallback !== undefined) return fallback;
+  if (value === undefined || value === null) {
+    if (fallback !== undefined) return fallback;
+    /*
+     * 缺参数时要把「收到了什么、需要什么」直接说清楚。
+     *
+     * 只说「path 必须是字符串」时，弱模型往往换个工具而不是补参数（实测：缺 path
+     * 之后它改用了 run_command 又撞一次）。把已收到的键列出来，它下一次就知道怎么改。
+     */
+    throw new Error(tt('tool.paramMissing', {
+      key,
+      keys: Object.keys(args).filter((item) => item !== key).join(', ') || tt('tool.paramNoneReceived'),
+    }));
+  }
+  // 弱模型常把数字当路径/版本号直接传过来，类型错误不该让整步失败。
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   if (typeof value !== 'string') throw new Error(tt('tool.paramMustBeString', { key }));
   return value;
 }
