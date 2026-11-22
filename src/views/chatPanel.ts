@@ -10,6 +10,7 @@ import { isInsideWorkspace, normalizeFileReference, revealTargetFor } from '../a
 import { embedMentionedImages, rehostWebviewImageUrls, resolveLocalImage, rewriteMarkdownImagePaths } from '../agent/markdownImages';
 import { imageCapabilityPrompt, looksLikeImageRequest } from '../agent/imageRequest';
 import { blockedToolReason, detectPlaybooks, detectTestCommand, hasWriteIntent, narrowToolNames, type ToolPlaybook } from '../agent/toolPlaybooks';
+import { BRIDGED_TOOL_PREFIX, trimToolSurface, wantsBridgedTools } from '../agent/toolSurface';
 import { findRemoteImages, resolveRemoteImages } from '../agent/remoteImages';
 import { chooseReferenceMatch } from '../agent/fileReferenceResolve';
 import { resolveFileReferences, type ReferenceQuery } from '../agent/fileReferenceBatch';
@@ -554,6 +555,12 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   /** 每轮运行里「工具失败自动回查」已用次数（上限 3，防止灌满上下文）。 */
   private readonly failureRecallUsed = new Map<string, number>();
   private readonly todoBaselines = new Map<string, Map<string, { status: AgentTaskNode['status']; contents: string[] }>>();
+  /**
+   * 每条对话成功用过的桥接工具名（`hwchat_vscode_*`）。
+   *
+   * 只用于「这次要不要把桥接工具下发给模型」的判断，见 `applyToolSnapshot` 与 `send()`。
+   */
+  private readonly bridgedToolUsage = new Map<string, Set<string>>();
   /** 等待用户在面板里点「允许一次 / 拒绝」的工具授权。 */
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingDecisions = new Map<string, PendingDecision>();
@@ -1998,11 +2005,26 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       });
       const writingRequested = hasWriteIntent(content);
       const allToolNames = this.toolCatalog(settings, mode);
+      /*
+       * 本轮到底需不需要「VS Code 扩展提供的桥接工具」。
+       *
+       * Copilot Chat 只给模型十几个精选工具；HWChat 之前把 VS Code 里所有扩展注册的
+       * 语言模型工具（上限 400）一起下发，几十个候选 + 上万字符 schema —— 模型挑错
+       * 的概率随候选数上升，挑中一个在 HWChat 上下文里调不通的桥接工具就是一轮白烧。
+       * 所以默认只下发原生工具，只有用户这句话明确指向扩展侧能力（浏览器 / 终端 /
+       * 扩展命令 / 符号跳转…）时才带上桥接工具。
+       *
+       * 此外，如果本轮之前已经成功用过某个桥接工具，也继续带上：那是模型已经选定的
+       * 工作方式，中途抽走会让它下一轮突然找不到。
+       */
+      const bridgedRequested = wantsBridgedTools(content) || (this.bridgedToolUsage.get(conversationId)?.size ?? 0) > 0;
       const toolAllowList = playbooks.length
         ? narrowToolNames(allToolNames, playbooks, writingRequested)
-        : undefined;
+        : trimToolSurface(allToolNames, { bridgedRequested });
       if (playbooks.length) {
         this.log(`[playbook] ${playbooks.map((item) => item.kind).join('+')}｜工具 ${allToolNames.length} → ${toolAllowList?.length ?? allToolNames.length}（写意图：${writingRequested}）`);
+      } else if (toolAllowList) {
+        this.log(`[tools] 工具 ${allToolNames.length} → ${toolAllowList.length}（未请求扩展能力，隐去桥接工具）`);
       }
       const controller = new AbortController();
       /**
@@ -2474,6 +2496,21 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       if (offset === undefined) {
         offset = boundary;
         run.toolContentOffsets.set(item.callId, offset);
+      }
+      /*
+       * 记下这条对话用过的桥接工具名。
+       *
+       * `send()` 里决定「这次要不要把桥接工具下发给模型」时要参考它：模型已经成功用过
+       * 某个扩展工具，就说明这是它选定的工作方式，中途抽走会让它下一轮突然找不到。
+       * 只按对话记名字（不记内容），内存开销可忽略。
+       */
+      if (item.name.startsWith(BRIDGED_TOOL_PREFIX) && item.status === 'success') {
+        let used = this.bridgedToolUsage.get(conversationId);
+        if (!used) {
+          used = new Set<string>();
+          this.bridgedToolUsage.set(conversationId, used);
+        }
+        used.add(item.name);
       }
       return { ...item, contentOffset: offset };
     });
