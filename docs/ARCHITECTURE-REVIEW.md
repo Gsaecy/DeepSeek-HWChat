@@ -18,7 +18,7 @@
 |---|---|
 | 形态 | VS Code 扩展，单 webview 面板（辅助侧栏），无自建后端 |
 | 语言/构建 | TypeScript → esbuild → `out/extension.js`；无框架、无运行时依赖注入 |
-| 规模 | 209 个 `.ts` / 50,831 行 + webview 资源 ~9.2k 行（0.4.23 实测） |
+| 规模 | 209 个 `.ts` / 50,831 行 + webview 资源 ~9.2k 行（0.4.24 实测） |
 | 最大单文件 | `src/views/chatPanel.ts` 6,463 行；`src/agent/toolExecutor.ts` 2,726；`src/core/storage.ts` 2,436 |
 | 对外接口 | 任意 OpenAI 兼容端点（chat / images / models / embeddings） |
 | 密钥 | 只在 `SecretStorage`（`src/core/apiKeys.ts`），不进 settings.json |
