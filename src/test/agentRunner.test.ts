@@ -642,3 +642,38 @@ test('折叠保留结论与改动文件（不丢可用的信息）', () => {
   assert.match(String(first.summary), /读取第 0 个文件/);
   assert.equal(first.folded, true);
 });
+
+/**
+ * 工作集要留住：读过的文件内容不会被「读到第 4 个」挤掉。
+ *
+ * 真实故障：一个「翻译」任务里 `read_file Icon.tsx` 被读了 53 次 —— 每次读到新文件，
+ * 前面读过的就被折叠掉，模型回头要改它时只能再读一遍，读完另一个又被折掉，无限循环。
+ */
+test('按路径钉住：回头读过的文件，其内容不会被后续读取挤掉', () => {
+  const read = (path: string, bytes = 200): ChatRequestMessage => ({
+    role: 'tool',
+    tool_call_id: `call-${path}-${Math.random()}`,
+    name: 'read_file',
+    content: JSON.stringify({ status: 'success', summary: `读取 ${path}`, result: 'x'.repeat(bytes), path }),
+  });
+  const messages: ChatRequestMessage[] = [read('a.ts'), read('b.ts'), read('c.ts'), read('d.ts'), read('e.ts'), read('a.ts')];
+  pruneToolPayloads(messages, 3);
+
+  const folded = messages.map((message) => /"folded":true/.test(String(message.content)));
+  assert.equal(folded[0], true, 'a.ts 的第一次读取（重复）可以折');
+  assert.equal(folded[5], false, 'a.ts 最近一次读取必须留住（它是工作集）');
+  assert.equal(folded[4], false, '最新一条永远不折');
+});
+
+test('钉住也有字节上限：大文件不会把预算吃光', () => {
+  const big = (path: string): ChatRequestMessage => ({
+    role: 'tool',
+    tool_call_id: `call-${path}`,
+    name: 'read_file',
+    content: JSON.stringify({ status: 'success', summary: `读取 ${path}`, result: 'x'.repeat(60_000), path }),
+  });
+  const messages = [big('a.ts'), big('b.ts'), big('c.ts'), big('d.ts')];
+  const budget = 100_000;
+  pruneToolPayloads(messages, 1, budget);
+  assert.ok(requestBytes(messages) <= budget, `超预算时必须能折到装得下，实际 ${requestBytes(messages)}`);
+});

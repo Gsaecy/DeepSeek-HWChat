@@ -878,7 +878,8 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.listFiles.description': { zh: '列出工作区内匹配的文件路径，不读取文件内容。', en: 'List matching file paths inside the workspace without reading their contents.' },
   'tool.listFiles.globParam': { zh: '相对工作区的 glob，例如 src/**/*.ts', en: 'Workspace-relative glob, for example src/**/*.ts' },
   'tool.searchFiles.description': { zh: '在工作区文本文件中搜索字符串，返回匹配文件和行号。', en: 'Search text files in the workspace and return matching files and line numbers.' },
-  'tool.readFile.description': { zh: '读取工作区内一个文本文件。敏感文件默认禁止。', en: 'Read a text file inside the workspace. Sensitive files are blocked by default.' },
+  'tool.readFile.description': { zh: '读取工作区内一个文本文件。返回带行号的内容，默认最多 600 行 / 48 KB；需要更多时传 startLine / endLine 接着读（不要为了看全文重复读同一个文件）。敏感文件默认禁止。', en: 'Read a text file inside the workspace. Content comes back with line numbers, up to 600 lines / 48 KB by default; pass startLine / endLine to continue reading further (do not re-read the same file just to see it all). Sensitive files are blocked by default.' },
+  'tool.readWindowHint': { zh: '\n\n（只显示第 {from}–{to} 行，共 {total} 行。继续请调用 read_file 传 startLine={next}；要定位具体内容请用 search_files，不要重复读同一段。）', en: '\n\n(Showing lines {from}–{to} of {total}. Continue with read_file startLine={next}; to locate something specific use search_files instead of re-reading the same range.)' },
   'tool.openFile.description': { zh: '直接在 VS Code 编辑器中打开工作区内文件。不运行终端命令；用户要求打开文件时优先使用。', en: 'Open a workspace file directly in the VS Code editor. Runs no terminal command; prefer it when the user asks to open a file.' },
   'tool.openFile.pathParam': { zh: '工作区相对路径、带工作区根目录名的路径，或工作区内绝对路径', en: 'Workspace-relative path, a path prefixed with a workspace root name, or an in-workspace absolute path' },
   'tool.openFile.previewParam': { zh: '是否以预览标签打开，默认 true', en: 'Open as a preview tab; defaults to true' },
@@ -1092,6 +1093,7 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.fileTag': { zh: '[文件]', en: '[file]' },
   'tool.binaryFile': { zh: '该文件似乎是二进制文件，未加入模型上下文。', en: 'This file looks binary, so it was not added to the model context.' },
   'tool.outputTruncated': { zh: '{result}\n… [输出已截断，原始大小 {bytes} 字节]', en: '{result}\n… [output truncated; original size {bytes} bytes]' },
+  'tool.outputTruncatedMiddle': { zh: '{head}\n\n… [中间省略 {bytes} 字节；需要更多请缩小范围重跑，例如命令加 `| Select-Object -Last 100`、`| Select-String "错误关键词"`，或读文件时传 startLine / endLine] …\n\n{tail}', en: '{head}\n\n… [{bytes} bytes omitted in the middle; narrow the command instead of re-running it wholesale, e.g. `| Select-Object -Last 100` or `| Select-String "keyword"`, or pass startLine / endLine when reading a file] …\n\n{tail}' },
   'tool.lineDelta': { zh: '{lines} 行（{delta}）', en: '{lines} lines ({delta})' },
 
   // 待办清单（Agent 自己维护的任务清单）

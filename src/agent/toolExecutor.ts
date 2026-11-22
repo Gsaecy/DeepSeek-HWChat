@@ -1073,7 +1073,6 @@ export class ToolExecutor implements vscode.Disposable {
       throw new Error(tt('tool.readFileTooLarge', { size: formatBytes(stat.size), max: formatBytes(settings.maxReadBytes) }));
     }
     const decoded = decodeTextWithEncoding(await vscode.workspace.fs.readFile(resolved.uri));
-    let text = decoded.text;
     /*
      * 非 UTF-8 文件（GBK 等）：正文照样给模型（已按真实编码解出来），但要说明两件事 ——
      * 编辑会被拒绝（避免把中文写坏），以及不要按 UTF-8 去猜字节偏移。
@@ -1083,10 +1082,40 @@ export class ToolExecutor implements vscode.Disposable {
       : `\n\n${tt('tool.encodingNotice', { encoding: encodingLabel(decoded.encoding) })}`;
     const startLine = Math.max(1, numberArg(args, 'startLine', 1));
     const endLine = Math.max(startLine, numberArg(args, 'endLine', Number.MAX_SAFE_INTEGER));
-    if (startLine > 1 || endLine < Number.MAX_SAFE_INTEGER) {
-      const lines = text.split(/\r?\n/);
-      text = lines.slice(startLine - 1, endLine).map((line, index) => `${startLine + index}: ${line}`).join('\n');
+    /*
+     * 按行返回 + 默认窗口。
+     *
+     * 用户 2026-11-22 的真实现场：`read_file src/index.css`（231.6 KB）一次把整个文件
+     * 塞进上下文 —— 约 6 万 token 一次请求，紧接着就被 `pruneToolPayloads` 折叠掉，
+     * 模型于是再读一遍、再折叠、再读…… 同一个文件被读了 53 次。Copilot Chat 的做法是
+     * 「带行号 + 按需分段」：一次只给窗口，告诉它还剩多少行、下一段从哪开始。
+     *
+     * 行为变化：**始终带行号**（模型能引用行、也更容易判断读到哪），单次最多
+     * `READ_WINDOW_LINES` 行 / `READ_WINDOW_BYTES` 字节；超出时附一行「继续读第 X 行起」。
+     * 小文件（绝大多数）一次读完，与以前完全一样，只是多了行号。
+     */
+    const lines = decoded.text.split(/\r?\n/);
+    const requested = lines.slice(startLine - 1, endLine);
+    const window: string[] = [];
+    let windowBytes = 0;
+    for (const line of requested) {
+      const lineBytes = Buffer.byteLength(line) + 1;
+      if (window.length >= READ_WINDOW_LINES) break;
+      if (window.length > 0 && windowBytes + lineBytes > READ_WINDOW_BYTES) break;
+      window.push(line);
+      windowBytes += lineBytes;
     }
+    const firstLine = startLine;
+    const lastLine = startLine + Math.max(0, window.length - 1);
+    let text = window.map((line, index) => `${firstLine + index}: ${line}`).join('\n');
+    const windowHint = lastLine < lines.length
+      ? tt('tool.readWindowHint', {
+        from: firstLine,
+        to: lastLine,
+        total: lines.length,
+        next: lastLine + 1,
+      })
+      : '';
     /*
      * 内容处理层（2026-11-08 外部评审 ⑥）：文件名白名单挡不住
      * `config.json`、`notes.md`、`backup.txt` 里的明文密钥。
@@ -1122,7 +1151,7 @@ export class ToolExecutor implements vscode.Disposable {
     return {
       status: 'success',
       summary: tt('tool.readSummary', { path: resolved.relativePath, size: formatBytes(stat.size) }),
-      content: `${text}${encodingNotice}${secretNotice}`,
+      content: `${text}${windowHint}${encodingNotice}${secretNotice}`,
       approval: 'not-required',
     };
   }
@@ -1610,6 +1639,15 @@ export class ToolExecutor implements vscode.Disposable {
     const noMatch = !result.timedOut && noMatchExit(effectiveCommand, result.code, result.stdout, result.stderr);
     const noMatchNote = noMatch ? tt('tool.runCommand.noMatch') : undefined;
     const failed = !(((result.code === 0 || tolerated || noMatch)) && !result.timedOut);
+    /*
+     * 命令输出默认只送 32 KB 给模型。
+     *
+     * 一次 `npm test` / `git diff` 动辄几百 KB，全部塞进上下文等于把一次请求烧掉几万
+     * token，紧接着又被载荷折叠掉，模型只能重跑同一条命令（实测同一条 `Get-Content`
+     * 跑了 51 次）。32 KB 足够看清报错与结论；真需要更多时输出里会带截断说明，
+     * 让模型用 `| Select-Object -Last 200`、`| Select-String` 之类收窄，而不是重跑。
+     */
+    const commandOutputLimit = Math.min(settings.maxToolOutputBytes, COMMAND_OUTPUT_WINDOW_BYTES);
     return {
       status: failed ? 'error' : 'success',
       // 失败但一个字都没输出：这才是「环境可能坏了」的证据（见 `noOutput` 的说明）。
@@ -1617,7 +1655,7 @@ export class ToolExecutor implements vscode.Disposable {
       summary: `${commandSummary(effectiveCommand, result, timeout, Date.now() - commandStartedAt)}${clampSummary}`,
       content: truncate(
         redact([strippedNote, clampNotice, output || tt('tool.noOutput'), toleratedNote, noMatchNote, nestedCdHint, missingPath, environmentHint, advice].filter(Boolean).join('\n\n')),
-        settings.maxToolOutputBytes,
+        commandOutputLimit,
       ),
       approval: 'approved',
     };
@@ -2697,6 +2735,25 @@ export interface BoundedText {
   readonly truncated: boolean;
 }
 
+/**
+ * `read_file` 单次返回的默认窗口。
+ *
+ * 一次给整份大文件是「读一次就爆上下文」的根源：231 KB 的 CSS 约 6 万 token，
+ * 发出去之后很快就被载荷折叠掉，模型只能再读 —— 实测同一个文件被读了 53 次。
+ * 600 行 / 48 KB 足够覆盖常规源码文件（读一次就能改），又不会把上下文烧光；
+ * 需要更多内容时按 `tool.readWindowHint` 的指引从下一行继续。
+ */
+export const READ_WINDOW_LINES = 600;
+export const READ_WINDOW_BYTES = 48 * 1024;
+
+/**
+ * `run_command` 单次给模型的输出上限。
+ *
+ * 见结果组装处的说明：200 KB 的命令输出约 5 万 token，一次就能把上下文烧掉一半，
+ * 随后被折叠、模型重跑同一条命令 —— 那是「几百条命令」的第二大来源。
+ */
+export const COMMAND_OUTPUT_WINDOW_BYTES = 32 * 1024;
+
 export const EMPTY_BOUNDED_TEXT: BoundedText = Object.freeze({
   text: '',
   bytes: 0,
@@ -2763,12 +2820,23 @@ export function renderBoundedText(buffer: BoundedText): string {
   return tt('tool.outputTruncated', { result: buffer.text, bytes: buffer.totalBytes.toLocaleString() });
 }
 
-function truncate(value: string, maxBytes: number): string {
+/**
+ * 截断超长输出：**保留开头和结尾**，中间折叠。
+ *
+ * 以前只留开头（前 75%），于是 `npm test` 的失败列表、`git diff` 的末尾、
+ * 命令最后那句报错全部被切掉 —— 模型看不到结论，只能把同一条命令再跑一遍
+ * （实测同一条命令跑了 51 次）。头尾都留才能让它「看完就知道下一步」。
+ */
+export function truncate(value: string, maxBytes: number): string {
   if (Buffer.byteLength(value) <= maxBytes) return value;
-  // 按码元截断会切开 emoji（半个代理项 → 请求 JSON 直接 400），所以走 safeSlice。
-  let result = safeSlice(value, 0, Math.max(1, Math.floor(maxBytes * 0.75)));
-  while (Buffer.byteLength(result) > maxBytes - 80) result = safeSlice(result, 0, Math.max(0, result.length - 256));
-  return tt('tool.outputTruncated', { result, bytes: Buffer.byteLength(value).toLocaleString() });
+  const headBudget = Math.max(1, Math.floor(maxBytes * 0.6));
+  const tailBudget = Math.max(0, maxBytes - headBudget - 200);
+  let head = safeSlice(value, 0, Math.max(1, headBudget));
+  while (head && Buffer.byteLength(head) > headBudget) head = safeSlice(head, 0, Math.max(0, head.length - 256));
+  let tail = safeSlice(value, Math.max(0, value.length - tailBudget));
+  while (tail && Buffer.byteLength(tail) > tailBudget) tail = safeSlice(tail, 256);
+  const omitted = Math.max(0, Buffer.byteLength(value) - Buffer.byteLength(head) - Buffer.byteLength(tail));
+  return tt('tool.outputTruncatedMiddle', { head, tail, bytes: omitted.toLocaleString() });
 }
 
 function formatBytes(bytes: number): string {

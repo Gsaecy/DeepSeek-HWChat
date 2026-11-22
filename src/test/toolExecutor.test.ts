@@ -3,7 +3,7 @@ import { after, before, test } from 'node:test';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ToolExecutor, commandShellLabel, type ToolApprovalRequest, type ToolExecutionScope } from '../agent/toolExecutor';
+import { ToolExecutor, READ_WINDOW_LINES, commandShellLabel, truncate, type ToolApprovalRequest, type ToolExecutionScope } from '../agent/toolExecutor';
 import { AuditLog } from '../agent/auditLog';
 import { ChatSettings, PermissionPreset, ToolCall, ToolExecutionResult } from '../core/types';
 import { PERMISSION_PRESET_PROFILES } from '../core/permissions';
@@ -744,4 +744,54 @@ test('replace_in_file：replaceAll 跨混合换行时替换全部命中', async 
 
   assert.equal(result.status, 'success', `实际：${result.status} / ${result.summary}`);
   assert.equal(await readFile(file, 'utf8'), 'x = 9;\r\ny = 2;\nx = 9;\nz = 3;\r\n');
+});
+
+/**
+ * 读取窗口（用户 2026-11-22：「翻译这种简单工作跑了几百条命令」）。
+ *
+ * 现场：`read_file src/index.css`（231.6 KB）一次把整份文件塞进上下文，约 6 万 token，
+ * 紧接着被载荷折叠掉，模型只能再读 —— 同一个文件被读了 53 次。
+ * 现在一律带行号、单次最多 READ_WINDOW_LINES 行，并明确告诉它下一段从哪读。
+ */
+test('read_file：默认按窗口返回，带行号，并给出继续读的起点', async () => {
+  const file = join(rootB, 'big.txt');
+  const lines = Array.from({ length: READ_WINDOW_LINES + 120 }, (_, index) => `line ${index + 1}`);
+  await writeFile(file, lines.join('\n'), 'utf8');
+
+  const { result } = await run('read_file', { path: join(rootB, 'big.txt') }, { preset: 'review' });
+
+  assert.equal(result.status, 'success');
+  assert.match(result.content, /^1: line 1/, '必须带行号');
+  assert.match(result.content, new RegExp(`${READ_WINDOW_LINES}: line ${READ_WINDOW_LINES}`), '窗口内的最后一行要在');
+  assert.equal(result.content.includes(`line ${READ_WINDOW_LINES + 1}\n`), false, '窗口外的内容不该被塞进来');
+  assert.match(result.content, new RegExp(`startLine=${READ_WINDOW_LINES + 1}`), '要告诉模型下一段从哪读');
+});
+
+test('read_file：按 startLine / endLine 只返回请求的那一段', async () => {
+  const file = join(rootB, 'ranged.txt');
+  await writeFile(file, ['a', 'b', 'c', 'd', 'e'].join('\n'), 'utf8');
+
+  const { result } = await run('read_file', { path: join(rootB, 'ranged.txt'), startLine: 2, endLine: 4 }, { preset: 'review' });
+
+  assert.equal(result.status, 'success');
+  assert.match(result.content, /^2: b/);
+  assert.match(result.content, /\n4: d\n/);
+  assert.equal(result.content.includes('5: e'), false);
+});
+
+/**
+ * 截断要同时留头留尾。
+ *
+ * 以前只留开头，`npm test` 的失败列表、命令最后那句报错全被切掉，模型看不到结论，
+ * 只能把同一条命令再跑一遍（实测同一条命令跑了 51 次）。
+ */
+test('truncate：超长输出保留开头与结尾，中间折叠', () => {
+  const head = `HEAD-${'a'.repeat(400)}`;
+  const tail = `${'b'.repeat(400)}-TAIL`;
+  const out = truncate(`${head}${'x'.repeat(5000)}${tail}`, 600);
+
+  assert.ok(out.startsWith('HEAD-'), '开头要留');
+  assert.ok(out.endsWith('-TAIL'), '结尾要留（报错通常在最后）');
+  assert.match(out, /中间省略|bytes omitted in the middle/);
+  assert.ok(Buffer.byteLength(out) <= 1200, `截断后仍应是可控大小，实际 ${Buffer.byteLength(out)}`);
 });

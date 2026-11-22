@@ -640,6 +640,7 @@ export class AgentRunner {
         const recall = result.status === 'error' && options.recallForFailure
           ? await options.recallForFailure(call.function.name, result.content).catch(() => '')
           : '';
+        const filePath = payloadPathFor(call.function.name, call.function.arguments);
         requestMessages.push({
           role: 'tool',
           tool_call_id: call.id,
@@ -649,6 +650,12 @@ export class AgentRunner {
             summary: result.summary,
             result: recall ? `${result.content}\n\n${recall}` : result.content,
             changedFiles: result.changedFiles,
+            /*
+             * 文件类工具的路径要留在载荷里：`pruneToolPayloads` 靠它「钉住」每个文件
+             * 最近一次的读取结果。否则模型读到第 4 个文件时，第 1 个文件的内容就被折掉了，
+             * 它只能回去再读一遍 —— 这正是同一个文件被读几十次的原因。
+             */
+            ...(filePath ? { path: filePath } : {}),
           }),
         });
         /*
@@ -862,7 +869,7 @@ const TOOL_PAYLOAD_KEEP = 3;
 function foldToolPayloadAt(messages: ChatRequestMessage[], at: number): boolean {
   const message = messages[at];
   if (!message || typeof message.content !== 'string') return false;
-  let payload: { status?: string; summary?: string; result?: unknown; changedFiles?: unknown; folded?: boolean };
+  let payload: { status?: string; summary?: string; result?: unknown; changedFiles?: unknown; folded?: boolean; path?: string };
   try {
     payload = JSON.parse(message.content) as typeof payload;
   } catch {
@@ -877,6 +884,8 @@ function foldToolPayloadAt(messages: ChatRequestMessage[], at: number): boolean 
       folded: true,
       result: '（早期工具输出已折叠：结论见任务树，需要原文请重新执行该工具）',
       changedFiles: payload.changedFiles,
+      // 路径要留下：钉住逻辑靠它认出「这是哪个文件的最新一次读取」。
+      ...(payload.path ? { path: payload.path } : {}),
     }),
   };
   return true;
@@ -897,6 +906,24 @@ export function requestBytes(messages: readonly ChatRequestMessage[]): number {
   return total;
 }
 
+/** 会产出「文件内容」这一类的工具：它们的载荷值得在上下文里保留。 */
+const FILE_PAYLOAD_TOOLS = new Set(['read_file', 'write_file', 'replace_in_file', 'rename_file']);
+
+/**
+ * 工具调用对应的文件路径（没有就返回空串）。
+ *
+ * 只用来给载荷「钉住」用，所以只认带 `path` 参数的工具；解析失败一律当作没有路径。
+ */
+function payloadPathFor(name: string, rawArguments: string): string {
+  if (!FILE_PAYLOAD_TOOLS.has(name)) return '';
+  try {
+    const parsed = JSON.parse(rawArguments || '{}') as { path?: unknown };
+    return typeof parsed?.path === 'string' ? parsed.path.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
 /**
  * 折叠早期工具输出，**先按条数，再按总预算**。
  *
@@ -906,30 +933,94 @@ export function requestBytes(messages: readonly ChatRequestMessage[]): number {
  * 三条就是 600KB；再加上历史窗口，请求体可以很大 —— 而「几条」和「多大」不是一回事。
  * 所以按条数折完之后再看总字节：仍然超预算就**从最旧的继续折**，
  * 但**永远保留最新那一条**（它通常正是模型下一步要用的）。
+ *
+ * 2026-11-22 追加一条：**每个文件最近一次的载荷不折**。
+ *
+ * 真实故障：一个「翻译」任务里 `read_file Icon.tsx` 被读了 53 次。原因不是模型蠢 ——
+ * 它读到第 4 个文件时，第 1 个文件的内容已经被这条规则折掉了，回头要改第 1 个文件就得
+ * 再读一遍，读完之后第 2 个又被折掉…… 无限循环。现在按路径钉住最近 `PINNED_PATHS`
+ * 个文件的**最后一次**读取结果，让「读过的文件」在工作集里稳定存在；
+ * 真的超出总预算时才会把钉住的也折掉（最后一步兜底）。
  */
+const PINNED_PATHS = 4;
+/** 被钉住的载荷总字节上限：工作集可以留在上下文里，但不能把预算吃光。 */
+const MAX_PINNED_BYTES = 64 * 1024;
+
 export function pruneToolPayloads(
   messages: ChatRequestMessage[],
   keep = TOOL_PAYLOAD_KEEP,
   budgetBytes = 0,
 ): number {
   const toolIndexes: number[] = [];
+  /** 最近出现的文件路径 → 它最后一次出现的位置。 */
+  const latestByPath = new Map<string, number>();
+  /** 每个路径在这段历史里被读过几次（=2 说明模型回头再读过，是真工作集）。 */
+  const readsByPath = new Map<string, number>();
   for (let index = 0; index < messages.length; index += 1) {
-    if (messages[index]?.role === 'tool') toolIndexes.push(index);
+    const message = messages[index];
+    if (message?.role !== 'tool') continue;
+    toolIndexes.push(index);
+    const path = payloadPathOf(message);
+    if (!path) continue;
+    latestByPath.delete(path);
+    latestByPath.set(path, index);
+    readsByPath.set(path, (readsByPath.get(path) ?? 0) + 1);
+  }
+  /*
+   * 钉住哪些载荷：**被回头读过的最优先**，其次按最近出现的顺序。
+   *
+   * 排序依据用「读过的次数」而不是单纯的时间，是因为「回头再读」正是模型在告诉你
+   * 「这是我正在改的文件」；把它的内容留住，才不会出现「读第 4 个文件 → 第 1 个被折掉
+   * → 回头再读第 1 个 → 第 2 个又被折掉」的无限循环。
+   */
+  const pinned = new Set<number>();
+  const candidates = [...latestByPath.entries()]
+    .sort((a, b) => (readsByPath.get(b[0]) ?? 0) - (readsByPath.get(a[0]) ?? 0) || b[1] - a[1]);
+  let pinnedBytes = 0;
+  for (const [, index] of candidates) {
+    if (pinned.size >= PINNED_PATHS) break;
+    const size = toolPayloadBytes(messages[index]!);
+    if (pinnedBytes + size > MAX_PINNED_BYTES) continue;
+    pinnedBytes += size;
+    pinned.add(index);
   }
   let folded = 0;
   const cutoff = toolIndexes.length - Math.max(0, keep);
   for (let index = 0; index < Math.max(0, cutoff); index += 1) {
-    if (foldToolPayloadAt(messages, toolIndexes[index]!)) folded += 1;
+    const at = toolIndexes[index]!;
+    if (pinned.has(at)) continue;
+    if (foldToolPayloadAt(messages, at)) folded += 1;
   }
   if (budgetBytes <= 0) return folded;
   /*
    * 预算这一轮从**最旧的**还没折的开始折，直到装得下；最新一条永远不动。
+   * 钉住的先跳过，实在还超预算再折它们（兜底优先于「保留工作集」）。
    */
-  for (let index = 0; index < toolIndexes.length - 1; index += 1) {
-    if (requestBytes(messages) <= budgetBytes) break;
-    if (foldToolPayloadAt(messages, toolIndexes[index]!)) folded += 1;
+  for (const allowPinned of [false, true]) {
+    for (let index = 0; index < toolIndexes.length - 1; index += 1) {
+      if (requestBytes(messages) <= budgetBytes) return folded;
+      const at = toolIndexes[index]!;
+      if (!allowPinned && pinned.has(at)) continue;
+      if (foldToolPayloadAt(messages, at)) folded += 1;
+    }
   }
   return folded;
+}
+
+/** 一条 tool 消息的载荷字节数（解析失败按 0 算）。 */
+function toolPayloadBytes(message: ChatRequestMessage): number {
+  return typeof message.content === 'string' ? Buffer.byteLength(message.content) : 0;
+}
+
+/** 从一条 tool 消息里读出它的文件路径（没有就返回空串）。 */
+function payloadPathOf(message: ChatRequestMessage): string {
+  if (typeof message.content !== 'string') return '';
+  try {
+    const payload = JSON.parse(message.content) as { path?: unknown };
+    return typeof payload?.path === 'string' ? payload.path : '';
+  } catch {
+    return '';
+  }
 }
 
 function cloneExecutions(executions: ToolExecution[]): ToolExecution[] {

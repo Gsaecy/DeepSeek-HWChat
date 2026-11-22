@@ -25,6 +25,14 @@ Two more executor bugs came back from the same session and are fixed in this ver
 - **Exit code 1 from a search command means "no match", not failure.** `findstr` / `grep` / `rg` return 1 with empty output when nothing matched; that used to be counted as a failed step with no output, so three "not found" results in a row stopped the whole run. It is now a successful negative result (with a note saying so), and real errors (`grep: …: No such file`) still fail because they write to stderr.
 - **A regex literal is no longer treated as an absolute path.** A script containing `/\r?\n/` was rejected with "path `/\r?\n/` is outside the current workspace". Any candidate shaped `/…/flags` whose body contains regex metacharacters is skipped, while real paths such as `/etc/hosts` or `/tmp/` are still checked.
 
+### Token economy: windowed reads, head+tail output, pinned working set
+
+Three measurable gaps behind "why is Copilot Chat so smooth and HWChat so heavy":
+
+- **`read_file` returned whole files** — one `index.css` (231.6 KB) is ~60k tokens in a single request, which was then folded out of the context, so the model read it again: the same file was read **53 times** in one run. Reads now always come back with line numbers and a 600-line / 48 KB window, plus an explicit "continue from `startLine=N`" hint. Small files are unchanged apart from the line numbers.
+- **Command output kept only the beginning** — up to 200 KB, head 75% only, which cut off the failing tests and the final error line, so the model re-ran the command (the same command ran **51 times**). Output is now capped at 32 KB for the model and keeps both the head and the tail with an explicit "bytes omitted" marker plus concrete narrowing advice (`| Select-Object -Last 100`, `| Select-String`).
+- **Context folding kept only the last 3 tool payloads** — reading a fourth file dropped the first, and coming back to it meant re-reading, which dropped another. `pruneToolPayloads` now pins the latest payload of up to 4 files (≤ 64 KB total), preferring paths the model has returned to, and only folds them when the total budget genuinely requires it.
+
 ## What's new in 0.4.22
 
 ### Another group of bugs that made working commands look like failures
