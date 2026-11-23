@@ -172,24 +172,24 @@
         "category": "HWChat"
       },
       {
-        "command": "hwchat.lanSync.start",
-        "title": "HWChat: 启动局域网同步（本机作为主机）"
-      },
-      {
-        "command": "hwchat.lanSync.join",
-        "title": "HWChat: 加入局域网同步（连接到另一台设备）"
-      },
-      {
-        "command": "hwchat.lanSync.stop",
-        "title": "HWChat: 停止局域网同步"
-      },
-      {
         "command": "hwchat.lanSync.status",
         "title": "HWChat: 查看局域网同步状态"
       },
       {
         "command": "hwchat.lanSync.openLedger",
         "title": "HWChat: 打开跨平台对齐账本"
+      },
+      {
+        "command": "hwchat.lanSync.connect",
+        "title": "HWChat: 连接另一台设备（同一 WiFi，一键）"
+      },
+      {
+        "command": "hwchat.lanSync.disconnect",
+        "title": "HWChat: 断开局域网同步"
+      },
+      {
+        "command": "hwchat.lanSync.advanced",
+        "title": "HWChat: 局域网同步 · 高级设置"
       }
     ],
     "viewsContainers": {
@@ -670,7 +670,7 @@
         "hwchat.lanSync.enabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "启用局域网同步：同一 WiFi 下的两台设备可以共享功能需求、一起执行，并维护一份跨平台对齐账本。默认关闭。"
+          "markdownDescription": "记住连接状态：开启后每次启动自动恢复到上次的连接（**不需要手工操作**，正常流程是点状态栏的「连接另一台设备」）。"
         },
         "hwchat.lanSync.port": {
           "type": "number",
@@ -680,7 +680,7 @@
         "hwchat.lanSync.pairingCode": {
           "type": "string",
           "default": "",
-          "markdownDescription": "配对码。两台设备必须填**同一个值**才能互通；留空时每台设备各自生成并显示。"
+          "markdownDescription": "（高级，可留空）固定配对码。留空时用「对方点允许」的方式确认，正常流程不需要填。"
         },
         "hwchat.lanSync.deviceName": {
           "type": "string",

@@ -56,6 +56,13 @@ export interface LanSyncBridge {
    * 里，用户或 agent 下次 `team_sync status` 能看到，不会丢。
    */
   runNote?(note: SyncNote): Promise<boolean>;
+  /**
+   * 有一台陌生设备想连进来，问一下用户。
+   *
+   * 这是「傻瓜式」的关键：用户不用抄配对码，只要在弹窗上点一次「允许」。
+   * 返回 true 之后这台设备会被记住，以后自动重连不再询问。
+   */
+  approvePeer?(peer: SyncPeer): Promise<boolean>;
   /** 把账本写进工作区（没有工作区时由实现方决定写到哪 / 跳过）。 */
   writeLedger(markdown: string): Promise<void>;
   /** 日志（输出通道）。 */
@@ -76,6 +83,12 @@ interface PersistedState {
   requirements: SyncRequirement[];
   reports: SyncReport[];
   notes?: SyncNote[];
+  /** 已经被用户允许过的设备 id：重连不再打扰。 */
+  approved?: string[];
+  /** 上次的角色与主机地址：下次开窗口自动恢复连接。 */
+  role?: 'hub' | 'peer';
+  hub?: string;
+  port?: number;
 }
 
 const STATE_LIMIT = 300;
@@ -109,6 +122,12 @@ export class LanSyncService implements Disposable {
   private requirements: SyncRequirement[] = [];
   private reports: SyncReport[] = [];
   private notes: SyncNote[] = [];
+  /** 用户点过「允许」的设备。重连时直接放行，不再弹窗。 */
+  private approved = new Set<string>();
+  /** 上次的角色与主机：下次激活自动恢复（用户不用重复操作）。 */
+  private lastRole: 'hub' | 'peer' = 'hub';
+  private lastHub = '';
+  private lastPort = 0;
   private readonly peers = new Map<string, { peer: SyncPeer; address: string }>();
   private disposed = false;
   private announceTimer?: NodeJS.Timeout;
@@ -133,6 +152,12 @@ export class LanSyncService implements Disposable {
       this.notes = Array.isArray(parsed.notes)
         ? parsed.notes.map((item) => parseSyncMessage(item)).filter((item): item is SyncNote => item?.kind === 'note').slice(-MAX_NOTES)
         : [];
+      this.approved = new Set(Array.isArray(parsed.approved)
+        ? parsed.approved.filter((item): item is string => typeof item === 'string').slice(0, 32)
+        : []);
+      this.lastRole = parsed.role === 'peer' ? 'peer' : 'hub';
+      this.lastHub = typeof parsed.hub === 'string' ? parsed.hub : '';
+      this.lastPort = typeof parsed.port === 'number' && parsed.port > 0 ? parsed.port : 0;
     } catch {
       // 第一次运行没有文件，正常。
     }
@@ -148,6 +173,10 @@ export class LanSyncService implements Disposable {
       requirements: this.requirements.slice(-STATE_LIMIT),
       reports: this.reports.slice(-STATE_LIMIT * 3),
       notes: this.notes.slice(-MAX_NOTES),
+      approved: [...this.approved],
+      role: this.lastRole,
+      hub: this.lastHub,
+      port: this.lastPort,
     };
     try {
       await mkdir(dirname(this.storagePath), { recursive: true });
@@ -159,6 +188,67 @@ export class LanSyncService implements Disposable {
 
   pairingCode(): string {
     return this.code;
+  }
+
+  /**
+   * **一键连接**：这是给用户的唯一入口，不需要懂主机/从机/配对码。
+   *
+   * 行为按「哪边先点」自动兜底：
+   *  - 同一个 WiFi 里已经有主机 → 直接加入（对端弹一次「允许吗」，点允许即可）；
+   *  - 没有主机 → 自己成为主机待命，并提示另一台设备也点同一个按钮。
+   *
+   * 两台设备都点同一个按钮，谁先谁后都能连上 —— 这就是「傻瓜式」的核心。
+   */
+  async autoConnect(port?: number): Promise<{ ok: boolean; message: string; role: LanSyncRole }> {
+    const targetPort = port && port > 0 ? port : (this.lastPort || this.port);
+    this.port = targetPort;
+    // 先在局域网里找已有主机（多试几次，给对方一点启动时间）。
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const found = await this.discover();
+      if (found) {
+        const joined = await this.joinHub(found, targetPort);
+        if (joined.ok) {
+          this.lastRole = 'peer';
+          this.lastHub = found;
+          this.lastPort = targetPort;
+          await this.persist();
+          return { ok: true, message: joined.message, role: 'peer' };
+        }
+        this.bridge.log(`[sync] 找到主机但加入失败：${joined.message}`, 'warn');
+      }
+    }
+    const started = await this.startHub(targetPort);
+    if (started.ok) {
+      this.lastRole = 'hub';
+      this.lastHub = '';
+      this.lastPort = targetPort;
+      await this.persist();
+      return { ok: true, message: started.message, role: 'hub' };
+    }
+    return { ok: false, message: started.message, role: 'off' };
+  }
+
+  /** 上次连接的角色与地址（启动时自动恢复用）。 */
+  lastConnection(): { role: 'hub' | 'peer'; hub: string; port: number } {
+    return { role: this.lastRole, hub: this.lastHub, port: this.lastPort };
+  }
+
+  /**
+   * 恢复到上次的连接状态。
+   *
+   * 用户不用每次开窗口都点一遍：上次是主机就继续当主机，上次加入了某台就继续连那台
+   * （连不上就退回「成为主机待命」，绝不会卡在一个失败的连接上）。
+   */
+  async resume(port?: number): Promise<{ ok: boolean; message: string; role: LanSyncRole }> {
+    const last = this.lastConnection();
+    const targetPort = port && port > 0 ? port : (last.port || this.port);
+    if (last.role === 'peer' && last.hub) {
+      const joined = await this.joinHub(last.hub, targetPort);
+      if (joined.ok) return { ok: true, message: joined.message, role: 'peer' };
+      this.bridge.log(`[sync] 上次的主机没响应（${last.hub}），改为本机待命`, 'warn');
+    }
+    const started = await this.startHub(targetPort);
+    return { ok: started.ok, message: started.message, role: started.ok ? 'hub' : 'off' };
   }
 
   /** 本机身份（面板拼「按本机平台做等价实现」时用）。 */
@@ -180,8 +270,7 @@ export class LanSyncService implements Disposable {
   }
 
   state(): { role: LanSyncRole; peers: number; requirements: number; divergences: number; address: string; text: string } {
-    const rows = buildLedger(this.requirements, this.reports);
-    const divergences = findDivergences(rows).length;
+    const rows = buildLedger(this.requirements, this.reports);    const divergences = findDivergences(rows).length;
     return {
       role: this.role,
       peers: this.role === 'off' ? 0 : this.peers.size + (this.role === 'hub' ? 1 : 1),
@@ -412,10 +501,12 @@ export class LanSyncService implements Disposable {
         return;
       }
       /*
-       * 配对码：**每个**请求都要带。别人在同一个 WiFi 上扫到端口也进不来。
-       * 未启用主机模式时一律拒绝 —— 只监听、不服务，等于端口是关的。
+       * 配对码：**每个**请求都要带，别人在同一个 WiFi 上扫到端口也进不来。
+       *
+       * `/pair` 例外：它的放行判断在下面（已允许过的设备 / 对得上码 / 用户点「允许」
+       * 三种途径），所以不能在这里一刀切 —— 否则「傻瓜式」的弹窗永远走不到。
        */
-      if (!pairingMatches(parsed.code, this.code)) {
+      if (route !== '/hwchat-sync/v1/pair' && !pairingMatches(parsed.code, this.code)) {
         json(403, { ok: false, error: 'pairing code mismatch' });
         return;
       }
@@ -435,6 +526,28 @@ export class LanSyncService implements Disposable {
           const address = typeof parsed.address === 'string' && parsed.address
             ? parsed.address
             : (remoteIp ? `http://${remoteIp}:${declaredPort}` : '');
+          /*
+           * 放行判断，**傻瓜式**优先：
+           *  1. 这台设备以前被允许过 → 直接放行（重连不再打扰）；
+           *  2. 配对码对得上（老用户/固定码场景）→ 放行并记住；
+           *  3. 否则问用户一次「允许吗」——用户点一次，以后就自动记住。
+           * 没有 `approvePeer` 实现时退回「配对码必须对」（测试环境 / 无人值守）。
+           */
+          const known = this.approved.has(message.from.id);
+          const codeOk = pairingMatches(parsed.code, this.code);
+          let allowed = known || codeOk;
+          if (!allowed && this.bridge.approvePeer) {
+            allowed = await this.bridge.approvePeer(message.from).catch(() => false);
+          }
+          if (!allowed) {
+            this.bridge.log(`[sync] 拒绝未授权的设备：${message.from.name}`);
+            json(403, { ok: false, error: '未允许连接' });
+            return;
+          }
+          if (!known) {
+            this.approved.add(message.from.id);
+            await this.persist();
+          }
           this.peers.set(message.from.id, { peer: message.from, address });
           this.bridge.log(`[sync] 设备加入：${message.from.name}（${message.from.project}）${address ? ` → ${address}` : ''}`);
         }

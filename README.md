@@ -49,12 +49,13 @@ A missing argument now says what was received and tells the model to retry the s
 
 Building a Windows and a macOS version of the same app usually ends with one side shipping a feature the other forgot, or two implementations that quietly differ. This release adds an **opt-in** LAN collaboration feature: two devices on the same WiFi share a feature request, execute it on both sides, and maintain one alignment ledger.
 
-**Setup** (once per device):
+**Setup — three steps, no code to type**:
 
-1. Set the same hwchat.lanSync.pairingCode on both devices — it is the only credential, so a stranger on the same network cannot join;
-2. On device A run HWChat: 启动局域网同步（本机作为主机）; it shows the pairing code and its LAN address;
-3. On device B run HWChat: 加入局域网同步; leave the address empty to find the host automatically, or type A's LAN IP;
-4. After that, a normal request on **either** device is picked up and executed by the other one too.
+1. Install the extension on both machines and open the project folder;
+2. On **either** machine click **「连接另一台设备」** in the status bar;
+3. Click the same button on the other machine. The first one waits, the second finds it, and the waiting machine shows one dialog: “「MacBook · macOS」 wants to connect. Allow?” Click **Allow** and you are connected.
+
+After that the connection is remembered and restored on the next window. No pairing code and no IP address to type (both remain available under Advanced).
 
 **What it does**:
 

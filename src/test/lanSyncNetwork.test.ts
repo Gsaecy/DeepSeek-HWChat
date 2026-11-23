@@ -164,6 +164,90 @@ test('协作消息：主机发一条，对端 agent 收到；纯陈述不触发�
   }
 });
 
+test('一键连接：陌生设备弹一次「允许」即可加入，之后重连不再询问', async () => {
+  /*
+   * 这是「傻瓜式」的核心：用户不抄配对码，只在弹窗上点一次「允许」。
+   * 允许之后这台设备被记住，重连不再打扰。
+   */
+  const dir = await mkdtemp(join(tmpdir(), 'hwchat-sync-approve-'));
+  const dir2 = await mkdtemp(join(tmpdir(), 'hwchat-sync-approve2-'));
+  const asked: string[] = [];
+  const hub = new LanSyncService(join(dir, 'state.json'), {
+    peer: () => winPeer,
+    runRequirement: async () => true,
+    runNote: async () => true,
+    writeLedger: async () => undefined,
+    log: () => undefined,
+    approvePeer: async (peer) => { asked.push(peer.id); return true; },
+  });
+  await hub.load();
+  await hub.setPairingCode('HUB-ONLY-CODE');
+
+  const strangerA = new LanSyncService(join(dir2, 'a.json'), {
+    peer: () => macPeer,
+    runRequirement: async () => true,
+    runNote: async () => true,
+    writeLedger: async () => undefined,
+    log: () => undefined,
+  });
+  await strangerA.load();
+  await strangerA.setPairingCode('DIFFERENT-CODE');
+
+  try {
+    const started = await hub.startHub(HUB_PORT + 30);
+    assert.equal(started.ok, true, started.message);
+
+    const first = await strangerA.joinHub(`http://127.0.0.1:${HUB_PORT + 30}`, PEER_PORT + 30);
+    assert.equal(first.ok, true, `点「允许」之后必须能加入：${first.message}`);
+    assert.deepEqual(asked, [macPeer.id], '主机应该只问一次');
+
+    // 记住之后再连：不再弹窗。
+    strangerA.stop();
+    const again = await strangerA.joinHub(`http://127.0.0.1:${HUB_PORT + 30}`, PEER_PORT + 30);
+    assert.equal(again.ok, true);
+    assert.equal(asked.length, 1, '允许过的设备重连不该再打扰用户');
+  } finally {
+    hub.dispose();
+    strangerA.dispose();
+    await rm(dir, { recursive: true, force: true });
+    await rm(dir2, { recursive: true, force: true });
+  }
+});
+
+test('一键连接：用户点「拒绝」时连不进来', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hwchat-sync-reject-'));
+  const dir2 = await mkdtemp(join(tmpdir(), 'hwchat-sync-reject2-'));
+  const hub = new LanSyncService(join(dir, 'state.json'), {
+    peer: () => winPeer,
+    runRequirement: async () => true,
+    runNote: async () => true,
+    writeLedger: async () => undefined,
+    log: () => undefined,
+    approvePeer: async () => false,
+  });
+  await hub.load();
+  await hub.setPairingCode('HUB-CODE');
+  const stranger = new LanSyncService(join(dir2, 'a.json'), {
+    peer: () => macPeer,
+    runRequirement: async () => true,
+    runNote: async () => true,
+    writeLedger: async () => undefined,
+    log: () => undefined,
+  });
+  await stranger.load();
+  await stranger.setPairingCode('OTHER');
+  try {
+    assert.equal((await hub.startHub(HUB_PORT + 40)).ok, true);
+    const joined = await stranger.joinHub(`http://127.0.0.1:${HUB_PORT + 40}`, PEER_PORT + 40);
+    assert.equal(joined.ok, false, '用户拒绝就必须连不上');
+  } finally {
+    hub.dispose();
+    stranger.dispose();
+    await rm(dir, { recursive: true, force: true });
+    await rm(dir2, { recursive: true, force: true });
+  }
+});
+
 async function waitFor(check: () => boolean, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
