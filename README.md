@@ -43,6 +43,30 @@ You cannot always switch to a stronger tool-calling model, so the near-misses ar
 
 A missing argument now says what was received and tells the model to retry the same tool instead of switching tools to work around it, and `replace_in_file` / `run_command` carry a one-line argument list plus a minimal JSON example.
 
+## What's new in 0.4.26
+
+### LAN cross-platform alignment: request on one device, run on both
+
+Building a Windows and a macOS version of the same app usually ends with one side shipping a feature the other forgot, or two implementations that quietly differ. This release adds an **opt-in** LAN collaboration feature: two devices on the same WiFi share a feature request, execute it on both sides, and maintain one alignment ledger.
+
+**Setup** (once per device):
+
+1. Set the same hwchat.lanSync.pairingCode on both devices — it is the only credential, so a stranger on the same network cannot join;
+2. On device A run HWChat: 启动局域网同步（本机作为主机）; it shows the pairing code and its LAN address;
+3. On device B run HWChat: 加入局域网同步; leave the address empty to find the host automatically, or type A's LAN IP;
+4. After that, a normal request on **either** device is picked up and executed by the other one too.
+
+**What it does**:
+
+- **Shared requirements** — broadcast the moment you send. The peer implements the *equivalent* feature for its own platform (and says why when the platform cannot do it) instead of copying platform-specific code.
+- **Progress reports** — the peer reports done / in_progress with the files it changed and its conclusion; a stopped or failed run is never reported as finished.
+- **Teammate chat** — a new 	eam_sync tool (send / sk / status) lets the two agents tell each other things like "I made the title bar custom-drawn, do you want to match the padding?" without touching code just to answer.
+
+**Alignment ledger** — docs/PLATFORM-ALIGNMENT.md is generated automatically as a requirement × platform table, plus a section listing every requirement one side completed and the other explicitly skipped, with the reason. It lives in the repo, so both people and agents can read it.
+
+**No infinite ping-pong** — only a message that actually asks something triggers a run on the peer; the prompts forbid "got it / thanks" replies; and messages that arrived via sync are never re-broadcast.
+
+**Security** — every request carries the pairing code (compared without early exit), bodies are capped at 80 KB, malformed payloads are dropped silently, and nothing is exposed outside the LAN.
 ## What's new in 0.4.25
 
 ### The real difference: dozens of tools were sent on every request

@@ -28,6 +28,7 @@ import { searchWorkspace } from '../agent/workspaceSearch';
 import { gitWriteAuthorization } from '../agent/conversationScope';
 import { VERSION_RULE_PROMPT, argumentsMentionVersionBump, versionBumpAuthorization } from '../agent/releasePolicy';
 import { TODO_LIST_PROMPT } from '../agent/todoPrompt';
+import { teamSyncToolDefinition } from '../sync/lanTool';
 import { droppedCompletedTodos, hasTodoReplanIntent, splitTodoScope } from '../agent/todoScope';
 import { COMMAND_BLOCK_PROMPT } from '../agent/commandPrompt';
 import { NOTICE_PROMPT } from '../agent/noticePrompt';
@@ -210,6 +211,15 @@ interface ActiveResponseState {
  */
 interface SendOptions {
   resumedTodos?: boolean;
+  /**
+   * 这条消息是谁发起的。
+   *
+   * `sync` 表示它是局域网另一台设备的 agent 发来的（需求或队友消息）——
+   * 这类消息**不能再广播回去**，否则两台机器会无限互相转发。
+   */
+  origin?: 'user' | 'sync';
+  /** 来自同步需求时记下需求号，运行结束时据此回报进度。 */
+  syncRequirementId?: string;
 }
 
 /**
@@ -262,6 +272,13 @@ interface ConversationRun {
   activeResponseTaskId?: string;
   /** 本次运行期间产生的全部工具步骤（跨多个响应节点）。 */
   globalTools: ToolExecution[];
+  /**
+   * 这一轮是局域网另一台设备发起的同步需求时，记下需求号。
+   *
+   * 运行结束时用它回报进度（done / in_progress），对方设备的账本才会更新 ——
+   * 这是「两边一起执行、并且能核对做没做齐」的闭环。
+   */
+  syncRequirementId?: string;
   toolContentOffsets: Map<string, number>;
   checkpointTail: Promise<void>;
   lastCheckpointByMessage: Map<string, number>;
@@ -561,6 +578,13 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 只用于「这次要不要把桥接工具下发给模型」的判断，见 `applyToolSnapshot` 与 `send()`。
    */
   private readonly bridgedToolUsage = new Map<string, Set<string>>();
+  /**
+   * 局域网跨平台同步（可选功能，默认关闭）。
+   *
+   * 面板只负责两件事：**发出**（用户发消息时广播成需求）与**接收**（对端需求 /
+   * 队友消息开跑一轮）。网络、配对、账本都在 `LanSyncService` 里，面板不碰 socket。
+   */
+  private lanSync?: import('../sync/lanSync').LanSyncService;
   /** 等待用户在面板里点「允许一次 / 拒绝」的工具授权。 */
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingDecisions = new Map<string, PendingDecision>();
@@ -847,6 +871,72 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     this.callbacks.onHistoryChanged();
     await this.open(created.id, { skipState: true });
     await this.sendState();
+  }
+
+  /**
+   * 挂上局域网同步服务（扩展激活时调用一次）。
+   *
+   * 面板不自己建立网络连接：它只把「用户发了一条消息」告诉服务，并在收到对端
+   * 消息时开跑一轮。未启用时 `lanSync` 为空，所有相关分支都不执行 —— 这就是
+   * 「默认关闭、不影响现有功能」的落点。
+   */
+  setLanSync(service: import('../sync/lanSync').LanSyncService | undefined): void {
+    this.lanSync = service;
+  }
+
+  /** 面板是否正忙（同步消息进来自动开跑之前先问一次）。 */
+  private syncBusy(): boolean {
+    return Boolean(this.activeConversationId && this.runs.has(this.activeConversationId));
+  }
+
+  /**
+   * 收到另一台设备发来的**需求**：在本机按本地平台实现等价功能。
+   *
+   * 返回 false 表示这次没跑（面板在忙 / 没有可用会话）—— 服务会记下这条需求，
+   * 用户之后仍能在账本和 `team_sync status` 里看到，不会凭空消失。
+   */
+  async runSyncRequirement(requirement: import('../sync/lanProtocol').SyncRequirement): Promise<boolean> {
+    if (!this.lanSync || this.syncBusy()) return false;
+    const { requirementPromptForLocal } = await import('../sync/lanProtocol.js');
+    const prompt = requirementPromptForLocal(requirement, this.lanSync.localPeer());
+    await this.send(prompt, undefined, undefined, undefined, undefined, undefined, {
+      origin: 'sync',
+      syncRequirementId: requirement.id,
+    });
+    return true;
+  }
+
+  /**
+   * 收到队友（另一台设备的 agent）发来的**协作消息**。
+   *
+   * 与需求不同，它可能只需要读：是不是要动手由模型按提示词判断（见
+   * `notePromptForLocal`）。同样在忙的时候返回 false，消息留在服务里。
+   */
+  async runSyncNote(note: import('../sync/lanProtocol').SyncNote): Promise<boolean> {
+    if (!this.lanSync || this.syncBusy()) return false;
+    const { notePromptForLocal } = await import('../sync/lanProtocol.js');
+    const prompt = notePromptForLocal(note, this.lanSync.localPeer());
+    await this.send(prompt, undefined, undefined, undefined, undefined, undefined, { origin: 'sync' });
+    return true;
+  }
+
+  /** 跑一轮同步需求之后回报进度：对方的账本靠这条更新。 */
+  private async reportSyncOutcome(run: ConversationRun, outcome: TodoRunOutcome): Promise<void> {
+    const requirementId = run.syncRequirementId;
+    if (!this.lanSync || !requirementId) return;
+    const files = [...new Set(run.globalTools.flatMap((tool) => tool.changedFiles ?? []))].slice(0, 40);
+    const status = outcome === 'completed' ? 'done' : 'in_progress';
+    const lastText = [...run.responses.values()]
+      .map((response) => response.content.trim())
+      .filter(Boolean)
+      .slice(-1)[0] ?? '';
+    await this.lanSync.report({
+      requirementId,
+      status,
+      summary: lastText.replace(/\s+/g, ' ').slice(0, 400),
+      files,
+      note: outcome === 'completed' ? '' : '本端这一轮没有跑完（被停止或出错），可以接着做。',
+    }).catch(() => undefined);
   }
 
   /**
@@ -1806,6 +1896,18 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         await this.rejectSend(content, 'notice.privacyRequired');
         return;
       }
+      /*
+       * 局域网同步：用户在这台设备上发起的需求，广播给同一 WiFi 的另一台设备一起做。
+       *
+       * 只广播**用户亲自发的**：`origin === 'sync'` 是从对端收到的，再发回去会无限
+       * 互相转发；`resumedTodos` 是「继续执行清单」这类系统指令，没有跨平台含义。
+       * 广播失败不影响本机这一轮，所以是 fire-and-forget。
+       */
+      if (this.lanSync && options?.origin !== 'sync' && !options?.resumedTodos && content) {
+        void this.lanSync.shareRequirement(content)
+          .then((result) => this.log(`[sync] 广播需求：${result.message}`))
+          .catch(() => undefined);
+      }
       let configuredSettings = readSettings();
       let conversationId = this.activeConversationId;
       const existingConversation = conversationId ? await this.storage.getConversation(conversationId) : undefined;
@@ -2072,6 +2174,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         responses: new Map(),
         activeResponseTaskId: rootTaskId,
         globalTools: [],
+        // 来自对端的需求才记需求号：普通用户消息不需要回报进度。
+        ...(options?.syncRequirementId ? { syncRequirementId: options.syncRequirementId } : {}),
         toolContentOffsets: new Map(),
         checkpointTail: Promise.resolve(),
         lastCheckpointByMessage: new Map(),
@@ -2144,6 +2248,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
           extraTools: [
             todoToolDefinition(),
             decisionToolDefinition(),
+            // 团队沟通：只有启用局域网同步时才下发（未启用时模型连选项都看不到）。
+            teamSyncToolDefinition(Boolean(this.lanSync)),
             // 任何一个配置档配了图片模型就下发（出图档可以与聊天档不同）。
             ...(imageProfileFor(settings, profile.id) ? [generateImageToolDefinition()] : []),
             this.skills.toolDefinition(preparedSkills.routableIds),
@@ -2156,6 +2262,21 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
             const blockedByPlaybook = blockedToolReason(call.function.name, playbooks, writingRequested);
             if (blockedByPlaybook) {
               return { result: { status: 'denied', summary: tt('tool.playbookBlocked'), content: blockedByPlaybook, approval: 'not-required' } };
+            }
+            /*
+             * 与队友（另一台设备的 agent）沟通：只在局域网同步启用时可用。
+             * 未启用时工具根本不会下发，走不到这里；这个分支兜的是「运行中途被关掉」。
+             */
+            if (call.function.name === 'team_sync') {
+              let teamArgs: Record<string, unknown> = {};
+              try {
+                teamArgs = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>;
+              } catch {
+                teamArgs = {};
+              }
+              const { runTeamSync } = await import('../sync/lanTool.js');
+              const outcome = await runTeamSync(this.lanSync, teamArgs);
+              return { result: { ...outcome, approval: 'not-required' } };
             }
             if (call.function.name === 'update_todos') {
               return {
@@ -2371,6 +2492,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
         // 成功 / 失败 / 被停止都走同一处结算：全绿才归档；没跑完的留给用户决定，
         // 但「正常跑完」与「被掐断」要分开标，不能一律说成中断。
         await this.settleTodosAfterRun(conversationId, runOutcome);
+        // 同步需求：把本端结果回报给对端（对方的账本据此更新）。
+        await this.reportSyncOutcome(run, runOutcome);
         // 任务树就是下一轮的「记忆」：运行一结束立刻落库，不能等去抖计时器。
         await this.flushTaskMemory(conversationId);
         /*
@@ -5882,6 +6005,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     // 按需还原一条消息的重字段（工具输出/附件正文）：记录保留在磁盘上，只在需要时读。
     names.add('read_message_detail');
     if (imageProfileFor(settings)) names.add('generate_image');
+    // 与队友沟通：启用局域网同步时才有这个工具。
+    if (this.lanSync) names.add('team_sync');
     return [...names];
   }
 

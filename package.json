@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek: approval-controlled workspace tools, plan-tracking task lists, copyable local/server commands and durable local history.",
-  "version": "0.4.25",
+  "version": "0.4.26",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -170,6 +170,26 @@
         "command": "hwchat.diagnoseNetwork",
         "title": "HWChat: %command.diagnoseNetwork%",
         "category": "HWChat"
+      },
+      {
+        "command": "hwchat.lanSync.start",
+        "title": "HWChat: 启动局域网同步（本机作为主机）"
+      },
+      {
+        "command": "hwchat.lanSync.join",
+        "title": "HWChat: 加入局域网同步（连接到另一台设备）"
+      },
+      {
+        "command": "hwchat.lanSync.stop",
+        "title": "HWChat: 停止局域网同步"
+      },
+      {
+        "command": "hwchat.lanSync.status",
+        "title": "HWChat: 查看局域网同步状态"
+      },
+      {
+        "command": "hwchat.lanSync.openLedger",
+        "title": "HWChat: 打开跨平台对齐账本"
       }
     ],
     "viewsContainers": {
@@ -646,6 +666,26 @@
           ],
           "default": "auto",
           "description": "%config.language%"
+        },
+        "hwchat.lanSync.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "启用局域网同步：同一 WiFi 下的两台设备可以共享功能需求、一起执行，并维护一份跨平台对齐账本。默认关闭。"
+        },
+        "hwchat.lanSync.port": {
+          "type": "number",
+          "default": 47821,
+          "markdownDescription": "局域网同步使用的端口（TCP + UDP 发现）。两台设备必须一致。"
+        },
+        "hwchat.lanSync.pairingCode": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "配对码。两台设备必须填**同一个值**才能互通；留空时每台设备各自生成并显示。"
+        },
+        "hwchat.lanSync.deviceName": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "这台设备在队友眼里的名字。留空自动使用「主机名 · 系统」。"
         }
       }
     }

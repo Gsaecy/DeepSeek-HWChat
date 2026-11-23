@@ -17,6 +17,7 @@ import { proxyEnv } from './providers/netDiagnostics';
 import { ChatPanel } from './views/chatPanel';
 import { SettingsPanel } from './views/settingsPanel';
 import { tt } from './core/i18n';
+import { setupLanSync } from './sync/lanSetup';
 
 let activeStorage: ConversationStorage | undefined;
 
@@ -373,6 +374,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     skills,
     toolExecutor,
     ...commandDisposables,
+    // 局域网同步（可选、默认关闭）：服务、状态栏与它自己的命令一起挂到扩展上。
+    ...(await setupLanSync({
+      context,
+      output,
+      chat,
+      version: String(context.extension?.packageJSON?.version ?? '0.0.0'),
+    })).disposables,
   );
   scheduler.start();
   void audit.cleanup(readSettings().auditRetentionDays);
