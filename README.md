@@ -8,6 +8,23 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.27
+
+### A team group: you are the client, the two agents are contractors who clarify before building
+
+You do not write code, so a requirement must never be guessed at. LAN collaboration is now a **group** with a fixed order: **analysis → questions → confirmation → execution → result**.
+
+You are the 甲方 (client); the agents on both devices are the 乙方 (two product managers, one per platform). You state a requirement on either machine:
+
+1. Each agent posts a **requirement analysis** in plain language: what you will see happen, which screen changes, what counts as done — with no variable names, file names, frameworks or function names.
+2. If anything is ambiguous (scope, priority, which screen, whether the other platform must match, how you will verify it), it posts **questions** as concrete either/or choices and **stops to wait**. It never guesses, and never "builds a draft and fixes it later".
+3. After you answer it continues; once nothing is unclear it posts a one-paragraph **confirmation**, and only then starts implementing.
+4. When done it posts the **result** in plain language: what changed, how you can check it yourself, and any platform differences.
+
+**What keeps it controlled**: questions always stop the run, at most one consolidated question message per requirement, teammates do not repeat each other's questions, your answer is recognised as an answer (not a new requirement), and both agents resume when you answer.
+
+Two files record everything: `docs/TEAM-CHAT.md` (who said what, grouped by requirement) and `docs/PLATFORM-ALIGNMENT.md` (how far each platform got).
+
 ## What's new in 0.4.23
 
 ### The run now finishes the task list before it stops — and stops pretending it did the work

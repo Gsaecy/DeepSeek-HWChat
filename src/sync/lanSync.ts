@@ -21,6 +21,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   ALIGNMENT_FILE,
+  MAX_GROUP_MESSAGES,
   MAX_MESSAGE_BYTES,
   MAX_NOTES,
   MAX_PEERS,
@@ -28,14 +29,20 @@ import {
   buildLedger,
   describeSyncState,
   findDivergences,
+  groupAgreement,
+  makeGroupMessage,
   makeNote,
   makeReport,
   makeRequirement,
   pairingMatches,
   parseSyncMessage,
+  renderGroupLine,
+  renderGroupTranscript,
   renderLedger,
   shouldAutoRespond,
+  type GroupPhase,
   type ReportStatus,
+  type SyncGroupMessage,
   type SyncMessage,
   type SyncNote,
   type SyncPeer,
@@ -57,6 +64,12 @@ export interface LanSyncBridge {
    */
   runNote?(note: SyncNote): Promise<boolean>;
   /**
+   * 群里出现了新发言（包括自己的）：面板把它追加到对话里，用户就能像看群一样看整个过程。
+   *
+   * 失败不影响同步本身：记录文件照样写，用户仍能在 `docs/TEAM-CHAT.md` 里回看。
+   */
+  onGroupMessage?(message: SyncGroupMessage): Promise<void>;
+  /**
    * 有一台陌生设备想连进来，问一下用户。
    *
    * 这是「傻瓜式」的关键：用户不用抄配对码，只要在弹窗上点一次「允许」。
@@ -65,6 +78,8 @@ export interface LanSyncBridge {
   approvePeer?(peer: SyncPeer): Promise<boolean>;
   /** 把账本写进工作区（没有工作区时由实现方决定写到哪 / 跳过）。 */
   writeLedger(markdown: string): Promise<void>;
+  /** 把团队群记录写进工作区。 */
+  writeTranscript(markdown: string): Promise<void>;
   /** 日志（输出通道）。 */
   log(line: string, level?: 'info' | 'warn'): void;
   /** 状态变化时刷新状态栏。 */
@@ -83,6 +98,8 @@ interface PersistedState {
   requirements: SyncRequirement[];
   reports: SyncReport[];
   notes?: SyncNote[];
+  /** 团队群发言。 */
+  group?: SyncGroupMessage[];
   /** 已经被用户允许过的设备 id：重连不再打扰。 */
   approved?: string[];
   /** 上次的角色与主机地址：下次开窗口自动恢复连接。 */
@@ -122,6 +139,8 @@ export class LanSyncService implements Disposable {
   private requirements: SyncRequirement[] = [];
   private reports: SyncReport[] = [];
   private notes: SyncNote[] = [];
+  /** 团队群的全部发言（需求 / 解析 / 进度 / 结果）。 */
+  private group: SyncGroupMessage[] = [];
   /** 用户点过「允许」的设备。重连时直接放行，不再弹窗。 */
   private approved = new Set<string>();
   /** 上次的角色与主机：下次激活自动恢复（用户不用重复操作）。 */
@@ -152,6 +171,9 @@ export class LanSyncService implements Disposable {
       this.notes = Array.isArray(parsed.notes)
         ? parsed.notes.map((item) => parseSyncMessage(item)).filter((item): item is SyncNote => item?.kind === 'note').slice(-MAX_NOTES)
         : [];
+      this.group = Array.isArray(parsed.group)
+        ? parsed.group.map((item) => parseSyncMessage(item)).filter((item): item is SyncGroupMessage => item?.kind === 'group').slice(-MAX_GROUP_MESSAGES)
+        : [];
       this.approved = new Set(Array.isArray(parsed.approved)
         ? parsed.approved.filter((item): item is string => typeof item === 'string').slice(0, 32)
         : []);
@@ -173,6 +195,7 @@ export class LanSyncService implements Disposable {
       requirements: this.requirements.slice(-STATE_LIMIT),
       reports: this.reports.slice(-STATE_LIMIT * 3),
       notes: this.notes.slice(-MAX_NOTES),
+      group: this.group.slice(-MAX_GROUP_MESSAGES),
       approved: [...this.approved],
       role: this.lastRole,
       hub: this.lastHub,
@@ -616,7 +639,32 @@ export class LanSyncService implements Disposable {
         }
       }
     } else {
-      if (message.kind === 'note') {
+      if (message.kind === 'group') {
+        /*
+         * 群消息：只记录与展示，**绝不触发对端重新开跑** —— 否则「解析」「结果」
+         * 会互相激发，两个 agent 能聊到把额度烧光。需求本身（kind=requirement）
+         * 才是唯一的执行触发器。
+         */
+        if (!this.group.some((item) => item.id === message.id)) {
+          this.group = [...this.group, message].slice(-MAX_GROUP_MESSAGES);
+          await this.persist();
+          this.bridge.log(`[sync] 群消息：${renderGroupLine(message)}`);
+          await this.bridge.onGroupMessage?.(message).catch(() => undefined);
+          await this.refreshTranscript();
+          /*
+           * 甲方回答了乙方的追问 → 本机这一侧也要接着做。
+           *
+           * 这是「追问直到达成一致」能闭环的地方：不重新开一轮，甲方的话会被
+           * 记录却没人接，两个 agent 就永远停在「等你回答」。
+           */
+          if (message.author === 'user' && message.phase === 'answer' && message.from.id !== this.bridge.peer().id) {
+            const requirement = this.requirementById(message.requirementId);
+            if (requirement && this.role !== 'off') {
+              await this.bridge.runRequirement(requirement).catch(() => false);
+            }
+          }
+        }
+      } else if (message.kind === 'note') {
         /*
          * 协作消息：先记账，再交给本机 agent。
          *
@@ -749,8 +797,86 @@ export class LanSyncService implements Disposable {
     return { ok: Boolean(response?.ok), message: response?.ok ? '已发给对端。' : '记录成功，但发送失败（主机没响应）。' };
   }
 
-  /** 最近的协作消息（`team_sync` 的 status 与面板展示用）。 */
-  recentNotes(limit = 10): SyncNote[] {
+  /**
+   * 在团队群里发言（本机 agent 或用户）。
+   *
+   * 与 `shareNote` 的区别：这是**群记录**，会写进 `docs/TEAM-CHAT.md` 并追加到对话里，
+   * 而且**不会**触发对端开跑 —— 只有用户的需求（`shareRequirement`）才触发。
+   */
+  async postGroup(input: {
+    author: 'user' | 'agent';
+    phase: GroupPhase;
+    body: string;
+    requirementId?: string;
+  }): Promise<{ ok: boolean; message: string; group?: SyncGroupMessage }> {
+    /*
+     * 关联需求：没指定就用最近的一条。
+     *
+     * 模型经常只写 `action=analysis` 而忘了带需求号 —— 让它自己再猜一次毫无价值，
+     * 而「最近一条需求」在真实使用里几乎总是对的。
+     */
+    const requirementId = input.requirementId
+      || this.requirements[this.requirements.length - 1]?.id
+      || '';
+    const group = makeGroupMessage(this.bridge.peer(), { ...input, requirementId });
+    if (!group) return { ok: false, message: '群消息内容为空。' };
+    this.group = [...this.group, group].slice(-MAX_GROUP_MESSAGES);
+    await this.persist();
+    await this.refreshTranscript();
+    await this.bridge.onGroupMessage?.(group).catch(() => undefined);
+    this.bridge.onState?.();
+    if (this.role === 'off') return { ok: true, message: '已记入团队群（未启用局域网同步，没有发给队友）。', group };
+
+    const payload = JSON.stringify({ protocol: SYNC_PROTOCOL_VERSION, code: this.code, message: group });
+    if (this.role === 'hub') {
+      const targets = this.peerList().filter((entry) => entry.address);
+      await Promise.allSettled(targets.map((entry) => postRaw(entry.address, '/hwchat-sync/v1/deliver', payload)));
+    } else {
+      await this.postJson(this.hubAddress, '/hwchat-sync/v1/message', { code: this.code, message: group }).catch(() => undefined);
+    }
+    return { ok: true, message: '已发到团队群。', group };
+  }
+
+  /** 群里的最近发言（`team_sync status` 与面板用）。 */
+  recentGroup(limit = 12): SyncGroupMessage[] {
+    return this.group.slice(-Math.max(1, limit));
+  }
+
+  /**
+   * 当前有没有「乙方问了、甲方还没回答」的需求，返回它的需求号。
+   *
+   * 面板用它决定：甲方下一条消息是**回答追问**（并入同一条需求），
+   * 还是一条**新需求**（新开一条、再广播给对端）。判错会让追问永远收不了尾。
+   */
+  openQuestionRequirement(): string | undefined {
+    for (let index = this.requirements.length - 1; index >= 0; index -= 1) {
+      const requirement = this.requirements[index]!;
+      if (groupAgreement(this.group, requirement.id) === 'awaiting-user') return requirement.id;
+    }
+    return undefined;
+  }
+
+  /** 按需求号取需求（收到甲方回答时要重新交给本机 agent）。 */
+  requirementById(id: string): SyncRequirement | undefined {
+    return this.requirements.find((item) => item.id === id);
+  }
+
+  /**
+   * 把群记录写进仓库。
+   *
+   * 与对齐账本分工：账本是**状态表**（谁做完没做完），群记录是**过程**（谁说了什么）。
+   * 两者都进仓库，人和模型都能读。
+   */
+  private async refreshTranscript(): Promise<void> {
+    if (!this.group.length) return;
+    try {
+      await this.bridge.writeTranscript(renderGroupTranscript(this.group));
+    } catch (error) {
+      this.bridge.log(`[sync] 写群记录失败：${error instanceof Error ? error.message : String(error)}`, 'warn');
+    }
+  }
+
+  /** 最近的协作消息（`team_sync` 的 status 与面板展示用）。 */  recentNotes(limit = 10): SyncNote[] {
     return this.notes.slice(-Math.max(1, limit));
   }
 

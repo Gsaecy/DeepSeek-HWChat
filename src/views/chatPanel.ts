@@ -29,6 +29,7 @@ import { gitWriteAuthorization } from '../agent/conversationScope';
 import { VERSION_RULE_PROMPT, argumentsMentionVersionBump, versionBumpAuthorization } from '../agent/releasePolicy';
 import { TODO_LIST_PROMPT } from '../agent/todoPrompt';
 import { teamSyncToolDefinition } from '../sync/lanTool';
+import { TEAM_GROUP_PROMPT } from '../sync/lanProtocol';
 import { droppedCompletedTodos, hasTodoReplanIntent, splitTodoScope } from '../agent/todoScope';
 import { COMMAND_BLOCK_PROMPT } from '../agent/commandPrompt';
 import { NOTICE_PROMPT } from '../agent/noticePrompt';
@@ -897,8 +898,14 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    */
   async runSyncRequirement(requirement: import('../sync/lanProtocol').SyncRequirement): Promise<boolean> {
     if (!this.lanSync || this.syncBusy()) return false;
-    const { requirementPromptForLocal } = await import('../sync/lanProtocol.js');
-    const prompt = requirementPromptForLocal(requirement, this.lanSync.localPeer());
+    const { requirementPromptForLocal, renderGroupLine } = await import('../sync/lanProtocol.js');
+    /*
+     * 把群里最近的发言一起交给本机 agent。
+     *
+     * 没有这段，两边会向甲方提同样的问题，或者队友已经确认过的结论本机又推翻一次。
+     */
+    const groupLines = this.lanSync.recentGroup(10).map((message) => renderGroupLine(message));
+    const prompt = requirementPromptForLocal(requirement, this.lanSync.localPeer(), groupLines);
     await this.send(prompt, undefined, undefined, undefined, undefined, undefined, {
       origin: 'sync',
       syncRequirementId: requirement.id,
@@ -918,6 +925,37 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
     const prompt = notePromptForLocal(note, this.lanSync.localPeer());
     await this.send(prompt, undefined, undefined, undefined, undefined, undefined, { origin: 'sync' });
     return true;
+  }
+
+  /**
+   * 群里出现了新发言：追加到当前对话，用户就能像看群一样看整个过程。
+   *
+   * 为什么追加成普通消息而不是新做一套渲染：对话气泡、Markdown、折叠都已经现成，
+   * 每条消息开头写清「谁 · 什么阶段」，读起来就是群聊。改渲染层风险大、收益小。
+   */
+  async appendGroupMessage(message: import('../sync/lanProtocol').SyncGroupMessage): Promise<void> {
+    const conversationId = this.activeConversationId;
+    if (!conversationId) return;
+    const { groupSpeaker } = await import('../sync/lanProtocol.js');
+    const labels: Record<string, string> = {
+      requirement: '需求',
+      analysis: '需求解析',
+      question: '追问',
+      confirm: '确认',
+      progress: '进度',
+      result: '结果',
+    };
+    const header = `**${groupSpeaker(message)} · ${labels[message.phase] ?? message.phase}**`;
+    const time = new Date(message.at).toTimeString().slice(0, 5);
+    const content = `${header}\n\n${message.body}\n\n_${time}_`;
+    await this.storage.appendMessage(conversationId, {
+      role: 'assistant',
+      content,
+      status: 'complete',
+      model: message.from.name,
+    });
+    await this.postHistorySnapshot();
+    await this.sendState();
   }
 
   /** 跑一轮同步需求之后回报进度：对方的账本靠这条更新。 */
@@ -1902,11 +1940,32 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
        * 只广播**用户亲自发的**：`origin === 'sync'` 是从对端收到的，再发回去会无限
        * 互相转发；`resumedTodos` 是「继续执行清单」这类系统指令，没有跨平台含义。
        * 广播失败不影响本机这一轮，所以是 fire-and-forget。
+       *
+       * 同时记成团队群里的「甲方需求」：群记录、对话气泡、对齐账本三处要能对上。
        */
       if (this.lanSync && options?.origin !== 'sync' && !options?.resumedTodos && content) {
-        void this.lanSync.shareRequirement(content)
-          .then((result) => this.log(`[sync] 广播需求：${result.message}`))
-          .catch(() => undefined);
+        /*
+         * 甲方正在回答乙方的追问：**并入同一条需求**，不新开一条。
+         *
+         * 判错会有两种恶果：当成新需求 → 追问永远收不了尾、每次回答都多一条需求；
+         * 当成回答却根本没问过 → 用户随便说一句就被挂到旧需求上。所以只认
+         * `groupAgreement === 'awaiting-user'`（最后一条是追问）这一种状态。
+         */
+        const openRequirement = this.lanSync.openQuestionRequirement();
+        if (openRequirement) {
+          void this.lanSync.postGroup({
+            author: 'user',
+            phase: 'answer',
+            body: content,
+            requirementId: openRequirement,
+          }).catch(() => undefined);
+        } else {
+          void this.lanSync.postGroup({ author: 'user', phase: 'requirement', body: content })
+            .catch(() => undefined);
+          void this.lanSync.shareRequirement(content)
+            .then((result) => this.log(`[sync] 广播需求：${result.message}`))
+            .catch(() => undefined);
+        }
       }
       let configuredSettings = readSettings();
       let conversationId = this.activeConversationId;
@@ -6072,6 +6131,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       'Never rewrite or re-encode workspace files through a shell command (Set-Content, Out-File, Tee-Object, redirection, or an encoding round-trip). Those silently change encoding and line endings; use write_file or replace_in_file, which keep UTF-8 and the file\'s existing line endings.',
       // 任务清单：多步任务必须先列清单再动手，面板才会跟着走。
       TODO_LIST_PROMPT,
+      // 团队群：用户是甲方、你是乙方。启用局域网协作时才讲这套规则。
+      this.lanSync ? TEAM_GROUP_PROMPT : '',
       'Never claim a file changed or a command passed unless the corresponding tool returned success.',
       /*
        * 假执行的另一种形状：模型自己写一个「检查脚本」、跑通它，然后宣布任务完成。

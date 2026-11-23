@@ -30,6 +30,7 @@ async function makeService(peer: SyncPeer, options: {
     runRequirement: options.onRequirement ?? (async () => true),
     runNote: options.onNote ?? (async () => true),
     writeLedger: async (markdown) => { ledgers.push(markdown); },
+    writeTranscript: async () => undefined,
     log: () => undefined,
   });
   await service.load();
@@ -51,6 +52,7 @@ test('端到端：配对后主机发需求，对端真的收到并执行；对�
     runRequirement: async (requirement) => { received.push(requirement); return true; },
     runNote: async () => true,
     writeLedger: async () => undefined,
+    writeTranscript: async () => undefined,
     log: () => undefined,
   });
   await peerWithHook.load();
@@ -102,6 +104,7 @@ test('端到端：配对码不一致时加入失败，需求不会外泄', async
     runRequirement: async (requirement) => { received.push(requirement); return true; },
     runNote: async () => true,
     writeLedger: async () => undefined,
+    writeTranscript: async () => undefined,
     log: () => undefined,
   });
   await spy.load();
@@ -134,6 +137,7 @@ test('协作消息：主机发一条，对端 agent 收到；纯陈述不触发�
     runRequirement: async () => true,
     runNote: async (note) => { notes.push(note); return true; },
     writeLedger: async () => undefined,
+    writeTranscript: async () => undefined,
     log: () => undefined,
   });
   await peer.load();
@@ -177,6 +181,7 @@ test('一键连接：陌生设备弹一次「允许」即可加入，之后重�
     runRequirement: async () => true,
     runNote: async () => true,
     writeLedger: async () => undefined,
+    writeTranscript: async () => undefined,
     log: () => undefined,
     approvePeer: async (peer) => { asked.push(peer.id); return true; },
   });
@@ -188,6 +193,7 @@ test('一键连接：陌生设备弹一次「允许」即可加入，之后重�
     runRequirement: async () => true,
     runNote: async () => true,
     writeLedger: async () => undefined,
+    writeTranscript: async () => undefined,
     log: () => undefined,
   });
   await strangerA.load();
@@ -222,6 +228,7 @@ test('一键连接：用户点「拒绝」时连不进来', async () => {
     runRequirement: async () => true,
     runNote: async () => true,
     writeLedger: async () => undefined,
+    writeTranscript: async () => undefined,
     log: () => undefined,
     approvePeer: async () => false,
   });
@@ -232,6 +239,7 @@ test('一键连接：用户点「拒绝」时连不进来', async () => {
     runRequirement: async () => true,
     runNote: async () => true,
     writeLedger: async () => undefined,
+    writeTranscript: async () => undefined,
     log: () => undefined,
   });
   await stranger.load();

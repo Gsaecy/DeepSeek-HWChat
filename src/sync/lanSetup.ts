@@ -15,6 +15,9 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import * as vscode from 'vscode';
 import { ALIGNMENT_FILE, type SyncPeer } from './lanProtocol';
+
+/** 团队群记录文件（与对齐账本并列，一个记状态、一个记过程）。 */
+const TRANSCRIPT_FILE = 'docs/TEAM-CHAT.md';
 import { LanSyncService, defaultDeviceName, defaultPlatform, lanAddresses, peerIdFor, type LanSyncBridge } from './lanSync';
 
 export interface LanSetupOptions {
@@ -24,6 +27,7 @@ export interface LanSetupOptions {
     setLanSync(service: LanSyncService | undefined): void;
     runSyncRequirement(requirement: import('./lanProtocol').SyncRequirement): Promise<boolean>;
     runSyncNote(note: import('./lanProtocol').SyncNote): Promise<boolean>;
+    appendGroupMessage(message: import('./lanProtocol').SyncGroupMessage): Promise<void>;
   };
   version: string;
 }
@@ -94,6 +98,33 @@ export async function setupLanSync(options: LanSetupOptions): Promise<LanSetupRe
         await writeFile(target, markdown, 'utf8');
       } catch (error) {
         output.warn(`[sync] 写账本失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+    /** 团队群记录：与账本一样进仓库，人和模型都能读。 */
+    async writeTranscript(markdown: string): Promise<void> {
+      const root = workspaceRoot();
+      if (!root) return;
+      const target = join(root, TRANSCRIPT_FILE);
+      try {
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, markdown, 'utf8');
+      } catch (error) {
+        output.warn(`[sync] 写群记录失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+    /**
+     * 群里有新发言：追加到对话，并在**追问**时明确提醒甲方去回答。
+     *
+     * 追问必须显眼：它是整条链路上唯一需要人动手的环节，埋在对话里等于没问。
+     */
+    async onGroupMessage(message) {
+      await chat.appendGroupMessage(message).catch(() => undefined);
+      if (message.author === 'agent' && message.phase === 'question') {
+        void vscode.window
+          .showInformationMessage(`乙方在等你确认需求：${message.body.slice(0, 120)}`, '看看群')
+          .then(async (choice) => {
+            if (choice) await vscode.commands.executeCommand('hwchat.lanSync.openTranscript');
+          });
       }
     },
     log: (line, level) => {

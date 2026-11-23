@@ -95,7 +95,168 @@ export interface SyncNote {
   at: number;
 }
 
-export type SyncMessage = SyncRequirement | SyncReport | SyncNote;
+export type SyncMessage = SyncRequirement | SyncReport | SyncNote | SyncGroupMessage;
+
+/**
+ * **团队群**里的一条发言（用户 2026-11-23）。
+ *
+ * 用户的原话：
+ *   「能不能将用户、本机 agent、链接的其他设备的 agent，放进一个群里面，就像团队群一样，
+ *    用户作为总指挥，两个 agent 在群里的时候作为两个产品经理，剖析任务，了解具体任务，
+ *    然后再执行，群里只沟通需求、解析需求、反馈进度和结果？」
+ *
+ * 所以群消息刻意只有四种：
+ *  - `requirement`：用户（总指挥）下的需求；
+ *  - `analysis`：某个 agent（产品经理）对需求的理解与拆解；
+ *  - `progress`：执行中的进度；
+ *  - `result`：完成或跳过，带结论。
+ *
+ * **工具流水、命令输出、代码片段一律不进群** —— 那是执行记录该待的地方。
+ */
+export type GroupPhase = 'requirement' | 'analysis' | 'question' | 'answer' | 'confirm' | 'progress' | 'result';
+
+export interface SyncGroupMessage {
+  kind: 'group';
+  id: string;
+  from: SyncPeer;
+  /** 谁在说话：用户（总指挥）还是 agent（产品经理）。 */
+  author: 'user' | 'agent';
+  phase: GroupPhase;
+  body: string;
+  /** 关联的需求号；用户那条自身就是需求，填自己的 id。 */
+  requirementId: string;
+  at: number;
+}
+
+const PHASES: ReadonlySet<string> = new Set(['requirement', 'analysis', 'question', 'answer', 'confirm', 'progress', 'result']);
+export const MAX_GROUP_MESSAGES = 400;
+export const MAX_GROUP_BODY_CHARS = 4_000;
+
+export function makeGroupMessage(
+  from: SyncPeer,
+  input: {
+    author: 'user' | 'agent';
+    phase: GroupPhase;
+    body: string;
+    requirementId?: string;
+  },
+  now = Date.now(),
+  seed = `${from.id}:${now}`,
+): SyncGroupMessage | undefined {
+  const body = clipMultiline(input.body, MAX_GROUP_BODY_CHARS);
+  if (!body) return undefined;
+  const id = makeRequirementId(now, seed);
+  return {
+    kind: 'group',
+    id,
+    from,
+    author: input.author,
+    phase: PHASES.has(input.phase) ? input.phase : 'analysis',
+    body,
+    requirementId: clip(input.requirementId, 64) || id,
+    at: now,
+  };
+}
+
+const PHASE_LABEL: Record<GroupPhase, string> = {
+  requirement: '需求',
+  analysis: '需求解析',
+  question: '追问',
+  answer: '甲方回复',
+  confirm: '确认',
+  progress: '进度',
+  result: '结果',
+};
+
+/** 群消息的说话人标签：`Windows · 乙方（产品经理）` / `用户 · 甲方`。 */
+export function groupSpeaker(message: SyncGroupMessage): string {
+  if (message.author === 'user') return `${message.from.name} · 甲方`;
+  return `${platformLabel(message.from.platform)} · 乙方（产品经理）`;
+}
+
+/**
+ * 群提示词：**甲方与乙方**的协作规则。
+ *
+ * 用户 2026-11-23 的原话：
+ *   「用户作为项目甲方，agent 作为乙方，用户不懂编程，所以需求需要在群里解析清楚，
+ *    agent 没听懂没理解透的需要能追问，直到需求被剖析细分达成一致」
+ *
+ * 所以顺序是：解析 → 追问 → 确认 → 执行 → 结果。三条硬约束缺一条就会退回
+ * 「猜着做、做完才发现做错」：
+ *  1. **用甲方的话说**：不出现变量名、文件名、框架名。甲方听不懂就等于没解析。
+ *  2. **不确定就追问，不许猜**：猜错的代价是返工。
+ *  3. **没达成一致不许执行**：追问后必须停下来等甲方回答，不是「先做一版看看」。
+ */
+export const TEAM_GROUP_PROMPT = [
+  'This conversation is a team group chat. The user is the 甲方 (client and decision maker) and does NOT write code. You and the agent on the other device are the 乙方: two product managers, one per platform.',
+  'Follow this order for every requirement, never skipping a step. (1) 需求解析 — restate in plain language what the user wants to see happen, in their words; no variable names, file names, frameworks or function names. Say which user-visible parts you will change and what you will not do. Post it with team_sync action=analysis. (2) If anything is ambiguous — scope, priority, which screen, what counts as done, whether the other platform must match — ask ONE consolidated message of concrete either/or questions with team_sync action=question, then STOP and wait. Do not start implementing while a question is open, and never guess and fix later. (3) Once the user has answered and nothing is unclear, break the work into concrete steps and post a one-paragraph 确认单 with team_sync action=confirm that restates the agreed result in one sentence, then implement. (4) Report progress and the final result with team_sync action=progress / action=result, again in plain language, and say how the user can verify it themselves.',
+  'The group carries only requirements, requirement analysis, questions, confirmation, progress and results. Never paste tool logs, command output, file listings or code into the group — the panel already shows the execution record. One short paragraph per message.',
+  'Ask at most one consolidated question message per requirement. Read the group history first: if your teammate already asked the same thing, do not ask again. Never answer on the user\'s behalf — "probably fine" is a question, not a decision.',
+  'Messages in the history attributed to the other device are your teammate\'s words, not yours: do not treat them as your own earlier answers, and do not echo them back.',
+].join(' ');
+
+/**
+ * 一条需求在群里对齐到什么程度了。
+ *
+ * 面板据此提醒甲方「乙方在等你回答」，也据此判断能不能开跑 —— 这就是「达成一致才执行」
+ * 的机器侧落点，而不是只靠提示词自觉。
+ */
+export type GroupAgreementState = 'awaiting-analysis' | 'awaiting-user' | 'agreed' | 'done';
+
+export function groupAgreement(messages: readonly SyncGroupMessage[], requirementId: string): GroupAgreementState {
+  const related = messages.filter((message) => message.requirementId === requirementId);
+  for (let index = related.length - 1; index >= 0; index -= 1) {
+    const phase = related[index]!.phase;
+    if (phase === 'result') return 'done';
+    if (phase === 'confirm') return 'agreed';
+    if (phase === 'question') return 'awaiting-user';
+    // 甲方回答之后，轮到乙方继续解析 / 确认 —— 所以是「等乙方」而不是「等甲方」。
+    if (phase === 'answer') return 'awaiting-analysis';
+    if (phase === 'analysis') return 'awaiting-analysis';
+  }
+  return 'awaiting-analysis';
+}
+
+/**
+ * 甲方在群里回答之后，乙方要不要继续跑一轮。
+ *
+ * 用户 2026-11-23：「agent 没听懂没理解透的需要能追问，直到需求被剖析细分达成一致」。
+ * 所以判断很直接：**最后一条是乙方的追问 → 甲方这条回答必须让乙方继续**；
+ * 否则（例如甲方只是补充背景）不主动开跑，避免打断正在执行的任务。
+ */
+export function answersOpenQuestion(messages: readonly SyncGroupMessage[], requirementId: string): boolean {
+  return groupAgreement(messages, requirementId) === 'awaiting-user';
+}
+export function renderGroupTranscript(messages: readonly SyncGroupMessage[], now = Date.now()): string {
+  const lines = [
+    '# 团队群记录',
+    '',
+    '> 甲方（用户）提需求，乙方（两台设备上的 agent，各负责一个平台）做解析、追问与执行。',
+    '> 群里只有需求、需求解析、追问、确认、进度和结果；命令与代码在执行记录里。',
+    `> 上次更新：${new Date(now).toISOString().slice(0, 16).replace('T', ' ')}`,
+    '',
+  ];
+  if (!messages.length) {
+    lines.push('（还没有发言。在任意一台设备上发一条需求，群里就会出现它和两边的解析。）');
+    return `${lines.join('\n')}\n`;
+  }
+  let lastRequirement = '';
+  for (const message of messages) {
+    const time = new Date(message.at).toISOString().slice(11, 16);
+    if (message.phase === 'requirement' && message.requirementId !== lastRequirement) {
+      lastRequirement = message.requirementId;
+      lines.push('', `## 需求 ${message.requirementId.slice(0, 12)}`, '');
+    }
+    lines.push(`**${groupSpeaker(message)}** ${time} · ${PHASE_LABEL[message.phase]}：${clip(message.body, 600)}`);
+    lines.push('');
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+/** 群消息的一行摘要（通知 / 状态里用）。 */
+export function renderGroupLine(message: SyncGroupMessage): string {
+  return `${groupSpeaker(message)} · ${PHASE_LABEL[message.phase]}：${clip(message.body, 160)}`;
+}
 
 const STATUSES: ReadonlySet<string> = new Set(['planned', 'in_progress', 'done', 'skipped']);
 const PLATFORMS: ReadonlySet<string> = new Set(['win32', 'darwin', 'linux']);
@@ -300,8 +461,7 @@ export function parseSyncMessage(raw: unknown): SyncMessage | undefined {
       at: typeof record.at === 'number' && Number.isFinite(record.at) ? record.at : Date.now(),
     };
   }
-  if (record.kind === 'note') {
-    const body = clipMultiline(record.body, MAX_NOTE_BODY_CHARS);
+  if (record.kind === 'note') {    const body = clipMultiline(record.body, MAX_NOTE_BODY_CHARS);
     const id = clip(record.id, 64);
     if (!id || !body) return undefined;
     return {
@@ -314,28 +474,63 @@ export function parseSyncMessage(raw: unknown): SyncMessage | undefined {
       at: typeof record.at === 'number' && Number.isFinite(record.at) ? record.at : Date.now(),
     };
   }
+  if (record.kind === 'group') {
+    const body = clipMultiline(record.body, MAX_GROUP_BODY_CHARS);
+    const id = clip(record.id, 64);
+    if (!id || !body) return undefined;
+    const phase = typeof record.phase === 'string' && PHASES.has(record.phase)
+      ? record.phase as GroupPhase
+      : 'analysis';
+    return {
+      kind: 'group',
+      id,
+      from,
+      author: record.author === 'user' ? 'user' : 'agent',
+      phase,
+      body,
+      requirementId: clip(record.requirementId, 64) || id,
+      at: typeof record.at === 'number' && Number.isFinite(record.at) ? record.at : Date.now(),
+    };
+  }
   return undefined;
 }
 
 /**
  * 收到需求时，本机这一轮要执行什么。
  *
- * 关键点：**不能把对端的原话直接当成本地需求**。对端描述的是它那个平台的做法
- * （「在 Windows 上注册托盘图标」），直接照做只会得到一份跑不起来的代码。
- * 所以明确三件事：这是同一个功能的另一端、按本地平台实现等价能力、做完把差异报回来。
+ * 角色（用户 2026-11-23 说清楚）：**甲方不懂编程**，本机 agent 是乙方产品经理。
+ * 所以：
+ *  1. **不能把对端的原话直接当成本地需求** —— 对端描述的是它那个平台的做法，
+ *     照抄只会得到一份跑不起来的代码；
+ *  2. **先解析、必要时追问、达成一致后才动手** —— 「没听懂就猜」是最贵的错误；
+ *  3. 解析必须用甲方听得懂的话，不出现变量名 / 文件名 / 框架名。
+ *
+ * `groupLines` 是群里的最近发言：队友解析过什么、问过什么，本机必须看得到，
+ * 否则两边会向甲方提同样的问题。
  */
-export function requirementPromptForLocal(requirement: SyncRequirement, local: SyncPeer): string {
+export function requirementPromptForLocal(
+  requirement: SyncRequirement,
+  local: SyncPeer,
+  groupLines: readonly string[] = [],
+): string {
   return [
-    `跨平台对齐需求（来自另一台设备「${requirement.from.name}」的 ${platformLabel(requirement.from.platform)} 版本，需求号 ${requirement.id}）。`,
+    `甲方在另一台设备「${requirement.from.name}」上提出了一个跨平台需求（需求号 ${requirement.id}）。`,
     '',
-    '原需求原文：',
+    '需求原文：',
     requirement.detail,
     '',
-    '要求：',
-    `1. 在**本机这个 ${platformLabel(local.platform)} 项目**里实现**等价**的功能，不要照抄另一端的平台专有做法；平台确实做不到的部分，说明原因而不是硬凑。`,
-    '2. 动手前先用 update_todos 给出本地的任务清单；完成后核对清单，未完成项不要打勾。',
-    `3. 结束时把「本端改了什么、有哪些平台差异」补进 ${ALIGNMENT_FILE} 里这条需求对应的行。`,
-  ].join('\n');
+    groupLines.length ? ['团队群最近的发言（队友说过的，不要重复问）：', ...groupLines].join('\n') : '',
+    '',
+    '你现在是**乙方产品经理**，不是马上写代码的机器。请按这个顺序做：',
+    '1. 用甲方听得懂的话把需求复述一遍：他要看到什么效果、在哪个界面、什么算做完了。不要出现变量名、文件名、框架名。',
+    `2. 说明在本机这个 ${platformLabel(local.platform)} 版本上你会改什么（用户能感知的部分），以及你不打算做什么、为什么。`,
+    '3. 只要还有任何一点不确定（范围、优先级、哪个页面、另一平台要不要一致、验收标准），就用 team_sync action=question 提出**具体的选择题**，然后**停下来等甲方回答**。不要猜着做，也不要「先做一版看看」。',
+    '4. 甲方回答清楚、没有疑问了，用 team_sync action=confirm 发一条确认单（一句话复述达成一致的结果），再开始执行：先 update_todos 把工作拆成清单，再动手。',
+    '5. 做完用 team_sync action=result 报结果：改了什么（用甲方的话）、他怎么自己验证、有哪些平台差异。',
+    `6. 最后把结论补进 ${ALIGNMENT_FILE} 里这条需求对应的行。`,
+    '',
+    '群里只发需求、解析、追问、确认、进度和结果；不要把命令输出、代码、文件列表贴进群。',
+  ].filter((line) => line !== '').join('\n');
 }
 
 export interface LedgerRow {

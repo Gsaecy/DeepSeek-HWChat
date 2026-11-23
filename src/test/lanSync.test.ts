@@ -4,6 +4,9 @@ import {
   MAX_DETAIL_CHARS,
   buildLedger,
   clip,
+  groupAgreement,
+  makeGroupMessage,
+  renderGroupTranscript,
   findDivergences,
   makeNote,
   makeReport,
@@ -124,14 +127,53 @@ test('空账本也给出可读文件，而不是空字符串', () => {
   assert.match(markdown, /还没有跨平台需求/);
 });
 
-test('收到需求时的本地指令：按本机平台做等价实现，不要照抄', () => {
+test('收到需求时的本地指令：按甲方的话解析、不确定先追问、达成一致才动手', () => {
   const requirement = makeRequirement(win, '在 Windows 上把设置页改成 Mica 材质', 1, 'r')!;
-  const prompt = requirementPromptForLocal(requirement, mac);
+  const prompt = requirementPromptForLocal(requirement, mac, ['Windows · 乙方（产品经理）· 需求解析：把设置页做成半透明']);
   assert.match(prompt, /macOS/, '必须点名本机平台');
-  assert.match(prompt, /等价/);
-  assert.match(prompt, /不要照抄/);
+  assert.match(prompt, /甲方/, '要按甲乙方角色说话');
+  assert.match(prompt, /不要出现变量名/, '解析必须用甲方听得懂的话');
+  assert.match(prompt, /team_sync action=question/, '不确定必须追问');
+  assert.match(prompt, /停下来等甲方回答/, '追问后必须停下，不许猜着做');
+  assert.match(prompt, /team_sync action=confirm/, '达成一致后要发确认单');
+  assert.match(prompt, /team_sync action=result/, '做完要报结果');
   assert.match(prompt, /PLATFORM-ALIGNMENT\.md/, '要写进共享账本');
   assert.match(prompt, /在 Windows 上把设置页改成 Mica 材质/, '原需求原文必须完整保留');
+  assert.match(prompt, /队友说过的/, '要把群里的发言一起给它，避免重复提问');
+});
+
+test('对齐状态：追问 → 等甲方；甲方回答 → 等乙方；确认 → 可执行；结果 → 完成', () => {
+  const requirement = makeRequirement(win, '加个深色开关', 1, 'r')!;
+  const rid = requirement.id;
+  const base = makeGroupMessage(win, { author: 'user', phase: 'requirement', body: '加个深色开关', requirementId: rid }, 10, 'g1')!;
+  const analysis = makeGroupMessage(mac, { author: 'agent', phase: 'analysis', body: '我理解是设置页加开关', requirementId: rid }, 11, 'g2')!;
+  const question = makeGroupMessage(mac, { author: 'agent', phase: 'question', body: '要跟随系统还是手动？', requirementId: rid }, 12, 'g3')!;
+  const answer = makeGroupMessage(win, { author: 'user', phase: 'answer', body: '跟随系统就行', requirementId: rid }, 13, 'g4')!;
+  const confirm = makeGroupMessage(mac, { author: 'agent', phase: 'confirm', body: '确认：跟随系统深浅色', requirementId: rid }, 14, 'g5')!;
+  const result = makeGroupMessage(mac, { author: 'agent', phase: 'result', body: '已完成', requirementId: rid }, 15, 'g6')!;
+
+  const withRequirement = [base];
+  assert.equal(groupAgreement(withRequirement, rid), 'awaiting-analysis');
+  assert.equal(groupAgreement([...withRequirement, analysis], rid), 'awaiting-analysis');
+  assert.equal(groupAgreement([...withRequirement, analysis, question], rid), 'awaiting-user');
+  assert.equal(groupAgreement([...withRequirement, analysis, question, answer], rid), 'awaiting-analysis');
+  assert.equal(groupAgreement([...withRequirement, analysis, question, answer, confirm], rid), 'agreed');
+  assert.equal(groupAgreement([...withRequirement, analysis, question, answer, confirm, result], rid), 'done');
+});
+
+test('群记录：按需求分组、标出甲乙方、不塞工具流水', () => {
+  const requirement = makeRequirement(win, '加个深色开关', 1, 'r')!;
+  const messages = [
+    makeGroupMessage(win, { author: 'user', phase: 'requirement', body: '设置页加个深色开关', requirementId: requirement.id }, 10, 'a')!,
+    makeGroupMessage(mac, { author: 'agent', phase: 'question', body: '跟随系统还是手动选？', requirementId: requirement.id }, 11, 'b')!,
+  ];
+  const markdown = renderGroupTranscript(messages, 100);
+  assert.match(markdown, /# 团队群记录/);
+  assert.match(markdown, /甲方/);
+  assert.match(markdown, /乙方（产品经理）/);
+  assert.match(markdown, /追问/);
+  assert.match(markdown, /设置页加个深色开关/);
+  assert.match(markdown, /需求 r/, '按需求分组');
 });
 
 test('队友消息的本地指令：先判断要不要动手，不要为了回应改代码', () => {

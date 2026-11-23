@@ -18,14 +18,14 @@
 |---|---|
 | 形态 | VS Code 扩展，单 webview 面板（辅助侧栏），无自建后端 |
 | 语言/构建 | TypeScript → esbuild → `out/extension.js`；无框架、无运行时依赖注入 |
-| 规模 | 209 个 `.ts` / 50,831 行 + webview 资源 ~9.2k 行（0.4.26 实测） |
+| 规模 | 209 个 `.ts` / 50,831 行 + webview 资源 ~9.2k 行（0.4.27 实测） |
 | 最大单文件 | `src/views/chatPanel.ts` 6,463 行；`src/agent/toolExecutor.ts` 2,726；`src/core/storage.ts` 2,436 |
 | 对外接口 | 任意 OpenAI 兼容端点（chat / images / models / embeddings） |
 | 密钥 | 只在 `SecretStorage`（`src/core/apiKeys.ts`），不进 settings.json |
 | 权限 | 四档预设 × 三档命令风险 × 敏感文件，默认 `askAll`（最严） |
 | 配置项 | 38 个 `contributes.configuration` |
 | 命令 | 19 个 |
-| 质量 | 1,401 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
+| 质量 | 1,408 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
 
 ---
 
@@ -132,6 +132,8 @@ Runner
 | 局域网同步 | 默认关闭；配对码校验 + 80 KB 体上限 + 静默丢弃畸形消息；只在局域网监听 | `sync/lanSync.ts` |
 | 跨平台账本 | 需求 × 平台对照表 + 「一端完成另一端跳过」差异；自动写入 `docs/PLATFORM-ALIGNMENT.md` | `sync/lanProtocol.ts`（`renderLedger`） |
 | 队友消息防接龙 | 只有真的在问才触发对端自动运行；来自同步的消息不再广播 | `lanProtocol.shouldAutoRespond` / `chatPanel.send` |
+| 团队群对齐 | 六阶段（需求/解析/追问/甲方回复/确认/进度/结果）+ `groupAgreement` 状态机；追问后必须停下等甲方，未确认不执行 | `lanProtocol.ts` |
+| 群记录 | `docs/TEAM-CHAT.md` 按需求分组记录发言；工具流水永不进群 | `lanProtocol.renderGroupTranscript` |
 
 终止原因会翻译成人话（`agentRunner.ts:76`），并区分「超时 / 卡住 / 断网 / 用户取消」四态（`src/agent/abortReason.ts:73`）。
 
@@ -306,7 +308,7 @@ Runner
 
 ## 10. 质量保障
 
-- **1,401 条单测**（`src/test/`）。
+- **1,408 条单测**（`src/test/`）。
 - **79 个 `test/check-*.mjs` 守护脚本**，其中若干不是静态断言，而是**真跑**：
   - 真实 Chromium：量按钮宽高、真点按钮、走完整交互（`check-settings-layout`、`check-image-attachment`、`check-capsule-*` …）；
   - 真实文件系统：大小写不同拼写是否算同一目录（`check-path-identity`）；
@@ -543,7 +545,7 @@ Runner
 # 类型检查
 npx tsc -p ./ --noEmit
 
-# 单测（1,401 条）
+# 单测（1,408 条）
 npm test
 
 # 全部守护脚本（79 个；含真实 Chromium / 真实文件系统 / 真实命令）
