@@ -51,6 +51,7 @@
     skillCount: document.getElementById('skillCount'),
     skillSummaryList: document.getElementById('skillSummaryList'),
     lanSyncConnectButton: document.getElementById('lanSyncConnectButton'),
+  lanSyncGroupButton: document.getElementById('lanSyncGroupButton'),
   lanSyncLedgerButton: document.getElementById('lanSyncLedgerButton'),
   lanSyncDisconnectButton: document.getElementById('lanSyncDisconnectButton'),
   rescanSkillsButton: document.getElementById('rescanSkillsButton'),
@@ -452,6 +453,7 @@
   elements.cleanupButton.addEventListener('click', () => post('cleanup'));
   elements.exportAllButton.addEventListener('click', () => post('exportAll'));
   elements.lanSyncConnectButton.addEventListener('click', () => post('lanSyncConnect'));
+  elements.lanSyncGroupButton.addEventListener('click', () => post('lanSyncGroup'));
   elements.lanSyncLedgerButton.addEventListener('click', () => post('lanSyncLedger'));
   elements.lanSyncDisconnectButton.addEventListener('click', () => post('lanSyncDisconnect'));
   elements.rescanSkillsButton.addEventListener('click', () => post('rescanSkills'));

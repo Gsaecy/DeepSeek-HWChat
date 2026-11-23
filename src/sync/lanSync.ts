@@ -843,6 +843,32 @@ export class LanSyncService implements Disposable {
   }
 
   /**
+   * 团队群窗口要显示的全部状态（一次取完，避免面板多次调用）。
+   *
+   * 面板据此渲染：成员、发言、以及「乙方正在等你回答」的那条追问 ——
+   * 群窗口要做的事只有三件：看谁说了什么、回答追问、发新需求。
+   */
+  groupState(): {
+    role: LanSyncRole;
+    peers: SyncPeer[];
+    messages: SyncGroupMessage[];
+    openQuestion?: { requirementId: string; body: string };
+  } {
+    const questionId = this.openQuestionRequirement();
+    const question = questionId
+      ? [...this.group].reverse().find((message) => message.requirementId === questionId && message.phase === 'question')
+      : undefined;
+    return {
+      role: this.role,
+      peers: [this.bridge.peer(), ...this.peerList().map((entry) => entry.peer)],
+      messages: this.group,
+      ...(question && questionId
+        ? { openQuestion: { requirementId: questionId, body: question.body } }
+        : {}),
+    };
+  }
+
+  /**
    * 当前有没有「乙方问了、甲方还没回答」的需求，返回它的需求号。
    *
    * 面板用它决定：甲方下一条消息是**回答追问**（并入同一条需求），

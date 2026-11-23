@@ -8,6 +8,23 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.28
+
+**Which box counts**: what you write in the group window applies to **both devices** (and is broadcast); what you write in the main chat goes to the **local agent only** and is never synced (you get a one-time notice). If the two disagree, the latest agreement in the group wins — an agent must not silently implement a different version.
+
+### The team group gets its own window (your chat stays clean)
+
+The split is now explicit: the **main chat** only carries your own agent's work — group messages no longer get interleaved into it. The **team group window** carries the whole conversation between you and the two agents, while `docs/TEAM-CHAT.md` keeps the transcript and `docs/PLATFORM-ALIGNMENT.md` keeps the per-platform state.
+
+The group window is a real chat surface, not a cramped list:
+
+- header with connection status and member cards (you, the local agent, the remote agent);
+- two-sided bubbles — yours on the right, the agents' on the left — each with a phase tag and time; questions outlined in yellow, results in green so they stand out;
+- a banner that appears whenever an agent is waiting for your answer, quoting the question;
+- a multi-line composer (Enter sends, Shift+Enter adds a line) and a toolbar for the ledger, connection state and advanced settings.
+
+Three entry points: the chat panel title bar, Settings → Collab → Open team group, and the notification button when an agent asks something.
+
 ## What's new in 0.4.27
 
 ### A team group: you are the client, the two agents are contractors who clarify before building

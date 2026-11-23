@@ -135,6 +135,7 @@ export const SETTINGS_INCOMING_MESSAGE_SPECS: Record<string, IncomingMessageSpec
   restoreTrash: {},
   openNativeSettings: {},
   lanSyncConnect: {},
+  lanSyncGroup: {},
   lanSyncDisconnect: {},
   lanSyncLedger: {},
 };

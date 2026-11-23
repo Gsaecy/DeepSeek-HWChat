@@ -215,10 +215,16 @@ interface SendOptions {
   /**
    * 这条消息是谁发起的。
    *
-   * `sync` 表示它是局域网另一台设备的 agent 发来的（需求或队友消息）——
-   * 这类消息**不能再广播回去**，否则两台机器会无限互相转发。
+   * `sync`：局域网另一台设备的 agent 发来的（需求或队友消息）——**不能再广播回去**，
+   * 否则两台机器会无限互相转发。
+   * `group`：用户在**团队群窗口**里说的 —— 这是双方共享的频道，会广播给对端一起做。
+   * 缺省（主对话）：只发给你本机这个 agent，**不广播**。
+   *
+   * 为什么必须区分（用户 2026-11-23 的追问）：「一个功能两个 agent 都需要做的时候，
+   * 是哪个对话框的用户消息起作用？」两个输入框如果都广播，就等于两个事实来源，
+   * 冲突时谁也说不清谁对。所以定死：**群 = 双方，主对话 = 本机**。
    */
-  origin?: 'user' | 'sync';
+  origin?: 'user' | 'sync' | 'group';
   /** 来自同步需求时记下需求号，运行结束时据此回报进度。 */
   syncRequirementId?: string;
 }
@@ -586,6 +592,8 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
    * 队友消息开跑一轮）。网络、配对、账本都在 `LanSyncService` 里，面板不碰 socket。
    */
   private lanSync?: import('../sync/lanSync').LanSyncService;
+  /** 「主对话不同步」的提醒只弹一次（每轮都弹等于噪音）。 */
+  private localOnlyNoticeShown = false;
   /** 等待用户在面板里点「允许一次 / 拒绝」的工具授权。 */
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingDecisions = new Map<string, PendingDecision>();
@@ -928,10 +936,21 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   }
 
   /**
-   * 群里出现了新发言：追加到当前对话，用户就能像看群一样看整个过程。
+   * 群窗口里发的一句话：**复用 `send()`**。
    *
-   * 为什么追加成普通消息而不是新做一套渲染：对话气泡、Markdown、折叠都已经现成，
-   * 每条消息开头写清「谁 · 什么阶段」，读起来就是群聊。改渲染层风险大、收益小。
+   * 它已经负责判断「这是回答追问还是新需求」、广播、以及本机这一轮怎么跑；
+   * 群窗口不重复实现那套逻辑，否则两处判断迟早会不一致。
+   */
+  async sendGroupMessage(text: string): Promise<void> {
+    await this.send(text, undefined, undefined, undefined, undefined, undefined, { origin: 'group' });
+  }
+
+  /**
+   * 群里出现了新发言：追加到当前对话。
+   *
+   * @deprecated 群消息现在进独立的「团队群」窗口（`GroupPanel`），主对话不再插队，
+   * 否则一条长任务下来几十条群发言会把真正的工作过程淹掉。保留这个方法是为了
+   * 将来「把某条群消息贴进对话」这类显式操作。
    */
   async appendGroupMessage(message: import('../sync/lanProtocol').SyncGroupMessage): Promise<void> {
     const conversationId = this.activeConversationId;
@@ -1943,28 +1962,41 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
        *
        * 同时记成团队群里的「甲方需求」：群记录、对话气泡、对齐账本三处要能对上。
        */
-      if (this.lanSync && options?.origin !== 'sync' && !options?.resumedTodos && content) {
-        /*
-         * 甲方正在回答乙方的追问：**并入同一条需求**，不新开一条。
-         *
-         * 判错会有两种恶果：当成新需求 → 追问永远收不了尾、每次回答都多一条需求；
-         * 当成回答却根本没问过 → 用户随便说一句就被挂到旧需求上。所以只认
-         * `groupAgreement === 'awaiting-user'`（最后一条是追问）这一种状态。
-         */
-        const openRequirement = this.lanSync.openQuestionRequirement();
-        if (openRequirement) {
-          void this.lanSync.postGroup({
-            author: 'user',
-            phase: 'answer',
-            body: content,
-            requirementId: openRequirement,
-          }).catch(() => undefined);
-        } else {
-          void this.lanSync.postGroup({ author: 'user', phase: 'requirement', body: content })
-            .catch(() => undefined);
-          void this.lanSync.shareRequirement(content)
-            .then((result) => this.log(`[sync] 广播需求：${result.message}`))
-            .catch(() => undefined);
+      /*
+       * 频道规则（用户 2026-11-23 追问「是哪个对话框的用户消息起作用」）：
+       *
+       *  - **团队群窗口**（origin=group）= 双方共享频道：广播给对端，两台一起做；
+       *  - **主对话**（origin 缺省）= 只给你本机这个 agent，**不广播**；
+       *  - 对端发来的（origin=sync）不再转发，否则两台机器会无限互相转发。
+       *
+       * 一个功能需要两边都做时，请在群窗口说 —— 这是唯一广播的入口。
+       * 在主对话说「两个平台都加上」只会让**本机**做，另一台收不到；所以下面还加了
+       * 一次提示，避免用户以为已经同步了。
+       */
+      if (this.lanSync && !options?.resumedTodos && content) {
+        if (options?.origin === 'group') {
+          const openRequirement = this.lanSync.openQuestionRequirement();
+          if (openRequirement) {
+            void this.lanSync.postGroup({
+              author: 'user',
+              phase: 'answer',
+              body: content,
+              requirementId: openRequirement,
+            }).catch(() => undefined);
+          } else {
+            void this.lanSync.postGroup({ author: 'user', phase: 'requirement', body: content })
+              .catch(() => undefined);
+            void this.lanSync.shareRequirement(content)
+              .then((result) => this.log(`[sync] 广播需求：${result.message}`))
+              .catch(() => undefined);
+          }
+        } else if (options?.origin !== 'sync' && !this.localOnlyNoticeShown) {
+          /*
+           * 主对话里说的话**不会**同步给另一台设备。只提醒一次 —— 每轮都弹等于噪音，
+           * 而用户知道规则之后就不需要再提醒了。
+           */
+          this.localOnlyNoticeShown = true;
+          await this.post({ type: 'toast', tone: 'neutral', text: tt('sync.localOnlyNotice') });
         }
       }
       let configuredSettings = readSettings();

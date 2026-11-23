@@ -19,6 +19,7 @@ import { ALIGNMENT_FILE, type SyncPeer } from './lanProtocol';
 /** 团队群记录文件（与对齐账本并列，一个记状态、一个记过程）。 */
 const TRANSCRIPT_FILE = 'docs/TEAM-CHAT.md';
 import { LanSyncService, defaultDeviceName, defaultPlatform, lanAddresses, peerIdFor, type LanSyncBridge } from './lanSync';
+import { GroupPanel } from '../views/groupPanel';
 
 export interface LanSetupOptions {
   context: vscode.ExtensionContext;
@@ -27,7 +28,8 @@ export interface LanSetupOptions {
     setLanSync(service: LanSyncService | undefined): void;
     runSyncRequirement(requirement: import('./lanProtocol').SyncRequirement): Promise<boolean>;
     runSyncNote(note: import('./lanProtocol').SyncNote): Promise<boolean>;
-    appendGroupMessage(message: import('./lanProtocol').SyncGroupMessage): Promise<void>;
+    /** 群窗口里发一句话（需求或回答），由面板决定走哪条路径。 */
+    sendGroupMessage(text: string): Promise<void>;
   };
   version: string;
 }
@@ -113,17 +115,19 @@ export async function setupLanSync(options: LanSetupOptions): Promise<LanSetupRe
       }
     },
     /**
-     * 群里有新发言：追加到对话，并在**追问**时明确提醒甲方去回答。
+     * 群里有新发言：刷新团队群窗口。
      *
-     * 追问必须显眼：它是整条链路上唯一需要人动手的环节，埋在对话里等于没问。
+     * **不再往主对话里追加消息** —— 那是「信息繁杂」的来源。主对话只放本机 agent
+     * 自己的工作过程；群的事在群窗口里看（一行一条、可展开），全过程另有
+     * `docs/TEAM-CHAT.md`。
      */
     async onGroupMessage(message) {
-      await chat.appendGroupMessage(message).catch(() => undefined);
+      await groupPanel?.refresh().catch(() => undefined);
       if (message.author === 'agent' && message.phase === 'question') {
         void vscode.window
-          .showInformationMessage(`乙方在等你确认需求：${message.body.slice(0, 120)}`, '看看群')
+          .showInformationMessage(`乙方在等你确认需求：${message.body.slice(0, 120)}`, '打开团队群')
           .then(async (choice) => {
-            if (choice) await vscode.commands.executeCommand('hwchat.lanSync.openTranscript');
+            if (choice) await vscode.commands.executeCommand('hwchat.lanSync.openGroup');
           });
       }
     },
@@ -135,6 +139,16 @@ export async function setupLanSync(options: LanSetupOptions): Promise<LanSetupRe
 
   const service = new LanSyncService(join(context.globalStorageUri.fsPath, 'lan-sync.json'), bridge);
   await service.load();
+  /*
+   * 团队群窗口：独立面板，不进主对话。
+   *
+   * 发消息复用 `chat.send()` —— 它已经知道「这是回答追问还是新需求」，
+   * 群窗口不重复实现那套判断。
+   */
+  const groupPanel = new GroupPanel(context.extensionUri, service, {
+    send: (text) => chat.sendGroupMessage(text),
+    log: (line) => output.info(line),
+  });
   // 设置里填了固定配对码就以设置为准（高级用法；正常流程根本不需要）。
   const configuredCode = setting('lanSync.pairingCode', '').trim();
   if (configuredCode) await service.setPairingCode(configuredCode);
@@ -204,6 +218,10 @@ export async function setupLanSync(options: LanSetupOptions): Promise<LanSetupRe
       if (choice === '打开对齐账本') await vscode.commands.executeCommand('hwchat.lanSync.openLedger');
       if (choice === '断开连接') await vscode.commands.executeCommand('hwchat.lanSync.disconnect');
     }),
+    vscode.commands.registerCommand('hwchat.lanSync.openGroup', async () => {
+      await groupPanel.open();
+    }),
+    groupPanel,
     vscode.commands.registerCommand('hwchat.lanSync.openLedger', async () => {
       const root = workspaceRoot();
       if (!root) {

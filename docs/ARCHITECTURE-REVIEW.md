@@ -18,14 +18,14 @@
 |---|---|
 | 形态 | VS Code 扩展，单 webview 面板（辅助侧栏），无自建后端 |
 | 语言/构建 | TypeScript → esbuild → `out/extension.js`；无框架、无运行时依赖注入 |
-| 规模 | 209 个 `.ts` / 50,831 行 + webview 资源 ~9.2k 行（0.4.27 实测） |
-| 最大单文件 | `src/views/chatPanel.ts` 6,463 行；`src/agent/toolExecutor.ts` 2,726；`src/core/storage.ts` 2,436 |
+| 规模 | 223 个 `.ts` / 55,840 行 + webview 资源 ~9.2k 行（0.4.28 实测） |
+| 最大单文件 | `src/views/chatPanel.ts` 6,772 行；`src/agent/toolExecutor.ts` 3,088；`src/core/storage.ts` 2,436 |
 | 对外接口 | 任意 OpenAI 兼容端点（chat / images / models / embeddings） |
 | 密钥 | 只在 `SecretStorage`（`src/core/apiKeys.ts`），不进 settings.json |
 | 权限 | 四档预设 × 三档命令风险 × 敏感文件，默认 `askAll`（最严） |
-| 配置项 | 38 个 `contributes.configuration` |
-| 命令 | 19 个 |
-| 质量 | 1,408 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
+| 配置项 | 42 个 `contributes.configuration` |
+| 命令 | 25 个 |
+| 质量 | 1,415 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
 
 ---
 
@@ -308,7 +308,7 @@ Runner
 
 ## 10. 质量保障
 
-- **1,408 条单测**（`src/test/`）。
+- **1,415 条单测**（`src/test/`）。
 - **79 个 `test/check-*.mjs` 守护脚本**，其中若干不是静态断言，而是**真跑**：
   - 真实 Chromium：量按钮宽高、真点按钮、走完整交互（`check-settings-layout`、`check-image-attachment`、`check-capsule-*` …）；
   - 真实文件系统：大小写不同拼写是否算同一目录（`check-path-identity`）；
@@ -545,7 +545,7 @@ Runner
 # 类型检查
 npx tsc -p ./ --noEmit
 
-# 单测（1,408 条）
+# 单测（1,415 条）
 npm test
 
 # 全部守护脚本（79 个；含真实 Chromium / 真实文件系统 / 真实命令）
