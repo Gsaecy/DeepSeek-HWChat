@@ -50,7 +50,10 @@
     trustState: document.getElementById('trustState'),
     skillCount: document.getElementById('skillCount'),
     skillSummaryList: document.getElementById('skillSummaryList'),
-    rescanSkillsButton: document.getElementById('rescanSkillsButton'),
+    lanSyncConnectButton: document.getElementById('lanSyncConnectButton'),
+  lanSyncLedgerButton: document.getElementById('lanSyncLedgerButton'),
+  lanSyncDisconnectButton: document.getElementById('lanSyncDisconnectButton'),
+  rescanSkillsButton: document.getElementById('rescanSkillsButton'),
     openSkillFolderButton: document.getElementById('openSkillFolderButton'),
     clearLocalDataButton: document.getElementById('clearLocalDataButton'),
     toast: document.getElementById('toast'),
@@ -448,6 +451,9 @@
   });
   elements.cleanupButton.addEventListener('click', () => post('cleanup'));
   elements.exportAllButton.addEventListener('click', () => post('exportAll'));
+  elements.lanSyncConnectButton.addEventListener('click', () => post('lanSyncConnect'));
+  elements.lanSyncLedgerButton.addEventListener('click', () => post('lanSyncLedger'));
+  elements.lanSyncDisconnectButton.addEventListener('click', () => post('lanSyncDisconnect'));
   elements.rescanSkillsButton.addEventListener('click', () => post('rescanSkills'));
   elements.openSkillFolderButton.addEventListener('click', () => post('openSkillFolder'));
   elements.clearLocalDataButton.addEventListener('click', () => post('clearLocalData'));

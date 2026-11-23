@@ -222,6 +222,26 @@ export async function setupLanSync(options: LanSetupOptions): Promise<LanSetupRe
 
   refreshStatus();
   /*
+   * 首次提示：只弹一次。
+   *
+   * 用户 2026-11-23 的反馈是「按钮在哪里」—— 说明状态栏那个入口太隐蔽。
+   * 与其写一堆说明，不如在升级后第一次打开时直接给一个带按钮的提示，
+   * 用户点一次就懂了；之后再也不会打扰。
+   */
+  const hintedKey = 'hwchat.lanSync.hinted.v1';
+  if (!context.globalState.get<boolean>(hintedKey) && !setting('lanSync.enabled', false)) {
+    void context.globalState.update(hintedKey, true);
+    void vscode.window
+      .showInformationMessage(
+        'HWChat 新功能：两台电脑在同一 WiFi 下可以一起开发同一个 app 的两个平台版本。要现在连一台试试吗？',
+        '连接另一台设备',
+        '以后再说',
+      )
+      .then(async (choice) => {
+        if (choice === '连接另一台设备') await vscode.commands.executeCommand('hwchat.lanSync.connect');
+      });
+  }
+  /*
    * 自动恢复：用户上次连过，这次开窗口就不用再点一次。
    * 上次是主机就继续待命；上次加入了某台就继续连那台，连不上退回待命 ——
    * 绝不会卡在一个永远连不上的按钮上。

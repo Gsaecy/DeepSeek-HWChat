@@ -181,7 +181,8 @@
       },
       {
         "command": "hwchat.lanSync.connect",
-        "title": "HWChat: 连接另一台设备（同一 WiFi，一键）"
+        "title": "HWChat: 连接另一台设备（同一 WiFi，一键）",
+        "icon": "$(broadcast)"
       },
       {
         "command": "hwchat.lanSync.disconnect",
@@ -254,6 +255,11 @@
         }
       ],
       "view/title": [
+        {
+          "command": "hwchat.lanSync.connect",
+          "when": "view == hwchat.chatView",
+          "group": "navigation@0"
+        },
         {
           "command": "hwchat.newChat",
           "when": "view == hwchat.chatView",

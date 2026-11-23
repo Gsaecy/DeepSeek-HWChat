@@ -37,7 +37,10 @@ type IncomingMessage =
   | { type: 'clearLocalData' }
   | { type: 'emptyTrash' }
   | { type: 'restoreTrash' }
-  | { type: 'openNativeSettings' };
+  | { type: 'openNativeSettings' }
+  | { type: 'lanSyncConnect' }
+  | { type: 'lanSyncDisconnect' }
+  | { type: 'lanSyncLedger' };
 
 export class SettingsPanel implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
@@ -159,6 +162,15 @@ export class SettingsPanel implements vscode.Disposable {
           break;
         case 'openNativeSettings':
           await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:honor-world.hwchat');
+          break;
+        case 'lanSyncConnect':
+          await vscode.commands.executeCommand('hwchat.lanSync.connect');
+          break;
+        case 'lanSyncDisconnect':
+          await vscode.commands.executeCommand('hwchat.lanSync.disconnect');
+          break;
+        case 'lanSyncLedger':
+          await vscode.commands.executeCommand('hwchat.lanSync.openLedger');
           break;
       }
     } catch (error) {
@@ -456,6 +468,7 @@ export class SettingsPanel implements vscode.Disposable {
         <button type="button" data-target="generation">${t(lang, 'settings.nav.generation')}</button>
         <button type="button" data-target="agent">${t(lang, 'settings.nav.agent')}</button>
         <button type="button" data-target="skills">${t(lang, 'settings.nav.skills')}</button>
+        <button type="button" data-target="collab">${t(lang, 'settings.nav.collab')}</button>
         <button type="button" data-target="privacy">${t(lang, 'settings.nav.privacy')}</button>
         <button type="button" data-target="storage">${t(lang, 'settings.nav.storage')}</button>
       </nav>
@@ -519,6 +532,15 @@ export class SettingsPanel implements vscode.Disposable {
           <div class="section-heading"><h2>${t(lang, 'settings.skills.title')}</h2><span id="skillCount" class="section-value">${t(lang, 'settings.skills.count', { count: 0 })}</span></div>
           <div id="skillSummaryList" class="skill-summary-list"></div>
           <div class="storage-actions"><button id="rescanSkillsButton" type="button">${t(lang, 'settings.skills.rescan')}</button><button id="openSkillFolderButton" type="button">${t(lang, 'settings.skills.openFolder')}</button></div>
+        </section>
+        <section id="collab" class="settings-section">
+          <div class="section-heading"><h2>${t(lang, 'settings.collab.title')}</h2></div>
+          <div class="privacy-summary"><p>${t(lang, 'settings.collab.body')}</p></div>
+          <div class="storage-actions">
+            <button id="lanSyncConnectButton" type="button">${t(lang, 'settings.collab.connect')}</button>
+            <button id="lanSyncLedgerButton" type="button">${t(lang, 'settings.collab.ledger')}</button>
+            <button id="lanSyncDisconnectButton" type="button">${t(lang, 'settings.collab.disconnect')}</button>
+          </div>
         </section>
         <section id="privacy" class="settings-section">
           <div class="section-heading"><h2>${t(lang, 'settings.privacy.title')}</h2><span class="status-pill configured">${t(lang, 'settings.privacy.noTelemetry')}</span></div>

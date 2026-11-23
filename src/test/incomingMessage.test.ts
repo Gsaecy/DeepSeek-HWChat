@@ -130,9 +130,12 @@ test('JSON 往返后的合法消息仍通过（webview 实际走的就是结构�
 function settingsUnionTypes(): string[] {
   const start = SETTINGS_PANEL.indexOf('type IncomingMessage =');
   assert.ok(start > 0, 'settingsPanel.ts 里必须仍有 IncomingMessage 联合类型');
-  const end = SETTINGS_PANEL.indexOf("| { type: 'openNativeSettings' };", start);
-  assert.ok(end > start, '设置页联合类型必须仍以 openNativeSettings 结尾（改结尾要同步本测试）');
-  return [...SETTINGS_PANEL.slice(start, end + 40).matchAll(/type: '([A-Za-z]+)'/g)].map((match) => match[1]!);
+  // 结尾不再依赖某个具体消息名（新增消息会把它挤到中间），改为「到类型声明结束」。
+  // 注意仓库里两种换行都存在，所以用正则匹配而不是字面量。
+  const rest = SETTINGS_PANEL.slice(start);
+  const end = rest.search(/;\r?\n\r?\n(?:export )?class SettingsPanel/);
+  assert.ok(end > 0, '设置页联合类型必须以 `;` 结束后接 SettingsPanel 类声明');
+  return [...rest.slice(0, end).matchAll(/type: '([A-Za-z]+)'/g)].map((match) => match[1]!);
 }
 
 test('设置页：规格表与联合类型逐条对拍', () => {
