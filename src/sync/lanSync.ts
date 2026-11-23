@@ -19,7 +19,6 @@ import { createSocket, type Socket as UdpSocket } from 'node:dgram';
 import { hostname, networkInterfaces, platform as osPlatform } from 'node:os';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import * as vscode from 'vscode';
 import {
   ALIGNMENT_FILE,
   MAX_MESSAGE_BYTES,
@@ -67,6 +66,11 @@ export interface LanSyncBridge {
 
 export type LanSyncRole = 'off' | 'hub' | 'peer';
 
+/** 只依赖 dispose()，不 import vscode —— 这样整个网络层能在 Node 里直接跑测试。 */
+export interface Disposable {
+  dispose(): void;
+}
+
 interface PersistedState {
   pairingCode?: string;
   requirements: SyncRequirement[];
@@ -95,7 +99,7 @@ export function lanAddresses(): string[] {
   return result;
 }
 
-export class LanSyncService implements vscode.Disposable {
+export class LanSyncService implements Disposable {
   private server?: Server;
   private udp?: UdpSocket;
   private role: LanSyncRole = 'off';
@@ -243,8 +247,7 @@ export class LanSyncService implements vscode.Disposable {
       code: this.code,
       peer: this.bridge.peer(),
       port: this.port,
-    });
-    if (!response?.ok) {
+    }).catch(() => undefined);    if (!response?.ok) {
       this.role = 'off';
       this.stopListener();
       const reason = typeof response?.error === 'string' ? response.error : '对端无响应或配对码不符';
@@ -419,11 +422,21 @@ export class LanSyncService implements vscode.Disposable {
       if (route === '/hwchat-sync/v1/pair') {
         const message = parseSyncMessage({ kind: 'report', requirementId: 'pair', from: parsed.peer, status: 'planned' });
         if (message) {
+          /*
+           * 加入方自己的地址必须算准，否则主机会把需求「转发」到自己身上。
+           *
+           * 这里优先用加入方声明的地址；没有就用**请求来源的 IP** 加它自报的端口 ——
+           * 绝不能回落到 `selfAddress()`，那是主机自己的地址（第一版就是这个 bug）。
+           */
+          const remoteIp = (request.socket.remoteAddress ?? '').replace(/^::ffff:/, '');
+          const declaredPort = typeof parsed.port === 'number' && parsed.port > 0 && parsed.port < 65_536
+            ? parsed.port
+            : this.port;
           const address = typeof parsed.address === 'string' && parsed.address
             ? parsed.address
-            : this.selfAddress(request.socket.remoteAddress);
+            : (remoteIp ? `http://${remoteIp}:${declaredPort}` : '');
           this.peers.set(message.from.id, { peer: message.from, address });
-          this.bridge.log(`[sync] 设备加入：${message.from.name}（${message.from.project}）`);
+          this.bridge.log(`[sync] 设备加入：${message.from.name}（${message.from.project}）${address ? ` → ${address}` : ''}`);
         }
         json(200, {
           ok: true,
