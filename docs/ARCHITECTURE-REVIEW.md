@@ -18,14 +18,14 @@
 |---|---|
 | 形态 | VS Code 扩展，单 webview 面板（辅助侧栏），无自建后端 |
 | 语言/构建 | TypeScript → esbuild → `out/extension.js`；无框架、无运行时依赖注入 |
-| 规模 | 223 个 `.ts` / 55,840 行 + webview 资源 ~9.2k 行（0.4.28 实测） |
-| 最大单文件 | `src/views/chatPanel.ts` 6,772 行；`src/agent/toolExecutor.ts` 3,088；`src/core/storage.ts` 2,436 |
+| 规模 | 229 个 `.ts` / 57,593 行 + webview 资源 ~9.2k 行（0.4.29 实测） |
+| 最大单文件 | `src/views/chatPanel.ts` 6,826 行；`src/agent/toolExecutor.ts` 3,088；`src/core/storage.ts` 2,436 |
 | 对外接口 | 任意 OpenAI 兼容端点（chat / images / models / embeddings） |
 | 密钥 | 只在 `SecretStorage`（`src/core/apiKeys.ts`），不进 settings.json |
 | 权限 | 四档预设 × 三档命令风险 × 敏感文件，默认 `askAll`（最严） |
-| 配置项 | 42 个 `contributes.configuration` |
-| 命令 | 25 个 |
-| 质量 | 1,415 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
+| 配置项 | 44 个 `contributes.configuration` |
+| 命令 | 27 个 |
+| 质量 | 1,429 条单测 + 79 个 `test/check-*.mjs`（多个跑真实 Chromium / 真实文件系统 / 真实命令） |
 
 ---
 
@@ -134,6 +134,9 @@ Runner
 | 队友消息防接龙 | 只有真的在问才触发对端自动运行；来自同步的消息不再广播 | `lanProtocol.shouldAutoRespond` / `chatPanel.send` |
 | 团队群对齐 | 六阶段（需求/解析/追问/甲方回复/确认/进度/结果）+ `groupAgreement` 状态机；追问后必须停下等甲方，未确认不执行 | `lanProtocol.ts` |
 | 群记录 | `docs/TEAM-CHAT.md` 按需求分组记录发言；工具流水永不进群 | `lanProtocol.renderGroupTranscript` |
+| 手机遥控 | 同一 WiFi 用浏览器指挥；6 位单次码 → 12h `HttpOnly`+`SameSite=Strict` 会话；错 5 次锁 5 分钟；`/m/{send,approve}` 额外要求 `x-hwchat-mobile` 头（挡 CSRF）；端口可填 0 由系统分配 | `sync/mobileControl.ts` / `lanSync.handleMobileRequest` |
+| 授权竞速 | 电脑卡片与手机卡片并行，谁先点谁算数；危险档在手机授权开启时改用非模态（否则模态框会卡住屏幕）；3 分钟无人处理按拒绝收尾 | `chatPanel.requestToolApproval` / `lanSync.awaitApproval` |
+| 二维码 | 自写最小 QR 编码器（byte 模式 / 纠错 M / 版本 1–10 / 掩码择优），不引依赖、不调第三方图片服务 | `sync/qr.ts` |
 
 终止原因会翻译成人话（`agentRunner.ts:76`），并区分「超时 / 卡住 / 断网 / 用户取消」四态（`src/agent/abortReason.ts:73`）。
 
@@ -308,7 +311,7 @@ Runner
 
 ## 10. 质量保障
 
-- **1,415 条单测**（`src/test/`）。
+- **1,429 条单测**（`src/test/`）。
 - **79 个 `test/check-*.mjs` 守护脚本**，其中若干不是静态断言，而是**真跑**：
   - 真实 Chromium：量按钮宽高、真点按钮、走完整交互（`check-settings-layout`、`check-image-attachment`、`check-capsule-*` …）；
   - 真实文件系统：大小写不同拼写是否算同一目录（`check-path-identity`）；
@@ -545,7 +548,7 @@ Runner
 # 类型检查
 npx tsc -p ./ --noEmit
 
-# 单测（1,415 条）
+# 单测（1,429 条）
 npm test
 
 # 全部守护脚本（79 个；含真实 Chromium / 真实文件系统 / 真实命令）

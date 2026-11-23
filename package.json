@@ -2,7 +2,7 @@
   "name": "hwchat",
   "displayName": "HWChat",
   "description": "A secure coding agent for VS Code with DeepSeek: approval-controlled workspace tools, plan-tracking task lists, copyable local/server commands and durable local history.",
-  "version": "0.4.28",
+  "version": "0.4.29",
   "publisher": "honor-world",
   "license": "MIT",
   "icon": "resources/logo.png",
@@ -196,6 +196,15 @@
         "command": "hwchat.lanSync.openGroup",
         "title": "HWChat: 打开团队群（甲方与两个乙方）",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "hwchat.mobile.open",
+        "title": "HWChat: 手机遥控（扫码）",
+        "icon": "$(device-mobile)"
+      },
+      {
+        "command": "hwchat.mobile.toggle",
+        "title": "HWChat: 开 / 关手机遥控"
       }
     ],
     "viewsContainers": {
@@ -702,6 +711,16 @@
           "type": "string",
           "default": "",
           "markdownDescription": "这台设备在队友眼里的名字。留空自动使用「主机名 · 系统」。"
+        },
+        "hwchat.mobile.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "允许同一 WiFi 下的手机用浏览器指挥这台电脑（发需求、回答追问、看进度）。打开后从「手机遥控」窗口扫码进入。"
+        },
+        "hwchat.mobile.allowApproval": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "允许在手机上批准工具授权（命令、写文件）。关掉后手机只能看和说话，授权仍需在电脑上点。"
         }
       }
     }

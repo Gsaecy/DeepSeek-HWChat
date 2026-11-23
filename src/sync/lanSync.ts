@@ -50,6 +50,20 @@ import {
   type SyncReport,
   type SyncRequirement,
 } from './lanProtocol';
+import {
+  MOBILE_COOKIE,
+  MOBILE_PATH,
+  MOBILE_SESSION_TTL_MS,
+  MobileGate,
+  mobileCookie,
+  parseCookies,
+  renderMobilePage,
+  type MobileApprovalView,
+  type MobileStatePayload,
+} from './mobileControl';
+
+/** 手机上挂着的审批卡最多等这么久，过期就按「拒绝」收尾，免得线程一直挂着。 */
+const REMOTE_APPROVAL_TTL_MS = 3 * 60_000;
 
 export interface LanSyncBridge {
   /** 本机这一轮的身份（名称、平台、项目、扩展版本）。 */
@@ -84,6 +98,14 @@ export interface LanSyncBridge {
   log(line: string, level?: 'info' | 'warn'): void;
   /** 状态变化时刷新状态栏。 */
   onState?: () => void;
+  /**
+   * 手机发来的一句话：走和群窗口完全相同的入口（判断「回答追问还是新需求」、广播、开跑）。
+   *
+   * 不在网络层重复实现这套判断 —— 两处判断迟早会不一致，那正是「手机说的和电脑说的不一样」的根因。
+   */
+  onMobileMessage?(text: string): Promise<{ ok: boolean; message: string }>;
+  /** 手机上是否允许批准工具授权（用户可在设置里关掉，关掉后手机只能看和说话）。 */
+  canApproveFromPhone?(): boolean;
 }
 
 export type LanSyncRole = 'off' | 'hub' | 'peer';
@@ -150,6 +172,11 @@ export class LanSyncService implements Disposable {
   private readonly peers = new Map<string, { peer: SyncPeer; address: string }>();
   private disposed = false;
   private announceTimer?: NodeJS.Timeout;
+  /** 手机遥控是否开启。开着时即使没做双机同步也保留监听（单机也能用手机指挥）。 */
+  private mobileEnabled = false;
+  private readonly gate = new MobileGate();
+  private readonly approvals = new Map<string, { view: MobileApprovalView; resolve: (allow: boolean) => void; timer: NodeJS.Timeout }>();
+  private approvalSequence = 0;
 
   constructor(
     private readonly storagePath: string,
@@ -279,6 +306,145 @@ export class LanSyncService implements Disposable {
     return this.bridge.peer();
   }
 
+  /* ------------------------------------------------------------------ *
+   * 手机遥控
+   * ------------------------------------------------------------------ */
+
+  /**
+   * 开 / 关手机遥控。
+   *
+   * 关键点：**单机也要能开**。用户可能只有一台电脑，手机只是遥控器；
+   * 所以这里不依赖 `role`，只要开着就保留监听。
+   */
+  async setMobileControl(enabled: boolean, port?: number): Promise<{ ok: boolean; message: string; url?: string }> {
+    this.mobileEnabled = enabled;
+    if (port && port > 0) this.port = port;
+    if (!enabled) {
+      this.gate.revokeAll();
+      for (const id of [...this.approvals.keys()]) this.resolveApproval(id, false);
+      if (this.role === 'off') this.stopListener();
+      this.bridge.onState?.();
+      return { ok: true, message: '手机遥控已关闭。' };
+    }
+    try {
+      await this.ensureListener();
+    } catch (error) {
+      this.mobileEnabled = false;
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, message: `手机遥控启动失败：${message}（端口 ${this.port} 可能被占用）` };
+    }
+    const code = this.gate.issueCode();
+    this.bridge.onState?.();
+    return {
+      ok: true,
+      message: `手机遥控已打开：同一 WiFi 下打开 ${this.mobileUrl()} 并输入 ${code.code}，或直接扫二维码。`,
+      url: this.mobileUrl(),
+    };
+  }
+
+  mobileAllowed(): boolean {
+    return this.mobileEnabled;
+  }
+
+  /**
+   * 手机要打开的那个地址。
+   *
+   * 一台机器常有好几个局域网地址（WiFi + 有线 + WSL/Hyper-V/VMware 虚拟网卡），
+   * 取"第一个"经常取到虚拟网卡，手机根本连不上。所以按常见家庭/办公网段排序，
+   * 面板上再把其余地址列出来当备选。
+   */
+  mobileUrl(): string {
+    const all = lanAddresses();
+    const score = (ip: string): number => {
+      if (ip.startsWith('192.168.')) return 0;
+      if (ip.startsWith('10.')) return 1;
+      if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return 2;
+      if (ip.startsWith('169.254.')) return 4;
+      return 3;
+    };
+    const address = [...all].sort((left, right) => score(left) - score(right))[0] ?? '127.0.0.1';
+    return `http://${address}:${this.port}${MOBILE_PATH}`;
+  }
+
+  /** 带码的地址：拼成二维码，手机扫一下就进（不用手输 6 位）。 */
+  mobileUrlWithCode(): string {
+    const code = this.gate.currentCode().code;
+    return `${this.mobileUrl()}?c=${code}`;
+  }
+
+  mobileInfo(): { enabled: boolean; url: string; qrText: string; code: string; expiresAt: number; sessions: number; addresses: string[] } {
+    const current = this.gate.currentCode();
+    return {
+      enabled: this.mobileEnabled,
+      url: this.mobileUrl(),
+      qrText: `${this.mobileUrl()}?c=${current.code}`,
+      code: current.code,
+      expiresAt: current.expiresAt,
+      sessions: 0,
+      addresses: lanAddresses().map((address) => `http://${address}:${this.port}${MOBILE_PATH}`),
+    };
+  }
+
+  /** 换一张新码（旧码立刻作废）。 */
+  rotateMobileCode(): string {
+    return this.gate.rotate().code;
+  }
+
+  /** 手机页面轮询的状态：成员 / 发言 / 未答追问 / 待审批。 */
+  mobileState(): MobileStatePayload {
+    const base = this.groupState();
+    return {
+      device: this.bridge.peer().name,
+      role: this.role,
+      peers: base.peers,
+      messages: base.messages.slice(-60),
+      ...(base.openQuestion ? { openQuestion: base.openQuestion } : {}),
+      approvals: [...this.approvals.values()].map((entry) => entry.view),
+      canApprove: this.bridge.canApproveFromPhone?.() ?? false,
+    };
+  }
+
+  /** 手机上是否允许批准授权（用户在设置里可关）。 */
+  remoteApprovalEnabled(): boolean {
+    return this.mobileEnabled && (this.bridge.canApproveFromPhone?.() ?? false);
+  }
+
+  /**
+   * 登记一张「等手机/电脑谁来批」的授权卡。
+   *
+   * 返回的 Promise 由**先到的一方**结算：手机点「允许」或电脑上点「允许」都行；
+   * 三分钟没人处理就自动按拒绝收尾，绝不让工具线程一直挂着。
+   */
+  awaitApproval(
+    input: { title: string; summary: string; detail: string; risk: MobileApprovalView['risk'] },
+    id = `m-${++this.approvalSequence}`,
+  ): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => this.resolveApproval(id, false), REMOTE_APPROVAL_TTL_MS);
+      timer.unref?.();
+      this.approvals.set(id, {
+        view: { id, at: Date.now(), ...input },
+        resolve,
+        timer,
+      });
+    });
+  }
+
+  /** 结算一张授权卡；返回 false 表示它已经不在（被桌面抢先处理或过期了）。 */
+  resolveApproval(id: string, allow: boolean): boolean {
+    const entry = this.approvals.get(id);
+    if (!entry) return false;
+    this.approvals.delete(id);
+    clearTimeout(entry.timer);
+    entry.resolve(allow);
+    return true;
+  }
+
+  /** 当前挂着几张待批（状态栏提示用）。 */
+  pendingApprovalCount(): number {
+    return this.approvals.size;
+  }
+
   /**
    * 设置配对码。
    *
@@ -374,21 +540,33 @@ export class LanSyncService implements Disposable {
   }
 
   stop(): void {
-    this.stopListener();
+    this.stopDiscovery();
     this.role = 'off';
     this.hubAddress = '';
+    // 手机遥控开着的时候监听要留着：否则「断开双机同步」会顺手把手机也踢下线。
+    if (!this.mobileEnabled) this.stopListener();
     this.bridge.onState?.();
   }
 
-  private stopListener(): void {
+  private stopDiscovery(): void {
     if (this.announceTimer) {
       clearInterval(this.announceTimer);
       this.announceTimer = undefined;
     }
     this.udp?.close();
     this.udp = undefined;
+  }
+
+  private stopListener(): void {
+    this.stopDiscovery();
     this.server?.close();
     this.server = undefined;
+  }
+
+  /** 监听已经开着就复用：手机遥控和双机同步共用同一个端口。 */
+  private async ensureListener(): Promise<void> {
+    if (this.server) return;
+    await this.startListener();
   }
 
   private async startListener(): Promise<void> {
@@ -399,6 +577,9 @@ export class LanSyncService implements Disposable {
       server.once('error', reject);
       server.listen(this.port, '0.0.0.0', () => {
         server.off('error', reject);
+        // 端口填 0 时由系统分配：手机遥控因此永远不会和「上次没退干净的端口」打架。
+        const address = server.address();
+        if (address && typeof address === 'object' && address.port > 0) this.port = address.port;
         resolve();
       });
     });
@@ -505,6 +686,14 @@ export class LanSyncService implements Disposable {
     try {
       if (request.method === 'GET' && route === '/hwchat-sync/v1/ping') {
         json(200, { ok: true, protocol: SYNC_PROTOCOL_VERSION, peer: this.bridge.peer(), role: this.role });
+        return;
+      }
+      /*
+       * 手机遥控走独立的一组路由（`/m`），排在配对码闸门前面：
+       * 手机是用 6 位码换 Cookie 的，没有配对码可带。
+       */
+      if (route === MOBILE_PATH || route.startsWith(`${MOBILE_PATH}/`)) {
+        await this.handleMobileRequest(request, response, route);
         return;
       }
       if (request.method !== 'POST') {
@@ -622,6 +811,159 @@ export class LanSyncService implements Disposable {
    * 幂等：同一个需求 id 只记一次，同一条报告按「平台 + 时间」取最新 ——
    * 网络重发、主机与对端都收到同一条消息时不会重复渲染。
    */
+  private async handleMobileRequest(request: IncomingMessage, response: ServerResponse, route: string): Promise<void> {
+    const send = (status: number, body: unknown, headers: Record<string, string> = {}): void => {
+      const payload = JSON.stringify(body);
+      response.writeHead(status, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': Buffer.byteLength(payload),
+        'cache-control': 'no-store',
+        ...headers,
+      });
+      response.end(payload);
+    };
+    const sendHtml = (status: number, body: string): void => {
+      response.writeHead(status, {
+        'content-type': 'text/html; charset=utf-8',
+        'content-length': Buffer.byteLength(body),
+        'cache-control': 'no-store',
+        // 页面只用内联脚本，禁止别人嵌框架、禁止嗅探类型。
+        'x-content-type-options': 'nosniff',
+        'x-frame-options': 'DENY',
+        'referrer-policy': 'no-referrer',
+      });
+      response.end(body);
+    };
+
+    if (!this.mobileEnabled) {
+      send(404, { ok: false, error: '手机遥控未开启' });
+      return;
+    }
+
+    const client = (request.socket.remoteAddress ?? '').replace(/^::ffff:/, '');
+    const cookies = parseCookies(request.headers.cookie);
+    const authed = this.gate.authorize(cookies[MOBILE_COOKIE]);
+
+    if (route === MOBILE_PATH) {
+      if (request.method !== 'GET') {
+        send(405, { ok: false, error: 'method not allowed' });
+        return;
+      }
+      sendHtml(200, renderMobilePage({
+        device: this.bridge.peer().name,
+        authed,
+        canApprove: this.bridge.canApproveFromPhone?.() ?? false,
+      }));
+      return;
+    }
+
+    if (route === `${MOBILE_PATH}/login`) {
+      if (request.method !== 'POST') {
+        send(405, { ok: false, error: 'method not allowed' });
+        return;
+      }
+      const raw = await readBody(request);
+      if (!raw) {
+        send(413, { ok: false, error: 'body too large' });
+        return;
+      }
+      let code = '';
+      try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        code = typeof parsed.code === 'string' ? parsed.code : String(parsed.code ?? '');
+      } catch {
+        send(400, { ok: false, error: 'invalid json' });
+        return;
+      }
+      const result = this.gate.redeem(code, client);
+      if (!result.ok) {
+        this.bridge.log(`[mobile] ${client || '未知来源'} 验证码不正确`, 'warn');
+        send(401, { ok: false, error: result.error });
+        return;
+      }
+      this.bridge.log(`[mobile] ${client || '未知来源'} 已进入团队群`);
+      send(200, { ok: true }, {
+        'set-cookie': mobileCookie(result.token, Math.floor(MOBILE_SESSION_TTL_MS / 1000)),
+      });
+      return;
+    }
+
+    if (!authed) {
+      send(401, { ok: false, error: '会话已过期，请重新输入验证码。' });
+      return;
+    }
+
+    if (route === `${MOBILE_PATH}/state`) {
+      if (request.method !== 'GET') {
+        send(405, { ok: false, error: 'method not allowed' });
+        return;
+      }
+      send(200, this.mobileState());
+      return;
+    }
+
+    if (route !== `${MOBILE_PATH}/send` && route !== `${MOBILE_PATH}/approve`) {
+      send(404, { ok: false, error: 'not found' });
+      return;
+    }
+    if (request.method !== 'POST') {
+      send(405, { ok: false, error: 'method not allowed' });
+      return;
+    }
+    /*
+     * 改状态的接口要求这个自定义头：跨站表单发不出自定义头，
+     * 配合 `SameSite=Strict` 就挡住了「别的网页借你的浏览器指挥这台电脑」。
+     */
+    if (request.headers['x-hwchat-mobile'] !== '1') {
+      send(403, { ok: false, error: '缺少请求头' });
+      return;
+    }
+    const raw = await readBody(request);
+    if (!raw) {
+      send(413, { ok: false, error: 'body too large' });
+      return;
+    }
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      send(400, { ok: false, error: 'invalid json' });
+      return;
+    }
+
+    if (route === `${MOBILE_PATH}/send`) {
+      const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
+      if (!text) {
+        send(400, { ok: false, error: '内容为空' });
+        return;
+      }
+      if (!this.bridge.onMobileMessage) {
+        send(503, { ok: false, error: '本机还没准备好接收手机消息，请重试。' });
+        return;
+      }
+      const result = await this.bridge.onMobileMessage(text.slice(0, 4_000));
+      send(result.ok ? 200 : 409, result);
+      return;
+    }
+
+    const id = typeof parsed.id === 'string' ? parsed.id : '';
+    const allow = parsed.allow === true;
+    if (!id) {
+      send(400, { ok: false, error: '缺少审批号' });
+      return;
+    }
+    if (!this.remoteApprovalEnabled()) {
+      send(403, { ok: false, error: '这台电脑没有允许「手机批准授权」。' });
+      return;
+    }
+    if (!this.resolveApproval(id, allow)) {
+      send(409, { ok: false, error: '这张卡已经处理过了（或在电脑上已过期）。' });
+      return;
+    }
+    this.bridge.log(`[mobile] 来自手机的授权：${allow ? '允许' : '拒绝'} ${id}`);
+    send(200, { ok: true });
+  }
+
   private async applyMessage(message: SyncMessage, options: { relay: boolean; from?: string }): Promise<void> {
     if (message.kind === 'requirement') {
       const exists = this.requirements.some((item) => item.id === message.id);
@@ -955,6 +1297,8 @@ export class LanSyncService implements Disposable {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    for (const id of [...this.approvals.keys()]) this.resolveApproval(id, false);
+    this.gate.revokeAll();
     this.stopListener();
     this.role = 'off';
   }

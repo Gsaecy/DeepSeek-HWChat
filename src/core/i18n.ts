@@ -630,6 +630,7 @@ const DICTIONARY: Record<string, Entry> = {
   },
   'settings.collab.connect': { zh: '连接另一台设备', en: 'Connect another device' },
   'settings.collab.group': { zh: '打开团队群', en: 'Open team group' },
+  'settings.collab.mobile': { zh: '手机遥控（扫码）', en: 'Phone control (QR)' },
   'settings.collab.disconnect': { zh: '断开', en: 'Disconnect' },
   'settings.collab.ledger': { zh: '打开对齐账本', en: 'Open alignment ledger' },
   'settings.collab.state': { zh: '当前状态：{state}', en: 'State: {state}' },

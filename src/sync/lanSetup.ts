@@ -20,6 +20,7 @@ import { ALIGNMENT_FILE, type SyncPeer } from './lanProtocol';
 const TRANSCRIPT_FILE = 'docs/TEAM-CHAT.md';
 import { LanSyncService, defaultDeviceName, defaultPlatform, lanAddresses, peerIdFor, type LanSyncBridge } from './lanSync';
 import { GroupPanel } from '../views/groupPanel';
+import { MobilePanel } from '../views/mobilePanel';
 
 export interface LanSetupOptions {
   context: vscode.ExtensionContext;
@@ -135,6 +136,25 @@ export async function setupLanSync(options: LanSetupOptions): Promise<LanSetupRe
       if (level === 'warn') output.warn(line);
       else output.info(line);
     },
+    /**
+     * 手机发来的一句话：**走和群窗口完全相同的入口**。
+     *
+     * 判断「回答追问还是新需求」、广播、本机开跑，全都复用 `sendGroupMessage()`。
+     * 如果这里另写一套，手机和电脑迟早会得出不同结论 —— 那正是最难查的一类 bug。
+     */
+    async onMobileMessage(text: string) {
+      try {
+        await chat.sendGroupMessage(text);
+        output.info(`[mobile] 已转发到团队群：${text.slice(0, 80)}`);
+        return { ok: true, message: '已发到团队群' };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.warn(`[mobile] 发送失败：${message}`);
+        return { ok: false, message: `本机现在没法执行：${message}` };
+      }
+    },
+    /** 手机上能否批准工具授权（用户可在「手机遥控」窗口里一键关掉）。 */
+    canApproveFromPhone: () => setting('mobile.allowApproval', false),
   };
 
   const service = new LanSyncService(join(context.globalStorageUri.fsPath, 'lan-sync.json'), bridge);
@@ -149,6 +169,20 @@ export async function setupLanSync(options: LanSetupOptions): Promise<LanSetupRe
     send: (text) => chat.sendGroupMessage(text),
     log: (line) => output.info(line),
   });
+  /*
+   * 「手机遥控」窗口：电脑上显示二维码 + 6 位码。
+   *
+   * 和群窗口分开：群窗口是「看过程」，这个窗口只在配手机时用一次，
+   * 之后手机上就能看到同样的群。
+   */
+  const mobilePanel = new MobilePanel(context.extensionUri, service, {
+    rotate: () => service.rotateMobileCode(),
+    getApprove: () => setting('mobile.allowApproval', false),
+    setApprove: async (value) => {
+      await vscode.workspace.getConfiguration('hwchat').update('mobile.allowApproval', value, vscode.ConfigurationTarget.Global);
+      output.info(`[mobile] 手机批准工具授权：${value ? '已允许' : '已禁止'}`);
+    },
+  });
   // 设置里填了固定配对码就以设置为准（高级用法；正常流程根本不需要）。
   const configuredCode = setting('lanSync.pairingCode', '').trim();
   if (configuredCode) await service.setPairingCode(configuredCode);
@@ -161,6 +195,14 @@ export async function setupLanSync(options: LanSetupOptions): Promise<LanSetupRe
   const refreshStatus = (): void => {
     const state = service.state();
     if (state.role === 'off') {
+      // 单机 + 手机遥控：状态栏直接说清楚「手机那端能连」，不然用户会以为没生效。
+      if (service.mobileAllowed()) {
+        status.text = '$(device-mobile) 手机遥控已开';
+        status.tooltip = `手机打开 ${service.mobileUrl()}（或用二维码）。点这里看二维码 / 换验证码。`;
+        status.command = 'hwchat.mobile.open';
+        status.show();
+        return;
+      }
       status.text = '$(broadcast) 连接另一台设备';
       status.tooltip = '两台电脑在同一 WiFi 下各点一次，就能共享功能需求、一起执行（点了才启用）。';
       status.command = 'hwchat.lanSync.connect';
@@ -221,7 +263,37 @@ export async function setupLanSync(options: LanSetupOptions): Promise<LanSetupRe
     vscode.commands.registerCommand('hwchat.lanSync.openGroup', async () => {
       await groupPanel.open();
     }),
+    /*
+     * 手机遥控：一个命令开窗，一个命令开关。
+     *
+     * 打开时**顺手把监听起起来** —— 单机（没连第二台电脑）也要能用手机指挥，
+     * 所以不能依赖 `lanSync.enabled`。
+     */
+    vscode.commands.registerCommand('hwchat.mobile.open', async () => {
+      if (!service.mobileAllowed()) {
+        const started = await service.setMobileControl(true, setting('lanSync.port', 47821));
+        if (!started.ok) {
+          void vscode.window.showWarningMessage(started.message);
+          return;
+        }
+        await vscode.workspace.getConfiguration('hwchat').update('mobile.enabled', true, vscode.ConfigurationTarget.Global);
+      }
+      await mobilePanel.open();
+    }),
+    vscode.commands.registerCommand('hwchat.mobile.toggle', async () => {
+      const next = !service.mobileAllowed();
+      const result = await service.setMobileControl(next, setting('lanSync.port', 47821));
+      await vscode.workspace.getConfiguration('hwchat').update('mobile.enabled', next, vscode.ConfigurationTarget.Global);
+      refreshStatus();
+      if (!result.ok) {
+        void vscode.window.showWarningMessage(result.message);
+        return;
+      }
+      void vscode.window.showInformationMessage(result.message);
+      if (next) await mobilePanel.open();
+    }),
     groupPanel,
+    mobilePanel,
     vscode.commands.registerCommand('hwchat.lanSync.openLedger', async () => {
       const root = workspaceRoot();
       if (!root) {
@@ -264,8 +336,16 @@ export async function setupLanSync(options: LanSetupOptions): Promise<LanSetupRe
       await announce(started.ok ? 'hub' : 'off', started.message);
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (!event.affectsConfiguration('hwchat.lanSync')) return;
-      deviceName = setting('lanSync.deviceName', '');
+      if (event.affectsConfiguration('hwchat.lanSync')) {
+        deviceName = setting('lanSync.deviceName', '');
+      }
+      // 只认「开关本身」的变化：改「允许手机批准」不该把验证码和会话重置一遍。
+      if (event.affectsConfiguration('hwchat.mobile.enabled')) {
+        void service.setMobileControl(setting('mobile.enabled', false), setting('lanSync.port', 47821)).then((result) => {
+          refreshStatus();
+          if (!result.ok) output.warn(`[mobile] ${result.message}`);
+        });
+      }
     }),
   ];
 
@@ -298,6 +378,15 @@ export async function setupLanSync(options: LanSetupOptions): Promise<LanSetupRe
   if (setting('lanSync.enabled', false)) {
     const resumed = await service.resume(setting('lanSync.port', 47821));
     if (!resumed.ok) output.warn(`[sync] 自动恢复失败：${resumed.message}`);
+    refreshStatus();
+  }
+  /*
+   * 手机遥控同样自动恢复：上次开着，这次打开窗口就直接可用。
+   * 它不依赖 `lanSync.enabled` —— 只有一台电脑也能用手机指挥。
+   */
+  if (setting('mobile.enabled', false)) {
+    const mobile = await service.setMobileControl(true, setting('lanSync.port', 47821));
+    if (!mobile.ok) output.warn(`[mobile] ${mobile.message}`);
     refreshStatus();
   }
 

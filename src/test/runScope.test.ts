@@ -108,15 +108,20 @@ test('两张卡片建立时都带上了 runId', () => {
 
 test('危险档审批走原生模态框（webview 被注入也伪造不了）', () => {
   assert.match(PANEL, /private async requestToolApproval\(\s*summary: string,\s*detail: string,\s*risk: 'read' \| 'write' \| 'command',\s*run: ConversationRun,\s*dangerous = false,/);
-  const body = bodyOf(PANEL, 'private async requestToolApproval(', 3000);
-  // 危险分支必须在「面板卡片」之前，并且用 modal: true。
+  const body = bodyOf(PANEL, 'private async askDesktopApproval(', 3000);
+  // 危险分支必须在「面板卡片」之前，并且默认用 modal: true。
   const dangerousIndex = body.indexOf('if (dangerous)');
   const cardIndex = body.indexOf('this.pendingApprovals.set');
   assert.ok(dangerousIndex > 0, '必须有 dangerous 分支');
   assert.ok(cardIndex > dangerousIndex, '危险分支必须早于面板卡片分支');
   assert.match(body.slice(dangerousIndex, cardIndex), /modal: true/);
+  // 开着手机授权时改用非模态：否则会出现「手机已批、模态框还挂着」。
+  assert.match(body.slice(dangerousIndex, cardIndex), /remoteAvailable \? \{ detail \} : \{ modal: true/);
   // 调用点要把 dangerous 传进去。
   assert.match(PANEL, /this\.requestToolApproval\(request\.summary, request\.detail, request\.risk, run, request\.dangerous\)/);
+  // 手机与电脑竞速：谁先点谁算数，另一方撤卡。
+  assert.match(PANEL, /remote\.awaitApproval\(/);
+  assert.match(PANEL, /remote\.resolveApproval\(requestId, false\)/);
 });
 
 test('危险档标记来自命令分档，不是靠关键词再猜一遍', () => {

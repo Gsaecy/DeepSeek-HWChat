@@ -40,6 +40,7 @@ type IncomingMessage =
   | { type: 'openNativeSettings' }
   | { type: 'lanSyncConnect' }
   | { type: 'lanSyncGroup' }
+  | { type: 'mobileOpen' }
   | { type: 'lanSyncDisconnect' }
   | { type: 'lanSyncLedger' };
 
@@ -169,6 +170,9 @@ export class SettingsPanel implements vscode.Disposable {
           break;
         case 'lanSyncGroup':
           await vscode.commands.executeCommand('hwchat.lanSync.openGroup');
+          break;
+        case 'mobileOpen':
+          await vscode.commands.executeCommand('hwchat.mobile.open');
           break;
         case 'lanSyncDisconnect':
           await vscode.commands.executeCommand('hwchat.lanSync.disconnect');
@@ -543,6 +547,7 @@ export class SettingsPanel implements vscode.Disposable {
           <div class="storage-actions">
             <button id="lanSyncConnectButton" type="button">${t(lang, 'settings.collab.connect')}</button>
             <button id="lanSyncGroupButton" type="button">${t(lang, 'settings.collab.group')}</button>
+            <button id="mobileButton" type="button">${t(lang, 'settings.collab.mobile')}</button>
             <button id="lanSyncLedgerButton" type="button">${t(lang, 'settings.collab.ledger')}</button>
             <button id="lanSyncDisconnectButton" type="button">${t(lang, 'settings.collab.disconnect')}</button>
           </div>

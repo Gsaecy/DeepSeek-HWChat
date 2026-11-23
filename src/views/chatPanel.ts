@@ -6405,10 +6405,64 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
   ): Promise<boolean> {
     if (run.controller.signal.aborted) return false;
     const title = risk === 'command' ? tt('notice.approveCommandTitle') : risk === 'write' ? tt('notice.approveWriteTitle') : tt('notice.approveReadTitle');
+    const requestId = `approval-${++this.approvalSequence}`;
+    /*
+     * 手机遥控：授权卡同时出现在电脑和手机上，**谁先点谁算数**。
+     *
+     * 这里刻意只是「并行 + 竞速」，不改电脑上原有的任何判断顺序：
+     * 没有手机时走的就是以前那条路径（下面是同一份代码）。
+     */
+    const remote = this.lanSync?.remoteApprovalEnabled() ? this.lanSync : undefined;
+    const remotePromise = remote
+      ? remote.awaitApproval({
+        title,
+        summary,
+        detail,
+        risk: dangerous ? 'dangerous' : risk,
+      }, requestId)
+      : undefined;
+    let settleDesktop: ((allowed: boolean) => void) | undefined;
+    const desktopPromise = this.askDesktopApproval(title, summary, detail, risk, run, dangerous, requestId, Boolean(remote), (finish) => {
+      settleDesktop = finish;
+    });
+    if (!remote || !remotePromise) return desktopPromise;
+
+    const first = await Promise.race([
+      desktopPromise.then((allow) => ({ from: 'desktop' as const, allow })),
+      remotePromise.then((allow) => ({ from: 'phone' as const, allow })),
+    ]);
+    if (first.from === 'phone') {
+      // 手机上先点了：把电脑那张卡收掉，别让用户再点一次。
+      await this.post({ type: 'approvalResolved', requestId });
+      settleDesktop?.(first.allow);
+    } else {
+      // 电脑上先点了：撤掉手机上那张卡（它已经没用了）。
+      remote.resolveApproval(requestId, false);
+    }
+    return first.allow;
+  }
+
+  /** 电脑侧原有的授权路径（webview 卡片 / 原生通知 / 危险档模态框）。 */
+  private async askDesktopApproval(
+    title: string,
+    summary: string,
+    detail: string,
+    risk: 'read' | 'write' | 'command',
+    run: ConversationRun,
+    dangerous: boolean,
+    requestId: string,
+    remoteAvailable: boolean,
+    onSettle: (finish: (allowed: boolean) => void) => void,
+  ): Promise<boolean> {
     if (dangerous) {
+      /*
+       * 危险档以前一律用模态框：卡片上的「允许」只是一条 postMessage，
+       * webview 被注入后能自己批准自己。手机那边是另一条经令牌校验的通道，
+       * 所以开着手机授权时改用**非模态**原生通知，避免出现「手机已批、模态框还挂在屏幕上」。
+       */
       const answer = await vscode.window.showWarningMessage(
         `${title}\n${summary}`,
-        { modal: true, detail: tt('notice.approveDangerousDetail', { detail }) },
+        remoteAvailable ? { detail } : { modal: true, detail: tt('notice.approveDangerousDetail', { detail }) },
         tt('notice.approveDeny'),
         tt('notice.approveAllowOnce'),
       );
@@ -6424,18 +6478,20 @@ export class ChatPanel implements vscode.WebviewViewProvider, vscode.Disposable 
       );
       return answer === tt('notice.approveAllowOnce');
     }
-    const requestId = `approval-${++this.approvalSequence}`;
     return new Promise<boolean>((resolve) => {
       let settled = false;
+      // 任务被停止 / 出错时不能把 Promise 挂在这里，否则那条线程的 finally 永远不跑。
+      const onAbort = (): void => finish(false);
       const finish = (allowed: boolean): void => {
         if (settled) return;
         settled = true;
         this.pendingApprovals.delete(requestId);
         run.controller.signal.removeEventListener('abort', onAbort);
+        // 顺手撤掉手机上那张卡：桌面已经处理完了，手机再点也没意义。
+        this.lanSync?.resolveApproval(requestId, false);
         resolve(allowed);
       };
-      // 任务被停止 / 出错时不能把 Promise 挂在这里，否则那条线程的 finally 永远不跑。
-      const onAbort = (): void => finish(false);
+      onSettle(finish);
       run.controller.signal.addEventListener('abort', onAbort, { once: true });
       this.pendingApprovals.set(requestId, {
         conversationId: run.conversationId,

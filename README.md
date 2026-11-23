@@ -8,6 +8,21 @@ It ships a compact chat surface and settings page, native streaming tool calling
 
 ![HWChat chat panel: conversation sidebar and a new conversation](https://raw.githubusercontent.com/Gsaecy/DeepSeek-HWChat/main/docs/screenshots/chat-panel.png)
 
+## What's new in 0.4.29
+
+### Phone control: drive both computers from your phone
+
+On the same WiFi, scan the QR code in the **Phone control** panel (or type the 6 digits) and the team group opens in your phone browser:
+
+- **Send a requirement** as the client — both devices pick it up and work on it together;
+- **Answer questions** — a pending question sits in a yellow banner at the top; your reply joins the same requirement;
+- **Watch progress and results** — who said what, and how far each side got;
+- **Approve tool permissions** (can be switched off in one click) — when a tool wants to run a command or write a file, the card also appears on the phone; whichever side taps first wins.
+
+Entry points: command palette "HWChat: 手机遥控（扫码）", Settings → Collaboration → Phone control, and the status bar item. It works on a **single machine** too — no second computer required.
+
+Security is closed on purpose: the 6-digit code is single-use, five wrong attempts lock the source for five minutes, sessions last 12 hours, the cookie is `HttpOnly` + `SameSite=Strict`, and state-changing endpoints additionally require a custom header that a cross-site form cannot set. LAN traffic is plain HTTP, so only same-WiFi devices are accepted; cross-network use needs a tunnel (see [docs/MOBILE-CONTROL.md](docs/MOBILE-CONTROL.md)).
+
 ## What's new in 0.4.28
 
 **Which box counts**: what you write in the group window applies to **both devices** (and is broadcast); what you write in the main chat goes to the **local agent only** and is never synced (you get a one-time notice). If the two disagree, the latest agreement in the group wins — an agent must not silently implement a different version.
