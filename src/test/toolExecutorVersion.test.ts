@@ -10,7 +10,7 @@ import { PERMISSION_PRESET_PROFILES } from '../core/permissions';
 import { setWorkspaceRoots } from './support/vscodeMock';
 
 /**
- * 版本管理闸门的端到端用例（用户规则第 4 条：HWChat 不主动升版本）。
+ * 版本管理闸门的端到端用例（用户规则第 4 条：PlaitCode 不主动升版本）。
  *
  * 为什么放在执行器层而不是只测纯函数：只有在「写入真的被挡在落盘之前」
  * 被验证过，「提示词说不许升版本」才算有约束力。
@@ -21,7 +21,7 @@ let root: string;
 let executor: ToolExecutor;
 
 before(async () => {
-  workspaceRoot = await mkdtemp(join(tmpdir(), 'hwchat-version-'));
+  workspaceRoot = await mkdtemp(join(tmpdir(), 'plaitcode-version-'));
   root = join(workspaceRoot, 'Demo');
   await mkdir(join(root, 'src'), { recursive: true });
   await writeFile(

@@ -1,7 +1,7 @@
 /**
  * 网络错误的可读化与有限重试。
  *
- * 现场（用户反馈）：「hwchat对话弹出：请求失败：无法连接到接口：fetch failed」。
+ * 现场（用户反馈）：「plaitcode对话弹出：请求失败：无法连接到接口：fetch failed」。
  *
  * `fetch failed` 是 undici 的**外层**错误，真正的原因全在 `error.cause` 里
  * （`ENOTFOUND` / `ECONNREFUSED` / `UND_ERR_CONNECT_TIMEOUT` / 证书错误…）。
@@ -103,12 +103,12 @@ function describeCode(code: string, host: string): { stage: NetworkStage; hint: 
   }
   if (['ERR_INVALID_PROXY', 'ERR_SOCKS_UNSUPPORTED', 'ERR_PROXY_CONNECT'].includes(key)) {
     // 代理地址写错、不支持 socks、代理拒绝建隧道：改配置才能解决，重试毫无意义。
-    return { stage: 'connect', hint: '代理配置有问题：检查 HWChat 设置里的「接口代理」（形如 http://127.0.0.1:8080，不支持 socks://）。', retryable: false };
+    return { stage: 'connect', hint: '代理配置有问题：检查 PlaitCode 设置里的「接口代理」（形如 http://127.0.0.1:8080，不支持 socks://）。', retryable: false };
   }
   if (['ERR_INVALID_URL', 'ERR_INVALID_PROTOCOL'].includes(key)) {
     return { stage: 'unknown', hint: '接口地址不合法：检查设置里的接口地址（需要以 http:// 或 https:// 开头）。', retryable: false };
   }
-  return { stage: 'unknown', hint: '网络错误。可先运行命令「HWChat: 测试网络连接」查看是 DNS、连接还是证书出了问题。', retryable: true };
+  return { stage: 'unknown', hint: '网络错误。可先运行命令「PlaitCode: 测试网络连接」查看是 DNS、连接还是证书出了问题。', retryable: true };
 }
 
 /** 错误对象上可能出现的字段（Node / undici 都会带一部分）。 */
@@ -198,7 +198,7 @@ export function classifyNetworkError(error: unknown, target: string): NetworkCau
       code: 'ETIMEDOUT',
       host,
       detail: `连接超时（ETIMEDOUT）：${outerMessage}`,
-      hint: '在超时时间内没有完成请求。可能是网络慢、被墙，或需要代理；已按超时处理，不重试。可运行命令「HWChat: 测试网络连接」定位卡在哪一环。',
+      hint: '在超时时间内没有完成请求。可能是网络慢、被墙，或需要代理；已按超时处理，不重试。可运行命令「PlaitCode: 测试网络连接」定位卡在哪一环。',
       retryable: false,
     };
   }

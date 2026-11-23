@@ -45,14 +45,14 @@ test('新对话初始值不受 settings.json 里的旧声明影响（真实故�
   // 这就是本机用户设置里的真实内容：旧版本把面板选择写进了全局配置。
   setWorkspaceRoots([ROOT]);
   setConfiguration({
-    'hwchat.permissionPreset': 'autopilot',
-    'hwchat.agentMaxSteps': 0,
-    'hwchat.reasoningEffort': 'high',
-    'hwchat.fileReadPolicy': 'allow',
-    'hwchat.fileWritePolicy': 'allow',
-    'hwchat.commandPolicy': 'allow',
+    'plaitcode.permissionPreset': 'autopilot',
+    'plaitcode.agentMaxSteps': 0,
+    'plaitcode.reasoningEffort': 'high',
+    'plaitcode.fileReadPolicy': 'allow',
+    'plaitcode.fileWritePolicy': 'allow',
+    'plaitcode.commandPolicy': 'allow',
   });
-  setFolderConfiguration(ROOT, { 'hwchat.permissionPreset': 'autopilot' });
+  setFolderConfiguration(ROOT, { 'plaitcode.permissionPreset': 'autopilot' });
 
   // 全局设置对象本身已经是固定值……
   const settings = readSettings();

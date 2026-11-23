@@ -1,11 +1,11 @@
 /**
  * 收尾「需要你做的」清单的格式规则（system prompt 片段）。
  *
- * 为什么必须写进 HWChat 自己的提示词：这条格式以前只存在于用户级的
- * `~/.copilot/skills/follow-up-actions/SKILL.md` 里，而 HWChat 的系统提示词
+ * 为什么必须写进 PlaitCode 自己的提示词：这条格式以前只存在于用户级的
+ * `~/.copilot/skills/follow-up-actions/SKILL.md` 里，而 PlaitCode 的系统提示词
  * 对「回复结尾怎么列待办」一个字都没提。于是模型爱写 `1. [ ] **动作**`，
  * 渲染出来就是满屏字面方括号 —— 用户改过 skill、也提醒过好几轮，仍然反复出现。
- * 根因不是模型不听话，而是规则从来没进过 HWChat 的上下文。
+ * 根因不是模型不听话，而是规则从来没进过 PlaitCode 的上下文。
  *
  * 这里只约束「格式」这一件事，内容仍由模型决定。
  * `media/follow-up-format.js` 里另有一层渲染兜底，见那里的注释。

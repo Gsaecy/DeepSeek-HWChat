@@ -63,7 +63,7 @@ export class SettingsPanel implements vscode.Disposable {
   async open(): Promise<void> {
     if (!this.panel) {
       this.panel = vscode.window.createWebviewPanel(
-        'hwchat.settings',
+        'plaitcode.settings',
         tt('settings.windowTitle'),
         vscode.ViewColumn.One,
         {
@@ -85,7 +85,7 @@ export class SettingsPanel implements vscode.Disposable {
            */
           const verdict = validateSettingsIncomingMessage(message);
           if (!verdict.ok) {
-            console.warn(`[hwchat] 丢弃异常设置页消息：${verdict.reason}`);
+            console.warn(`[plaitcode] 丢弃异常设置页消息：${verdict.reason}`);
             return;
           }
           void this.handleMessage(message as IncomingMessage);
@@ -160,25 +160,25 @@ export class SettingsPanel implements vscode.Disposable {
           await this.emptyTrash();
           break;
         case 'restoreTrash':
-          await vscode.commands.executeCommand('hwchat.restoreDeletedConversations');
+          await vscode.commands.executeCommand('plaitcode.restoreDeletedConversations');
           break;
         case 'openNativeSettings':
-          await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:honor-world.hwchat');
+          await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:plaitcode.plaitcode');
           break;
         case 'lanSyncConnect':
-          await vscode.commands.executeCommand('hwchat.lanSync.connect');
+          await vscode.commands.executeCommand('plaitcode.lanSync.connect');
           break;
         case 'lanSyncGroup':
-          await vscode.commands.executeCommand('hwchat.lanSync.openGroup');
+          await vscode.commands.executeCommand('plaitcode.lanSync.openGroup');
           break;
         case 'mobileOpen':
-          await vscode.commands.executeCommand('hwchat.mobile.open');
+          await vscode.commands.executeCommand('plaitcode.mobile.open');
           break;
         case 'lanSyncDisconnect':
-          await vscode.commands.executeCommand('hwchat.lanSync.disconnect');
+          await vscode.commands.executeCommand('plaitcode.lanSync.disconnect');
           break;
         case 'lanSyncLedger':
-          await vscode.commands.executeCommand('hwchat.lanSync.openLedger');
+          await vscode.commands.executeCommand('plaitcode.lanSync.openLedger');
           break;
       }
     } catch (error) {
@@ -206,7 +206,7 @@ export class SettingsPanel implements vscode.Disposable {
       if (nextIds.has(profileId) && apiKey.trim()) await storeApiKey(this.secrets, profileId, apiKey.trim());
     }
     /*
-     * 向量 Key 单独存（`hwchat.embeddingKey.<profileId>`）。
+     * 向量 Key 单独存（`plaitcode.embeddingKey.<profileId>`）。
      *
      * 用户反馈「也没看到向量 key 输入框」：聊天用 DeepSeek（没有 embeddings）、
      * 向量用 holysheep 时，两把 Key 必须能分开填；挤在同一个配置档里做不到。
@@ -369,7 +369,7 @@ export class SettingsPanel implements vscode.Disposable {
     const destination = await vscode.window.showSaveDialog({
       filters: { JSON: ['json'] },
       saveLabel: tt('settings.exportAllSaveLabel'),
-      defaultUri: vscode.Uri.file(`HWChat-history-${new Date().toISOString().slice(0, 10)}.json`),
+      defaultUri: vscode.Uri.file(`PlaitCode-history-${new Date().toISOString().slice(0, 10)}.json`),
     });
     if (!destination) {
       return;
@@ -469,7 +469,7 @@ export class SettingsPanel implements vscode.Disposable {
 <body>
   <div class="settings-shell">
     <aside class="settings-sidebar">
-      <div class="settings-brand"><img src="${logo}" alt=""><strong>HWChat</strong></div>
+      <div class="settings-brand"><img src="${logo}" alt=""><strong>PlaitCode</strong></div>
       <nav aria-label="${t(lang, 'settings.navLabel')}">
         <button type="button" data-target="general" class="active">${t(lang, 'settings.nav.general')}</button>
         <button type="button" data-target="connection">${t(lang, 'settings.nav.connection')}</button>

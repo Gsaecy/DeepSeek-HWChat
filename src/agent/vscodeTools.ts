@@ -15,7 +15,7 @@ import type { RequestApproval, ToolExecutor } from './toolExecutor';
 import { externalToolPathViolation, resolveWorkspacePath } from './workspacePaths';
 import { classifyVscodeToolRisk } from '../core/permissions';
 
-const PREFIX = 'hwchat_vscode_';
+const PREFIX = 'plaitcode_vscode_';
 const BUILTIN_NAMES = ['open_web_preview', 'open_text_preview', 'open_markdown_preview', 'open_diff_preview'] as const;
 type BuiltinName = typeof BUILTIN_NAMES[number];
 /**
@@ -44,7 +44,7 @@ export class VscodeToolBridge {
   /**
    * 本次会话里**确认调不通**的桥接工具（撞过「缺少 chat 调用上下文」）。
    *
-   * 学到之后就不再下发：这类工具在 HWChat 里永远不可能成功（见 `bridgedTools.ts`
+   * 学到之后就不再下发：这类工具在 PlaitCode 里永远不可能成功（见 `bridgedTools.ts`
    * 里对方实现的引用），继续摆给模型只会每次白烧一轮，还会被算进「连续失败」预算
    * —— 用户看到的正是「经常调用 vs code 工具失败」然后整轮停机。
    */
@@ -102,7 +102,7 @@ export class VscodeToolBridge {
      * 裸名（`open_browser_page`）也要能调到。
      *
      * 真实故障（用户 2026-11-04）：模型在历史里看到「调用 VS Code 工具：open_browser_page」，
-     * 下一次就照着这个自然名字调用 —— 而清单里下发的是 `hwchat_vscode_open_browser_page_<hash>`，
+     * 下一次就照着这个自然名字调用 —— 而清单里下发的是 `plaitcode_vscode_open_browser_page_<hash>`，
      * 于是落到原生执行器，得到一句「工具 open_browser_page 未被允许」。
      * 名字对不上不是用户的错，这里按工具的**真实名字**再找一次，找到就照常执行。
      */
@@ -157,7 +157,7 @@ export class VscodeToolBridge {
         `调用 VS Code 工具：${external.name}`,
         `${external.description}\n\n参数：${redact(call.function.arguments).slice(0, 1_000)}`,
         () => this.invokeExternal(external, call.function.arguments),
-        // VS Code 工具是否需要用户授权由 VS Code / 工具自身决定，HWChat 不再叠加确认。
+        // VS Code 工具是否需要用户授权由 VS Code / 工具自身决定，PlaitCode 不再叠加确认。
         { conversationId, delegateApproval: true },
       );
       return { result };
@@ -173,7 +173,7 @@ export class VscodeToolBridge {
   private async invokeExternal(tool: ExternalTool, rawArguments: string): Promise<ToolExecutionResult> {
     try {
       const input = parseInput(rawArguments);
-      // 桥接工具的参数由 VS Code 侧解释，HWChat 无法插手其内部行为，因此必须
+      // 桥接工具的参数由 VS Code 侧解释，PlaitCode 无法插手其内部行为，因此必须
       // 在调用前就挡掉越界路径——否则 `copilot_readFile` 能读到 /etc 下的任何文件。
       const folders = vscode.workspace.workspaceFolders ?? [];
       const violation = externalToolPathViolation(
@@ -191,7 +191,7 @@ export class VscodeToolBridge {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       /*
-       * 「缺少 chat 调用上下文」是**确定性**失败：这个工具在 HWChat 里永远调不通。
+       * 「缺少 chat 调用上下文」是**确定性**失败：这个工具在 PlaitCode 里永远调不通。
        * 记进不可用集合（之后不再下发），并返回说明 + 替代方案 —— 否则模型会以为是
        * 参数问题，换个写法再撞一次，凑满三轮就整轮停机。
        */
@@ -217,10 +217,10 @@ export class VscodeToolBridge {
   /**
    * 按工具的**真实名字**找（`open_browser_page` 而不是带前缀的 id）。
    *
-   * 宿主内部的名字（`hwchat_*`）不许走这条通道：那属于本扩展自己的命名空间。
+   * 宿主内部的名字（`plaitcode_*`）不许走这条通道：那属于本扩展自己的命名空间。
    */
   private findExternalToolByName(name: string): ExternalTool | undefined {
-    if (!name || name.startsWith(PREFIX) || name.startsWith('hwchat_')) return undefined;
+    if (!name || name.startsWith(PREFIX) || name.startsWith('plaitcode_')) return undefined;
     return this.externalTools().find((item) => item.name === name);
   }
 

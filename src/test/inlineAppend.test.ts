@@ -24,8 +24,8 @@ function load(): InlineAppend {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(readFileSync('media/inline-append.js', 'utf8'), sandbox);
-  const api = sandbox.HWChatInlineAppend as InlineAppend | undefined;
-  assert.ok(api, 'media/inline-append.js 必须挂载 HWChatInlineAppend');
+  const api = sandbox.PlaitCodeInlineAppend as InlineAppend | undefined;
+  assert.ok(api, 'media/inline-append.js 必须挂载 PlaitCodeInlineAppend');
   return api;
 }
 

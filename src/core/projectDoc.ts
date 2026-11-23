@@ -13,7 +13,7 @@
  * 所以需要一份**在项目里、能被 git 提交、跨对话共享**的决策记录。
  *
  * 三个刻意的设计：
- * 1. **靠标记而不是文件名判重**：文件头有一行 `<!-- hwchat:project-doc v1 -->`，
+ * 1. **靠标记而不是文件名判重**：文件头有一行 `<!-- plaitcode:project-doc v1 -->`，
  *    用户改名或移动之后仍然认得出来，不会长出第二份。
  * 2. **只追加，不重写**：每次往固定小节里加条目，永远不重新生成整篇 ——
  *    模型不需要「先读全文再写回」，也就不会因为摘要而吃掉旧结论。
@@ -22,10 +22,10 @@
  */
 
 /** 文档标记：判重的唯一依据，跟文件名无关。 */
-export const PROJECT_DOC_MARKER = '<!-- hwchat:project-doc v1 -->';
+export const PROJECT_DOC_MARKER = '<!-- plaitcode:project-doc v1 -->';
 
 /** 文件名（放在 `docs/` 下，没有 `docs/` 就放项目根）。 */
-export const PROJECT_DOC_NAME = 'HWCHAT-PROJECT-NOTES.md';
+export const PROJECT_DOC_NAME = 'PLAITCODE-PROJECT-NOTES.md';
 
 /** 每轮最多注入多少字节（用户 2026-11-09 选定 8KB）。 */
 export const PROJECT_DOC_CONTEXT_BYTES = 8 * 1024;
@@ -48,7 +48,7 @@ const SECTIONS: ReadonlyArray<{ kind: ProjectDocKind; title: string; hint: strin
   { kind: 'convention', title: '不可违反的约定', hint: '用户定下的规则、边界、口味。违反它就算「改进了」也是错的。' },
   { kind: 'decision', title: '已定的决策', hint: '定型的选择及理由。后来的改动不得与之冲突，除非先在这里写明为什么改。' },
   { kind: 'rejected', title: '已否决的做法（不要再试）', hint: '试过、被否掉、以及为什么。这一节就是为了避免反复循环修改。' },
-  { kind: 'done', title: '已完成（不要重做）', hint: 'HWChat 在每次运行结束时自动追加：做完了什么、动了哪些文件。新对话据此知道哪些事已经做完。' },
+  { kind: 'done', title: '已完成（不要重做）', hint: 'PlaitCode 在每次运行结束时自动追加：做完了什么、动了哪些文件。新对话据此知道哪些事已经做完。' },
   { kind: 'open', title: '未完成', hint: '已知还没做完的事。完成之后改成 decision 或删掉。' },
 ];
 
@@ -86,9 +86,9 @@ function sameDoneKey(existing: string, incoming: string): boolean {
 export function emptyProjectDoc(projectName: string, createdAt = new Date()): string {
   const lines: string[] = [
     PROJECT_DOC_MARKER,
-    `# ${projectName} · HWChat 项目决策记录`,
+    `# ${projectName} · PlaitCode 项目决策记录`,
     '',
-    '> 这份文件由 HWChat 自动维护，**只追加、不重写**，随项目一起提交。',
+    '> 这份文件由 PlaitCode 自动维护，**只追加、不重写**，随项目一起提交。',
     '> 目的：对话变长或换新对话之后，早期定下的决策不会丢，避免同一件事反复改。',
     `> 建立时间：${createdAt.toISOString().slice(0, 10)}`,
     '',
@@ -159,7 +159,7 @@ export function appendProjectDoc(
   if (!added) return { text: base, added: 0, skipped };
 
   const stamp = createdAt.toISOString().slice(0, 10);
-  const lines: string[] = [PROJECT_DOC_MARKER, '', '<!-- 本文件由 HWChat 维护：只追加，不重写。 -->', ''];
+  const lines: string[] = [PROJECT_DOC_MARKER, '', '<!-- 本文件由 PlaitCode 维护：只追加，不重写。 -->', ''];
   for (const section of SECTIONS) {
     const items = parsed[section.kind].slice(-SECTION_LIMIT);
     lines.push(`## ${section.title}`, '');

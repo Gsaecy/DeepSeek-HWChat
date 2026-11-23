@@ -2,8 +2,8 @@
  * 权限设置的作用域解析。
  *
  * 现场缺陷：用户在某个根目录的 `.vscode/settings.json` 里写
- * `"hwchat.permissionPreset": "review"`，但 `readSettings()` 用的是不带 resource 的
- * `getConfiguration('hwchat')`。按 vscode.d.ts，`workspaceFolderValue` 只属于
+ * `"plaitcode.permissionPreset": "review"`，但 `readSettings()` 用的是不带 resource 的
+ * `getConfiguration('plaitcode')`。按 vscode.d.ts，`workspaceFolderValue` 只属于
  * “请求的资源所属的工作区文件夹”，所以多根工作区里这份配置完全读不到——实际仍在
  * 用户设置的 autopilot 下运行，`chmod 777` 这类危险命令不会弹确认。
  *
@@ -24,8 +24,8 @@ function roots(...paths: string[]): void {
 
 test('文件夹级与用户级的 permissionPreset 声明都不再影响新对话', () => {
   roots(ROOT_A);
-  setConfiguration({ 'hwchat.permissionPreset': 'autopilot' });
-  setFolderConfiguration(ROOT_A, { 'hwchat.permissionPreset': 'review' });
+  setConfiguration({ 'plaitcode.permissionPreset': 'autopilot' });
+  setFolderConfiguration(ROOT_A, { 'plaitcode.permissionPreset': 'review' });
 
   const settings = readSettings();
   // 新规则：新对话固定「每次询问」。声明值只出现在权限来源报告里，不参与判定。
@@ -46,9 +46,9 @@ test('没有任何声明时同样是每次询问（默认值唯一出处）', ()
 
 test('多根工作区里任何文件夹的声明都不会放宽新对话', () => {
   setWorkspaceRoots([ROOT_A, `${ROOT_A}/src`, `${ROOT_A}/media`]);
-  setConfiguration({ 'hwchat.permissionPreset': 'full' });
-  setFolderConfiguration(`${ROOT_A}/src`, { 'hwchat.permissionPreset': 'autopilot' });
-  setFolderConfiguration(`${ROOT_A}/media`, { 'hwchat.permissionPreset': 'review' });
+  setConfiguration({ 'plaitcode.permissionPreset': 'full' });
+  setFolderConfiguration(`${ROOT_A}/src`, { 'plaitcode.permissionPreset': 'autopilot' });
+  setFolderConfiguration(`${ROOT_A}/media`, { 'plaitcode.permissionPreset': 'review' });
 
   // 以前这里是「同级取最严格」的 review；现在三项都归属对话，声明一律不生效。
   assert.equal(readSettings().permissionPreset, 'askAll');
@@ -64,9 +64,9 @@ test('完全没配置时回落到每次询问默认值', () => {
 
 test('策略列由预设推导，手写的单项设置不会覆盖预设', () => {
   setWorkspaceRoots([ROOT_A, `${ROOT_A}/src`]);
-  setConfiguration({ 'hwchat.permissionPreset': 'review', 'hwchat.fileWritePolicy': 'deny' });
-  setFolderConfiguration(`${ROOT_A}/src`, { 'hwchat.fileWritePolicy': 'deny' });
-  setFolderConfiguration(ROOT_A, { 'hwchat.fileWritePolicy': 'ask' });
+  setConfiguration({ 'plaitcode.permissionPreset': 'review', 'plaitcode.fileWritePolicy': 'deny' });
+  setFolderConfiguration(`${ROOT_A}/src`, { 'plaitcode.fileWritePolicy': 'deny' });
+  setFolderConfiguration(ROOT_A, { 'plaitcode.fileWritePolicy': 'ask' });
 
   // 预设与五项单项策略都已改为「按对话」，配置里的声明值一律不参与判定：
   // 新对话从最严格的每次询问开始，_settings.json 里写什么都不改变它。
@@ -78,8 +78,8 @@ test('策略列由预设推导，手写的单项设置不会覆盖预设', () =>
 
 test('文件夹级 sensitiveFilePolicy 不覆盖预设', () => {
   roots(ROOT_A);
-  setConfiguration({ 'hwchat.permissionPreset': 'review' });
-  setFolderConfiguration(ROOT_A, { 'hwchat.sensitiveFilePolicy': 'ask' });
+  setConfiguration({ 'plaitcode.permissionPreset': 'review' });
+  setFolderConfiguration(ROOT_A, { 'plaitcode.sensitiveFilePolicy': 'ask' });
 
   // 新对话固定每次询问：敏感文件禁止，声明值不参与判定。
   assert.equal(readSettings().sensitiveFilePolicy, 'deny');
@@ -88,7 +88,7 @@ test('文件夹级 sensitiveFilePolicy 不覆盖预设', () => {
 test('旧配置里的 custom 预设回落到每次询问，不残留单项策略', () => {
   roots(ROOT_A);
   // 这个值已不是合法预设：读取时必须安全回落，不能让策略表出现查不到的档位。
-  setConfiguration({ 'hwchat.permissionPreset': 'custom', 'hwchat.fileReadPolicy': 'deny' });
+  setConfiguration({ 'plaitcode.permissionPreset': 'custom', 'plaitcode.fileReadPolicy': 'deny' });
 
   const settings = readSettings();
   assert.equal(settings.permissionPreset, 'askAll');
@@ -98,8 +98,8 @@ test('旧配置里的 custom 预设回落到每次询问，不残留单项策略
 
 test('权限来源报告照实列出声明值，同时说明生效值固定为每次询问', () => {
   roots(ROOT_A);
-  setConfiguration({ 'hwchat.permissionPreset': 'autopilot' });
-  setFolderConfiguration(ROOT_A, { 'hwchat.permissionPreset': 'review' });
+  setConfiguration({ 'plaitcode.permissionPreset': 'autopilot' });
+  setFolderConfiguration(ROOT_A, { 'plaitcode.permissionPreset': 'review' });
 
   const report = describePermissionScope();
   // 生效值固定：预设不再从任何一层读取。
@@ -134,14 +134,14 @@ test('没有任何一层声明时，报告如实标注“无”', () => {
 
 test('defaultMode 读设置，非法值回落 agent', () => {
   roots(ROOT_A);
-  setConfiguration({ 'hwchat.defaultMode': 'plan' });
+  setConfiguration({ 'plaitcode.defaultMode': 'plan' });
   assert.equal(readSettings().defaultMode, 'plan');
 
-  setConfiguration({ 'hwchat.defaultMode': 'chat' });
+  setConfiguration({ 'plaitcode.defaultMode': 'chat' });
   assert.equal(readSettings().defaultMode, 'chat');
 
   // 手写成非法字符串时不能把非法值一路传给运行时。
-  setConfiguration({ 'hwchat.defaultMode': 'Ask' });
+  setConfiguration({ 'plaitcode.defaultMode': 'Ask' });
   assert.equal(readSettings().defaultMode, 'agent');
 
   setConfiguration({});
@@ -156,7 +156,7 @@ test('defaultMode 读设置，非法值回落 agent', () => {
 test('用户级 autopilot 声明不会让新对话自动执行危险命令', () => {
   roots(ROOT_A);
   setFolderConfiguration(ROOT_A, {});
-  setConfiguration({ 'hwchat.permissionPreset': 'autopilot', 'hwchat.dangerousCommandPolicy': 'deny' });
+  setConfiguration({ 'plaitcode.permissionPreset': 'autopilot', 'plaitcode.dangerousCommandPolicy': 'deny' });
 
   const settings = readSettings();
   // 新规则：新对话固定每次询问（危险命令直接拒绝），声明值只用于排障展示。
@@ -172,12 +172,12 @@ test('历史配置（含旧版本自动写入的 allow）无法放宽新对话�
   roots(ROOT_A);
   setFolderConfiguration(ROOT_A, {});
   setConfiguration({
-    'hwchat.permissionPreset': 'review',
-    'hwchat.fileReadPolicy': 'allow',
-    'hwchat.fileWritePolicy': 'allow',
-    'hwchat.commandPolicy': 'allow',
-    'hwchat.dangerousCommandPolicy': 'allow',
-    'hwchat.sensitiveFilePolicy': 'allow',
+    'plaitcode.permissionPreset': 'review',
+    'plaitcode.fileReadPolicy': 'allow',
+    'plaitcode.fileWritePolicy': 'allow',
+    'plaitcode.commandPolicy': 'allow',
+    'plaitcode.dangerousCommandPolicy': 'allow',
+    'plaitcode.sensitiveFilePolicy': 'allow',
   });
 
   const settings = readSettings();
@@ -206,11 +206,11 @@ test('保存设置不再把废弃的单项策略写进用户配置', async () =>
     sensitiveFilePolicy: 'allow',
   });
 
-  const configuration = vscode.workspace.getConfiguration('hwchat');
+  const configuration = vscode.workspace.getConfiguration('plaitcode');
   // 预设本身也不再落盘：它属于对话。
   assert.equal(configuration.get('permissionPreset'), undefined, 'permissionPreset 不应被写回配置');
   for (const key of ['fileReadPolicy', 'fileWritePolicy', 'commandPolicy', 'dangerousCommandPolicy', 'sensitiveFilePolicy']) {
-    assert.equal(configuration.get(`hwchat.${key}`), undefined, `${key} 不应被写回配置`);
+    assert.equal(configuration.get(`plaitcode.${key}`), undefined, `${key} 不应被写回配置`);
   }
   // 预设 / 步数 / 思考深度同样归属对话：写设置时不得落盘，否则下一次读配置的
   // 代码（或用户手改）会以为它们还能影响新对话。
@@ -227,11 +227,11 @@ test('保存设置不再把废弃的单项策略写进用户配置', async () =>
 test('图片模型跟着当前接口配置档走（空则视为不支持出图）', () => {
   roots(ROOT_A);
   setConfiguration({
-    'hwchat.apiProfiles': [
+    'plaitcode.apiProfiles': [
       { id: 'chat', name: 'Chat only', baseUrl: 'https://example.invalid/v1', models: ['deepseek-chat'], requestHeaders: {} },
       { id: 'media', name: 'With images', baseUrl: 'https://example.invalid/v1', models: ['deepseek-chat'], requestHeaders: {}, imageModel: ' gpt-image-1 ' },
     ],
-    'hwchat.activeApiProfileId': 'media',
+    'plaitcode.activeApiProfileId': 'media',
   });
   setFolderConfiguration(ROOT_A, {});
 
@@ -247,9 +247,9 @@ test('图片模型跟着当前接口配置档走（空则视为不支持出图�
 test('旧全局设置只作为迁移来源：合法值原样返回，非法值与默认值不返回', () => {
   roots(ROOT_A);
   setConfiguration({
-    'hwchat.permissionPreset': 'autopilot',
-    'hwchat.agentMaxSteps': 0,
-    'hwchat.reasoningEffort': 'max',
+    'plaitcode.permissionPreset': 'autopilot',
+    'plaitcode.agentMaxSteps': 0,
+    'plaitcode.reasoningEffort': 'max',
   });
   assert.deepEqual(readLegacyConversationControls(), {
     permissionPreset: 'autopilot',
@@ -263,9 +263,9 @@ test('旧全局设置只作为迁移来源：合法值原样返回，非法值�
 
   // 手改坏的 settings.json 不能把老对话迁成脏值。
   setConfiguration({
-    'hwchat.permissionPreset': 'bogus',
-    'hwchat.agentMaxSteps': -5,
-    'hwchat.reasoningEffort': 'ultra',
+    'plaitcode.permissionPreset': 'bogus',
+    'plaitcode.agentMaxSteps': -5,
+    'plaitcode.reasoningEffort': 'ultra',
   });
   assert.deepEqual(readLegacyConversationControls(), {});
 });

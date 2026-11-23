@@ -171,10 +171,10 @@ test('提示词：先调研 → 并入清单 → 才执行，且必须有 URL', 
 });
 
 test('提示词注入：关闭时逐字节保持原样，开启时追加协议', () => {
-  const base = 'You are HWChat.\n';
+  const base = 'You are PlaitCode.\n';
   assert.equal(withInternetReference(base, false), base, '关闭时不能改动提示词');
   const on = withInternetReference(base, true);
-  assert.ok(on.startsWith('You are HWChat.'), '原提示词要保留在前');
+  assert.ok(on.startsWith('You are PlaitCode.'), '原提示词要保留在前');
   assert.match(on, /INTERNET REFERENCE IS ON/);
   assert.equal(withInternetReference('', true), INTERNET_REFERENCE_PROMPT, '空提示词时只给协议');
 });

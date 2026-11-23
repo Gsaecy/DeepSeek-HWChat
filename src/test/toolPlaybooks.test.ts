@@ -2,7 +2,7 @@
  * 「按任务类型指定首选工具」。
  *
  * 三个真实故障（同一天）：
- *  1. 「先给我预览一下效果」→ 模型用 `run_in_terminal` 起服务器（该工具在 HWChat 里
+ *  1. 「先给我预览一下效果」→ 模型用 `run_in_terminal` 起服务器（该工具在 PlaitCode 里
  *     永远调不通）→ 三轮失败停机；
  *  2. 「优化图片，生成新图片发给我」→ 模型去 `npx` 装 mermaid-cli（超时 2 分钟）；
  *  3. 「提交/推送」→ 换着写法撞 git 闸门。
@@ -160,7 +160,7 @@ test('runner 真的按清单裁剪（三路来源一起裁，不是只在提示�
     }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   }) as typeof fetch;
 
-  const executor = new ToolExecutor(new AuditLog(join(tmpdir(), `hwchat-playbook-${Date.now()}.jsonl`)), () => true);
+  const executor = new ToolExecutor(new AuditLog(join(tmpdir(), `plaitcode-playbook-${Date.now()}.jsonl`)), () => true);
   const runner = new AgentRunner(new DeepSeekClient(async () => 'k'), executor);
   const extraTools = [
     { type: 'function', function: { name: 'open_web_preview', description: 'p', parameters: { type: 'object', properties: {} } } },

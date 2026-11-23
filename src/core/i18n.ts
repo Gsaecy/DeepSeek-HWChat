@@ -1,5 +1,5 @@
 /**
- * HWChat 全局文案表（中文 / 英文）。
+ * PlaitCode 全局文案表（中文 / 英文）。
  *
  * 设计要点：
  * 1) 单一来源：所有面向用户的字符串都从这里取，UI、通知、错误提示不接受硬编码中文。
@@ -10,7 +10,7 @@
  * 3) 缺键时返回键本身而不是抛错：漏译会显示成 `chat.xxx` 这种可识别文本，容易被发现，
  *    而不是让整块界面崩掉。
  *
- * 语言来源：`hwchat.language`，取值 `auto` / `zh` / `en`。
+ * 语言来源：`plaitcode.language`，取值 `auto` / `zh` / `en`。
  * `auto` 跟随 VS Code 显示语言（`vscode.env.language`），中文环境用中文，其余用英文。
  */
 import * as vscode from 'vscode';
@@ -29,7 +29,7 @@ export type Vars = Record<string, string | number>;
 const DICTIONARY: Record<string, Entry> = {
   // 语言设置本身
   'language.label': { zh: '界面语言', en: 'Interface language' },
-  'language.hint': { zh: '切换 HWChat 全部界面与提示语言', en: 'Change the language of all HWChat UI and messages' },
+  'language.hint': { zh: '切换 PlaitCode 全部界面与提示语言', en: 'Change the language of all PlaitCode UI and messages' },
   'language.auto': { zh: '自动（跟随 VS Code）', en: 'Auto (follow VS Code)' },
   'language.zh': { zh: '中文', en: 'Chinese' },
   'language.en': { zh: 'English', en: 'English' },
@@ -144,8 +144,8 @@ const DICTIONARY: Record<string, Entry> = {
   /* 设置页：项目技术文档（预设之外唯一会改变「要不要问」的开关，单独一行） */
   'settings.projectDoc.title': { zh: '项目技术文档', en: 'Project decision record' },
   'settings.projectDoc.hint': {
-    zh: '真的改过项目文件之后，由 HWChat 在 docs/HWCHAT-PROJECT-NOTES.md 建立并维护**唯一一份**决策记录（只追加、不重写、随项目提交）。它的作用是让早期定下的决策在长对话或新对话里不丢，避免同一件事反复改。这是权限预设之外唯一会改变「要不要问」的开关。',
-    en: 'Once HWChat has actually changed files in a project, it creates and maintains a **single** decision record at docs/HWCHAT-PROJECT-NOTES.md (append-only, committed with the project). It keeps earlier decisions alive across long or new conversations so the same thing is not reworked. This is the only switch outside the permission presets that changes whether you are asked.',
+    zh: '真的改过项目文件之后，由 PlaitCode 在 docs/PLAITCODE-PROJECT-NOTES.md 建立并维护**唯一一份**决策记录（只追加、不重写、随项目提交）。它的作用是让早期定下的决策在长对话或新对话里不丢，避免同一件事反复改。这是权限预设之外唯一会改变「要不要问」的开关。',
+    en: 'Once PlaitCode has actually changed files in a project, it creates and maintains a **single** decision record at docs/PLAITCODE-PROJECT-NOTES.md (append-only, committed with the project). It keeps earlier decisions alive across long or new conversations so the same thing is not reworked. This is the only switch outside the permission presets that changes whether you are asked.',
   },
   'settings.projectDoc.auto': { zh: '自动维护（推荐）', en: 'Maintain automatically (recommended)' },
   'settings.projectDoc.ask': { zh: '每次写入前确认', en: 'Ask before each write' },
@@ -252,7 +252,7 @@ const DICTIONARY: Record<string, Entry> = {
     en: 'New conversations start from “Local Skill Quick Launch”',
   },
   'chat.skillsInstallBody': {
-    zh: '装上「本地skill快捷调用」后，它的勾选会决定每个新对话默认启用哪些 Skill（route 模式下命中才读取正文）。现在没有检测到它，所以新对话从空白开始；装好后新建对话即可自动套用。注意：在 HWChat 里取消勾选只作用于当前这条对话，不会改到它的全局清单。',
+    zh: '装上「本地skill快捷调用」后，它的勾选会决定每个新对话默认启用哪些 Skill（route 模式下命中才读取正文）。现在没有检测到它，所以新对话从空白开始；装好后新建对话即可自动套用。注意：在 PlaitCode 里取消勾选只作用于当前这条对话，不会改到它的全局清单。',
     en: 'With the local skill quick-launch extension installed, its ticks decide which skills every new conversation starts with (in route mode a skill’s text is read only on a match). It is not detected right now, so new conversations start empty; install it and the next new conversation picks the ticks up. Note that unticking here only affects the current conversation and never edits that global list.',
   },
   'chat.skillsInstallAction': { zh: '打开扩展详情', en: 'Open extension page' },
@@ -401,8 +401,8 @@ const DICTIONARY: Record<string, Entry> = {
 
   // 对话面板：技能与工具卡片
   'chat.skillsEmpty': {
-    zh: '未发现 Skill。可放入 .hwchat/skills 或兼容的 SKILL.md 目录。',
-    en: 'No skills found. Add them under .hwchat/skills or a compatible SKILL.md directory.',
+    zh: '未发现 Skill。可放入 .plaitcode/skills 或兼容的 SKILL.md 目录。',
+    en: 'No skills found. Add them under .plaitcode/skills or a compatible SKILL.md directory.',
   },
   'chat.skillDefaultEnabled': { zh: '默认启用', en: 'Enabled by default' },
   'chat.skillUsed': { zh: '已调用', en: 'Used' },
@@ -554,10 +554,10 @@ const DICTIONARY: Record<string, Entry> = {
   'notice.privacyRequired': { zh: '需要确认隐私说明后才能向配置的模型接口发送内容。', en: 'Confirm the privacy notice before sending content to the configured model endpoint.' },
   'notice.configureApiKey': { zh: '请先为“{profile}”配置 API Key。', en: 'Configure an API key for “{profile}” first.' },
   'notice.archivedResume': { zh: '该对话已归档，请恢复后继续。', en: 'This conversation is archived. Restore it to continue.' },
-  'notice.voiceTitle': { zh: '允许 HWChat 使用语音输入？', en: 'Allow HWChat to use voice input?' },
+  'notice.voiceTitle': { zh: '允许 PlaitCode 使用语音输入？', en: 'Allow PlaitCode to use voice input?' },
   'notice.voiceDetail': {
-    zh: 'HWChat 只接收语音识别后的文字，不保存音频，也不会把音频写入对话缓存。具体的语音识别服务由 VS Code/Webview 和系统浏览器实现，可能会按你的系统设置处理音频。识别出的文字只有在你点击发送后才会发送给当前 API。',
-    en: 'HWChat only receives the transcribed text; it never stores audio or writes it into the conversation cache. Speech recognition itself is provided by the VS Code webview and your system browser, which may process audio according to your OS settings. Transcribed text is only sent to the API after you press send.',
+    zh: 'PlaitCode 只接收语音识别后的文字，不保存音频，也不会把音频写入对话缓存。具体的语音识别服务由 VS Code/Webview 和系统浏览器实现，可能会按你的系统设置处理音频。识别出的文字只有在你点击发送后才会发送给当前 API。',
+    en: 'PlaitCode only receives the transcribed text; it never stores audio or writes it into the conversation cache. Speech recognition itself is provided by the VS Code webview and your system browser, which may process audio according to your OS settings. Transcribed text is only sent to the API after you press send.',
   },
   'notice.voiceAllow': { zh: '允许语音输入', en: 'Allow voice input' },
   'notice.permissionTitle': { zh: '确认更改 Agent 权限预设？', en: 'Change the agent permission preset?' },
@@ -614,7 +614,7 @@ const DICTIONARY: Record<string, Entry> = {
   'approval.expired': { zh: '这次授权请求已失效（任务已结束）。', en: 'This approval request expired because the task has ended.' },
 
   // 设置页：外壳与导航
-  'settings.windowTitle': { zh: 'HWChat 设置', en: 'HWChat Settings' },
+  'settings.windowTitle': { zh: 'PlaitCode 设置', en: 'PlaitCode Settings' },
   'settings.title': { zh: '设置', en: 'Settings' },
   'settings.navLabel': { zh: '设置分组', en: 'Settings sections' },
   'settings.nav.general': { zh: '通用', en: 'General' },
@@ -699,7 +699,7 @@ const DICTIONARY: Record<string, Entry> = {
   'settings.embeddingKey.hint': { zh: '留空则用所选配置档自己的 Key（智谱这类同一个 Key 就够）。聊天与向量不是同一个账号时填这里，例如 holysheep 的 Key —— 它不是 DeepSeek 的 Key。', en: 'Empty uses the selected profile\'s own key (enough for providers like Zhipu). Fill this when chat and embeddings use different accounts, e.g. a holysheep key — which is not your DeepSeek key.' },
   'settings.embeddingBaseUrl.label': { zh: '向量接口地址（可选）', en: 'Embedding base URL (optional)' },
   'settings.embeddingBaseUrl.hint': { zh: '留空则用配置档的地址。智谱要注意：编码地址是 /api/coding/paas/v4，向量要用 /api/paas/v4。', en: 'Empty uses the profile base URL. For Zhipu note the coding endpoint is /api/coding/paas/v4 while embeddings live at /api/paas/v4.' },
-  'settings.proxyBypassHosts.hint': { zh: '即使配了代理也直连的主机，逗号分隔，默认 api.deepseek.com。经代理上传大请求体时首字节很容易被拖过超时，把接口域名放进来通常更稳。只影响 HWChat 自己的请求，git 命令不受影响。', en: 'Hosts reached directly even when a proxy is set, comma-separated; defaults to api.deepseek.com. Uploading large bodies through a proxy often pushes time-to-first-byte past the timeout. Only affects HWChat requests; git is unaffected.' },
+  'settings.proxyBypassHosts.hint': { zh: '即使配了代理也直连的主机，逗号分隔，默认 api.deepseek.com。经代理上传大请求体时首字节很容易被拖过超时，把接口域名放进来通常更稳。只影响 PlaitCode 自己的请求，git 命令不受影响。', en: 'Hosts reached directly even when a proxy is set, comma-separated; defaults to api.deepseek.com. Uploading large bodies through a proxy often pushes time-to-first-byte past the timeout. Only affects PlaitCode requests; git is unaffected.' },
   'settings.proxy.hint': { zh: '留空表示直连。填 HTTP 代理，例如 http://127.0.0.1:8080（不支持 socks://，请填代理软件给出的 HTTP 端口）。扩展不会自动读取 HTTPS_PROXY 环境变量，也不会继承 VS Code 的 http.proxy。', en: 'Empty means direct. Use an HTTP proxy such as http://127.0.0.1:8080 (socks:// is not supported - use the HTTP port your proxy app exposes). The extension does not read HTTPS_PROXY or inherit VS Code http.proxy.' },
   'settings.timeout.label': { zh: '请求超时', en: 'Request timeout' },
   'settings.timeout.hint': { zh: '10–900 秒', en: '10–900 seconds' },
@@ -743,8 +743,8 @@ const DICTIONARY: Record<string, Entry> = {
   'settings.skills.rescan': { zh: '重新扫描', en: 'Rescan' },
   'settings.skills.openFolder': { zh: '打开用户 Skill 目录', en: 'Open user skill folder' },
   'settings.skills.empty': {
-    zh: '未发现 Skill。支持 .hwchat/skills/*.md、.agents/skills/**/SKILL.md 和 .claude/skills/**/SKILL.md。',
-    en: 'No skills found. Supported: .hwchat/skills/*.md, .agents/skills/**/SKILL.md and .claude/skills/**/SKILL.md.',
+    zh: '未发现 Skill。支持 .plaitcode/skills/*.md、.agents/skills/**/SKILL.md 和 .claude/skills/**/SKILL.md。',
+    en: 'No skills found. Supported: .plaitcode/skills/*.md, .agents/skills/**/SKILL.md and .claude/skills/**/SKILL.md.',
   },
 
   // 设置页：权限与隐私
@@ -770,8 +770,8 @@ const DICTIONARY: Record<string, Entry> = {
   'settings.privacy.auditHint': { zh: '只记录工具、结果摘要和审批状态，不记录 API Key', en: 'Only tools, result summaries and approval states are recorded, never API keys' },
   'settings.storage.trashCount': { zh: '条在回收站（尚未删除）', en: 'in the recycle bin (not deleted yet)' },
   'settings.storage.trashHint': {
-    zh: '删除对话只是把它移进回收站，内容还在磁盘上。只有点「清空回收站」才会永久删除 —— HWChat 不会自己清空它。',
-    en: 'Deleting a conversation only moves it to the recycle bin; its content stays on disk. Only "Empty recycle bin" deletes permanently — HWChat never empties it on its own.',
+    zh: '删除对话只是把它移进回收站，内容还在磁盘上。只有点「清空回收站」才会永久删除 —— PlaitCode 不会自己清空它。',
+    en: 'Deleting a conversation only moves it to the recycle bin; its content stays on disk. Only "Empty recycle bin" deletes permanently — PlaitCode never empties it on its own.',
   },
   'settings.storage.restoreTrash': { zh: '恢复回收站里的对话', en: 'Restore from recycle bin' },
   'settings.storage.emptyTrash': { zh: '清空回收站（永久）', en: 'Empty recycle bin (permanent)' },
@@ -801,7 +801,7 @@ const DICTIONARY: Record<string, Entry> = {
   'settings.cleanupDone': { zh: '清理完成：瘦身 {compacted} 条，删除 {deleted} 个过期对话。', en: 'Cleanup done: {compacted} messages trimmed, {deleted} expired conversations removed.' },
   'settings.exportedAll': { zh: '全部对话已导出。', en: 'All conversations exported.' },
   'settings.busy': { zh: '当前有正在执行的 Agent 任务，请先停止任务。', en: 'An agent task is still running. Stop it first.' },
-  'settings.clearConfirmTitle': { zh: '删除 HWChat 的全部本地对话和 Agent 审计记录？', en: 'Delete all local HWChat conversations and agent audit records?' },
+  'settings.clearConfirmTitle': { zh: '删除 PlaitCode 的全部本地对话和 Agent 审计记录？', en: 'Delete all local PlaitCode conversations and agent audit records?' },
   'settings.clearConfirmDetail': { zh: 'API Key 不会被删除。此操作无法撤销，建议先导出记录。', en: 'API keys are not deleted. This cannot be undone; export your records first.' },
   'settings.cleared': { zh: '本地对话和审计记录已删除。', en: 'Local conversations and audit records deleted.' },
   'settings.exportAllSaveLabel': { zh: '导出全部记录', en: 'Export all records' },
@@ -848,21 +848,21 @@ const DICTIONARY: Record<string, Entry> = {
     zh: '无法把这条对话移入回收站（磁盘或权限问题），已保持原样未删除。',
     en: 'Could not move this conversation to the recycle bin (disk or permission problem); it was left untouched.',
   },
-  'cleanup.doneVerbose': { zh: 'HWChat 清理完成：瘦身 {compacted} 条消息。', en: 'HWChat cleanup finished: compacted {compacted} messages.' },
+  'cleanup.doneVerbose': { zh: 'PlaitCode 清理完成：瘦身 {compacted} 条消息。', en: 'PlaitCode cleanup finished: compacted {compacted} messages.' },
   'cleanup.draftsHint': { zh: '另整理了 {count} 个没有任何消息的空对话（已移入回收站）。', en: 'Also tidied {count} empty conversation(s) with no messages (moved to the recycle bin).' },
-  'cleanup.overBudget': { zh: '历史体积 {size} 已超出预算 {budget}。HWChat 不会自动删除对话，可在设置里自行清理。', en: 'History size {size} is over the {budget} budget. HWChat never deletes conversations by itself — clean up in Settings.' },
+  'cleanup.overBudget': { zh: '历史体积 {size} 已超出预算 {budget}。PlaitCode 不会自动删除对话，可在设置里自行清理。', en: 'History size {size} is over the {budget} budget. PlaitCode never deletes conversations by itself — clean up in Settings.' },
   'cleanup.openSettings': { zh: '打开设置', en: 'Open settings' },
   'integrity.archivedMissing': {
-    zh: '检测到 {count} 条原本归档的对话既不在磁盘上、也不在回收站里。它们的内容已经无法从 HWChat 找回，请检查备份。这条提示只在发现异常时出现一次。',
-    en: '{count} conversation(s) that were archived are neither on disk nor in the recycle bin. HWChat cannot recover their content any more — please check your backups. This warning only appears once when something is detected.',
+    zh: '检测到 {count} 条原本归档的对话既不在磁盘上、也不在回收站里。它们的内容已经无法从 PlaitCode 找回，请检查备份。这条提示只在发现异常时出现一次。',
+    en: '{count} conversation(s) that were archived are neither on disk nor in the recycle bin. PlaitCode cannot recover their content any more — please check your backups. This warning only appears once when something is detected.',
   },
   'ext.emptyTrashConfirm': { zh: '清空回收站？将永久删除 {count} 条对话（{size}），无法恢复。', en: 'Empty the recycle bin? {count} conversation(s) ({size}) will be deleted permanently.' },
-  'ext.emptyTrashDetail': { zh: '回收站里的对话已经不在历史列表里。清空后内容从磁盘移除，HWChat 无法再找回。', en: 'Conversations in the recycle bin are already out of the history list. Emptying it removes their content from disk permanently.' },
+  'ext.emptyTrashDetail': { zh: '回收站里的对话已经不在历史列表里。清空后内容从磁盘移除，PlaitCode 无法再找回。', en: 'Conversations in the recycle bin are already out of the history list. Emptying it removes their content from disk permanently.' },
   'ext.emptyTrashAction': { zh: '永久删除', en: 'Delete permanently' },
   'ext.emptyTrashDone': { zh: '已永久删除 {count} 条对话。', en: 'Permanently deleted {count} conversation(s).' },
   'ext.netDiagnoseProxyFail': { zh: '代理 {proxy} 不通：{detail}\n检查代理软件是否在运行、端口是否填对（不支持 socks://，请填 HTTP 端口）。', en: 'Proxy {proxy} is not working: {detail}\nCheck that the proxy is running and the port is right (socks:// is not supported — use the HTTP port).' },
   'ext.netDiagnoseOk': { zh: '网络正常：{summary}', en: 'Network looks fine: {summary}' },
-  'ext.netDiagnoseFail': { zh: '网络诊断：卡在「{stage}」——{detail}（完整报告见 HWChat 输出面板）', en: 'Network check failed at "{stage}": {detail} (full report in the HWChat output panel)' },
+  'ext.netDiagnoseFail': { zh: '网络诊断：卡在「{stage}」——{detail}（完整报告见 PlaitCode 输出面板）', en: 'Network check failed at "{stage}": {detail} (full report in the PlaitCode output panel)' },
   'ext.trashEmpty': { zh: '回收站是空的：没有可恢复的对话。', en: 'The recycle bin is empty — nothing to restore.' },
   'ext.trashPick': { zh: '恢复已删除的对话', en: 'Restore deleted conversations' },
   'ext.trashPickHint': { zh: '回收站里有 {count} 条（自动清理时挪进来的，用户主动删除的不会在这里）', en: '{count} item(s) in the recycle bin (moved here by automatic cleanup; conversations you deleted yourself are not listed)' },
@@ -871,19 +871,19 @@ const DICTIONARY: Record<string, Entry> = {
   'ext.trashReason.expired': { zh: '超过保留期', en: 'retention expired' },
   'ext.trashReason.budget': { zh: '缓存预算回收', en: 'storage budget reclaim' },
   'ext.skillsFound': { zh: '已发现 {count} 个 Skill。', en: 'Found {count} skills.' },
-  'ext.permissionScope': { zh: '生效权限预设：{preset}（各层来源见 HWChat 输出面板）', en: 'Effective permission preset: {preset} (per-layer sources in the HWChat output channel)' },
-  'ext.resourceStats': { zh: '搜索：活动 {active}、排队 {queued}；命令：活动 {commands}。详细计数已写入 HWChat 输出面板。', en: 'Searches: {active} active, {queued} queued; commands: {commands} active. Full counters were written to the HWChat output panel.' },
+  'ext.permissionScope': { zh: '生效权限预设：{preset}（各层来源见 PlaitCode 输出面板）', en: 'Effective permission preset: {preset} (per-layer sources in the PlaitCode output channel)' },
+  'ext.resourceStats': { zh: '搜索：活动 {active}、排队 {queued}；命令：活动 {commands}。详细计数已写入 PlaitCode 输出面板。', en: 'Searches: {active} active, {queued} queued; commands: {commands} active. Full counters were written to the PlaitCode output panel.' },
   'ext.privacyTitle': {
-    zh: 'HWChat 会将你发送的消息、已选择的文件内容和必要的工具结果发送到你在设置中配置的模型接口。对话、Skill 和审计记录默认只保存在本机；扩展不上传遥测。Agent 的写入和命令操作仍需按权限策略审批。',
-    en: 'HWChat sends your messages, the file content you select and necessary tool results to the model endpoint you configure. Conversations, skills and audit records stay on this device by default; the extension uploads no telemetry. Agent writes and commands still go through the permission policy.',
+    zh: 'PlaitCode 会将你发送的消息、已选择的文件内容和必要的工具结果发送到你在设置中配置的模型接口。对话、Skill 和审计记录默认只保存在本机；扩展不上传遥测。Agent 的写入和命令操作仍需按权限策略审批。',
+    en: 'PlaitCode sends your messages, the file content you select and necessary tool results to the model endpoint you configure. Conversations, skills and audit records stay on this device by default; the extension uploads no telemetry. Agent writes and commands still go through the permission policy.',
   },
-  'ext.privacyDetail': { zh: '请确认你了解并同意这项数据流向后继续。可在 HWChat 设置中清除本地记录。', en: 'Confirm that you understand and accept this data flow to continue. Local records can be cleared in HWChat settings.' },
+  'ext.privacyDetail': { zh: '请确认你了解并同意这项数据流向后继续。可在 PlaitCode 设置中清除本地记录。', en: 'Confirm that you understand and accept this data flow to continue. Local records can be cleared in PlaitCode settings.' },
   'ext.privacyAgree': { zh: '同意并继续', en: 'Agree and continue' },
   'ext.apiKeyTitle': { zh: '设置 {profile} API Key', en: 'Set the API key for {profile}' },
   'ext.apiKeyPrompt': { zh: '密钥将安全保存在 VS Code SecretStorage 中。', en: 'The key will be stored securely in VS Code SecretStorage.' },
   'ext.apiKeyEmpty': { zh: 'API Key 不能为空。', en: 'The API key cannot be empty.' },
-  'ext.apiKeySaved': { zh: 'HWChat API Key 已保存。', en: 'HWChat API key saved.' },
-  'ext.exported': { zh: 'HWChat 对话记录已导出。', en: 'HWChat conversation history exported.' },
+  'ext.apiKeySaved': { zh: 'PlaitCode API Key 已保存。', en: 'PlaitCode API key saved.' },
+  'ext.exported': { zh: 'PlaitCode 对话记录已导出。', en: 'PlaitCode conversation history exported.' },
   'ext.layoutReportCopied': { zh: '布局诊断已复制到剪贴板，可以直接贴给开发者', en: 'Layout report copied to the clipboard — paste it wherever you need' },
   'ext.reportLayout': { zh: '复制布局诊断', en: 'Copy layout report' },
   'ext.exportAllLabel': { zh: '导出全部对话', en: 'Export all conversations' },
@@ -1044,14 +1044,14 @@ const DICTIONARY: Record<string, Entry> = {
   'tool.dangerousDenied': { zh: '命令属于危险操作（提权、破坏性删除、磁盘擦写、推送远端等），当前权限预设禁止执行 —— 普通 git push 也算，不只是强制推送。需要执行时请切换到“Autopilot”或“完全访问”预设。', en: 'The command is a dangerous operation (privilege escalation, destructive deletion, disk wiping, pushing to a remote). The current preset forbids running it — a plain git push counts too, not only forced pushes. Switch to “Autopilot” or “Full access” to allow it.' },
   'tool.policyDeniedTool': { zh: '当前权限策略禁止 {name}。', en: 'The current permission policy blocks {name}.' },
   'tool.planModeReadOnlyTool': { zh: '规划模式只允许只读分析。', en: 'Plan mode only allows read-only analysis.' },
-  'tool.gitWriteNotRequested': { zh: '已阻止 git {operation}：本次对话中用户没有要求提交或推送，HWChat 不会主动提交。请先用一句话向用户确认；用户明确要求后（或启用包含提交规则的技能后）再执行。', en: 'Blocked `git {operation}`: the user has not asked to commit or push in this conversation, and HWChat never commits on its own. Ask the user first; retry after they explicitly request it, or after a skill with a commit rule is enabled.' },
+  'tool.gitWriteNotRequested': { zh: '已阻止 git {operation}：本次对话中用户没有要求提交或推送，PlaitCode 不会主动提交。请先用一句话向用户确认；用户明确要求后（或启用包含提交规则的技能后）再执行。', en: 'Blocked `git {operation}`: the user has not asked to commit or push in this conversation, and PlaitCode never commits on its own. Ask the user first; retry after they explicitly request it, or after a skill with a commit rule is enabled.' },
   'tool.gitProjectUnknown': { zh: '本次对话还没有确定属于哪个项目，无法执行 git 写操作。请先修改该项目的文件，或在 run_command 里显式传入 cwd=<项目根> 后重试。', en: 'This conversation is not bound to a project yet, so git write operations are refused. Edit a file in that project first, or pass an explicit cwd=<project root> to run_command and retry.' },
   'tool.gitNotRepository': { zh: '上一级路径里没有 git 仓库（{path}），无法执行写操作。', en: 'No git repository found above {path}; the write operation was refused.' },
   'tool.gitProjectMismatch': { zh: '已阻止跨项目 git 操作：命令会作用于仓库 {repo}，而本次对话绑定的是项目 {project}。请传入该项目内的 cwd 重试。', en: 'Blocked a cross-project git operation: the command targets repository {repo}, but this conversation is bound to {project}. Retry with a cwd inside that project.' },
   'tool.gitForeignProject': { zh: '已阻止 git 操作：仓库 {repo} 里还包含另一个工作区项目 {project}，一次 git add/commit 会把它的改动一起提交。请在该项目自己的对话里操作。', en: 'Blocked the git operation: repository {repo} also contains another workspace project ({project}), so a single git add/commit would include its changes. Run it from that project\'s own conversation.' },
-  'tool.versionBumpNotAuthorized': { zh: '已阻止修改版本号：{file} 的 version 想从 {from} 改成 {to}，但本次对话中用户没有要求升级版本，HWChat 不会主动升版本。请先停下改动，在任务全部完成后用一句话询问用户是否要升版本（长任务在阶段完成时再问），得到明确同意后再改。', en: 'Blocked the version bump: {file} would change version {from} → {to}, but the user has not asked for a version bump in this conversation, and HWChat never bumps versions on its own. Stop here and ask the user in one sentence — after all work in this conversation is finished (or at a phase boundary for a long task) — then proceed only after an explicit yes.' },
-  'tool.versionBumpCommandNotAuthorized': { zh: '已阻止执行 `{command}`：它会改写项目版本号，而本次对话中用户没有要求升级版本，HWChat 不会主动升版本。请先完成手上的任务，再询问用户是否要升版本；用户明确同意后再执行。', en: 'Blocked `{command}`: it rewrites the project version, but the user has not asked for a version bump in this conversation, and HWChat never bumps versions on its own. Finish the current work first, then ask the user; run it only after an explicit yes.' },
-  'tool.versionBumpNotRequested': { zh: '已阻止版本升级操作：本次对话中用户没有要求升级版本，HWChat 不会主动升版本。请先完成手上的任务，再询问用户是否要升版本；用户明确同意后再执行。', en: 'Blocked a version-bump operation: the user has not asked for a version bump in this conversation, and HWChat never bumps versions on its own. Finish the current work first, then ask the user; proceed only after an explicit yes.' },
+  'tool.versionBumpNotAuthorized': { zh: '已阻止修改版本号：{file} 的 version 想从 {from} 改成 {to}，但本次对话中用户没有要求升级版本，PlaitCode 不会主动升版本。请先停下改动，在任务全部完成后用一句话询问用户是否要升版本（长任务在阶段完成时再问），得到明确同意后再改。', en: 'Blocked the version bump: {file} would change version {from} → {to}, but the user has not asked for a version bump in this conversation, and PlaitCode never bumps versions on its own. Stop here and ask the user in one sentence — after all work in this conversation is finished (or at a phase boundary for a long task) — then proceed only after an explicit yes.' },
+  'tool.versionBumpCommandNotAuthorized': { zh: '已阻止执行 `{command}`：它会改写项目版本号，而本次对话中用户没有要求升级版本，PlaitCode 不会主动升版本。请先完成手上的任务，再询问用户是否要升版本；用户明确同意后再执行。', en: 'Blocked `{command}`: it rewrites the project version, but the user has not asked for a version bump in this conversation, and PlaitCode never bumps versions on its own. Finish the current work first, then ask the user; run it only after an explicit yes.' },
+  'tool.versionBumpNotRequested': { zh: '已阻止版本升级操作：本次对话中用户没有要求升级版本，PlaitCode 不会主动升版本。请先完成手上的任务，再询问用户是否要升版本；用户明确同意后再执行。', en: 'Blocked a version-bump operation: the user has not asked for a version bump in this conversation, and PlaitCode never bumps versions on its own. Finish the current work first, then ask the user; proceed only after an explicit yes.' },
   'tool.untrustedWrite': { zh: '当前工作区未受信任，文件写入和命令执行已禁用。请先信任工作区。', en: 'The workspace is untrusted, so file writes and command execution are disabled. Trust the workspace first.' },
   'tool.symlinkEscape': { zh: '路径通过符号链接离开了工作区。', en: 'The path leaves the workspace through a symbolic link.' },
   'tool.sensitiveCommandArg': { zh: '命令参数引用了敏感文件名', en: 'a command argument references a sensitive file name' },
@@ -1080,16 +1080,16 @@ const DICTIONARY: Record<string, Entry> = {
    */
   /* 项目技术文档工具（唯一一份、只追加）。描述要写清「什么时候记」，否则模型会记成流水账。 */
   'tool.updateProjectDoc.description': {
-    zh: '把这一轮定下的决策、被否决的做法、用户的硬性约定、或还没做完的事，追加到项目里那份唯一的决策记录（docs/HWCHAT-PROJECT-NOTES.md）。只追加不重写，重复的条目会被跳过。**什么时候该记**：用户拍板了方案、你放弃了一种做法并知道原因、用户给出新的硬性要求、或者你留下了一件没做完的事。不要记流水账（「读了某个文件」不算决策）。',
-    en: 'Append the decisions of this turn — settled choices, approaches ruled out, hard user rules, unfinished work — to the single project decision record (docs/HWCHAT-PROJECT-NOTES.md). Append-only; duplicates are skipped. **When to record**: the user settled an approach, you ruled out an option and know why, the user gave a new hard rule, or you left something unfinished. Not a changelog — "read file X" is not a decision.',
+    zh: '把这一轮定下的决策、被否决的做法、用户的硬性约定、或还没做完的事，追加到项目里那份唯一的决策记录（docs/PLAITCODE-PROJECT-NOTES.md）。只追加不重写，重复的条目会被跳过。**什么时候该记**：用户拍板了方案、你放弃了一种做法并知道原因、用户给出新的硬性要求、或者你留下了一件没做完的事。不要记流水账（「读了某个文件」不算决策）。',
+    en: 'Append the decisions of this turn — settled choices, approaches ruled out, hard user rules, unfinished work — to the single project decision record (docs/PLAITCODE-PROJECT-NOTES.md). Append-only; duplicates are skipped. **When to record**: the user settled an approach, you ruled out an option and know why, the user gave a new hard rule, or you left something unfinished. Not a changelog — "read file X" is not a decision.',
   },
   'tool.updateProjectDoc.entriesParam': {
     zh: '要追加的条目。kind：convention=用户的硬性约定，decision=已定的方案及理由，rejected=已否决的做法及原因，open=还没做完的事。',
     en: 'Entries to append. kind: convention = a hard user rule, decision = a settled choice plus why, rejected = an approach ruled out plus why, open = work still unfinished.',
   },
   'tool.projectDocOff': {
-    zh: '项目技术文档已在设置里关闭（hwchat.projectDoc = off）。要记录决策，请让用户打开它，或改用普通文件工具写进项目文档。',
-    en: 'The project decision record is turned off (hwchat.projectDoc = off). Ask the user to enable it, or write into a normal project document with the file tools.',
+    zh: '项目技术文档已在设置里关闭（plaitcode.projectDoc = off）。要记录决策，请让用户打开它，或改用普通文件工具写进项目文档。',
+    en: 'The project decision record is turned off (plaitcode.projectDoc = off). Ask the user to enable it, or write into a normal project document with the file tools.',
   },
   'tool.projectDocNoEntries': { zh: '没有可写入的条目：每条都需要 kind（convention/decision/rejected/open）与非空 text。', en: 'Nothing to write: every entry needs a kind (convention/decision/rejected/open) and non-empty text.' },
   'tool.projectDocNoProject': {
@@ -1225,8 +1225,8 @@ const DICTIONARY: Record<string, Entry> = {
   'api.connectFailed': { zh: '无法连接到接口：{error}', en: 'Could not reach the endpoint: {error}' },
   'api.requestFailed': { zh: '接口请求失败（{status}）：{detail}', en: 'Endpoint request failed ({status}): {detail}' },
   'api.transientHint': {
-    zh: '（这是服务端临时过载，HWChat 已自动重试仍不成功；稍后再发一次通常就能过，也可以在设置里换一个模型或接口。）',
-    en: ' (Temporary server overload — HWChat retried automatically and still failed. Sending again usually works; you can also switch model or endpoint in settings.)',
+    zh: '（这是服务端临时过载，PlaitCode 已自动重试仍不成功；稍后再发一次通常就能过，也可以在设置里换一个模型或接口。）',
+    en: ' (Temporary server overload — PlaitCode retried automatically and still failed. Sending again usually works; you can also switch model or endpoint in settings.)',
   },
   'api.noStream': { zh: '接口没有返回可读取的数据流。', en: 'The endpoint returned no readable stream.' },
   'chat.imageDownloading': { zh: '正在下载图片…（{host}）', en: 'Downloading image… ({host})' },
@@ -1263,7 +1263,7 @@ const DICTIONARY: Record<string, Entry> = {
   'agent.stalled': { zh: '\n\n同一个工具调用（{tool}）已经反复返回完全相同的结果，说明反复执行也不会推进任务，因此被拦下（累计 {skips} 次）。已停止自动重试。请说明接下来该怎么做，或换个方向让我继续。', en: '\n\nThe same tool call ({tool}) kept returning byte-identical results, so repeating it cannot move the task forward and was blocked ({skips} times total). Automatic retries stopped. Tell me how to proceed, or point me in a different direction.' },
   'agent.continueForTodos': { zh: '步数预算用尽，但任务清单里还有未完成项。不要总结、不要收尾：继续执行清单里剩下的条目，直到全部完成并核实为止；不要重复已完成的步骤，也不要重新规划清单。', en: 'The step budget is exhausted but the task list still has unfinished items. Do not summarize or wrap up: keep working through the remaining items until every one is done and verified. Do not repeat finished steps or re-plan the list.' },
   'agent.unfinishedTodos': { zh: '任务清单里还有未完成项，这次运行不能结束。请继续做剩下的条目（不要重复已完成的步骤，也不要重新规划清单）：真的执行并核实之后，再用 update_todos 把它们标成 completed。如果你认为自己已经做完，请先核对清单：哪一条还没打勾、它的具体产出在哪里；核对后仍无法推进，就把卡住的原因和需要我做的事写清楚。', en: 'The task list still has unfinished items, so this run cannot end yet. Keep working through the remaining items (do not repeat finished steps or re-plan the list); actually perform and verify the work, then mark those items completed with update_todos. If you believe you are done, check the list first: which item is still unticked and where is its concrete result? If you still cannot make progress, state exactly what is blocking you and what you need from me.' },
-  'agent.commandStalled': { zh: '有命令已 {seconds} 秒没有输出，可能卡在等待密码或确认。HWChat 无法替你输入，可在该步骤上点停止；到达 {timeout} 秒上限会自动终止。', en: 'A command has produced no output for {seconds}s and may be waiting for a password or confirmation. HWChat cannot type it for you; stop that step if needed. It will be killed automatically at the {timeout}s cap.' },
+  'agent.commandStalled': { zh: '有命令已 {seconds} 秒没有输出，可能卡在等待密码或确认。PlaitCode 无法替你输入，可在该步骤上点停止；到达 {timeout} 秒上限会自动终止。', en: 'A command has produced no output for {seconds}s and may be waiting for a password or confirmation. PlaitCode cannot type it for you; stop that step if needed. It will be killed automatically at the {timeout}s cap.' },
   'agent.mergedGuidance': { zh: '收到相关新消息，已跳过尚未执行的旧步骤', en: 'New guidance arrived; pending steps were skipped' },
   'agent.pausedSkipped': { zh: '已暂停：新消息到达，本步剩余调用不再执行，先做综合分析', en: 'Paused: a new message arrived, so the rest of this step was skipped for re-analysis' },
   'tool.runCommand.noMatch': { zh: '退出码 1 表示**没有找到匹配**（findstr / grep / rg 的约定），命令本身执行成功了 —— 结论是这里没有这个内容，不必换写法重试。', en: 'Exit code 1 means **no match was found** (the findstr / grep / rg convention), not a failure — the command ran fine and the answer is that the content is not there. No need to retry with different syntax.' },
@@ -1342,7 +1342,7 @@ function appLanguage(): string {
 export function currentLanguage(): Language {
   let setting: unknown;
   try {
-    setting = vscode.workspace.getConfiguration('hwchat').get('language', 'auto');
+    setting = vscode.workspace.getConfiguration('plaitcode').get('language', 'auto');
   } catch {
     setting = 'auto';
   }
@@ -1393,7 +1393,7 @@ export function messageEntry(key: string): Entry | undefined {
  * 把词表包成可安全嵌入 HTML 的 JSON script 块。
  * `<` 转义成 `\u003c`，避免文案里出现脚本结束标签时截断文档。
  */
-export function messageScriptTag(lang: Language, id = 'hwchat-i18n'): string {
+export function messageScriptTag(lang: Language, id = 'plaitcode-i18n'): string {
   const json = JSON.stringify(messageTable(lang)).replace(/</g, '\\u003c');
   return `<script type="application/json" id="${id}">${json}</script>`;
 }

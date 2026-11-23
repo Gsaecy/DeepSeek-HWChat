@@ -154,7 +154,7 @@ test('falls back to a match-everything glob when the input is empty', () => {
 });
 
 // ── 裸 `**` 必须归一：findFiles 的 include 里 `**` 匹配不到任何文件 ──────────
-// 真实故障：`DeepSeek-HWChat/**` 剥掉前缀后剩 `**`，交给 findFiles 后 0 个文件，
+// 真实故障：`PlaitCode/**` 剥掉前缀后剩 `**`，交给 findFiles 后 0 个文件，
 // 工具却回答“没有匹配文件”，调用方只能误判为该目录下没有文件。
 test('rewrites a bare ** left over from stripping a root prefix', () => {
   const normalized = normalizeWorkspaceGlob('MaiKer_Win/**', roots);
@@ -173,7 +173,7 @@ test('keeps a trailing ** that still has a directory before it', () => {
 });
 
 // ── 桥接工具的路径隔离 ───────────────────────────────────────────────────
-// 真实缺陷：`hwchat_vscode_copilot_readFile` 传 /etc/hosts 直接返回了工作区外的
+// 真实缺陷：`plaitcode_vscode_copilot_readFile` 传 /etc/hosts 直接返回了工作区外的
 // 文件内容，`copilot_listDirectory` 传 /etc 列出了整个系统目录。原生 read_file 被
 // 锁在工作区内，桥接通道却能读任何路径，两条通道安全等级不一致。
 test('external tools: absolute path outside every root is rejected', () => {
@@ -304,7 +304,7 @@ test('project badge name: uses the folder name, and the filesystem root has none
 /* ── 涉及多个项目 ─────────────────────────────────────────────── */
 
 const many = [
-  { name: 'DeepSeek-HWChat', fsPath: '/Users/test/AI projects/DeepSeek-HWChat' },
+  { name: 'PlaitCode', fsPath: '/Users/test/AI projects/PlaitCode' },
   { name: 'Local_skill_quick_access', fsPath: '/Users/test/AI projects/Local_skill_quick_access' },
   { name: 'MaiKer_Win', fsPath: '/Users/test/AI projects/MaiKer_Win' },
 ];
@@ -370,9 +370,9 @@ test('involved projects: legacy conversations recover projects from changed-file
     rootsFromChangedFiles({
       roots: many,
       files: [
-        'DeepSeek-HWChat/src/views/chatPanel.ts',
+        'PlaitCode/src/views/chatPanel.ts',
         'Local_skill_quick_access/CHANGELOG.md',
-        'DeepSeek-HWChat/src/core/types.ts',
+        'PlaitCode/src/core/types.ts',
       ],
     }),
     [many[0]!.fsPath, many[1]!.fsPath],
@@ -380,10 +380,10 @@ test('involved projects: legacy conversations recover projects from changed-file
 });
 
 test('involved projects: a file name equal to a project name is not a project', () => {
-  // 无扩展名的文件 `DeepSeek-HWChat` 的第一段恰好等于文件夹名，但后面没有分隔符。
-  assert.deepEqual(rootsFromChangedFiles({ roots: many, files: ['DeepSeek-HWChat'] }), []);
+  // 无扩展名的文件 `PlaitCode` 的第一段恰好等于文件夹名，但后面没有分隔符。
+  assert.deepEqual(rootsFromChangedFiles({ roots: many, files: ['PlaitCode'] }), []);
   // 名字相近的项目不能被当成同一个。
-  assert.deepEqual(rootsFromChangedFiles({ roots: many, files: ['DeepSeek-HWChat-older/src/a.ts'] }), []);
+  assert.deepEqual(rootsFromChangedFiles({ roots: many, files: ['PlaitCode-older/src/a.ts'] }), []);
   // 绝对路径不参与推断。
   assert.deepEqual(rootsFromChangedFiles({ roots: many, files: ['/Users/test/AI projects/MaiKer_Win/src/a.ts'] }), []);
 });

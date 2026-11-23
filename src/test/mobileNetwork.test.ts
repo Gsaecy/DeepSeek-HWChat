@@ -20,7 +20,7 @@ import type { SyncPeer } from '../sync/lanProtocol';
 const phonePeer: SyncPeer = { id: 'p-win', name: 'PC · Windows', platform: 'win32', project: 'app', version: 'test' };
 
 async function makeService(received: string[]): Promise<{ service: LanSyncService; dir: string }> {
-  const dir = await mkdtemp(join(tmpdir(), 'hwchat-mobile-'));
+  const dir = await mkdtemp(join(tmpdir(), 'plaitcode-mobile-'));
   const service = new LanSyncService(join(dir, 'state.json'), {
     peer: () => phonePeer,
     runRequirement: async () => true,
@@ -66,7 +66,7 @@ test('手机遥控：验证码进门 → 读状态 → 发言 → 批准授权�
     const page = await fetch(base);
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-type') ?? '', /text\/html/);
-    assert.match(await page.text(), /HWChat/);
+    assert.match(await page.text(), /PlaitCode/);
 
     // 2) 错码进不来
     const wrongCode = service.mobileInfo().code === '000000' ? '111111' : '000000';
@@ -85,7 +85,7 @@ test('手机遥控：验证码进门 → 读状态 → 发言 → 批准授权�
     });
     assert.equal(login.status, 200);
     const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
-    assert.match(cookie, /^hwchat_m=[0-9a-f]+$/);
+    assert.match(cookie, /^plaitcode_m=[0-9a-f]+$/);
 
     // 4) 没 Cookie 读不到状态
     assert.equal((await fetch(`${base}/state`)).status, 401);
@@ -109,7 +109,7 @@ test('手机遥控：验证码进门 → 读状态 → 发言 → 批准授权�
 
     const sent = await fetch(`${base}/send`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', cookie, 'x-hwchat-mobile': '1' },
+      headers: { 'content-type': 'application/json', cookie, 'x-plaitcode-mobile': '1' },
       body: JSON.stringify({ text: '加一个托盘图标' }),
     });
     assert.equal(sent.status, 200);
@@ -118,7 +118,7 @@ test('手机遥控：验证码进门 → 读状态 → 发言 → 批准授权�
     // 7) 空的正文不进群
     const empty = await fetch(`${base}/send`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', cookie, 'x-hwchat-mobile': '1' },
+      headers: { 'content-type': 'application/json', cookie, 'x-plaitcode-mobile': '1' },
       body: JSON.stringify({ text: '   ' }),
     });
     assert.equal(empty.status, 400);
@@ -131,7 +131,7 @@ test('手机遥控：验证码进门 → 读状态 → 发言 → 批准授权�
 
     const approve = await fetch(`${base}/approve`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', cookie, 'x-hwchat-mobile': '1' },
+      headers: { 'content-type': 'application/json', cookie, 'x-plaitcode-mobile': '1' },
       body: JSON.stringify({ id: 'approval-7', allow: true }),
     });
     assert.equal(approve.status, 200);
@@ -140,7 +140,7 @@ test('手机遥控：验证码进门 → 读状态 → 发言 → 批准授权�
     // 9) 重复批准同一张卡 → 409（手机和电脑同时点也不会互相打架）
     const duplicate = await fetch(`${base}/approve`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', cookie, 'x-hwchat-mobile': '1' },
+      headers: { 'content-type': 'application/json', cookie, 'x-plaitcode-mobile': '1' },
       body: JSON.stringify({ id: 'approval-7', allow: false }),
     });
     assert.equal(duplicate.status, 409);

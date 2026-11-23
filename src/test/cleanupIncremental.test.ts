@@ -23,7 +23,7 @@ const baseOptions = {
 };
 
 async function withStorage(run: (storage: ConversationStorage) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-cleanup-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-cleanup-'));
   try {
     const storage = new ConversationStorage(root);
     await storage.initialize();
@@ -115,7 +115,7 @@ test('crossing the retention window forces a rescan but never deletes the conver
     assert.equal(second.scannedConversations, 1, '时间越过保留期时必须重新判定，不能因为「没写入」就跳过');
     /*
      * 但「保留期到了」只意味着可以瘦身，**不意味着可以消失**。
-     * HWChat 不再因为任何时限自动移除对话：那是用户报告丢数据之后定下的规则。
+     * PlaitCode 不再因为任何时限自动移除对话：那是用户报告丢数据之后定下的规则。
      */
     assert.equal(second.deletedConversations, 0, '保留期到期不许自动删除对话');
     const ids = (await storage.listConversations()).map((item) => item.id);
@@ -161,7 +161,7 @@ test('deleting a conversation drops its scan bookkeeping', async () => {
  */
 test('删除对话会删掉整个目录，不留空壳（否则重载后被 reconcile 复活）', async () => {
   const { readdir, stat } = await import('node:fs/promises');
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-shell-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-shell-'));
   try {
     const storage = new ConversationStorage(root);
     await storage.initialize();
@@ -186,7 +186,7 @@ test('删除对话会删掉整个目录，不留空壳（否则重载后被 reco
 
 test('启动时清掉历史遗留的空壳目录，且不把它重建成幽灵对话', async () => {
   const { mkdir, readdir, stat, writeFile } = await import('node:fs/promises');
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-shadow-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-shadow-'));
   try {
     // 复刻用户磁盘上的破损状态：manifest 里有一条「新对话」，磁盘上只剩空壳目录。
     await mkdir(join(root, 'conversations', 'conversation_ghost'), { recursive: true });
@@ -212,7 +212,7 @@ test('启动时清掉历史遗留的空壳目录，且不把它重建成幽灵�
 
 test('正常空对话（有 messages/ 目录）不会被当成空壳删掉', async () => {
   const { stat } = await import('node:fs/promises');
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-keep-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-keep-'));
   try {
     const storage = new ConversationStorage(root);
     await storage.initialize();

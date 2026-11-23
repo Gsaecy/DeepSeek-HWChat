@@ -25,7 +25,7 @@ let activeStorage: ConversationStorage | undefined;
  * 激活。
  *
  * **这里刻意不做重活**（真实性能问题 + 官方指引）：`activationEvents` 已清空，
- * 于是扩展只在「打开 HWChat 面板」或「执行 hwchat.* 命令」时才激活——官方文档
+ * 于是扩展只在「打开 PlaitCode 面板」或「执行 plaitcode.* 命令」时才激活——官方文档
  * （Activation Events：*It is best practice to activate only when a user needs your
  * extension*；且 1.74 起贡献的命令/视图无需显式声明）就是为了避免「装了扩展，
  * 每个窗口启动都被它读一遍磁盘」。
@@ -39,7 +39,7 @@ let activeStorage: ConversationStorage | undefined;
  * 自行 `initialize()`），激活本身只剩注册命令、视图与事件。
  */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const output = vscode.window.createOutputChannel('HWChat', { log: true });
+  const output = vscode.window.createOutputChannel('PlaitCode', { log: true });
   const storage = new ConversationStorage(join(context.globalStorageUri.fsPath, 'history-v1'), {
     legacyControls: readLegacyConversationControls(),
   });
@@ -52,7 +52,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.Uri.file(join(homedir(), '.copilot', '.skill-quick-launch.json')),
   );
   // 技能清单需要至少一次真实扫描（`sendState` 已不再每次扫描）。激活本身现在只在
-  // 「用户打开面板 / 执行 hwchat.* 命令」时发生，所以这一次扫描落在正确的时机；
+  // 「用户打开面板 / 执行 plaitcode.* 命令」时发生，所以这一次扫描落在正确的时机；
   // 之后 `SkillRegistry.refresh` 的 30 秒新鲜窗口与 single-flight 会挡掉重复调用。
   skills.onError = (error) => {
     output.warn(`[skills] 扫描失败（保留上一份清单）：${error instanceof Error ? error.message : String(error)}`);
@@ -174,12 +174,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 
   const commands: Array<[string, (...args: unknown[]) => unknown]> = [
-    ['hwchat.openChat', (id?: unknown) => chat.open(typeof id === 'string' ? id : undefined)],
-    ['hwchat.newChat', () => chat.newChat()],
-    ['hwchat.openSettings', () => settingsPanel.open()],
-    ['hwchat.askSelection', () => chat.openSelection('ask')],
-    ['hwchat.explainSelection', () => chat.openSelection('explain')],
-    ['hwchat.cleanupNow', () => scheduler.run(true)],
+    ['plaitcode.openChat', (id?: unknown) => chat.open(typeof id === 'string' ? id : undefined)],
+    ['plaitcode.newChat', () => chat.newChat()],
+    ['plaitcode.openSettings', () => settingsPanel.open()],
+    ['plaitcode.askSelection', () => chat.openSelection('ask')],
+    ['plaitcode.explainSelection', () => chat.openSelection('explain')],
+    ['plaitcode.cleanupNow', () => scheduler.run(true)],
     /*
      * 恢复自动删除的对话。
      *
@@ -187,7 +187,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * `rm -rf`。用户 2026-10-31 报过 13 条归档对话在一次清理后彻底消失（连废纸篓都
      * 没有），所以必须有一条可用的找回路径，而不是只在日志里留一行数字。
      */
-    ['hwchat.emptyTrash', async () => {
+    ['plaitcode.emptyTrash', async () => {
       const stats = await storage.trashStats();
       if (!stats.count) {
         await vscode.window.showInformationMessage(tt('ext.trashEmpty'));
@@ -204,7 +204,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await chat.refresh();
       await vscode.window.showInformationMessage(tt('ext.emptyTrashDone', { count: removed }));
     }],
-    ['hwchat.restoreDeletedConversations', async () => {
+    ['plaitcode.restoreDeletedConversations', async () => {
       const entries = await storage.listTrash();
       if (!entries.length) {
         await vscode.window.showInformationMessage(tt('ext.trashEmpty'));
@@ -229,24 +229,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await chat.refresh();
       await vscode.window.showInformationMessage(tt('ext.trashRestored', { count: restored }));
     }],
-    ['hwchat.setApiKey', () => setApiKey(context.secrets, settingsPanel, chat)],
-    ['hwchat.exportHistory', () => exportHistory(storage)],
-    ['hwchat.attachFiles', (uri?: unknown, selected?: unknown) => {
+    ['plaitcode.setApiKey', () => setApiKey(context.secrets, settingsPanel, chat)],
+    ['plaitcode.exportHistory', () => exportHistory(storage)],
+    ['plaitcode.attachFiles', (uri?: unknown, selected?: unknown) => {
       const uris = Array.isArray(selected)
         ? selected.filter((item): item is vscode.Uri => item instanceof vscode.Uri)
         : uri instanceof vscode.Uri ? [uri] : undefined;
       return chat.attachFiles(uris);
     }],
-    ['hwchat.archiveConversation', () => chat.archiveActiveConversation()],
-    ['hwchat.continueConversation', (id?: unknown) => chat.continueActiveConversation(typeof id === 'string' ? id : undefined)],
-    ['hwchat.rescanSkills', async () => {
+    ['plaitcode.archiveConversation', () => chat.archiveActiveConversation()],
+    ['plaitcode.continueConversation', (id?: unknown) => chat.continueActiveConversation(typeof id === 'string' ? id : undefined)],
+    ['plaitcode.rescanSkills', async () => {
       await skills.refresh({ force: true });
       await chat.refresh();
       void vscode.window.showInformationMessage(tt('ext.skillsFound', { count: skills.list().length }));
     }],
     // 桥接工具（run_in_terminal 等）的审批由 VS Code 决定，只能改它自己的设置。
-    ['hwchat.syncVsCodeApprovals', () => showApprovalBridge(context)],
-    ['hwchat.revertVsCodeApprovals', () => revertApprovalBridge(context)],
+    ['plaitcode.syncVsCodeApprovals', () => showApprovalBridge(context)],
+    ['plaitcode.revertVsCodeApprovals', () => revertApprovalBridge(context)],
     /**
      * 分段诊断接口连通性（DNS → TCP → TLS → HTTP）。
      *
@@ -254,7 +254,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * 任何可操作信息，而现场（网络/代理）往往在提问的那一刻已经恢复。一条命令就能
      * 把「哪一环、什么码、多少毫秒」写进输出面板，下次复现时不用再靠猜。
      */
-    ['hwchat.diagnoseNetwork', async () => {
+    ['plaitcode.diagnoseNetwork', async () => {
       const settings = readSettings();
       const profile = profileFor(settings, undefined);
       output.show(true);
@@ -277,7 +277,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const envProxy = proxyEnv();
       if (envProxy && !configured) {
         output.warn(
-          `[net] 检测到代理环境变量 ${envProxy}，但 HWChat 没有配置代理：Node 的 fetch 不会自动使用它`
+          `[net] 检测到代理环境变量 ${envProxy}，但 PlaitCode 没有配置代理：Node 的 fetch 不会自动使用它`
           + '（VS Code 的 http.proxy 也不覆盖扩展）。若直连不通，请在设置里填「接口代理」。',
         );
       }
@@ -293,7 +293,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         );
       }
     }],
-    ['hwchat.showResourceStats', async () => {
+    ['plaitcode.showResourceStats', async () => {
       const stats = toolExecutor.resourceStats();
       const lines = [
         `searches: active=${stats.search?.active ?? 0} queued=${stats.search?.queued ?? 0} inFlight=${stats.search?.inFlight ?? 0} cached=${stats.search?.cacheSize ?? 0}`,
@@ -303,7 +303,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         /*
          * 内存侧的缓存占用。
          *
-         * 用户反馈过「hwchat 占用高内存」，而在此之前**面板里看不到任何内存数字**，
+         * 用户反馈过「plaitcode 占用高内存」，而在此之前**面板里看不到任何内存数字**，
          * 只能靠读代码猜。这几行把每一处常驻缓存的「当前量 / 上限」都摊开：
          * 页缓存（唯一的 MB 级常驻）、附件正文索引、附件指针表、文件引用缓存。
          */
@@ -328,8 +328,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }],
     // 面板布局问题（右边被切 / 显示不全）没法从扩展侧取证：扩展宿主不知道 webview
     // 有多宽、文档有没有横向溢出。这条命令让界面自己量一遍再把数字报回来。
-    ['hwchat.reportLayout', () => chat.requestLayoutReport()],
-    ['hwchat.showPermissionScope', async () => {
+    ['plaitcode.reportLayout', () => chat.requestLayoutReport()],
+    ['plaitcode.showPermissionScope', async () => {
       const report = describePermissionScope();
       for (const line of formatPermissionScope(report)) {
         output.info(line);
@@ -340,7 +340,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   ];
   const commandDisposables = commands.map(([name, handler]) => vscode.commands.registerCommand(name, handler));
   const configurationDisposable = vscode.workspace.onDidChangeConfiguration((event) => {
-    if (!event.affectsConfiguration('hwchat')) {
+    if (!event.affectsConfiguration('plaitcode')) {
       return;
     }
     scheduler.restart();
@@ -353,7 +353,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   /**
    * 扩展被安装 / 卸载 / 启用 / 停用（官方定义见 `extensions.onDidChange`）。
    *
-   * 用来把「本地skill快捷调用」的安装状态与勾选状态实时对接给 HWChat 的技能面板：
+   * 用来把「本地skill快捷调用」的安装状态与勾选状态实时对接给 PlaitCode 的技能面板：
    * 没有它，用户装完扩展必须重载窗口，星标面板才会从「去安装」变成勾选列表。
    */
   const extensionsDisposable = vscode.extensions.onDidChange(() => {
@@ -395,7 +395,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     output.error(error instanceof Error ? error.message : String(error));
   }), 20_000).unref?.();
 
-  output.info('HWChat activated.');
+  output.info('PlaitCode activated.');
 }
 
 /** 与设置页一致的体积格式（KB/MB），只用于提示文案。 */
@@ -405,7 +405,7 @@ function formatBytesForNotice(bytes: number): string {
 }
 
 async function ensurePrivacyConsent(context: vscode.ExtensionContext): Promise<boolean> {
-  if (context.globalState.get<boolean>('hwchat.privacyConsent.v1')) {
+  if (context.globalState.get<boolean>('plaitcode.privacyConsent.v1')) {
     return true;
   }
   // 模态框自带本地化的 Cancel，不用再传一个自己的「取消」。
@@ -415,7 +415,7 @@ async function ensurePrivacyConsent(context: vscode.ExtensionContext): Promise<b
     tt('ext.privacyAgree'),
   );
   if (answer !== tt('ext.privacyAgree')) return false;
-  await context.globalState.update('hwchat.privacyConsent.v1', true);
+  await context.globalState.update('plaitcode.privacyConsent.v1', true);
   return true;
 }
 
@@ -457,7 +457,7 @@ async function exportHistory(storage: ConversationStorage): Promise<void> {
   const destination = await vscode.window.showSaveDialog({
     filters: { JSON: ['json'] },
     saveLabel: tt('ext.exportLabel'),
-    defaultUri: vscode.Uri.file(`HWChat-history-${new Date().toISOString().slice(0, 10)}.json`),
+    defaultUri: vscode.Uri.file(`PlaitCode-history-${new Date().toISOString().slice(0, 10)}.json`),
   });
   if (!destination) {
     return;

@@ -27,7 +27,7 @@ const t = (key: string, values?: Record<string, string | number>): string =>
   `${key}${values ? `(${Object.entries(values).map(([k, v]) => `${k}=${v}`).join(',')})` : ''}`;
 
 function fixture(): string {
-  const root = mkdtempSync(join(tmpdir(), 'hwchat-pathhint-'));
+  const root = mkdtempSync(join(tmpdir(), 'plaitcode-pathhint-'));
   mkdirSync(join(root, 'web/assets'), { recursive: true });
   writeFileSync(join(root, 'web/assets/i18n.js'), 'export const a = 1;\n');
   return root;

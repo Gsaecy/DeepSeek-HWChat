@@ -18,7 +18,7 @@ const todos = (...statuses: TodoItem['status'][]): TodoItem[] =>
   statuses.map((status, index) => ({ content: `步骤 ${index + 1}`, status }));
 
 test('官方续跑文案（中英）都判定为通用续跑', () => {
-  // 这两个字符串由 HWChat 自己的「继续执行」按钮发出，必须被识别，
+  // 这两个字符串由 PlaitCode 自己的「继续执行」按钮发出，必须被识别，
   // 否则按钮那条路径又会把「继续执行当前任务清单…」当成任务身份。
   assert.equal(isGenericResume(resumeInstruction('zh')), true);
   assert.equal(isGenericResume(resumeInstruction('en')), true);
@@ -47,7 +47,7 @@ test('带路径或代码片段的续跑不算通用续跑', () => {
 });
 
 test('普通消息不会被误判', () => {
-  assert.equal(isGenericResume('将 hwchat 侧边栏的对话卡片显示的运行状态，运行中显示为蓝色文字'), false);
+  assert.equal(isGenericResume('将 plaitcode 侧边栏的对话卡片显示的运行状态，运行中显示为蓝色文字'), false);
   assert.equal(isGenericResume(''), false);
   assert.equal(isGenericResume('   '), false);
 });

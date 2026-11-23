@@ -59,10 +59,10 @@ import {
  * - `projectRoot`：本次对话绑定的项目根。多根工作区里它决定相对路径的归属，
  *   也决定 git 写操作允许落在哪个仓库；未绑定时 `'.'` 仍按旧行为落到第一个根。
  * - `gitWriteAllowed`：用户本轮**明确要求**（或已启用技能规则要求）git 写操作。
- *   为 false 时所有 git 写操作一律拒绝——HWChat 不主动提交。
+ *   为 false 时所有 git 写操作一律拒绝——PlaitCode 不主动提交。
  * - `versionBumpAllowed`：用户本轮**明确要求**（或已启用技能规则要求）升级项目版本号。
  *   为 false 时改动版本清单里的 version 字段、以及 `npm version` 这类命令一律拒绝——
- *   HWChat 也不主动升版本，只在任务完成后询问。
+ *   PlaitCode 也不主动升版本，只在任务完成后询问。
  * - `bindProjectRoot`：首次确定项目根时回调，由面板写回对话存档。
  * - `touchProjectRoot`：**每次**改动落盘成功都回调一次「这次动的是哪个工作区根」。首次绑定的
  *   那个之外，后续改到别的项目也要记下来，否则标题旁的徽标永远只显示第一个项目，用户看不出
@@ -172,10 +172,10 @@ export interface ExternalExecutionOptions {
   conversationId?: string;
   /** 名称/描述命中破坏性关键词时强制确认（不适用于委托授权的 VS Code 工具）。 */
   forceApproval?: boolean;
-  /** true 表示把授权交给外部系统（VS Code 工具自己的确认 UI），HWChat 不再弹窗。 */
+  /** true 表示把授权交给外部系统（VS Code 工具自己的确认 UI），PlaitCode 不再弹窗。 */
   delegateApproval?: boolean;
   /**
-   * 这是**HWChat 自己的数据**（对话存档、审计日志），不是工作区文件。
+   * 这是**PlaitCode 自己的数据**（对话存档、审计日志），不是工作区文件。
    *
    * 为什么单独区分（用户 2026-11-07 追问的缺口之一）：`read_message_detail` 走的是
    * `fileReadPolicy`，用户把它设成 `ask` 之后，每展开一条历史工具输出都要点一次确认 ——
@@ -218,7 +218,7 @@ const SEARCH_RESULT_TTL_MS = 2_000;
 /**
  * 结果缓存的两条上限：条数 + **总字节**。
  *
- * 现场（用户反馈「hwchat 占用高内存」）：只限 32 条是不够的 —— 每条 `result.content`
+ * 现场（用户反馈「plaitcode 占用高内存」）：只限 32 条是不够的 —— 每条 `result.content`
  * 允许到 `maxToolOutputBytes`（默认 200 KB），32 条就是 **6.4 MB** 常驻，
  * 而这份缓存的 TTL 只有 2 秒，换来的只是「同一轮里不要重复扫同一份代码」。
  * 现在再加一条 8 MB 的字节闸门：长输出条目进来时先把老的挤出去。
@@ -231,8 +231,8 @@ const SENSITIVE_PARTS = /(^|\/)(\.git|\.ssh|\.aws|\.kube)(\/|$)/i;
 const SENSITIVE_COMMAND = /(^|[\s'"/])(?:\.env(?:\.[^\s'"]*)?|\.ssh|\.aws|\.kube|credentials?(?:\.[^\s'"]*)?|secrets?(?:\.[^\s'"]*)?|service[-_]?account(?:\.[^\s'"]*)?|id_(?:rsa|dsa|ecdsa|ed25519)|[^\s'"]+\.(?:pem|key|p12|pfx))(?:[\s'"/]|$)/i;
 
 /** 带路径参数、需要单独做敏感文件守卫的工具。 */
-/** `hwchat.maxCommandSeconds` 的设置名与上限（与 package.json 的 maximum 保持一致）。 */
-const COMMAND_TIMEOUT_SETTING = 'hwchat.maxCommandSeconds';
+/** `plaitcode.maxCommandSeconds` 的设置名与上限（与 package.json 的 maximum 保持一致）。 */
+const COMMAND_TIMEOUT_SETTING = 'plaitcode.maxCommandSeconds';
 const COMMAND_TIMEOUT_MAX = 900;
 
 const PATH_TOOLS = ['list_directory', 'read_file', 'open_file', 'get_diagnostics', 'write_file', 'replace_in_file', 'rename_file', 'delete_file'];
@@ -263,7 +263,7 @@ export class ToolExecutor implements vscode.Disposable {
    *
    * 为什么需要这个模式：用户要「先给我预览一下效果」，正确做法是起一个静态服务器
    * 并**立刻返回**。旧实现只能等命令结束，于是 `python3 -m http.server` 跑满 120 秒
-   * 超时；模型只好去试 `run_in_terminal`（那个在 HWChat 里永远调不通），三轮失败后
+   * 超时；模型只好去试 `run_in_terminal`（那个在 PlaitCode 里永远调不通），三轮失败后
    * 整轮停机（用户 2026-11-04 的原话：「经常调用 vs code 工具失败」）。
    *
    * 这些进程必须能被**明确杀掉**：会话结束/用户点停止时按 id 收尾，不留孤儿端口。
@@ -680,7 +680,7 @@ export class ToolExecutor implements vscode.Disposable {
       return result;
     }
     // delegateApproval：VS Code 扩展工具是否弹窗由 VS Code 自己（prepareInvocation）决定，
-    // HWChat 只负责记录审计，不再叠加一层确认。
+    // PlaitCode 只负责记录审计，不再叠加一层确认。
     const approvalRequired = !internal
       && !delegateApproval
       && (policy === 'ask' || (forceApproval && !isAutonomousPreset(settings)));
@@ -831,7 +831,7 @@ export class ToolExecutor implements vscode.Disposable {
     if (root) {
       // 必须用 RelativePattern 把查询限定在该根目录内。若只传字符串 glob，
       // 多根工作区里 findFiles 会搜遍所有根、共享同一个上限：真实会话中第 17 个
-      // 根（DeepSeek-HWChat）被前 16 个根挤掉，过滤后返回 0 个文件，还因为
+      // 根（PlaitCode）被前 16 个根挤掉，过滤后返回 0 个文件，还因为
       // files.length 撞到上限被标成「已达上限」，调用方只能判定“这里没有文件”。
       const search = await this.runSearch({ include: glob, limit, folder: root.fsPath, operation }, scope, metrics);
       return {
@@ -859,7 +859,7 @@ export class ToolExecutor implements vscode.Disposable {
     // 按根轮转交错合并，而不是「第一个根的全部 → 第二个根的全部」。
     // 否则下游的扫描预算（SEARCH_FILE_BUDGET / 输出行数）会被最靠前的根吃光，
     // 后面的根永远轮不到，工具却回答“没有匹配”——真实会话里搜索第 17 个根
-    // （DeepSeek-HWChat）就得到 0 处匹配，而该字符串确实存在。
+    // （PlaitCode）就得到 0 处匹配，而该字符串确实存在。
     const longest = perRoot.reduce((max, list) => Math.max(max, list.length), 0);
     for (let index = 0; index < longest; index += 1) {
       for (const list of perRoot) {
@@ -1307,7 +1307,7 @@ export class ToolExecutor implements vscode.Disposable {
   /**
    * 真的改过项目文件之后，确保文档存在（不写内容，只建骨架）。
    *
-   * 这是用户要求的「涉及修改的项目文件里新建一份技术文档；没用 hwchat 修改的就不新建」：
+   * 这是用户要求的「涉及修改的项目文件里新建一份技术文档；没用 plaitcode 修改的就不新建」：
    * 触发点只能是**成功的文件修改**，而不是「打开了一条对话」或「读了一个文件」。
    */
   private async ensureProjectDoc(settings: ChatSettings, scope?: ToolExecutionScope): Promise<void> {
@@ -1484,7 +1484,7 @@ export class ToolExecutor implements vscode.Disposable {
       return deniedResult(tt('tool.versionBumpCommandNotAuthorized', { command: versionTool }));
     }
     /*
-     * 请求值与生效值分开算：模型可以要求 900 秒，但设置 `hwchat.maxCommandSeconds` 是硬上限。
+     * 请求值与生效值分开算：模型可以要求 900 秒，但设置 `plaitcode.maxCommandSeconds` 是硬上限。
      * 旧实现直接 `Math.min()` 吞掉，结果只说「超时（120 秒）」—— 用户那次 `cargo check`
      * 就是这样莫名其妙失败的（要求 900、实际 120、还因为 `| tail` 看不到任何输出）。
      */

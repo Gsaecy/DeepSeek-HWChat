@@ -43,8 +43,8 @@ function loadFileRef(): FileRefModule {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(readFileSync('media/file-reference.js', 'utf8'), sandbox);
-  const loaded = sandbox.HWChatFileRef as FileRefModule | undefined;
-  assert.ok(loaded, 'media/file-reference.js 应挂载 HWChatFileRef');
+  const loaded = sandbox.PlaitCodeFileRef as FileRefModule | undefined;
+  assert.ok(loaded, 'media/file-reference.js 应挂载 PlaitCodeFileRef');
   return loaded;
 }
 
@@ -59,7 +59,7 @@ function plain<T>(value: T): T {
   return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
 }
 
-const ROOT = '/Users/guohongyu/AI projects/DeepSeek-HWChat';
+const ROOT = '/Users/guohongyu/AI projects/PlaitCode';
 const CONTEXT = { roots: [ROOT], preferred: ROOT };
 
 /* ── 1. 认得出 ───────────────────────────────────────────── */
@@ -133,7 +133,7 @@ test('网址里的主机名不会被拆出一条假路径', () => {
 });
 
 test('路径里带空格只在反引号里才认（正文里没有边界可用）', () => {
-  const spaced = '/Users/guohongyu/AI projects/DeepSeek-HWChat/media/chat.js';
+  const spaced = '/Users/guohongyu/AI projects/PlaitCode/media/chat.js';
   assert.equal(fileRef.parseReference(spaced), null, '正文里裸写带空格的路径不该被认');
   assert.equal(fileRef.parseReference(spaced, { allowSpaces: true })?.path, spaced, '反引号里应该认');
 });

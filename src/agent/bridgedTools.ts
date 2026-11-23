@@ -9,7 +9,7 @@
  * 紧接着两次「换条路写日志」都被路径隔离拦住，凑满 3 轮失败 → 整轮停机。用户看到的
  * 就是「经常调用 vs code 工具失败」。
  *
- * **根因在 VS Code 侧，不在 HWChat 的参数上**。`run_in_terminal` 的实现（Workbench
+ * **根因在 VS Code 侧，不在 PlaitCode 的参数上**。`run_in_terminal` 的实现（Workbench
  * 打包产物里能直接读到）是：
  *
  *     async invoke(e, t, i, n) {
@@ -21,12 +21,12 @@
  *
  * 而 `lm.invokeTool` 的公开参数只有 `{ input, toolInvocationToken, tokenizationOptions }`
  * —— `toolSpecificData` 与 `context` 都传不进去，`toolInvocationToken` 也只能从
- * `ChatRequest` 里拿到（HWChat 是独立面板，不是 chat participant，没有 ChatRequest）。
+ * `ChatRequest` 里拿到（PlaitCode 是独立面板，不是 chat participant，没有 ChatRequest）。
  *
  * 官方 `vscode.d.ts` 对此的说明是「outside of a chat request, `undefined` should be passed」，
  * 也就是「一般工具可以」，但**具体工具可以自己要求上下文**，`run_in_terminal` 就是这种。
  *
- * 结论：这类工具在 HWChat 里**永远不可能成功**。继续把它摆在模型面前，只会每次白烧
+ * 结论：这类工具在 PlaitCode 里**永远不可能成功**。继续把它摆在模型面前，只会每次白烧
  * 一轮、并把它算进「连续失败」预算。正确处理是：
  *  1. 不下发（`definitions()` 过滤掉）；
  *  2. 万一模型凭记忆硬调，返回一条**确定性**说明 + 替代方案（原生 `run_command`），
@@ -50,8 +50,8 @@
  *
  * `_promptContext` 由 `resolveInput` 的第二个参数赋值，也就是**聊天请求上下文**；
  * `lm.invokeTool` 的公开参数只有 `{ input, toolInvocationToken }`，传不了它。
- * 所以这两个工具在 HWChat 里**永远**只会回一句 `Invalid input`（用户 2026-11-07 的真实报错），
- * 而 HWChat 有原生的 `replace_in_file` / `write_file`，能力不缺。
+ * 所以这两个工具在 PlaitCode 里**永远**只会回一句 `Invalid input`（用户 2026-11-07 的真实报错），
+ * 而 PlaitCode 有原生的 `replace_in_file` / `write_file`，能力不缺。
  */
 const KNOWN_NEEDS_CHAT_CONTEXT: readonly string[] = [
   'run_in_terminal',
@@ -102,15 +102,15 @@ export function missingChatContextNotice(toolName: string): string {
      * 大段重构可以直接 `write_file` 整份重写。否则模型会去改参数重试同一个工具。
      */
     return [
-      `工具 ${toolName} 在 HWChat 里无法调用：它要求 VS Code 聊天请求的调用上下文（promptContext），`,
-      '而 HWChat 是独立面板，`lm.invokeTool` 的公开参数里传不了它 —— 这不是权限、路径或参数格式的问题，',
+      `工具 ${toolName} 在 PlaitCode 里无法调用：它要求 VS Code 聊天请求的调用上下文（promptContext），`,
+      '而 PlaitCode 是独立面板，`lm.invokeTool` 的公开参数里传不了它 —— 这不是权限、路径或参数格式的问题，',
       '改参数、拆成更小的替换、或换一个 oldString 都不会成功，**不要重试**。',
       '改文件请用原生工具：`replace_in_file`（一处一次，需要改 N 处就按顺序调用 N 次）或 `write_file`（整份重写）。',
     ].join('');
   }
   return [
-    `工具 ${toolName} 在 HWChat 里无法调用：它要求 VS Code 聊天请求的调用上下文（toolSpecificData + context），`,
-    '而 HWChat 是独立面板，`lm.invokeTool` 的公开参数里没有这两项 —— 这不是权限、路径或参数格式的问题，',
+    `工具 ${toolName} 在 PlaitCode 里无法调用：它要求 VS Code 聊天请求的调用上下文（toolSpecificData + context），`,
+    '而 PlaitCode 是独立面板，`lm.invokeTool` 的公开参数里没有这两项 —— 这不是权限、路径或参数格式的问题，',
     '改参数或换命令写法都不会成功，**不要重试**。',
     '需要执行命令时请用原生 `run_command`（它支持 cwd、超时与后台运行）；需要预览网页时用 `open_web_preview`。',
   ].join('');

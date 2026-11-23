@@ -33,7 +33,7 @@ const ROOT = process.cwd();
 function repositoryFile(...segments: string[]): string {
   const candidates = [
     path.join(process.cwd(), ...segments),
-    path.join(process.cwd(), 'DeepSeek-HWChat', ...segments),
+    path.join(process.cwd(), 'PlaitCode', ...segments),
   ];
   const found = candidates.find((candidate) => existsSync(candidate));
   assert.ok(found, `找不到 ${segments.join('/')}`);
@@ -81,15 +81,15 @@ test('package.json 里三项新对话默认值与代码一致（每次询问 / 2
   };
   const properties = pkg.contributes?.configuration?.properties;
   assert.ok(properties, 'package.json 里找不到 contributes.configuration.properties');
-  assert.equal(properties['hwchat.permissionPreset']?.default, 'askAll');
-  assert.equal(properties['hwchat.agentMaxSteps']?.default, 24);
+  assert.equal(properties['plaitcode.permissionPreset']?.default, 'askAll');
+  assert.equal(properties['plaitcode.agentMaxSteps']?.default, 24);
   // 「无限制」用 0 表示，所以最小值必须是 0（写 1 会让用户手填 0 时被设置页标红）。
-  assert.equal(properties['hwchat.agentMaxSteps']?.minimum, 0);
-  assert.equal(properties['hwchat.reasoningEffort']?.default, 'default');
-  assert.deepEqual(properties['hwchat.reasoningEffort']?.enum, ['default', 'low', 'medium', 'high', 'max']);
+  assert.equal(properties['plaitcode.agentMaxSteps']?.minimum, 0);
+  assert.equal(properties['plaitcode.reasoningEffort']?.default, 'default');
+  assert.deepEqual(properties['plaitcode.reasoningEffort']?.enum, ['default', 'low', 'medium', 'high', 'max']);
   // 这三项已改为「按对话」：键仍注册（旧 settings.json 不报未知项），但必须标记废弃，
   // 否则用户会以为改它们还能影响新对话。
-  for (const key of ['hwchat.permissionPreset', 'hwchat.agentMaxSteps', 'hwchat.reasoningEffort']) {
+  for (const key of ['plaitcode.permissionPreset', 'plaitcode.agentMaxSteps', 'plaitcode.reasoningEffort']) {
     assert.ok(properties[key]?.deprecationMessage, `${key} 缺少 deprecationMessage`);
   }
 });
@@ -161,7 +161,7 @@ test('webview 的兜底默认值同样是每次询问', () => {
 test('切换后的权限只看当前预设，切换前（全局）那一份不参与判定', () => {
   // 全局保存着「完全访问」：它不再影响任何新对话。
   setWorkspaceRoots([ROOT]);
-  setConfiguration({ 'hwchat.permissionPreset': 'full' });
+  setConfiguration({ 'plaitcode.permissionPreset': 'full' });
   const global = readSettings();
   assert.equal(global.permissionPreset, 'askAll');
   assert.equal(global.sensitiveFilePolicy, 'deny');

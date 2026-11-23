@@ -1,5 +1,5 @@
 /**
- * HWChat 内部所有工作区文件搜索的唯一入口。
+ * PlaitCode 内部所有工作区文件搜索的唯一入口。
  *
  * 任何 `vscode.workspace.findFiles` 都必须经过这里，原因见 `searchScheduler.ts`：
  * 每次 findFiles 在 VS Code 里都对应一次真实搜索（会拉起 ripgrep），
@@ -7,7 +7,7 @@
  *
  * 默认排除：依赖、构建产物、缓存与语言工具链目录。它们不是用户的工作区内容，
  * 每次「搜一下」都扫一遍会让 I/O 和 CPU 都翻几倍。需要搜索这些目录时，
- * 用户可以显式写进 `hwchat.searchExclude` 的反向做法（见 README）——
+ * 用户可以显式写进 `plaitcode.searchExclude` 的反向做法（见 README）——
  * 或者用更具体的 glob 直接指向目标目录。
  */
 
@@ -95,7 +95,7 @@ export function workspaceSearchExclude(): string {
  * > `search.exclude`) will apply. When `null`, no excludes will apply.
  *
  * 也就是说：**只要传了自定义 exclude，VS Code 的默认排除（即 `files.exclude`）就不再生效**。
- * HWChat 必须传自定义 exclude（要挡住 node_modules / 构建产物），所以必须自己把
+ * PlaitCode 必须传自定义 exclude（要挡住 node_modules / 构建产物），所以必须自己把
  * `files.exclude` 并进来——否则用户在 `files.exclude` 里排掉的目录（例如 `vendor`、
  * `Pods`）反而会被我们逐个扫描，正是「越优化越费 CPU」的那类坑。
  *
@@ -139,7 +139,7 @@ export function simpleDirectoryName(pattern: string): string | undefined {
 /**
  * 读取用户追加的排除目录。
  *
- * `hwchat.searchExclude` 是 resource 作用域：多根工作区里用户完全可能只在某一个根的
+ * `plaitcode.searchExclude` 是 resource 作用域：多根工作区里用户完全可能只在某一个根的
  * `.vscode/settings.json` 里写它。只读无 resource 的合并视图会像当年的权限配置一样
  * 「写了但读不到」，所以这里逐根读一遍再取并集（并集只会少排除、不会多排除，
  * 不会把用户想搜的目录悄悄挡掉）。
@@ -155,9 +155,9 @@ function readConfiguredExcludes(): string[] {
     }
   };
   try {
-    add(vscode.workspace.getConfiguration('hwchat').get<unknown>('searchExclude', []));
+    add(vscode.workspace.getConfiguration('plaitcode').get<unknown>('searchExclude', []));
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
-      add(vscode.workspace.getConfiguration('hwchat', folder.uri).get<unknown>('searchExclude', []));
+      add(vscode.workspace.getConfiguration('plaitcode', folder.uri).get<unknown>('searchExclude', []));
     }
   } catch {
     // 配置读取失败只意味着「没有额外排除」，不影响搜索本身。
@@ -192,7 +192,7 @@ function buildKey(params: WorkspaceSearchParams): string {
  * 之前这里只传了三个参数，并在注释里写「findFiles 没有 CancellationToken」——那是错的。
  * 后果是：用户点「停止」后，搜索调度层只是不再等待结果，**底层搜索（ripgrep）仍会把
  * 整个工作区扫完**，CPU 与进程占用照旧。现在把 token 传下去，取消会真正传给搜索
- * 引擎，这才符合「取消任务后不遗留由 HWChat 启动的搜索」。
+ * 引擎，这才符合「取消任务后不遗留由 PlaitCode 启动的搜索」。
  *
  * token 的来源要在本次搜索结束后 dispose，避免每搜一次就漏一个 CancellationTokenSource。
  */

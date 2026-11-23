@@ -3,7 +3,7 @@
  *
  * 为什么需要（真实故障，全部发生在同一天）：
  *  - 用户说「先给我预览一下效果」，模型选了桥接工具 `run_in_terminal` 起静态服务器。
- *    那个工具要求 chat 调用上下文，在 HWChat 里永远失败（见 `bridgedTools.ts`），
+ *    那个工具要求 chat 调用上下文，在 PlaitCode 里永远失败（见 `bridgedTools.ts`），
  *    接着三轮失败整轮停机。
  *  - 用户说「优化图片，生成新图片发给我」，模型自己去 `npx` 装 mermaid-cli（超时 2 分钟），
  *    手写 SVG 落盘，对话框里什么也没出现。
@@ -220,7 +220,7 @@ const GIT_WRITE_PLAYBOOK: ToolPlaybook = {
     '## 本轮任务类型：git 写操作（宿主已指定执行路径）',
     '所有 git 写操作都通过 `run_command` 执行，并**显式传 `cwd`**（本次对话所属的项目根）：',
     '`{"command":"git ...","cwd":"<项目根>"}`。',
-    '禁止：`git -C <别的路径>`、`cd <别的项目> && git ...`、桥接终端工具 —— 这些会跨项目提交，或在 HWChat 里根本调不通。',
+    '禁止：`git -C <别的路径>`、`cd <别的项目> && git ...`、桥接终端工具 —— 这些会跨项目提交，或在 PlaitCode 里根本调不通。',
     '先 `git status --short` 看清要提交什么；版本号不要自己改。',
   ].join('\n'),
 };

@@ -10,7 +10,7 @@
  * 3. **配对码是唯一凭据**，每个请求都要带。同一个 WiFi 上的陌生设备扫到端口也进不来。
  * 4. **网络输入全部当作不可信**：`parseSyncMessage` 卡长度 + 校验形状，处理器只认
  *    校验通过的对象；任何异常都只在日志里留一行，绝不让它冒到面板。
- * 5. **默认关闭**（`hwchat.lanSync.enabled` 默认 false），不影响现有任何功能。
+ * 5. **默认关闭**（`plaitcode.lanSync.enabled` 默认 false），不影响现有任何功能。
  */
 
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -106,6 +106,13 @@ export interface LanSyncBridge {
   onMobileMessage?(text: string): Promise<{ ok: boolean; message: string }>;
   /** 手机上是否允许批准工具授权（用户可在设置里关掉，关掉后手机只能看和说话）。 */
   canApproveFromPhone?(): boolean;
+  /**
+   * 本机**新产生**的一条消息（需求 / 报告 / 协作消息 / 群发言）。
+   *
+   * 局域网模式下它已经自己广播了；跨网中继模式下由这一条钩子把密文送去中转。
+   * 只在「本机产生」时调用，收到别人的消息不会再触发，避免回声。
+   */
+  onOutgoing?(message: SyncMessage): void;
 }
 
 export type LanSyncRole = 'off' | 'hub' | 'peer';
@@ -133,8 +140,8 @@ interface PersistedState {
 const STATE_LIMIT = 300;
 const REQUEST_TIMEOUT_MS = 4_000;
 const BODY_LIMIT = MAX_MESSAGE_BYTES + 16 * 1024;
-const DISCOVER_MAGIC = 'HWCHAT-SYNC-DISCOVER/1';
-const HUB_MAGIC = 'HWCHAT-SYNC-HUB/1';
+const DISCOVER_MAGIC = 'PLAITCODE-SYNC-DISCOVER/1';
+const HUB_MAGIC = 'PLAITCODE-SYNC-HUB/1';
 
 function platformOf(value: string): SyncPlatform {
   return value === 'win32' || value === 'darwin' ? value : 'linux';
@@ -304,6 +311,24 @@ export class LanSyncService implements Disposable {
   /** 本机身份（面板拼「按本机平台做等价实现」时用）。 */
   localPeer(): SyncPeer {
     return this.bridge.peer();
+  }
+
+  /**
+   * 中继收到的一条消息：并入本机状态。
+   *
+   * 用 `relay: false`：中继已经把它发给所有设备了，这里再转发就是回路。
+   */
+  async ingestRelayMessage(message: SyncMessage): Promise<void> {
+    await this.applyMessage(message, { relay: false });
+  }
+
+  /** 本机产生的消息交给中继（没接中继时是空操作）。 */
+  private relayOut(message: SyncMessage): void {
+    try {
+      this.bridge.onOutgoing?.(message);
+    } catch (error) {
+      this.bridge.log(`[relay] 发送失败：${error instanceof Error ? error.message : String(error)}`, 'warn');
+    }
   }
 
   /* ------------------------------------------------------------------ *
@@ -520,7 +545,7 @@ export class LanSyncService implements Disposable {
       this.stopListener();
       return { ok: false, message: '没有自动找到主机。请直接填写主机的局域网 IP（状态栏里有）。' };
     }
-    const response = await this.postJson(target, '/hwchat-sync/v1/pair', {
+    const response = await this.postJson(target, '/plaitcode-sync/v1/pair', {
       protocol: SYNC_PROTOCOL_VERSION,
       code: this.code,
       peer: this.bridge.peer(),
@@ -684,7 +709,7 @@ export class LanSyncService implements Disposable {
       response.end(payload);
     };
     try {
-      if (request.method === 'GET' && route === '/hwchat-sync/v1/ping') {
+      if (request.method === 'GET' && route === '/plaitcode-sync/v1/ping') {
         json(200, { ok: true, protocol: SYNC_PROTOCOL_VERSION, peer: this.bridge.peer(), role: this.role });
         return;
       }
@@ -718,11 +743,11 @@ export class LanSyncService implements Disposable {
        * `/pair` 例外：它的放行判断在下面（已允许过的设备 / 对得上码 / 用户点「允许」
        * 三种途径），所以不能在这里一刀切 —— 否则「傻瓜式」的弹窗永远走不到。
        */
-      if (route !== '/hwchat-sync/v1/pair' && !pairingMatches(parsed.code, this.code)) {
+      if (route !== '/plaitcode-sync/v1/pair' && !pairingMatches(parsed.code, this.code)) {
         json(403, { ok: false, error: 'pairing code mismatch' });
         return;
       }
-      if (route === '/hwchat-sync/v1/pair') {
+      if (route === '/plaitcode-sync/v1/pair') {
         const message = parseSyncMessage({ kind: 'report', requirementId: 'pair', from: parsed.peer, status: 'planned' });
         if (message) {
           /*
@@ -770,7 +795,7 @@ export class LanSyncService implements Disposable {
         });
         return;
       }
-      if (route === '/hwchat-sync/v1/message') {
+      if (route === '/plaitcode-sync/v1/message') {
         const message = parseSyncMessage(parsed.message);
         if (!message) {
           json(400, { ok: false, error: 'invalid message' });
@@ -787,7 +812,7 @@ export class LanSyncService implements Disposable {
        * 只接受主机转发的消息，且同样校验配对码 —— 这样即使有人知道端口，
        * 没有配对码也没法让别人的机器执行任务。
        */
-      if (route === '/hwchat-sync/v1/deliver') {
+      if (route === '/plaitcode-sync/v1/deliver') {
         const message = parseSyncMessage(parsed.message);
         if (!message) {
           json(400, { ok: false, error: 'invalid message' });
@@ -914,7 +939,7 @@ export class LanSyncService implements Disposable {
      * 改状态的接口要求这个自定义头：跨站表单发不出自定义头，
      * 配合 `SameSite=Strict` 就挡住了「别的网页借你的浏览器指挥这台电脑」。
      */
-    if (request.headers['x-hwchat-mobile'] !== '1') {
+    if (request.headers['x-plaitcode-mobile'] !== '1') {
       send(403, { ok: false, error: '缺少请求头' });
       return;
     }
@@ -1039,7 +1064,7 @@ export class LanSyncService implements Disposable {
     if (options.relay && this.role === 'hub') {
       const payload = JSON.stringify({ protocol: SYNC_PROTOCOL_VERSION, code: this.code, message });
       const targets = this.peerList().filter((entry) => entry.address && entry.peer.id !== options.from);
-      await Promise.allSettled(targets.map((entry) => postRaw(entry.address, '/hwchat-sync/v1/deliver', payload)));
+      await Promise.allSettled(targets.map((entry) => postRaw(entry.address, '/plaitcode-sync/v1/deliver', payload)));
     }
     await this.refreshLedger();
     this.bridge.onState?.();
@@ -1069,12 +1094,13 @@ export class LanSyncService implements Disposable {
     if (!exists) this.requirements = [...this.requirements, requirement].slice(-STATE_LIMIT);
     await this.persist();
     await this.refreshLedger();
+    this.relayOut(requirement);
 
     if (this.role !== 'off') {
       const payload = JSON.stringify({ protocol: SYNC_PROTOCOL_VERSION, code: this.code, message: requirement });
       if (this.role === 'hub') {
         const targets = this.peerList().filter((entry) => entry.address);
-        const results = await Promise.allSettled(targets.map((entry) => postRaw(entry.address, '/hwchat-sync/v1/deliver', payload)));
+        const results = await Promise.allSettled(targets.map((entry) => postRaw(entry.address, '/plaitcode-sync/v1/deliver', payload)));
         const failed = results.filter((result) => result.status === 'rejected').length;
         const delivered = targets.length - failed;
         this.bridge.onState?.();
@@ -1086,7 +1112,7 @@ export class LanSyncService implements Disposable {
           requirement,
         };
       }
-      const response = await this.postJson(this.hubAddress, '/hwchat-sync/v1/message', {
+      const response = await this.postJson(this.hubAddress, '/plaitcode-sync/v1/message', {
         protocol: SYNC_PROTOCOL_VERSION,
         code: this.code,
         message: requirement,
@@ -1115,6 +1141,7 @@ export class LanSyncService implements Disposable {
     if (!note) return { ok: false, message: '消息内容为空。' };
     this.notes = [...this.notes, note].slice(-MAX_NOTES);
     await this.persist();
+    this.relayOut(note);
     if (this.role === 'off') {
       this.bridge.onState?.();
       return { ok: true, message: '本机已记录。局域网同步未启用，没有发出。' };
@@ -1122,7 +1149,7 @@ export class LanSyncService implements Disposable {
     const payload = JSON.stringify({ protocol: SYNC_PROTOCOL_VERSION, code: this.code, message: note });
     if (this.role === 'hub') {
       const targets = this.peerList().filter((entry) => entry.address);
-      const results = await Promise.allSettled(targets.map((entry) => postRaw(entry.address, '/hwchat-sync/v1/deliver', payload)));
+      const results = await Promise.allSettled(targets.map((entry) => postRaw(entry.address, '/plaitcode-sync/v1/deliver', payload)));
       const delivered = results.filter((result) => result.status === 'fulfilled').length;
       this.bridge.onState?.();
       return {
@@ -1130,7 +1157,7 @@ export class LanSyncService implements Disposable {
         message: targets.length ? `已发给 ${delivered}/${targets.length} 台设备。` : '已记录，当前没有其它设备加入。',
       };
     }
-    const response = await this.postJson(this.hubAddress, '/hwchat-sync/v1/message', {
+    const response = await this.postJson(this.hubAddress, '/plaitcode-sync/v1/message', {
       protocol: SYNC_PROTOCOL_VERSION,
       code: this.code,
       message: note,
@@ -1165,6 +1192,7 @@ export class LanSyncService implements Disposable {
     this.group = [...this.group, group].slice(-MAX_GROUP_MESSAGES);
     await this.persist();
     await this.refreshTranscript();
+    this.relayOut(group);
     await this.bridge.onGroupMessage?.(group).catch(() => undefined);
     this.bridge.onState?.();
     if (this.role === 'off') return { ok: true, message: '已记入团队群（未启用局域网同步，没有发给队友）。', group };
@@ -1172,9 +1200,9 @@ export class LanSyncService implements Disposable {
     const payload = JSON.stringify({ protocol: SYNC_PROTOCOL_VERSION, code: this.code, message: group });
     if (this.role === 'hub') {
       const targets = this.peerList().filter((entry) => entry.address);
-      await Promise.allSettled(targets.map((entry) => postRaw(entry.address, '/hwchat-sync/v1/deliver', payload)));
+      await Promise.allSettled(targets.map((entry) => postRaw(entry.address, '/plaitcode-sync/v1/deliver', payload)));
     } else {
-      await this.postJson(this.hubAddress, '/hwchat-sync/v1/message', { code: this.code, message: group }).catch(() => undefined);
+      await this.postJson(this.hubAddress, '/plaitcode-sync/v1/message', { code: this.code, message: group }).catch(() => undefined);
     }
     return { ok: true, message: '已发到团队群。', group };
   }
@@ -1268,13 +1296,14 @@ export class LanSyncService implements Disposable {
     else this.reports = [...this.reports, report].slice(-STATE_LIMIT * 3);
     await this.persist();
     await this.refreshLedger();
+    this.relayOut(report);
     if (this.role === 'off') return;
     const payload = JSON.stringify({ protocol: SYNC_PROTOCOL_VERSION, code: this.code, message: report });
     if (this.role === 'hub') {
       const targets = this.peerList().filter((entry) => entry.address);
-      await Promise.allSettled(targets.map((entry) => postRaw(entry.address, '/hwchat-sync/v1/deliver', payload)));
+      await Promise.allSettled(targets.map((entry) => postRaw(entry.address, '/plaitcode-sync/v1/deliver', payload)));
     } else {
-      await this.postJson(this.hubAddress, '/hwchat-sync/v1/message', { code: this.code, message: report }).catch(() => undefined);
+      await this.postJson(this.hubAddress, '/plaitcode-sync/v1/message', { code: this.code, message: report }).catch(() => undefined);
     }
     this.bridge.onState?.();
   }

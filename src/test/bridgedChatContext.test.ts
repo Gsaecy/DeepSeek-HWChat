@@ -22,7 +22,7 @@ import {
  * `_promptContext` 是聊天请求上下文，`lm.invokeTool` 传不了 → 永远只会回 `Invalid input`。
  * 旧代码只认「invocation context must be provided」这一类措辞，于是：
  *  - 模型拿到一句无信息的 `Invalid input`，换写法重试；
- *  - HWChat 也不学，下一轮照样把它摆在工具清单里。
+ *  - PlaitCode 也不学，下一轮照样把它摆在工具清单里。
  */
 
 test('已知需要 chat 上下文的工具：不再下发', () => {

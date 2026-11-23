@@ -2,7 +2,7 @@
  * VS Code 侧审批设置的纯计算层（不 import vscode，方便单测）。
  *
  * 背景：桥接工具（run_in_terminal 等）是否需要确认，由 VS Code 自己的
- * `chat.tools.*` 设置决定，HWChat 的 permissionPreset 管不到它们
+ * `chat.tools.*` 设置决定，PlaitCode 的 permissionPreset 管不到它们
  * （见 agent/vscodeTools.ts 的 delegateApproval: true）。本模块只负责把
  * 「一个审批档位」翻译成「要写进 VS Code 设置的具体值」，真正落盘在
  * vscodeApprovals.ts。
@@ -82,7 +82,7 @@ export const APPROVAL_LEVEL_DETAILS: readonly ApprovalLevelDetail[] = [
   {
     id: 'off',
     label: '关闭（全部询问）',
-    detail: '撤掉 HWChat 写入的批准条目，终端、编辑、工具都回到逐次确认。',
+    detail: '撤掉 PlaitCode 写入的批准条目，终端、编辑、工具都回到逐次确认。',
   },
   {
     id: 'safeCommands',

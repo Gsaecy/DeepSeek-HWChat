@@ -2,7 +2,7 @@
 
 ## Data flow
 
-HWChat sends only the following data to the configured model endpoint:
+PlaitCode sends only the following data to the configured model endpoint:
 
 - user messages;
 - conversation context within the configured limits;
@@ -13,7 +13,7 @@ HWChat sends only the following data to the configured model endpoint:
 
 The extension does not include telemetry. Each API profile stores its key in VS Code SecretStorage, not in settings, project files, conversation history, logs, or the VSIX package. Reinstalling or upgrading the same extension identity can continue using an existing key because VS Code preserves that SecretStorage entry until the user clears it. Conversation and audit data remain in VS Code global storage unless the configured API endpoint receives them as part of a request.
 
-Linking an old conversation is local and read-only: it does not copy or modify the source conversation. The source transcript is not sent wholesale. HWChat sends a bounded local handoff summary and, when the Agent requests missing details, only the matching excerpts. Those transmitted summaries and excerpts count as normal model input Tokens; keeping the source history on disk does not.
+Linking an old conversation is local and read-only: it does not copy or modify the source conversation. The source transcript is not sent wholesale. PlaitCode sends a bounded local handoff summary and, when the Agent requests missing details, only the matching excerpts. Those transmitted summaries and excerpts count as normal model input Tokens; keeping the source history on disk does not.
 
 Remote model endpoints must use HTTPS. Plain HTTP is accepted only for loopback hosts (`localhost`, `127.0.0.1`, and `::1`). Error messages are redacted before they are shown or stored.
 
@@ -31,11 +31,11 @@ Read, write, and command tools have independent policies and can be selected thr
 
 Workspace Trust is an additional hard boundary: file writes, moves, deletes, and commands are rejected in an untrusted workspace regardless of the configured policy.
 
-VS Code extension tools (anything exposed through `vscode.lm.tools`) are authorized by VS Code, not by HWChat. HWChat invokes them without its own approval prompt, so tools that need no authorization run immediately; tools whose `prepareInvocation` declares confirmation still show VS Code's own confirmation dialog, and cancelling is reported as a denied step. HWChat only records the invocation in its audit log. Plan mode still blocks tools classified as write or command, and untrusted workspaces still block tools that may write or execute.
+VS Code extension tools (anything exposed through `vscode.lm.tools`) are authorized by VS Code, not by PlaitCode. PlaitCode invokes them without its own approval prompt, so tools that need no authorization run immediately; tools whose `prepareInvocation` declares confirmation still show VS Code's own confirmation dialog, and cancelling is reported as a denied step. PlaitCode only records the invocation in its audit log. Plan mode still blocks tools classified as write or command, and untrusted workspaces still block tools that may write or execute.
 
 File tools resolve canonical paths and reject paths outside open workspace roots, including symlink escapes. Sensitive names and credential directories are denied by default. Deletes use the operating system trash and cannot remove directories.
 
-Command execution is intentionally more privileged than file tools. Every command is classified as read-only, regular, or dangerous before a policy is applied. Dangerous commands — privilege escalation (`sudo`, `doas`, `su`), destructive deletes (`rm -r`, `rm -f`), `mkfs`/`dd`/disk erase, `shutdown`/`reboot`, destructive or force-pushed git operations, `chmod 777`, piping remote scripts into a shell, package publishing, and similar — are denied under "ask every time", confirmed one by one under "review" and "Autopilot", and auto-approved only under "full access". Sensitive files are a separate axis: denied under the first three presets, auto-approved only when explicitly allowed, and "full access" confirms each sensitive read with the concrete target path. HWChat also rejects obvious paths outside the workspace and sensitive filenames, and strips secret-like environment variables from child processes. This is defense in depth, not an operating-system sandbox: a sufficiently creative program launched by an approved command may still access resources available to the VS Code process. Keep `hwchat.commandPolicy` set to `ask`, review every command, and run VS Code with least privilege.
+Command execution is intentionally more privileged than file tools. Every command is classified as read-only, regular, or dangerous before a policy is applied. Dangerous commands — privilege escalation (`sudo`, `doas`, `su`), destructive deletes (`rm -r`, `rm -f`), `mkfs`/`dd`/disk erase, `shutdown`/`reboot`, destructive or force-pushed git operations, `chmod 777`, piping remote scripts into a shell, package publishing, and similar — are denied under "ask every time", confirmed one by one under "review" and "Autopilot", and auto-approved only under "full access". Sensitive files are a separate axis: denied under the first three presets, auto-approved only when explicitly allowed, and "full access" confirms each sensitive read with the concrete target path. PlaitCode also rejects obvious paths outside the workspace and sensitive filenames, and strips secret-like environment variables from child processes. This is defense in depth, not an operating-system sandbox: a sufficiently creative program launched by an approved command may still access resources available to the VS Code process. Keep `plaitcode.commandPolicy` set to `ask`, review every command, and run VS Code with least privilege.
 
 ## Prompt injection
 

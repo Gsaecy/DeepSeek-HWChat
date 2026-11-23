@@ -6,7 +6,7 @@ import test from 'node:test';
 import { AUDIT_CLEANUP_FRESH_MS, AuditLog, redact } from '../agent/auditLog';
 
 async function withAudit(run: (audit: AuditLog, filePath: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-audit-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-audit-'));
   const filePath = join(root, 'audit.jsonl');
   try {
     await run(new AuditLog(filePath), filePath);

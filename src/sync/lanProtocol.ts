@@ -624,7 +624,7 @@ export function renderLedger(rows: readonly LedgerRow[], now = Date.now()): stri
   const lines = [
     '# 跨平台对齐账本',
     '',
-    '> 由 HWChat 局域网同步自动维护。**每个平台只补自己那一行/那一列**，不要重写整张表。',
+    '> 由 PlaitCode 局域网同步自动维护。**每个平台只补自己那一行/那一列**，不要重写整张表。',
     `> 上次更新：${new Date(now).toISOString().slice(0, 16).replace('T', ' ')}`,
     '',
   ];

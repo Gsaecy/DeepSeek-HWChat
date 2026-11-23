@@ -29,8 +29,8 @@ function loadPanelState(): TodoPanelState {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(readFileSync('media/todo-panel-state.js', 'utf8'), sandbox);
-  const api = sandbox.HWChatTodoPanelState as TodoPanelState | undefined;
-  assert.ok(api, 'media/todo-panel-state.js 必须挂载 HWChatTodoPanelState');
+  const api = sandbox.PlaitCodeTodoPanelState as TodoPanelState | undefined;
+  assert.ok(api, 'media/todo-panel-state.js 必须挂载 PlaitCodeTodoPanelState');
   return api;
 }
 

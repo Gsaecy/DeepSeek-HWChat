@@ -95,7 +95,7 @@ export function isGitWriteCommand(command: string): boolean {
  * 桥接工具的 JSON 参数里是否夹带 git 写操作。
  *
  * VS Code 侧工具（例如 run_in_terminal）会把命令放在参数里，而它们的授权由
- * VS Code 自己决定——如果只拦 HWChat 原生 `run_command`，模型换个通道提交就绕过去了。
+ * VS Code 自己决定——如果只拦 PlaitCode 原生 `run_command`，模型换个通道提交就绕过去了。
  * 这里把参数里所有字符串取出来逐个判定，宁可多拦一次也不放过。
  */
 export function argumentsMentionGitWrite(rawArguments: string): boolean {

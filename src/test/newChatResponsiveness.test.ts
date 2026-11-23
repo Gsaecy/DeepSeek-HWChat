@@ -23,7 +23,7 @@ import { SingleFlight } from '../core/singleFlight';
  */
 
 async function withStorage(run: (storage: ConversationStorage) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-newchat-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-newchat-'));
   try {
     const storage = new ConversationStorage(root);
     await storage.initialize();
@@ -35,7 +35,7 @@ async function withStorage(run: (storage: ConversationStorage) => Promise<void>)
 }
 
 test('技能扫描失败时 refresh 不抛错，并保留上一份清单', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-skillroot-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-skillroot-'));
   const registry = new SkillRegistry(
     vscode.Uri.file(root),
     vscode.Uri.file(join(root, 'copilot-skills')),

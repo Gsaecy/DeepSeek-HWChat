@@ -109,7 +109,7 @@ test('requestMessages：清单全完成时不注入，也不会注入空数组�
 test('requestMessages：没有清单的普通对话不受影响', async () => {
   const [system] = await fakePanel({ id: 'c1' }).requestMessages(false);
   assert.equal(system!.content.includes('<task_list>'), false);
-  assert.match(system!.content, /You are HWChat/);
+  assert.match(system!.content, /You are PlaitCode/);
 });
 
 test('requestMessages：清单进 system，tool 消息仍被过滤', async () => {

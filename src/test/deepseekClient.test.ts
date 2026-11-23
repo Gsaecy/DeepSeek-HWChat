@@ -315,7 +315,7 @@ test('retries without an unsupported reasoning control', async () => {
  * DeepSeek 官方 `/models` 的思考档位在**嵌套对象**里：
  *   effort: { supported_levels: ["low","high","max"], default_level: "high" }
  * 早先只认扁平数组（reasoning_efforts / thinking_levels …），读不到就把能力判成
- * unknown，界面于是把「思考深度」灰成「能力未知」——Copilot 能设、HWChat 不能，
+ * unknown，界面于是把「思考深度」灰成「能力未知」——Copilot 能设、PlaitCode 不能，
  * 差别就在这里。
  */
 test('parseModels：读出 DeepSeek 官方 /models 的 effort.supported_levels', () => {

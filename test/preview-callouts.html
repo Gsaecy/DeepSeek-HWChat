@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>HWChat · 提醒分级预览</title>
+<title>PlaitCode · 提醒分级预览</title>
 <!-- 复用真实样式表与真实图标集：这里只把 chat.js 造出来的 DOM 结构手写出来，
      所以 CSS 的任何改动都会直接反映在这一页上。 -->
 <link rel="stylesheet" href="../media/chat.css">
@@ -115,7 +115,7 @@
   <script src="../media/ui-icons.js"></script>
   <script>
     // 用真实图标集填 SVG：形状与界面里完全相同，不是另画一份。
-    const icons = globalThis.HWChatIcons;
+    const icons = globalThis.PlaitCodeIcons;
     for (const slot of document.querySelectorAll('.callout-icon')) {
       const name = slot.dataset.icon;
       if (icons && icons.markup(name)) slot.innerHTML = icons.markup(name);

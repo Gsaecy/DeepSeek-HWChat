@@ -2,7 +2,7 @@ import { basename } from 'node:path';
 import { commandSegments, tokenizeCommand } from './conversationScope';
 
 /**
- * 版本管理策略：HWChat 不主动升版本，只在任务完成后**询问**用户。
+ * 版本管理策略：PlaitCode 不主动升版本，只在任务完成后**询问**用户。
  *
  * 背景（用户规则第 4 条）：
  * - 短任务：把这一轮对话里提到的所有问题都做完之后，才问「要不要升版本 / 要不要提交」；

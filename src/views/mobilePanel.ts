@@ -32,7 +32,7 @@ export class MobilePanel implements vscode.Disposable {
       return;
     }
     const panel = vscode.window.createWebviewPanel(
-      'hwchat.mobileControl',
+      'plaitcode.mobileControl',
       '手机遥控',
       vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [this.extensionUri] },

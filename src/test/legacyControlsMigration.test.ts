@@ -24,7 +24,7 @@ const LEGACY = {
 } as const;
 
 async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-legacy-controls-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-legacy-controls-'));
   try {
     await run(root);
   } finally {

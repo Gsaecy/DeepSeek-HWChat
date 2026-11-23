@@ -54,7 +54,7 @@ interface Manifest {
 
 export interface ConversationStorageOptions {
   /**
-   * 旧版本写在 `hwchat.*` 全局设置里的三项。
+   * 旧版本写在 `plaitcode.*` 全局设置里的三项。
    *
    * 只用来给「升级前就已经有消息、存档里却没有这三项」的老对话补一次值：
    * 升级前它们显示/执行的就是这份全局值，不补的话会统一变成固定默认值
@@ -129,7 +129,7 @@ interface SafetySnapshot {
  * 一条对话为什么进了回收站。
  *
  * `'expired'` / `'budget'` 只为兼容旧版本写下的条目保留（那时自动清理会直接搬走对话），
- * 现在 HWChat 只会产生 `'draft'`（空对话）与 `'manual'`（用户自己删的）两种。
+ * 现在 PlaitCode 只会产生 `'draft'`（空对话）与 `'manual'`（用户自己删的）两种。
  */
 export type TrashReason = 'draft' | 'expired' | 'budget' | 'manual';
 
@@ -155,7 +155,7 @@ const MESSAGE_PAGE_CACHE_LIMIT = 8;
 /**
  * 页缓存的**总字节预算**。
  *
- * 现场（用户反馈「hwchat 占用高内存」）：只按「最多 8 页」限流是不够的 ——
+ * 现场（用户反馈「plaitcode 占用高内存」）：只按「最多 8 页」限流是不够的 ——
  * 每页最多 6 MB，8 页就是 **48 MB**；本机 5 个对话的首页实测就占 **17.7 MB**。
  * 而这份缓存只是为了少读几次盘（命中时 0ms、未命中 44ms），拿几十 MB 常驻内存
  * 换这点时间不划算。
@@ -765,7 +765,7 @@ export class ConversationStorage {
   /**
    * 内存缓存的实时占用（给「显示资源统计」与测试用）。
    *
-   * 用户反馈过「hwchat 占用高内存」，但此前**没有任何办法看到内存花在哪** ——
+   * 用户反馈过「plaitcode 占用高内存」，但此前**没有任何办法看到内存花在哪** ——
    * 只能靠读代码猜。把这几项暴露出来，下次再有问题一条命令就能定位。
    */
   cacheStats(): {
@@ -1415,7 +1415,7 @@ export class ConversationStorage {
        *
        * 旧实现在这里把最旧的未保护对话整条搬走 —— 用户 2026-10-31 报的 13 条归档
        * 丢失就是这条路径（保护字段一失效，它就把归档当普通旧对话挤出去）。现在的规则
-       * 只有一条：HWChat 不会自己让任何一条对话消失；空间不够就告诉用户，由用户在
+       * 只有一条：PlaitCode 不会自己让任何一条对话消失；空间不够就告诉用户，由用户在
        * 设置里决定清什么。
        */
       plan.overBudget = currentBytes > budgetBytes;
@@ -1624,7 +1624,7 @@ export class ConversationStorage {
    * 现场（用户 2026-10-31 报数据丢失）：13 条归档对话在一次清理后消失，目录被
    * `rm -rf` 直接删掉，废纸篓里也没有 —— 无法恢复。批量自动删除（空草稿、超期、
    * 预算回收）不该是不可逆的，所以统一改成「挪进 `trash/`」，并留一条记录
-   * 供 `HWChat: 恢复已删除的对话` 找回。
+   * 供 `PlaitCode: 恢复已删除的对话` 找回。
    *
    * 用户**主动**删除（点 × / 删除命令）仍走 `deleteConversation` 直接删 —— 那是
    * 明确的意图，不该在回收站里留一份让人以为没删掉。

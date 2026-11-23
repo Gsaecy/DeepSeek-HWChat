@@ -55,7 +55,7 @@ test('mergeManifests：显式删除的 id 不会被磁盘旧副本复活', () =>
 });
 
 test('两个实例共用同一个存储根：各建一条，重载后两条都在', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-concurrent-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-concurrent-'));
   try {
     const a = new ConversationStorage(root);
     const b = new ConversationStorage(root);
@@ -80,7 +80,7 @@ test('两个实例共用同一个存储根：各建一条，重载后两条都�
 });
 
 test('删除不会被另一个实例的旧快照写回来', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-tombstone-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-tombstone-'));
   try {
     const a = new ConversationStorage(root);
     await a.initialize();
@@ -102,7 +102,7 @@ test('删除不会被另一个实例的旧快照写回来', async () => {
 });
 
 test('文件锁：同一时刻只有一个持有者', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-lock-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-lock-'));
   const lock = join(root, 'x.lock');
   try {
     const first = await tryFileLock(lock, { timeoutMs: 0 });
@@ -119,7 +119,7 @@ test('文件锁：同一时刻只有一个持有者', async () => {
 });
 
 test('文件锁：陈旧锁（进程崩溃留下）可以被接管', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-stale-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-stale-'));
   const lock = join(root, 'x.lock');
   try {
     await writeFile(lock, 'dead-process:1', 'utf8');
@@ -134,7 +134,7 @@ test('文件锁：陈旧锁（进程崩溃留下）可以被接管', async () =>
 });
 
 test('文件锁：任务抛错也要释放（否则后续写入全部卡死）', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-lock-throw-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-lock-throw-'));
   const lock = join(root, 'x.lock');
   try {
     await assert.rejects(withFileLock(lock, async () => { throw new Error('boom'); }), /boom/);

@@ -127,7 +127,7 @@ test('真实技能语料：凡是写了 Triggers 的技能，触发词都必须�
 });
 
 test('端到端：长描述技能的触发词确实进了模型看到的路由表', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-skill-route-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-skill-route-'));
   // 让技能走**路由表**而不是整段预加载：只有在「快捷调用扩展已安装 + 该技能在
   // 启用清单里」时才会这样（见 readSkill 里的 defaultEnabled）。真实环境里这两种
   // 形态都存在，路由表这一条正是本次修复要保证的。

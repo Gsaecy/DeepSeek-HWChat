@@ -34,7 +34,7 @@ const EXCLUDE = `**/{${DEFAULT_SEARCH_EXCLUDED_DIRS.join(',')}}/**`;
 const QUERY = 'needleSymbol';
 
 before(async () => {
-  workspaceRoot = await mkdtemp(join(tmpdir(), 'hwchat-bench-'));
+  workspaceRoot = await mkdtemp(join(tmpdir(), 'plaitcode-bench-'));
   root = join(workspaceRoot, 'project');
   const body = Array.from({ length: 40 }, (_, index) => `export const value${index} = ${index};`).join('\n');
   const filler = `${body}\n${'// padding line to make the scan realistic\n'.repeat(20)}`;
@@ -182,5 +182,5 @@ test('perf A/B: default exclusions keep dependency directories out of the scan',
   const withDeps = result.outcome.files.filter((uri) => uri.fsPath.includes('node_modules')).length;
   assert.equal(withDeps, 0, '依赖目录不应进入扫描列表');
   assert.ok(result.outcome.files.length >= 400);
-  console.log(`[bench] files scanned by HWChat: ${result.outcome.files.length} (node_modules excluded)`);
+  console.log(`[bench] files scanned by PlaitCode: ${result.outcome.files.length} (node_modules excluded)`);
 });

@@ -4,7 +4,7 @@
   // 词表由扩展在生成 HTML 时按当前语言注入，脚本只做查表，不保存任何文案。
   const messages = (() => {
     try {
-      const node = document.getElementById('hwchat-i18n');
+      const node = document.getElementById('plaitcode-i18n');
       return node ? JSON.parse(node.textContent || '{}') : {};
     } catch {
       return {};
@@ -26,7 +26,7 @@
    * 万一那个脚本没加载成功，这里退化成「只认语言」的旧行为：
    * 代码块照旧能渲染和复制，只是不再显示位置与工具标签。
    */
-  const codeMeta = globalThis.HWChatCodeBlockMeta || {
+  const codeMeta = globalThis.PlaitCodeCodeBlockMeta || {
     isShellLanguage: (language) => /^(bash|zsh|sh|shell|powershell|pwsh|cmd|bat|terminal|console)$/i.test(String(language || '')),
     canonicalTool: (value) => String(value == null ? '' : value).trim().toLowerCase(),
     normalizeLocation: (value) => String(value == null ? '' : value).trim(),
@@ -61,14 +61,14 @@
    * 万一那个脚本没加载成功，这里退化成两个空实现：正文与代码片段原样显示，
    * 不再有任何文件引用——功能少一块，但渲染不会崩。
    */
-  const fileRef = globalThis.HWChatFileRef || null;
+  const fileRef = globalThis.PlaitCodeFileRef || null;
 
   /**
    * 任务清单面板的显示状态。同样放在 media/todo-panel-state.js 里以便单测。
    *
    * 退化实现只是「永远不自动展开」：面板照旧能显示和点击，只是新清单不会自己弹开。
    */
-  const todoPanelState = globalThis.HWChatTodoPanelState || {
+  const todoPanelState = globalThis.PlaitCodeTodoPanelState || {
     todoSignature: (todos) => (Array.isArray(todos) ? todos.map((todo) => String(todo && todo.content != null ? todo.content : '')).join('\u0000') : ''),
     shouldRevealTodoPanel: () => false,
     capsuleRadius: (height) => Math.max(2, Math.round(Number(height) * 0.3) || 2),
@@ -86,7 +86,7 @@
    * 退化策略：图标脚本没加载成功时回到原来的文字符号 —— 字形不好看总比徽标变成空白好，
    * 至少「成功 / 失败」还看得懂。
    */
-  const uiIcons = globalThis.HWChatIcons || null;
+  const uiIcons = globalThis.PlaitCodeIcons || null;
   const GLYPH_FALLBACK = {
     check: '✓', minus: '−', bang: '!', ellipsis: '…', dot: '●', ring: '○',
     turn: '↳', square: '□', close: '×', arrowUpRight: '↗', restore: '↺', pencil: '✎',
@@ -99,9 +99,9 @@
    * 退化策略：脚本没加载成功时永远返回 null，也就是所有引用块走原来的渲染 ——
    * 少一种样式总比把 `> [!DANGER]` 那行标记渲染成正文、让人看到一堆方括号好。
    */
-  const calloutMeta = globalThis.HWChatCalloutMeta || null;
+  const calloutMeta = globalThis.PlaitCodeCalloutMeta || null;
   /** 行内快路径的纯函数判定（见 media/inline-append.js）。缺了就一律走重排，行为安全。 */
-  const inlineAppend = globalThis.HWChatInlineAppend || null;
+  const inlineAppend = globalThis.PlaitCodeInlineAppend || null;
   /**
    * 流式补全未闭合 markdown（见 media/stream-repair.js）。
    *
@@ -110,7 +110,7 @@
    * 到了再跳变——那正是「已经输出的文字会跳」的另一半原因。缺了脚本就不补，
    * 行为退回原样，不会渲染错。
    */
-  const streamRepair = globalThis.HWChatStreamRepair || null;
+  const streamRepair = globalThis.PlaitCodeStreamRepair || null;
 
   /**
    * 用户消息里的明文凭据识别。规则在 media/secret-scan.js（纯函数，可单独单测）。
@@ -122,7 +122,7 @@
    * 退化策略：脚本没加载成功时永远返回空数组，也就是不显示提醒 ——
    * 宁可少一条提示，也不要因为探测失败把每条消息都标红。
    */
-  const secretScan = globalThis.HWChatSecretScan || null;
+  const secretScan = globalThis.PlaitCodeSecretScan || null;
 
   /**
    * toast 的显示时长。规则在 media/toast-timing.js（纯函数，可单独单测）。
@@ -132,7 +132,7 @@
    *
    * 退化策略：模块没加载成功时退回原来的 4.2 秒，行为与改动前完全一致。
    */
-  const toastTiming = globalThis.HWChatToastTiming || null;
+  const toastTiming = globalThis.PlaitCodeToastTiming || null;
 
   /**
    * 收尾清单里的复选框剥离。规则在 media/follow-up-format.js（纯函数，可单测）。
@@ -143,7 +143,7 @@
    *
    * 退化策略：模块没加载成功时原样显示，行为与改动前一致。
    */
-  const followUpFormat = globalThis.HWChatFollowUpFormat || null;
+  const followUpFormat = globalThis.PlaitCodeFollowUpFormat || null;
 
   /**
    * 造一个图标节点。
@@ -263,7 +263,7 @@
    * 把用户自己打的 🎉 换成某个我们画的图形只会更奇怪。
    */
   function flattenEmojiIcons(root) {
-    const uiIcons = globalThis.HWChatIcons;
+    const uiIcons = globalThis.PlaitCodeIcons;
     if (!uiIcons || typeof uiIcons.emojiName !== 'function') return;
     if (typeof document.createTreeWalker !== 'function') return;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
@@ -1277,7 +1277,7 @@
    * 为什么要有这个东西（用户原话：「参考 copilot 的 agent 模式，为什么 copilot
    * 能这么流畅并且占用不高不卡」）：Copilot 的聊天列表是 VS Code 的
    * `WorkbenchObjectTree`（`src/vs/platform/list/browser/listService.ts`）——
-   * 虚拟化列表，视口外的行根本没有 DOM 节点。HWChat 是 webview 里手写的全量列表，
+   * 虚拟化列表，视口外的行根本没有 DOM 节点。PlaitCode 是 webview 里手写的全量列表，
    * 状态里有多少条消息，DOM 里就有多少条。
    *
    * 实测（headless Chromium + 真实 media/chat.js，`ps` 汇总渲染进程 RSS）：
@@ -1846,7 +1846,7 @@
       buildMessageWindow(window.start, window.end);
       restoreScrollAnchor(anchor);
     } else {
-      // 用 `data-message-id` 定位：`hwchatRender` 里没有 id 字段。
+      // 用 `data-message-id` 定位：`plaitcodeRender` 里没有 id 字段。
       for (const article of [...elements.messageList.children]) {
         if (gone.has(article.dataset.messageId)) article.remove();
       }
@@ -1889,8 +1889,8 @@
    * 调用方退回整条替换。
    */
   function patchGrowingSegment(current) {
-    const previous = current.hwchatRender;
-    const flow = current.hwchatFlow;
+    const previous = current.plaitcodeRender;
+    const flow = current.plaitcodeFlow;
     if (!previous || !flow?.tail?.node?.isConnected) return false;
     // 这一条还是「正在继续处理…」的占位：结构马上要整体换掉，增量不适用。
     if (flow.placeholder) return false;
@@ -1937,7 +1937,7 @@
     // 上一帧画的还是占位文案：交给调用方整条重画，别把正文接在占位后面。
     if (!flow.placeholder && !tailNeedsRepair && !lostTrailingSpace && canAppendPlainText(appended, lastBlock.node, tailNode)) {
       appendRawText(lastBlock.node, appended);
-      current.hwchatRender = { ...previous, content };
+      current.plaitcodeRender = { ...previous, content };
       return true;
     }
     // 从「最后一个块」的起始行重新解析：它可能继续增长，也可能裂成两个块。
@@ -1952,7 +1952,7 @@
     const appendedBlocks = [];
     for (const block of freshBlocks) { tailNode.append(block.node); appendedBlocks.push({ line: lastBlock.line + block.line, node: block.node }); }
     flow.tail.blocks = kept.concat(appendedBlocks);
-    current.hwchatRender = { ...previous, content };
+    current.plaitcodeRender = { ...previous, content };
     return true;
   }
 
@@ -2022,7 +2022,7 @@
 
   /** 记下这一帧的渲染快照，下一帧据此判断能不能增量。 */
   function rememberRender(article, message) {
-    article.hwchatRender = {
+    article.plaitcodeRender = {
       content: message.content || '',
       reasoning: message.reasoning || '',
       status: message.status || '',
@@ -2073,7 +2073,7 @@
      * 两边各走各的增量：先把步骤就地同步并推进 tools 签名，再让正文走追加路径。
      */
     if (applyToolStepsInPlace(current, state.messages[index])) {
-      current.hwchatRender.tools = toolGroupSignature(state.messages[index]);
+      current.plaitcodeRender.tools = toolGroupSignature(state.messages[index]);
       if (patchGrowingSegment(current)) {
         renderedMessageSignature = messageListSignature(state.messages, state.conversation?.id);
         keepViewportAfterPatch();
@@ -2118,7 +2118,7 @@
    * 让原来的整条替换兜底 —— 宁可重画，也不能把内容画错。
    */
   function patchToolStepsOnly(node, message) {
-    const rendered = node.hwchatRender;
+    const rendered = node.plaitcodeRender;
     if (!rendered) return false;
     if (rendered.content !== (message.content || '')) return false;
     if (rendered.reasoning !== (message.reasoning || '')) return false;
@@ -2129,7 +2129,7 @@
   }
 
   /**
-   * 只把工具步骤就地同步（不动正文，也不写 `hwchatRender`）。
+   * 只把工具步骤就地同步（不动正文，也不写 `plaitcodeRender`）。
    *
    * 用于「正文在长 + 工具状态也在变」的同一帧：先就地改步骤，再让正文走增量追加，
    * 两边都不需要整条重建。结构对不上（步骤数/顺序变了）就返回 `false`，交给整条替换。
@@ -3057,7 +3057,7 @@
     const article = document.createElement('article');
     article.className = `message ${message.role}${message.status === 'error' ? ' error' : ''}`; article.dataset.messageId = message.id;
     const meta = document.createElement('div'); meta.className = 'message-meta';
-    const author = textElement('span', '', message.role === 'user' ? t('chat.you') : 'HWChat');
+    const author = textElement('span', '', message.role === 'user' ? t('chat.you') : 'PlaitCode');
     const time = textElement('time', '', formatTime(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); meta.append(author, time);
     if (message.content) {
       const copy = textElement('button', 'message-copy-button', t('common.copy')); copy.type = 'button'; copy.title = t('chat.copyMessage');
@@ -3095,7 +3095,7 @@
     if (message.usage?.totalTokens) body.append(textElement('div', 'message-usage', `${formatMillionTokens(message.usage.totalTokens)} tokens`));
     article.append(meta, body);
     // 流式增量更新要靠这份定位信息：正文最后一段的源起点 + 里面每个块的起始行。
-    article.hwchatFlow = flow;
+    article.plaitcodeFlow = flow;
     return article;
   }
 
@@ -3610,7 +3610,7 @@
    * 同时写一份自定义 MIME：`drop` 时用它判断「这是我们自己的附件」，而不是靠一个
    * 全局变量猜（拖动可能被外部打断，变量会留下过期的值）。
    */
-  const ATTACHMENT_DRAG_TYPE = 'application/x-hwchat-attachment';
+  const ATTACHMENT_DRAG_TYPE = 'application/x-plaitcode-attachment';
   /** 拖拽中的附件标识；`dragover` 判断要不要把输入框显示成放置目标时用它。 */
   let draggingAttachment = null;
 
@@ -4811,7 +4811,7 @@
    * 完全可以立刻画出来；随后到达的 `state` 会把它校准成权威值。
    */
   /** 「新建对话」点击后、扩展回话之前的占位卡片 id 前缀（每次点击各插一张）。 */
-  const PENDING_NEW_CHAT_PREFIX = '__hwchat_pending_new_chat__';
+  const PENDING_NEW_CHAT_PREFIX = '__plaitcode_pending_new_chat__';
   let pendingNewChatSeq = 0;
 
   function enterDraftLocally() {

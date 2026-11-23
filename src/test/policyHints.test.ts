@@ -72,7 +72,7 @@ test('每个模式选项都在名单里（防止只修 --exclude 一个）', () 
 });
 
 test('路径拦截的话术要给出下一步，不能只说「被拦截」', () => {
-  const roots = ['/tmp/hwchat-policy-root'];
+  const roots = ['/tmp/plaitcode-policy-root'];
   const blocked = commandPathViolation('tar czf /tmp/x.tgz .', roots, roots[0]);
   assert.ok(blocked, '工作区外的路径必须仍然被拒');
   assert.match(blocked!, /工作区内|<workspace root>/);
@@ -137,7 +137,7 @@ async function run(command: string, preset: PermissionPreset = 'autopilot'): Pro
 }
 
 before(async () => {
-  base = await mkdtemp(join(tmpdir(), 'hwchat-policy-'));
+  base = await mkdtemp(join(tmpdir(), 'plaitcode-policy-'));
   project = join(base, 'Proj');
   await mkdir(join(project, 'server'), { recursive: true });
   await writeFile(join(project, 'server', 'package.json'), '{"name":"s","version":"1.0.0"}\n', 'utf8');

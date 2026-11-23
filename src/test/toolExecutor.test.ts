@@ -27,9 +27,9 @@ let auditPath: string;
 let executor: ToolExecutor;
 
 before(async () => {
-  workspaceRoot = await mkdtemp(join(tmpdir(), 'hwchat-tools-'));
+  workspaceRoot = await mkdtemp(join(tmpdir(), 'plaitcode-tools-'));
   rootA = join(workspaceRoot, 'Safevault_android');
-  rootB = join(workspaceRoot, 'DeepSeek-HWChat');
+  rootB = join(workspaceRoot, 'PlaitCode');
   await mkdir(join(rootA, 'src'), { recursive: true });
   await mkdir(join(rootB, 'src', 'agent'), { recursive: true });
   await mkdir(join(rootB, 'src', 'views'), { recursive: true });
@@ -37,7 +37,7 @@ before(async () => {
   await writeFile(join(rootA, 'src', 'index.ts'), 'export const a = 1;\n', 'utf8');
   await writeFile(join(rootB, 'src', 'agent', 'commandPaths.ts'), 'export const b = 2;\n', 'utf8');
   await writeFile(join(rootB, 'src', 'views', 'webview.ts'), 'export const c = 3;\n', 'utf8');
-  await writeFile(join(rootB, 'package.json'), '{"name":"hwchat"}\n', 'utf8');
+  await writeFile(join(rootB, 'package.json'), '{"name":"plaitcode"}\n', 'utf8');
   await writeFile(join(rootB, '.env'), 'SECRET_TOKEN=abcdef123456\n', 'utf8');
   // 二进制文件：用于验证搜索遇到它时跳过而不是整次失败。
   await writeFile(join(rootB, 'blob.bin'), Buffer.from([0, 1, 2, 0, 255]));
@@ -131,15 +131,15 @@ async function run(
 
 // ── 1. glob 的根目录名前缀约定必须与 path 参数一致 ─────────────────────────
 test('list_files 支持根目录名前缀，和 path 参数的约定保持一致', async () => {
-  const { result } = await run('list_files', { glob: 'DeepSeek-HWChat/src/**/*.ts' });
+  const { result } = await run('list_files', { glob: 'PlaitCode/src/**/*.ts' });
   const files = result.content.split('\n').filter(Boolean);
   assert.equal(result.status, 'success');
   assert.equal(files.length, 2, `应找到 2 个文件，实际：${JSON.stringify(files)}`);
-  for (const file of files) assert.ok(file.startsWith('DeepSeek-HWChat/'), file);
+  for (const file of files) assert.ok(file.startsWith('PlaitCode/'), file);
 });
 
 test('search_files 支持根目录名前缀，而不是静默返回 0 处匹配', async () => {
-  const { result } = await run('search_files', { glob: 'DeepSeek-HWChat/src/**/*.ts', query: 'export const' });
+  const { result } = await run('search_files', { glob: 'PlaitCode/src/**/*.ts', query: 'export const' });
   assert.equal(result.status, 'success');
   assert.doesNotMatch(result.summary, /找到 0 处/, `实际摘要：${result.summary}`);
 });
@@ -151,7 +151,7 @@ test('不带前缀的 glob 仍然覆盖所有工作区根目录', async () => {
 });
 
 test('search_files 遇到二进制文件时跳过它，而不是整次搜索失败', async () => {
-  const { result } = await run('search_files', { glob: 'DeepSeek-HWChat/**/*', query: 'export const' });
+  const { result } = await run('search_files', { glob: 'PlaitCode/**/*', query: 'export const' });
   assert.equal(result.status, 'success', `${result.status} / ${result.content}`);
   assert.match(result.summary, /找到 [1-9]/);
 });
@@ -161,23 +161,23 @@ test('list_directory 不传 path 时列出所有工作区根目录，而不是�
   const { result } = await run('list_directory', {});
   assert.equal(result.status, 'success');
   assert.match(result.content, /Safevault_android/);
-  assert.match(result.content, /DeepSeek-HWChat/);
+  assert.match(result.content, /PlaitCode/);
 });
 
 // ── 3. 命令里的 `..` 应按 cwd 解析后判界，而不是一律拒绝 ─────────────────
 test('命令中使用 .. 但解析后仍在工作区内时应允许', async () => {
   const { result } = await run('run_command', {
     command: 'cat ../package.json',
-    cwd: 'DeepSeek-HWChat/src',
+    cwd: 'PlaitCode/src',
   });
   assert.equal(result.status, 'success', `实际：${result.status} / ${result.summary}`);
-  assert.match(result.content, /hwchat/);
+  assert.match(result.content, /plaitcode/);
 });
 
 test('命令中使用 .. 且解析后越界时应拒绝', async () => {
   const { result } = await run('run_command', {
     command: 'cat ../../../../etc/passwd',
-    cwd: 'DeepSeek-HWChat/src',
+    cwd: 'PlaitCode/src',
   });
   assert.notEqual(result.status, 'success');
 });
@@ -189,23 +189,23 @@ test('命令引用工作区外的绝对路径应拒绝', async () => {
 
 // ── 4. 权限预设矩阵：执行器层的真实拦截 ──────────────────────────────────
 test('review 预设：读取与写入工作区文件自动放行', async () => {
-  const read = await run('read_file', { path: 'DeepSeek-HWChat/package.json' });
+  const read = await run('read_file', { path: 'PlaitCode/package.json' });
   assert.equal(read.result.status, 'success');
   assert.equal(read.requests.length, 0);
 
-  const write = await run('write_file', { path: 'DeepSeek-HWChat/tmp-review.txt', content: 'x' });
+  const write = await run('write_file', { path: 'PlaitCode/tmp-review.txt', content: 'x' });
   assert.equal(write.result.status, 'success');
   assert.equal(write.requests.length, 0);
 });
 
 test('askAll 预设：读取也要逐次确认，拒绝后不执行', async () => {
-  const { result, requests } = await run('read_file', { path: 'DeepSeek-HWChat/package.json' }, { preset: 'askAll', approve: false });
+  const { result, requests } = await run('read_file', { path: 'PlaitCode/package.json' }, { preset: 'askAll', approve: false });
   assert.equal(requests.length, 1);
   assert.equal(result.status, 'denied');
 });
 
 test('review 预设：危险命令逐次确认，拒绝后不执行', async () => {
-  const { result, requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'DeepSeek-HWChat' }, { approve: false });
+  const { result, requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'PlaitCode' }, { approve: false });
   assert.equal(requests.length, 1);
   assert.match(requests[0]!.detail, /严重风险命令/);
   assert.equal(result.status, 'denied');
@@ -217,25 +217,25 @@ test('危险命令的审批请求带 dangerous 标记（面板据此改走原生
    * `approvalResponse` 就等于自己批准自己。所以危险档必须能在宿主侧被认出来，
    * 改走不经过 webview 的原生模态框（架构评审 ⑫）。
    */
-  const { requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'DeepSeek-HWChat' }, { approve: true });
+  const { requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'PlaitCode' }, { approve: true });
   assert.equal(requests.length, 1);
   assert.equal(requests[0]!.dangerous, true, '严重风险命令必须打上 dangerous');
 });
 
 test('普通操作的审批请求不带 dangerous（不要把所有确认都变成模态框）', async () => {
-  const { requests } = await run('read_file', { path: 'DeepSeek-HWChat/package.json' }, { preset: 'askAll', approve: true });
+  const { requests } = await run('read_file', { path: 'PlaitCode/package.json' }, { preset: 'askAll', approve: true });
   assert.equal(requests.length, 1);
   assert.equal(requests[0]!.dangerous, false);
 });
 
 test('askAll 预设：危险命令直接拒绝，不弹确认', async () => {
-  const { result, requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'DeepSeek-HWChat' }, { preset: 'askAll' });
+  const { result, requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'PlaitCode' }, { preset: 'askAll' });
   assert.equal(requests.length, 0);
   assert.equal(result.status, 'denied');
 });
 
 test('autopilot 预设：危险命令自动执行，不再确认', async () => {
-  const { result, requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'DeepSeek-HWChat' }, { preset: 'autopilot' });
+  const { result, requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'PlaitCode' }, { preset: 'autopilot' });
   assert.equal(requests.length, 0, 'autopilot 不应再询问');
   assert.equal(result.status, 'success', `${result.status} / ${result.summary}`);
 });
@@ -257,18 +257,18 @@ const ACTIONS: Array<{
   /** 该用预设表里的哪一列当期望值。 */
   column: keyof typeof PERMISSION_PRESET_PROFILES['askAll'];
 }> = [
-  { label: '读取普通文件', tool: 'read_file', args: { path: 'DeepSeek-HWChat/package.json' }, column: 'fileReadPolicy' },
-  { label: '读取敏感文件 .env', tool: 'read_file', args: { path: 'DeepSeek-HWChat/.env' }, column: 'sensitiveFilePolicy' },
-  { label: '写入普通文件', tool: 'write_file', args: { path: 'DeepSeek-HWChat/notes.tmp.md', content: 'x' }, column: 'fileWritePolicy' },
+  { label: '读取普通文件', tool: 'read_file', args: { path: 'PlaitCode/package.json' }, column: 'fileReadPolicy' },
+  { label: '读取敏感文件 .env', tool: 'read_file', args: { path: 'PlaitCode/.env' }, column: 'sensitiveFilePolicy' },
+  { label: '写入普通文件', tool: 'write_file', args: { path: 'PlaitCode/notes.tmp.md', content: 'x' }, column: 'fileWritePolicy' },
   {
     label: '写入会被自动执行的文件（.vscode/tasks.json）',
     tool: 'write_file',
-    args: { path: 'DeepSeek-HWChat/.vscode/tasks.json', content: '{}' },
+    args: { path: 'PlaitCode/.vscode/tasks.json', content: '{}' },
     column: 'fileWritePolicy',
   },
-  { label: '只读命令（git status）', tool: 'run_command', args: { command: 'git status', cwd: 'DeepSeek-HWChat' }, column: 'readOnlyCommandPolicy' },
-  { label: '常规命令（npm run compile）', tool: 'run_command', args: { command: 'npm run compile', cwd: 'DeepSeek-HWChat' }, column: 'commandPolicy' },
-  { label: '危险命令（chmod 777）', tool: 'run_command', args: { command: 'chmod 777 ./sandbox', cwd: 'DeepSeek-HWChat' }, column: 'dangerousCommandPolicy' },
+  { label: '只读命令（git status）', tool: 'run_command', args: { command: 'git status', cwd: 'PlaitCode' }, column: 'readOnlyCommandPolicy' },
+  { label: '常规命令（npm run compile）', tool: 'run_command', args: { command: 'npm run compile', cwd: 'PlaitCode' }, column: 'commandPolicy' },
+  { label: '危险命令（chmod 777）', tool: 'run_command', args: { command: 'chmod 777 ./sandbox', cwd: 'PlaitCode' }, column: 'dangerousCommandPolicy' },
 ];
 
 test('预设与表现逐项一致（四个预设 × 七类动作）', async () => {
@@ -319,7 +319,7 @@ test('Autopilot：用户截图里那条只读命令不再要求确认', async ()
    * 现在预设说什么就是什么：Autopilot 的常规命令策略是 allow，这条命令不会再问。
    */
   const command = `cd "${rootB}" && grep -rn 'IAsyncOperation\\|\\.get()\\|\\.join()\\|TimeSpan\\|CoInitializeEx' src/agent/commandPaths.ts | head -20; echo '=== rustup targets ==='; rustup target list --installed 2>/dev/null`;
-  const { requests } = await run('run_command', { command, cwd: 'DeepSeek-HWChat' }, { preset: 'autopilot', approve: false });
+  const { requests } = await run('run_command', { command, cwd: 'PlaitCode' }, { preset: 'autopilot', approve: false });
   assert.equal(requests.length, 0, 'Autopilot 下这条只读命令不该再要求确认');
 });
 
@@ -329,54 +329,54 @@ test('一条对话里读过外部网页，不会改变任何后续动作的权�
    * 现在不再有这一层 —— 权限只由预设决定（要更严就选更严的预设）。
    */
   const scope: ToolExecutionScope = {};
-  const first = await run('run_command', { command: 'npm run compile', cwd: 'DeepSeek-HWChat' }, { preset: 'autopilot', scope, approve: false });
-  const second = await run('run_command', { command: 'npm run compile', cwd: 'DeepSeek-HWChat' }, { preset: 'autopilot', scope, approve: false });
+  const first = await run('run_command', { command: 'npm run compile', cwd: 'PlaitCode' }, { preset: 'autopilot', scope, approve: false });
+  const second = await run('run_command', { command: 'npm run compile', cwd: 'PlaitCode' }, { preset: 'autopilot', scope, approve: false });
   assert.equal(first.requests.length, 0);
   assert.equal(second.requests.length, 0, '同一条对话里后续命令的判定不能被前面的工具调用影响');
   assert.deepEqual(Object.keys(scope), [], '执行器不该往作用域里塞任何"隐式加严"的标记');
 });
 
 test('预设说「禁止」就是拒绝，不会退化成「再问一次」', async () => {
-  const { result, requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'DeepSeek-HWChat' }, { preset: 'askAll' });
+  const { result, requests } = await run('run_command', { command: 'chmod 777 ./sandbox', cwd: 'PlaitCode' }, { preset: 'askAll' });
   assert.equal(requests.length, 0);
   assert.equal(result.status, 'denied');
 });
 
 // ── 5. 敏感文件 ──────────────────────────────────────────────────────────
 test('review 预设：敏感文件直接拒绝，且不泄漏内容', async () => {
-  const { result } = await run('read_file', { path: 'DeepSeek-HWChat/.env' });
+  const { result } = await run('read_file', { path: 'PlaitCode/.env' });
   assert.equal(result.status, 'denied');
   assert.doesNotMatch(result.content, /abcdef123456/);
 });
 
 test('完全访问预设：敏感文件也不再询问，直接读（用户 2026-11-20 反馈）', async () => {
   // 完全访问的语义是「全部自动执行、不再打断」。要保护敏感文件请用 Autopilot（那里是 deny）。
-  const allowed = await run('read_file', { path: 'DeepSeek-HWChat/.env' }, { preset: 'full', approve: false });
+  const allowed = await run('read_file', { path: 'PlaitCode/.env' }, { preset: 'full', approve: false });
   assert.equal(allowed.requests.length, 0, '完全访问下不该再弹确认框');
   assert.equal(allowed.result.status, 'success');
 });
 
 test('Autopilot 预设：敏感文件直接拒绝（不弹窗，也不是放行）', async () => {
-  const { result, requests } = await run('read_file', { path: 'DeepSeek-HWChat/.env' }, { preset: 'autopilot' });
+  const { result, requests } = await run('read_file', { path: 'PlaitCode/.env' }, { preset: 'autopilot' });
   assert.equal(requests.length, 0, '拒绝是确定性的，不该弹窗');
   assert.equal(result.status, 'denied');
 });
 
 test('敏感文件内容在工具输出里被脱敏', async () => {
-  const { result } = await run('read_file', { path: 'DeepSeek-HWChat/.env' }, { preset: 'full', approve: true });
+  const { result } = await run('read_file', { path: 'PlaitCode/.env' }, { preset: 'full', approve: true });
   assert.doesNotMatch(result.content, /abcdef123456/);
 });
 
 // ── 6. 硬边界 ────────────────────────────────────────────────────────────
 test('规划模式禁止写入，即使预设是 autopilot', async () => {
-  const { result } = await run('write_file', { path: 'DeepSeek-HWChat/plan.txt', content: 'x' }, { preset: 'autopilot', mode: 'plan' });
+  const { result } = await run('write_file', { path: 'PlaitCode/plan.txt', content: 'x' }, { preset: 'autopilot', mode: 'plan' });
   assert.equal(result.status, 'denied');
 });
 
 test('未受信任工作区禁止写入与执行命令', async () => {
   trusted = false;
   try {
-    const write = await run('write_file', { path: 'DeepSeek-HWChat/untrusted.txt', content: 'x' }, { preset: 'autopilot' });
+    const write = await run('write_file', { path: 'PlaitCode/untrusted.txt', content: 'x' }, { preset: 'autopilot' });
     assert.equal(write.result.status, 'denied');
 
     const command = await run('run_command', { command: 'pwd' }, { preset: 'autopilot' });
@@ -394,7 +394,7 @@ test('未知工具被拒绝，而不是静默忽略', async () => {
 
 // ── 7. 审计日志 ──────────────────────────────────────────────────────────
 test('被拒绝的调用会写入审计记录，且敏感值被脱敏', async () => {
-  await run('read_file', { path: 'DeepSeek-HWChat/.env' });
+  await run('read_file', { path: 'PlaitCode/.env' });
   const raw = await readFile(auditPath, 'utf8').catch(() => '');
   const lines = raw.split('\n').filter(Boolean).map((line) => JSON.parse(line) as { tool: string; status: string; summary: string });
   const denied = lines.filter((line) => line.tool === 'read_file' && line.status === 'denied');
@@ -459,7 +459,7 @@ test('外部工具：写入策略为禁止时不执行，也不弹确认', async
   assert.equal(requests.length, 0);
 });
 
-test('外部工具：delegateApproval 交给 VS Code 自己确认，HWChat 不叠加弹窗', async () => {
+test('外部工具：delegateApproval 交给 VS Code 自己确认，PlaitCode 不叠加弹窗', async () => {
   const { result, requests } = await runExternal('write', { delegateApproval: true, overrides: { fileWritePolicy: 'ask' } });
   assert.equal(requests.length, 0);
   assert.equal(result.status, 'success');
@@ -478,7 +478,7 @@ test('外部工具：forceApproval 在审阅预设下强制确认，在 autopilo
 // 真实故障：`search_files` 不带 glob 时只扫到 200 个文件，全部来自第一个根，
 // 用户的项目根根本没被搜过，工具却回答“没有匹配”。
 test('list_files 不传 glob 时覆盖所有根目录，而不是把名额全花在第一个根上', async () => {
-  const scratch = await mkdtemp(join(tmpdir(), 'hwchat-starve-'));
+  const scratch = await mkdtemp(join(tmpdir(), 'plaitcode-starve-'));
   const first = join(scratch, 'RootFirst');
   const second = join(scratch, 'RootSecond');
   try {
@@ -504,14 +504,14 @@ test('list_files 不传 glob 时覆盖所有根目录，而不是把名额全花
   }
 });
 
-// 真实故障（本次会话实测）：18 个根的工作区里点名第 17 个根 `DeepSeek-HWChat/**`，
+// 真实故障（本次会话实测）：18 个根的工作区里点名第 17 个根 `PlaitCode/**`，
 // 工具回答「找到 0 个文件（已达上限）」。根因是根名分支只传了字符串 glob，多根工作区里
 // findFiles 会搜遍所有根、共享同一个上限，前 16 个根把名额吃光，过滤后剩 0。
 // 注意：文件确实存在，工具却回答“没有”，比报错更糟——调用方会误判项目里没这个文件。
 test('根目录名前缀的 glob 必须限定在该根内查询，不能被前面的根挤成 0 个文件', async () => {
-  const scratch = await mkdtemp(join(tmpdir(), 'hwchat-scoped-glob-'));
+  const scratch = await mkdtemp(join(tmpdir(), 'plaitcode-scoped-glob-'));
   const first = join(scratch, 'Safevault_android');
-  const second = join(scratch, 'DeepSeek-HWChat');
+  const second = join(scratch, 'PlaitCode');
   try {
     await mkdir(join(first, 'src'), { recursive: true });
     await mkdir(join(second, 'src'), { recursive: true });
@@ -522,7 +522,7 @@ test('根目录名前缀的 glob 必须限定在该根内查询，不能被前�
     setWorkspaceRoots([first, second]);
     const scoped = new ToolExecutor(new AuditLog(join(scratch, 'audit.jsonl')), () => true);
     const result = await scoped.execute(
-      call('list_files', { glob: 'DeepSeek-HWChat/**' }),
+      call('list_files', { glob: 'PlaitCode/**' }),
       'agent',
       settings('review'),
       recorder(true).requestApproval,
@@ -541,12 +541,12 @@ test('根目录名前缀的 glob 必须限定在该根内查询，不能被前�
 // 根因：逐根查询已经修好，但合并后的列表是「第一个根的全部 → 第二个根的全部」，
 // 1500 的扫描预算在最靠前的根就用光了，第 17 个根从未被读到。
 test('search_files 不传 glob 时扫描预算要分摊到所有根，不能在第 17 个根之前耗尽', async () => {
-  const scratch = await mkdtemp(join(tmpdir(), 'hwchat-search-starve-'));
+  const scratch = await mkdtemp(join(tmpdir(), 'plaitcode-search-starve-'));
   // 每个根各自被 PER_ROOT_FILE_LIMIT（400）封顶，所以单靠一个噪音根凑不满
   // SEARCH_FILE_BUDGET（1500）。真实工作区是 18 个根，必须按「多个噪音根 + 目标根在最后」构造。
   const noisyNames = ['Safevault_android', 'Safevault_iOS', 'Safevault_macOS', 'Safevault_windows'];
   const noisyRoots = noisyNames.map((name) => join(scratch, name));
-  const targetRoot = join(scratch, 'DeepSeek-HWChat');
+  const targetRoot = join(scratch, 'PlaitCode');
   try {
     for (const root of noisyRoots) {
       await mkdir(root, { recursive: true });
@@ -571,7 +571,7 @@ test('search_files 不传 glob 时扫描预算要分摊到所有根，不能在�
   }
 });
 
-// 真实缺陷（本次会话实测）：`hwchat_vscode_copilot_readFile` 传 /etc/hosts 直接返回了
+// 真实缺陷（本次会话实测）：`plaitcode_vscode_copilot_readFile` 传 /etc/hosts 直接返回了
 // 工作区外的文件内容，`copilot_listDirectory` 传 /etc 列出了整个系统目录。原生 read_file
 // 被锁在工作区内，桥接通道却完全绕过路径隔离——等于同一套产品里有一扇没上锁的后门。
 // 这两条用例断言：越界参数必须在调用 VS Code 之前被拒绝，而不是靠 VS Code 自己兜。
@@ -611,7 +611,7 @@ test('桥接工具：工作区内的路径照常放行', async () => {
 
   const recorded = recorder(true);
   const outcome = await bridge.execute(
-    call(id, { filePath: 'DeepSeek-HWChat/package.json' }),
+    call(id, { filePath: 'PlaitCode/package.json' }),
     'agent',
     settings('autopilot'),
     recorded.requestApproval,
@@ -633,7 +633,7 @@ test('replace_in_file：CRLF 文件用 LF 的 oldText 也能命中，写回仍�
   await writeFile(file, 'line one\r\nline two\r\nline three\r\n', 'utf8');
 
   const { result } = await run('replace_in_file', {
-    path: 'DeepSeek-HWChat/crlf.cs',
+    path: 'PlaitCode/crlf.cs',
     oldText: 'line one\nline two',
     newText: 'line one\nline TWO',
   }, { preset: 'autopilot' });
@@ -649,7 +649,7 @@ test('replace_in_file：LF 文件用 CRLF 的 oldText 也能命中，写回仍�
   await writeFile(file, 'const a = 1;\nconst b = 2;\n', 'utf8');
 
   const { result } = await run('replace_in_file', {
-    path: 'DeepSeek-HWChat/lf.ts',
+    path: 'PlaitCode/lf.ts',
     oldText: 'const a = 1;\r\nconst b = 2;',
     newText: 'const a = 1;\r\nconst b = 3;',
   }, { preset: 'autopilot' });
@@ -665,7 +665,7 @@ test('replace_in_file：真正不存在的 oldText 仍然报错，换行归一�
   await writeFile(file, 'alpha\r\nbeta\r\n', 'utf8');
 
   const { result } = await run('replace_in_file', {
-    path: 'DeepSeek-HWChat/missing.cs',
+    path: 'PlaitCode/missing.cs',
     oldText: 'alpha\nnot-there',
     newText: 'x',
   }, { preset: 'autopilot' });
@@ -709,7 +709,7 @@ test('replace_in_file：文件同时含 CRLF 与 LF 时，跨混合区的 oldTex
   await writeFile(file, original, 'utf8');
 
   const { result } = await run('replace_in_file', {
-    path: 'DeepSeek-HWChat/mixed.cs',
+    path: 'PlaitCode/mixed.cs',
     // 模型给的是纯 LF 的 oldText，且跨越 LF 行与 CRLF 行。
     oldText: '          Focusable = false,\n        };\n        ScrollViewer.SetCanContentScroll(this, false);\n        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;\n        Padding = new Thickness(0, 0, 16, 0);\n\n        _panel = new StackPanel',
     newText: '          Focusable = false,\n        };\n        ScrollViewer.SetCanContentScroll(scroller, false);\n\n        _panel = new StackPanel',
@@ -736,7 +736,7 @@ test('replace_in_file：replaceAll 跨混合换行时替换全部命中', async 
   await writeFile(file, 'x = 1;\r\ny = 2;\nx = 1;\nz = 3;\r\n', 'utf8');
 
   const { result } = await run('replace_in_file', {
-    path: 'DeepSeek-HWChat/mixed-all.cs',
+    path: 'PlaitCode/mixed-all.cs',
     oldText: 'x = 1;',
     newText: 'x = 9;',
     replaceAll: true,

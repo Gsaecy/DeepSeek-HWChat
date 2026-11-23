@@ -2,15 +2,15 @@
  * 工具清单裁剪：只在真正需要时才把「VS Code 扩展提供的桥接工具」下发给模型。
  *
  * 用户 2026-11-22 的疑问：「Copilot Chat 我也用的 DeepSeek 模型，还是很流畅的，
- * HWChat 却很难用」。除了模型本身，最直接的差别就在**工具清单**：
+ * PlaitCode 却很难用」。除了模型本身，最直接的差别就在**工具清单**：
  *
  *  - Copilot Chat 只给模型一份**精选**工具（十几个），名字短、schema 小；
- *  - HWChat 之前把 VS Code 里**所有**扩展注册的语言模型工具都转成 `hwchat_vscode_*`
+ *  - PlaitCode 之前把 VS Code 里**所有**扩展注册的语言模型工具都转成 `plaitcode_vscode_*`
  *    一起下发（上限写成 400，等于不设限）。装了 Copilot / Git / 其它扩展之后，
  *    一次请求里可能多出几十个工具、上万字符的 JSON schema。
  *
  * 后果不是「多花点 token」而已：模型要在几十个候选里挑一个，挑错的概率随数量上升，
- * 而且很多桥接工具在 HWChat 的调用上下文里**根本调不通**（见 `bridgedTools.ts`），
+ * 而且很多桥接工具在 PlaitCode 的调用上下文里**根本调不通**（见 `bridgedTools.ts`），
  * 挑中就是一轮白烧。这与「省 token、不要错误调用」是同一件事。
  *
  * 所以这里按「用户这句话到底需不需要扩展能力」决定：
@@ -21,7 +21,7 @@
  */
 
 /** 桥接工具的 id 前缀（与 `vscodeTools.ts` 里的 `PREFIX` 必须一致）。 */
-export const BRIDGED_TOOL_PREFIX = 'hwchat_vscode_';
+export const BRIDGED_TOOL_PREFIX = 'plaitcode_vscode_';
 
 /**
  * 「需要 VS Code 扩展能力」的判据。

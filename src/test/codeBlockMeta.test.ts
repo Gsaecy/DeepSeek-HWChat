@@ -26,8 +26,8 @@ function loadMeta(): CodeBlockMeta {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(readFileSync('media/code-block-meta.js', 'utf8'), sandbox);
-  const meta = sandbox.HWChatCodeBlockMeta as CodeBlockMeta | undefined;
-  assert.ok(meta, 'media/code-block-meta.js 必须挂载 HWChatCodeBlockMeta');
+  const meta = sandbox.PlaitCodeCodeBlockMeta as CodeBlockMeta | undefined;
+  assert.ok(meta, 'media/code-block-meta.js 必须挂载 PlaitCodeCodeBlockMeta');
   return meta;
 }
 
@@ -183,7 +183,7 @@ test('提示词要求三种位置写法，并禁止把标注写进代码', () =>
 
 test('webview 真的用上了这套解析（防止前端被改回旧写法）', () => {
   const chat = readFileSync('media/chat.js', 'utf8');
-  assert.match(chat, /const codeMeta = globalThis\.HWChatCodeBlockMeta/, 'chat.js 必须读取 HWChatCodeBlockMeta');
+  assert.match(chat, /const codeMeta = globalThis\.PlaitCodeCodeBlockMeta/, 'chat.js 必须读取 PlaitCodeCodeBlockMeta');
   assert.match(chat, /codeMeta\.collectFenceBlock/, '围栏收集必须走公共实现');
   assert.match(chat, /codeMeta\.parseFenceInfo/, '位置/工具标注必须走公共实现');
   assert.match(chat, /codeMeta\.dedentCode/, '代码块必须去掉列表缩进');

@@ -15,7 +15,7 @@ export const REASONING_DEPTHS: readonly ReasoningEffort[] = ['low', 'medium', 'h
  * `effort.supported_levels` 里），而 `modelOptionsForProfile()` 在发现成功后
  * **整体替换**了内置表，于是 `reasoningSupport` 从 `configurable` 被洗成
  * `unknown`，工具条上的「思考深度」被灰成「能力未知」——而 DeepSeek 明明
- * 支持 `reasoning_effort`（Copilot 能设，HWChat 不能，就是这个差别）。
+ * 支持 `reasoning_effort`（Copilot 能设，PlaitCode 不能，就是这个差别）。
  *
  * 规则：**探测到的能力优先**（它更接近服务端真实状态）；
  * 探测没给出（`unknown` / 空数组）时才回落到内置值。

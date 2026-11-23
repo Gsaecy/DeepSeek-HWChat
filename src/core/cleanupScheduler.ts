@@ -132,7 +132,7 @@ export class CleanupScheduler implements vscode.Disposable {
         if (result.overBudget) {
           // 超预算时给一个直接入口：清理是用户的决定，但至少别让他去找设置在哪。
           void vscode.window.showInformationMessage(message, tt('cleanup.openSettings')).then((choice) => {
-            if (choice) void vscode.commands.executeCommand('hwchat.openSettings');
+            if (choice) void vscode.commands.executeCommand('plaitcode.openSettings');
           });
         } else {
           void vscode.window.showInformationMessage(message);

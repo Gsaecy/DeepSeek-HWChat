@@ -4,7 +4,7 @@ import { commandPathViolation, looksLikeRegexLiteral } from '../agent/commandPat
 import { bashOnlySyntax, noMatchExit, pathRewriteSuggestion, shellFor, powerShellCommand, toleratedPowerShellExit } from '../agent/toolExecutor';
 
 const roots = [
-  '/Users/test/AI projects/DeepSeek-HWChat',
+  '/Users/test/AI projects/PlaitCode',
   '/Users/test/AI projects/扩展选择助手',
 ];
 
@@ -15,7 +15,7 @@ test('accepts an absolute workspace path quoted with spaces', () => {
 });
 
 test('accepts an unquoted absolute workspace path composed of single segments', () => {
-  const command = 'ls /Users/test/AI projects/DeepSeek-HWChat/src';
+  const command = 'ls /Users/test/AI projects/PlaitCode/src';
   // 未加引号时按空白切分，`/Users/test/AI` 与 `projects/...` 都不在根目录内，
   // 因此这里应当被拦下——提醒调用方必须加引号。
   assert.match(String(commandPathViolation(command, roots)), /不在当前工作区内/);
@@ -93,7 +93,7 @@ test('does not flag absolute paths when no workspace root is open', () => {
 });
 
 // ── `..` 按 cwd 解析后判界，而不是一律拒绝 ───────────────────────────────
-const rootB = '/Users/test/AI projects/DeepSeek-HWChat';
+const rootB = '/Users/test/AI projects/PlaitCode';
 const srcCwd = `${rootB}/src`;
 
 test('allows .. when it resolves inside a workspace root and cwd is known', () => {
@@ -177,7 +177,7 @@ test('rejects commands that target the bare filesystem root', () => {
 
 test('still accepts redirects and devices that are not the bare root', () => {
   assert.equal(commandPathViolation('npm run build > /dev/null 2>&1', roots), undefined);
-  assert.equal(commandPathViolation('ls "/Users/test/AI projects/DeepSeek-HWChat/src"', roots), undefined);
+  assert.equal(commandPathViolation('ls "/Users/test/AI projects/PlaitCode/src"', roots), undefined);
   assert.equal(commandPathViolation('date +%Y/%m/%d', roots), undefined);
 });
 
@@ -264,7 +264,7 @@ test('quoted absolute paths inside a heredoc are still checked', () => {
 test('a workspace quoted path inside a heredoc is allowed', () => {
   const command = [
     "python3 - <<'PY'",
-    "Path('/Users/test/AI projects/DeepSeek-HWChat/site.css').read_text()",
+    "Path('/Users/test/AI projects/PlaitCode/site.css').read_text()",
     'PY',
   ].join('\n');
   assert.equal(commandPathViolation(command, roots), undefined);

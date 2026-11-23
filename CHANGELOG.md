@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.5.0（2026-11-24）
+
+### 品牌迁移：HWChat → PlaitCode
+
+原因：`HWChat` 原本是 **honor-world** chat 的缩写，而 `honor-world` 的英文商标与 HONOR
+冲突、没有拿下来。继续用这个名字，在 Marketplace、官网和对外宣传上都是隐患。
+
+用户 2026-11-24 的决定（原话）：「干脆换个名字，不留隐患的名字，重新上架和部署 GitHub 仓库」。
+
+| 项 | 旧 | 新 |
+|---|---|---|
+| 扩展 ID | `honor-world.hwchat` | `plaitcode.plaitcode` |
+| 显示名 | HWChat | **PlaitCode** |
+| 命令 / 设置前缀 | `hwchat.*` | `plaitcode.*` |
+| GitHub 仓库 | `Gsaecy/DeepSeek-HWChat` | `Gsaecy/PlaitCode`（301 自动跳转） |
+| 域名 | — | `plaitcode.com`（已购） |
+
+**受影响的使用者只有一件事要做**：卸载旧扩展、安装新扩展。命令 ID 和设置键都变了，
+工作区里旧的 `hwchat.*` 设置不会自动迁移（当前用户很少，这是代价最小的时刻）。
+
+迁移脚本刻意保护了两个东西，避免"改名改坏功能"：
+
+- `honor-world.local-skill-quick-launch`：**另一个已发布扩展**的 ID，替换掉就会指向不存在的扩展；
+- 小写 `deepseek-hwchat`：本机文件夹路径（历史日志里出现过），不是品牌。
+
+### 跨网中继（实验性，等待服务器配置）
+
+新增三个文件，把"多设备跨网络协作"的地基铺好：
+
+- `src/sync/relayCrypto.ts`：从一段配对密钥派生频道号 / 中转鉴权 / AES-256-GCM 密钥；
+- `src/sync/relayServer.ts`：零依赖单文件中转，只存密文，HTTP 长轮询；
+- `src/sync/relayClient.ts`：长轮询收发 + 解密 + 幂等，接入现有团队群管线（不回环）。
+
+`LanSyncService` 新增 `ingestRelayMessage()`（收到的消息并入同一管线）和
+`bridge.onOutgoing`（本机产生的消息单向往外发）。未加入频道时**不产生任何行为**。
+单测与部署包（systemd / nginx / 证书）在 0.5.1 补齐。
+
 ## 0.4.29（2026-11-23）
 
 ### 手机遥控：用手机指挥两台电脑（局域网）
@@ -22,7 +59,7 @@
 
 - 6 位数字码 → 12 小时会话 Cookie，**一个码只能用一次**（用完即作废，拍屏也没用）；
 - 同一来源连错 5 次锁 5 分钟（穷举六位数要几年）；
-- Cookie `HttpOnly` + `SameSite=Strict`；改状态的接口额外要求 `x-hwchat-mobile: 1`
+- Cookie `HttpOnly` + `SameSite=Strict`；改状态的接口额外要求 `x-plaitcode-mobile: 1`
   自定义头（跨站表单发不出这个头）；
 - 授权卡三分钟没人处理自动按拒绝收尾，绝不让工具线程挂着；
 - 手机批准可在「手机遥控」窗口一键关掉（默认开，用户明确要「也能量批准」）。
@@ -151,7 +188,7 @@ agent 后，就是群？那就需要将显示的输出简化缩小，避免信�
 >
 > 「甚至两边设备的 agent 可以像一个团队的同事一样沟通交流项目的情况，互通有无」
 
-**默认关闭**（hwchat.lanSync.enabled = false），不启用时零网络行为、零性能开销。
+**默认关闭**（plaitcode.lanSync.enabled = false），不启用时零网络行为、零性能开销。
 
 **怎么用（傻瓜式，只需要三步）**：
 
@@ -201,12 +238,12 @@ agent 后，就是群？那就需要将显示的输出简化缩小，避免信�
 差别不在模型，而在**工具清单**：
 
 - Copilot Chat 只给模型一份**精选**工具（十几个），名字短、schema 小；
-- HWChat 之前把 VS Code 里**所有**扩展注册的语言模型工具都转成 `hwchat_vscode_*`
+- PlaitCode 之前把 VS Code 里**所有**扩展注册的语言模型工具都转成 `plaitcode_vscode_*`
   一起下发，上限写的是 **400**，等于不设限。装了 Copilot / Git / 其它扩展之后，
   一次请求里会多出几十个工具、上万字符的 JSON schema（合几千 token）。
 
 后果不只是浪费：模型要在几十个候选里挑一个，挑错的概率随数量上升；而且其中不少桥接
-工具在 HWChat 的调用上下文里**根本调不通**（`bridgedTools.ts` 有记录），挑中就是一轮白烧。
+工具在 PlaitCode 的调用上下文里**根本调不通**（`bridgedTools.ts` 有记录），挑中就是一轮白烧。
 
 **修法**（`toolSurface.ts`，纯函数）：
 
@@ -296,7 +333,7 @@ agent 后，就是群？那就需要将显示的输出简化缩小，避免信�
 
 ### 像 Copilot 那样省 token：读文件按窗口、命令输出留头留尾、工作集钉住
 
-用户问「为什么 Copilot Chat 这么流畅，HWChat 这么难用」。三个可量化的差距：
+用户问「为什么 Copilot Chat 这么流畅，PlaitCode 这么难用」。三个可量化的差距：
 
 | 差距 | 旧行为 | 代价 |
 |---|---|---|
@@ -360,7 +397,7 @@ agent 后，就是群？那就需要将显示的输出简化缩小，避免信�
 
 ### 三个现场问题：任务没做完就停、一条清单项跑几百条命令、假执行报完成
 
-**现场一**：「hwchat 没有执行完对话框里面的任务就停下来了，每次都是这样」，并且用户
+**现场一**：「plaitcode 没有执行完对话框里面的任务就停下来了，每次都是这样」，并且用户
 在工具条上已经把**最大步数设为「不限制」**。
 
 根因：不限制步数时，循环只在「模型不再调用工具」时结束 —— 也就是模型自己写一段总结
@@ -538,7 +575,7 @@ agent 后，就是群？那就需要将显示的输出简化缩小，避免信�
 - **收尾竞态**：模型刚写完最后一段、正要去收尾时收到新消息，会再取一次任务接着做，
   不会出现「我发了消息，任务却结束了」。
 - **诊断日志**：`[steer] ...` 记录「并入 + 请求暂停」与「暂停点交付了什么」，
-  在「输出 → HWChat」里就能确认暂停是否真的发生。
+  在「输出 → PlaitCode」里就能确认暂停是否真的发生。
 - 输入框占位文案改为「发送新消息会先暂停当前任务，综合分析后调整任务清单…」，暂停时
   补一条 toast「已暂停当前任务，正在综合分析这条新消息…」。
 - `update_todos` 的「不许丢已完成项」守卫接受运行中补的「重新规划」：新增
@@ -707,7 +744,7 @@ repo 本身是工作区根），于是读操作放行、写操作一律拒绝，
 用户原话：「Windows 版本新装了扩展后，历史对话的预设权限和步数变成了每次询问和 24 步。」
 确认现场：出问题的是**升级前就有的老对话**，升级前显示的是「自动 / 不限制」，是在工具条上改的。
 
-**根因**：这三项（权限预设 / 最大步骤 / 思考深度）0.2.5 之前只有 `hwchat.*` 全局一份，
+**根因**：这三项（权限预设 / 最大步骤 / 思考深度）0.2.5 之前只有 `plaitcode.*` 全局一份，
 不随对话存档。升级后 `currentControls()` 对「存档里没有这些字段」的对话一律用
 `NEW_CONVERSATION_CONTROLS`（每次询问 / 24 步）兜底 —— 这条兜底本来是给**新对话**用的，
 结果把「升级前就已经存在、当年实际按全局值运行」的老对话也一起重置了。
@@ -716,7 +753,7 @@ repo 本身是工作区根），于是读操作放行、写操作一律拒绝，
 **修法**：
 
 - 新增 `readLegacyConversationControls()`（`core/settings.ts`）：只读用户显式写过的
-  `hwchat.permissionPreset` / `hwchat.agentMaxSteps` / `hwchat.reasoningEffort`
+  `plaitcode.permissionPreset` / `plaitcode.agentMaxSteps` / `plaitcode.reasoningEffort`
   （`inspect()` 逐层取声明值，`defaultValue` 不参与），非法值一律丢弃。
 - `ConversationStorage` 接受可选的 `legacyControls`：`initialize()` 在对账完消息数之后，
   只给**有消息、且对应字段缺失**的对话补值并落盘。三条边界：
@@ -768,8 +805,8 @@ repo 本身是工作区根），于是读操作放行、写操作一律拒绝，
 
 **做法**（`src/core/projectDoc.ts` + `update_project_doc` 工具）：
 
-- **一份，靠标记认**：`docs/HWCHAT-PROJECT-NOTES.md`（没有 `docs/` 就放项目根），文件头带
-  `<!-- hwchat:project-doc v1 -->`。用户改名或移动之后仍然认得出来，不会长出第二份。
+- **一份，靠标记认**：`docs/PLAITCODE-PROJECT-NOTES.md`（没有 `docs/` 就放项目根），文件头带
+  `<!-- plaitcode:project-doc v1 -->`。用户改名或移动之后仍然认得出来，不会长出第二份。
 - **只追加，不重写**：模型只提供条目，读改写由宿主完成 —— 不把整篇交给模型「总结」，
   否则它一旦压缩就会吃掉旧结论，而这份文件存在的意义恰恰是别丢旧结论。
 - 四个小节：**不可违反的约定 / 已定的决策 / 已否决的做法（不要再试）/ 未完成**。
@@ -1190,7 +1227,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.4.6
 
-**线上阻断问题热修**：一位新用户在全新的 Windows 上第一次用 HWChat，第一件事（拉取远端）就失败。
+**线上阻断问题热修**：一位新用户在全新的 Windows 上第一次用 PlaitCode，第一件事（拉取远端）就失败。
 
 - **`git pull` / `git fetch` 被自己的守卫拦住**（用户贴回的原文）：
 
@@ -1249,7 +1286,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 - **「检测能否直接调用」点了没反应**（用户原话：「这里显示不对，而且点击也没反应」）。真因不是样式：`media/settings.js` 的点击处理器调了**根本不存在的** `collectSettings()`，一点就抛 `ReferenceError`（`node --check` 查不出来，运行时才炸）。改为走 `withForm()`，和「保存」同一条取值/校验路径；点击后立即显示「正在检测…」并禁用按钮，结论回来再恢复。
 - **带文字的按钮被压成 32px 方块，中文一字一行竖排**（「测试出图」「检测能否直接调用」）。它们当时套在 `.profile-control` 里 —— 那是给 `＋` `−` 这类**方形图标按钮**用的栅格（`minmax(0,1fr) 32px 32px`）。新增 `.inline-control`（`minmax(0,1fr) auto` + `white-space: nowrap`）专供带文字的按钮。
 - **说明文字里的 `**` 原样显示成星号**。i18n 是**纯文本**渲染，不吃 markdown；去掉标记并改由脚本 `textContent` 注入，杜绝以后再混进标记。
-- **新增「向量接口 Key」输入框，按配置档分开存**（`hwchat.embeddingKey.<profileId>`）。原先只能复用配置档自己的聊天 Key —— 聊天用 DeepSeek、向量用 holysheep 时根本填不进去。优先级：本次填的 → 专用 Key → 配置档聊天 Key；已保存时显示「已保存（留空则不修改）」。
+- **新增「向量接口 Key」输入框，按配置档分开存**（`plaitcode.embeddingKey.<profileId>`）。原先只能复用配置档自己的聊天 Key —— 聊天用 DeepSeek、向量用 holysheep 时根本填不进去。优先级：本次填的 → 专用 Key → 配置档聊天 Key；已保存时显示「已保存（留空则不修改）」。
 - **顺手堵掉一处明文泄漏**：表单取值里残留了一个 `embeddingKey` 字段，而 `validateSettings()` 是直通合并 —— 这会把**明文向量 Key 写进 settings.json**。已删除，Key 只经 `apiKeys` / `embeddingApiKeys` 通道进 SecretStorage。
 - **检测结论为空时整行不再占位**（否则「向量模型」和说明块之间空出一大块）；成功绿色、失败红色。
 
@@ -1281,11 +1318,11 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.4.4
 
-这一版把三件事合在一起：**agent 不再忘记项目**、**图片与命令不再无谓失败**、**检索从关键词升级到向量**。起点是用户那句「hwchat 有时候会突然忘记项目」，终点是「同一句话换个说法也能找回来」。
+这一版把三件事合在一起：**agent 不再忘记项目**、**图片与命令不再无谓失败**、**检索从关键词升级到向量**。起点是用户那句「plaitcode 有时候会突然忘记项目」，终点是「同一句话换个说法也能找回来」。
 
 ### 一、记忆模型：记录是档案，任务树是记忆
 
-- **「突然忘记项目」的根因**（用户原话：「hwchat 有时候会突然忘记项目」，现场是面板显示「我这边没有收到具体请求：当前对话里只有运行环境与工具说明」）。
+- **「突然忘记项目」的根因**（用户原话：「plaitcode 有时候会突然忘记项目」，现场是面板显示「我这边没有收到具体请求：当前对话里只有运行环境与工具说明」）。
   - 用真实存档 `conversation_fde3da6a…`（154 条 / 23.5 MB）复现：旧 `getContextMessages()` 只回来 **1 条**消息，而且是一条**内容为空**的助手占位。模型自己的 reasoning 写着 `The conversation starts with the system prompt only. Wait, there's no user message.`，那一轮 `promptTokens = 50,509`，正好只有 system + 工具定义。
   - **机制**：旧预算按**原始 JSON 字节**从新到旧累加、上限 2 MB。用户贴两张截图的那条消息有 **2747 KB**（图片 base64 内联）：2 KB 的助手占位先进窗口，轮到用户消息时「2 KB + 2747 KB > 2 MB」→ `break`，用户这句话被整个丢掉；占位随后又因「内容为空」被跳过。
   - **修法**（`src/core/contextWindow.ts`）：预算只算真正会发给模型的内容（正文/附件文本，**图片字节不计**）；最新那条用户消息及其后的占位**无条件保留**；`requestMessages()` 末尾再加一道闸 —— 窗口里没有本轮消息就直接补上并记 `[context]` 日志。**不会再出现「只有 system」的请求。**
@@ -1318,8 +1355,8 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 ### 四、网络与失败：说清是哪一种
 
 - **半个 emoji 不再毁掉整份请求**（用户连报两次）：`Failed to parse the request body as JSON: messages[0].content: lone leading surrogate in hex escape`。一个 😀 占两个 UTF-16 码元，`slice` 截在中间就留下半个代理项，`JSON.stringify` 写成 `\ud83d`，服务端直接 400。修法：9 处进提示词的截断全部改成 `safeSlice`/`clipText`（`src/core/textSafety.ts`），并在**出站口**统一 `encodeBody()` 清洗 + 记日志。
-- **「卡住」不再报成「网络失败」**（用户追问「为什么 hwchat 和 copilot 都是用的 DeepSeek，hwchat 经常出现这种连不上的情况」）：真实日志里 `网络失败（ABORT_ERR）` 其实是我们自己「120 秒没收到任何字节」的空闲判定 abort 后经代理包装的结果。新增 `StreamStalledError`（阶段/秒数/请求体大小/是否走代理），界面直说「N 秒没有新数据」并给出「调大超时 / 加直连」两条做法。
-- **DeepSeek 走直连，其它流量照旧**：新增 `hwchat.proxyBypassHosts`（默认 `api.deepseek.com`，设置页有输入框）。**只影响 HWChat 自己的请求**，`git push/pull` 等子进程走自己的代理配置。
+- **「卡住」不再报成「网络失败」**（用户追问「为什么 plaitcode 和 copilot 都是用的 DeepSeek，plaitcode 经常出现这种连不上的情况」）：真实日志里 `网络失败（ABORT_ERR）` 其实是我们自己「120 秒没收到任何字节」的空闲判定 abort 后经代理包装的结果。新增 `StreamStalledError`（阶段/秒数/请求体大小/是否走代理），界面直说「N 秒没有新数据」并给出「调大超时 / 加直连」两条做法。
+- **DeepSeek 走直连，其它流量照旧**：新增 `plaitcode.proxyBypassHosts`（默认 `api.deepseek.com`，设置页有输入框）。**只影响 PlaitCode 自己的请求**，`git push/pull` 等子进程走自己的代理配置。
 - **请求体更小**：最近原文 24 → 12、字节预算 1 MB → 768 KB、运行内工具输出全文 6 → 3；超过 512 KB 记一行真实体积。
 
 ### 五、工具：注定失败的不再摆出来，失败时给出真实结构
@@ -1334,7 +1371,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.4.3
 
-- **多轮对话后「突然忘记项目」：根因是上下文预算把用户当下这句话挤掉了**（用户原话：「hwchat 有时候会突然忘记项目」，贴回的现场是面板里出现「我的理解 / 我这边没有收到具体请求：当前对话里只有运行环境与工具说明」）。
+- **多轮对话后「突然忘记项目」：根因是上下文预算把用户当下这句话挤掉了**（用户原话：「plaitcode 有时候会突然忘记项目」，贴回的现场是面板里出现「我的理解 / 我这边没有收到具体请求：当前对话里只有运行环境与工具说明」）。
   - **实测复现**：拿用户真实存档 `conversation_fde3da6a…`（154 条消息、23.5 MB）跑一遍旧的 `getContextMessages()`，只回来 **1 条** 消息——而且是一条内容为空的助手占位。模型自己的 reasoning 写得很清楚：`The conversation starts with the system prompt only. Wait, there's no user message.` 那一轮 `promptTokens = 50,509`，正好只有 system + 工具定义。
   - **机制**：旧预算按**原始 JSON 字节**从新到旧累加、上限 2 MB。用户贴了两张截图的那条消息有 **2747 KB**（图片 base64 直接存在消息里）：2 KB 的助手占位先进窗口，轮到用户消息时「2 KB + 2747 KB > 2 MB」→ `break`，用户这句话被整个丢掉；占位消息随后又因为「内容为空」被跳过 → 请求里只剩 system。
   - **修法（`src/core/contextWindow.ts`）**：预算只算真正会发给模型的内容（正文/附件文本，**图片字节不计**）；最新那条用户消息以及它之后的占位**无条件保留**；`requestMessages()` 最后再加一道闸——窗口里没有本轮消息就直接补上并记一行 `[context]` 日志。**再也不会发出「只有 system」的请求。**
@@ -1379,7 +1416,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.4.2
 
-- **选方案时的回答（含附件）现在是一条真正的消息气泡，不再凭空消失**（用户原话：「hwchat 让我选择方案的时候我发的附件，存在哪里了」「选择方案的时候，我的回答也需要显示成消息气泡，不能消失，包括附件」）。
+- **选方案时的回答（含附件）现在是一条真正的消息气泡，不再凭空消失**（用户原话：「plaitcode 让我选择方案的时候我发的附件，存在哪里了」「选择方案的时候，我的回答也需要显示成消息气泡，不能消失，包括附件」）。
   - **回答去哪了**：两种回答方式以前都只在**工具结果**里留痕 —— 自己写做法 → 文本进了 `ask_user_choice` 的返回值；点某个方案 → 连痕迹都没有。对话里看起来就是「我问了、agent 接着干」，中间那句回答凭空消失，事后想回看「当时我选的是哪个方案」也查不到。
   - **附件更糟**：旧实现在这条分支上直接 `this.pendingAttachments = []` —— 附件既没进消息存档、也没写进任何文件，等于丢掉。用户以为 agent 看到了那张图。
   - **修法**：新增 `recordDecisionAnswer()`，两条路径统一落一条 `executionStatus: 'done'` 的用户消息（文本 + 附件，附件照常可点开）。
@@ -1423,7 +1460,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **恢复待办树里的节点可以直接处理**：删除（`retained-<n>` → 从 `pendingTaskIds` 移除并删掉那一问一答）与编辑（直接改存档里那条用户消息，下一轮读到新内容），不用等它跑起来。
   - 守护：`check-no-skip.mjs` 扩到 **35 项**，其中 7 项是**真实 headless Chromium 渲染断言**（树可见、`is-restored` 类名与左边线、文字是「恢复执行」、悬停有解释、气泡仍是「还没执行」、气泡仍能编辑、无脚本错误）。测试夹具 `test/preview-chat.html` 的 i18n 快照也补到 903 条（原本落后，新按钮会显示成键名）。
 
-- **未执行的消息不再被跳过：先来先做、收尾不丢、续跑按清单继续**（用户原话：「hwchat的对话框，发的多个消息，如果合并执行的消息中间还有消息，会被跳过。请修复，让 agent 不要跳过未执行的消息，除非用户自己删除，不然需要根据状态之下，只要对话框还有未执行的消息都需要继续执行，包括执行中断、暂停等，继续后需要读取未执行清单，继续执行」）。
+- **未执行的消息不再被跳过：先来先做、收尾不丢、续跑按清单继续**（用户原话：「plaitcode的对话框，发的多个消息，如果合并执行的消息中间还有消息，会被跳过。请修复，让 agent 不要跳过未执行的消息，除非用户自己删除，不然需要根据状态之下，只要对话框还有未执行的消息都需要继续执行，包括执行中断、暂停等，继续后需要读取未执行清单，继续执行」）。
   - **① 不许插队（根因）**：合并进当前分支的消息会被**立刻读走**，而更早被判成「独立任务」的消息要等整条分支跑完。于是后发的先执行、先发的被无限期压后 —— 分支一旦因为步数用尽或用户停止而结束，它就再也没跑过。现在队列记录每条消息的到达序号（`PendingTask.seq`），**前面还有没执行的独立消息时，后发的「相关」一律降级成「排队」**；边界重判（`resolveReview`）也守同一条规则。等前面那条执行完，合并能力自动恢复。
   - **② 步数预算按分支独立**：整轮（含之后所有排队分支）以前共用一份 `agentMaxSteps` —— 前面那条跑满 24 步，后面排队的消息一步都轮不到。现在轮到排队消息时重置预算（`step = 0`）；Agent 循环在**步数用尽但队列里还有消息**时也会追加一份预算继续，最多 10 次（防模型无限调工具）。
   - **③ 收尾不再丢弃**：`AgentTaskQueue.finish()` 以前把还在队列里的节点记成完成/取消，那些消息再也不会执行、界面上也看不出它一次都没跑过。现在队列里的节点保持「排队」，由 `retainedTasks()` 按发送顺序交还给面板。
@@ -1467,15 +1504,15 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - 守护：`commandPaths.test.ts` 新增 **6 条**（用户那条真实命令原样放行、cd 之后仍不能 `../../..` 逃出、cd 到工作区外仍被拦、多参数 cd 不推进、`$(…)` 不推进、连续 cd 链）。
 
 - **VS Code 桥接工具用「自然名字」调用也能通**（用户贴回的失败：`open_browser_page {"url":"http://127.0.0.1:5199/pet.html"}` → `工具 open_browser_page 未被允许。`）。
-  - 清单里下发的是 `hwchat_vscode_open_browser_page_<hash>`，而模型在历史里看到的是「调用 VS Code 工具：open_browser_page」，照着它调用就落到原生执行器，得到「未被允许」。名字对不上不该由用户承担。
-  - **修法**：`VscodeToolBridge` 在带前缀分支之前先按工具的**真实名字**找一次，找到就照常执行；`hwchat_*` 命名空间不参与裸名匹配（避免遮蔽本扩展自己的工具）。
-  - 守护：`vscodeBridgeNames.test.ts` **4 条**（裸名路由成功、带前缀 id 不受影响、不存在的裸名仍交下游拒绝、`hwchat_*` 不参与）。
+  - 清单里下发的是 `plaitcode_vscode_open_browser_page_<hash>`，而模型在历史里看到的是「调用 VS Code 工具：open_browser_page」，照着它调用就落到原生执行器，得到「未被允许」。名字对不上不该由用户承担。
+  - **修法**：`VscodeToolBridge` 在带前缀分支之前先按工具的**真实名字**找一次，找到就照常执行；`plaitcode_*` 命名空间不参与裸名匹配（避免遮蔽本扩展自己的工具）。
+  - 守护：`vscodeBridgeNames.test.ts` **4 条**（裸名路由成功、带前缀 id 不受影响、不存在的裸名仍交下游拒绝、`plaitcode_*` 不参与）。
 
 - **`run_command` 不再把 `timeoutSeconds: 900` 静默压成 120：超时时说清「被上限截断」并给出可执行的三条路**（用户贴回的失败：`{"command":"cd \"…/Personal Workstation OS\" && cargo check --manifest-path src-tauri/Cargo.toml 2>&1 | tail -40","timeoutSeconds":900}` → `超时（120 秒）` + `(无输出)`）。
   - **根因**：`Math.min(settings.maxCommandSeconds, requested)` 直接吞掉请求值，结果只说「超时（120 秒）」。用户看到的是「命令莫名其妙失败」，模型看到的是「没有输出」，双方都不知道**它其实还能跑 900 秒**——上限只在设置里。
   - **① 请求值与生效值分开算**（`src/agent/commandTimeout.ts`）：`effectiveTimeoutSeconds()` 返回 `{ requested, effective, clamped }`，不再静默截断用户设置（设置仍然是硬上限，只是不再隐瞒）。
   - **② 摘要直接写出来**：`… → 超时（120 秒）（要求 900 秒，上限 120 秒）`。
-  - **③ 结果内容补两段**：`你要求 900 秒，但设置 hwchat.maxCommandSeconds 只有 120 秒 —— 本次是按 120 秒执行后被宿主打断的`，以及三条可执行建议：调大设置（上限 900）／**后台跑 + 把输出写进工作区日志再轮询**（`> tmp/build.log 2>&1` + `background: true`，再 `tail -n 60`）／别再用 `| tail -40` 包长构建（它会缓冲全部输出，超时后只剩空结果——正是这次「无输出」的真身）与「等一会儿再重试」（上限没变，一定同样超时）。
+  - **③ 结果内容补两段**：`你要求 900 秒，但设置 plaitcode.maxCommandSeconds 只有 120 秒 —— 本次是按 120 秒执行后被宿主打断的`，以及三条可执行建议：调大设置（上限 900）／**后台跑 + 把输出写进工作区日志再轮询**（`> tmp/build.log 2>&1` + `background: true`，再 `tail -n 60`）／别再用 `| tail -40` 包长构建（它会缓冲全部输出，超时后只剩空结果——正是这次「无输出」的真身）与「等一会儿再重试」（上限没变，一定同样超时）。
   - **④ 超时一定算 `error`**（以前若退出码碰巧为 0 会被算成成功）。
   - 守护：`commandTimeout.test.ts` **5 条** + `check-command-timeout.mjs` **15 项**（含真实词表渲染断言：`| tail`、`background`、`tail -n 60`、`重试一定同样超时` 都必须在文案里）。
 
@@ -1532,7 +1569,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 - **按任务类型由宿主指定首选工具：收窄工具清单 + 执行期硬拒 + 提示词约定，三道同时在**（用户原话：「**给每类任务指定首选工具**」，承接上一问「调用工具全部靠提示词吗？」）。
   - **为什么不能只加提示词**：同一天的三次真实故障里，模型都是「选错了工具」而不是「不会用工具」——
-    - 「先给我预览一下效果」→ 选了 `run_in_terminal`（在 HWChat 里永远调不通）→ 三轮失败停机；
+    - 「先给我预览一下效果」→ 选了 `run_in_terminal`（在 PlaitCode 里永远调不通）→ 三轮失败停机；
     - 「优化图片，生成新图片发给我」→ 去 `npx` 装 mermaid-cli（超时 2 分钟），手写 SVG 落盘；
     - 「提交/推送」→ 换着写法撞 git 闸门。
     这三类的**执行路径是固定的**，让模型去"想该用什么工具"只会引入不确定性。
@@ -1548,7 +1585,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - 守护：`src/test/toolPlaybooks.test.ts` **14 条**（六种预览说法、预览图片不误判、三类任务判定、写意图 5 例、收窄 4 例、硬拒、指令四要素、runner 真实裁剪）+ `test/check-tool-playbooks.mjs` **17 项**。
   - 全量：**973** 条单测、**50** 个 `check-*.mjs` 全绿。
 
-- **「经常调用 VS Code 工具失败」的根因：`run_in_terminal` 在 HWChat 里永远调不通；同时补上 `run_command` 的后台常驻能力**（用户原话：「经常调用vs code工具失败」，附执行记录：`Invocation context must be provided for this tool` → 两次写日志被路径隔离拦 → 连续 3 轮失败停机）。
+- **「经常调用 VS Code 工具失败」的根因：`run_in_terminal` 在 PlaitCode 里永远调不通；同时补上 `run_command` 的后台常驻能力**（用户原话：「经常调用vs code工具失败」，附执行记录：`Invocation context must be provided for this tool` → 两次写日志被路径隔离拦 → 连续 3 轮失败停机）。
   - **根因（读 VS Code Workbench 打包产物确认，不是猜）**：`run_in_terminal` 的 `invoke` 是
     ```js
     async invoke(e, t, i, n) {
@@ -1558,7 +1595,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
       ... this._getSandboxPrecheckInputs(e.context.sessionResource, e.chatRequestId)
     }
     ```
-    而 `lm.invokeTool` 的公开参数只有 `{ input, toolInvocationToken, tokenizationOptions }` —— `toolSpecificData` 与 `context` **传不进去**，`toolInvocationToken` 也只能从 `ChatRequest` 拿（官方 `vscode.d.ts`：「The _only_ way to get a valid tool invocation token is using the provided `ChatRequest.toolInvocationToken`」）。HWChat 是独立面板，不是 chat participant，**没有 ChatRequest**。所以这个工具在 HWChat 里永远不可能成功 —— 继续摆给模型只会每次白烧一轮，还把它算进「连续失败」预算。
+    而 `lm.invokeTool` 的公开参数只有 `{ input, toolInvocationToken, tokenizationOptions }` —— `toolSpecificData` 与 `context` **传不进去**，`toolInvocationToken` 也只能从 `ChatRequest` 拿（官方 `vscode.d.ts`：「The _only_ way to get a valid tool invocation token is using the provided `ChatRequest.toolInvocationToken`」）。PlaitCode 是独立面板，不是 chat participant，**没有 ChatRequest**。所以这个工具在 PlaitCode 里永远不可能成功 —— 继续摆给模型只会每次白烧一轮，还把它算进「连续失败」预算。
   - **修法 ①：调不通的桥接工具不再下发**。新增 `src/agent/bridgedTools.ts`：已知名单（`run_in_terminal`）+ 运行期学习（撞过 `toolSpecificData` / `invocation context` 错误就记进会话级集合），`externalDefinitions()` 统一下发前过滤；真撞上时返回 `denied`（**不计入「连续失败」的 error**，因为重试一万次也一样），并给出一条把三件事说清楚的说明：**为什么不行**（不是权限/路径/参数问题）、**别再试**、**用什么代替**（`run_command` / `open_web_preview`）。
   - **修法 ②：`run_command` 支持 `background: true`**。之前没有「常驻」概念，`python3 -m http.server` 只能跑满超时。现在起进程 → 收 1.5 秒输出 → 立刻返回，并给出后台 id；进程登记在册，可按 id 停掉，`dispose()` 与「停止」信号都会一起收尾（不留占端口的孤儿）。**1.5 秒这个等待是必要的**：端口被占用时服务器会立刻退出，不等就会谎报「已启动」，模型接着去预览一个空端口。
   - **修法 ③：系统提示词教对这条路** —— 要给人看本地页面，就用 `run_command`（`background: true`）起服务 + `open_web_preview` 打开 `http://127.0.0.1:<port>/`，并明确「不要用桥接的终端工具，它需要 chat 调用上下文」。
@@ -1597,7 +1634,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **修法**：`localResourceRoots` 补上 `attachmentStorageUri`（globalStorage）与**所有工作区根目录**。
   - **顺带修掉两个同批暴露的真 bug**：
     - **把 webview 地址当成远程图**：`findRemoteImages` / `replaceRemoteImages` 只判断 `^https:`，而 `asWebviewUri` 的输出也是 https —— 于是「已经本地化好的图片」又被当成待下载的远程图，先显示「正在下载图片…（主机）」再变成「图片未能加载（主机）」（14:46 那一条就是这个）。现在 `isWebviewResourceUrl()` 显式排除 `file+` / `file%2B` / `<guid>.vscode-cdn.net` 与 `vscode-resource:`。
-    - **带空格的路径整条不匹配**：多根工作区里模型（以及 HWChat 自己的列表）写的是 `<Personal Workstation OS/tmp/x.png>`，而旧正则是 `[^)\s]+`，遇到空格直接不匹配 → 那行 markdown 原样漏成文字。现在 TS 侧（`rewriteMarkdownImagePaths` / `embedMentionedImages`）与渲染层（`chat.js` 的块级与行内）都支持 `<…>` 写法，并对 `%20` 做反解。
+    - **带空格的路径整条不匹配**：多根工作区里模型（以及 PlaitCode 自己的列表）写的是 `<Personal Workstation OS/tmp/x.png>`，而旧正则是 `[^)\s]+`，遇到空格直接不匹配 → 那行 markdown 原样漏成文字。现在 TS 侧（`rewriteMarkdownImagePaths` / `embedMentionedImages`）与渲染层（`chat.js` 的块级与行内）都支持 `<…>` 写法，并对 `%20` 做反解。
     - 另外 `workspaceImageUri` 增加「按工作区根的**上一级**再解析一次」：`<根目录名>/子路径` 这种写法在父目录不是根时也能命中。
   - 守护：`check-image-output.mjs` 扩到 **51 项**（`localResourceRoots` 必须含 globalStorage 与工作区根、远程识别必须排除 webview 地址、渲染层必须支持尖括号写法）；`imageRequest.test.ts` 扩到 **13 条**（尖括号 / `%20` / webview 地址排除）。
   - 全量：**954** 条单测、**48** 个 `check-*.mjs` 全绿。
@@ -1605,7 +1642,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 - **CSP 改回严格、远程图由面板代下载；同时让 `generate_image` 真的能用**（用户原话：「**保持严格、由面板代下载**」→「**要让 `generate_image` 也真的能用**」）。
   - **① 撤销上一版的 CSP 放宽**：`img-src` 回到 `${webview.cspSource} data:`，渲染层白名单重新拒绝一切远程地址。上一版把口子开给 webview 之后，加载一张远程图就等于告诉那个外部主机「有人正在看这条对话」并暴露 IP —— 这个代价不划算。
   - **② 改成面板代下载**：正文里的 `![](https://…)` 由扩展走**同一套代理/超时/体积上限**取回（`downloadImage()`），存进会话目录（`<对话>/images/<sha256>.<ext>`），消息上挂一条带 `sourceUrl` 的附件，再把正文里的 markdown 换成 `asWebviewUri` 的本地地址。三条分支都翻成可读内容：已下载 → 真图；下载中 → 「正在下载图片…（主机）」；失败 → 「图片未能加载（主机）」。**绝不把裸 URL 丢给 CSP 去拦成破图**。
-    - 限制：只认 https（本机回环除外）、单张 8 MB、每条消息最多 4 张、复用 `hwchat.proxy`；同一条 URL 只下一次，失败不自动重试（重开对话才会再试），状态表上限 200 条。
+    - 限制：只认 https（本机回环除外）、单张 8 MB、每条消息最多 4 张、复用 `plaitcode.proxy`；同一条 URL 只下一次，失败不自动重试（重开对话才会再试），状态表上限 200 条。
     - 实测（无头 Chromium + 真实 `chat.js`）：把远程图塞进对话后 **webview 发起的远程请求数 = 0**。
   - **③ `generate_image` 真的可用**：
     - **跨配置档出图**：只要**任意一个**配置档填了「图片模型」，工具就会下发；执行时切到那个配置档，用它自己的 `baseUrl` / 请求头 / API Key。之前只认当前档 —— 而聊天模型和出图模型几乎不可能是同一个服务，结果就是「用户明明有出图档，工具却根本不出现」。
@@ -1639,7 +1676,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - 守护：`check-image-output.mjs` 扩到 **40 项**（新增 4 种地址拼法的放行/拒绝 + 补图接线校验）；`imageRequest.test.ts` 扩到 **11 条**（新增 `%2B`/`+` 规范化、工作区外不改编、Windows `/c:/` 反解）。
   - 全量：**943** 条单测、**48** 个 `check-*.mjs` 全绿。
 
-- **图片输出：修掉「生成了但对话里看不到」，并让「没配图片模型」当场说清楚**（用户原话：「hwchat的图片输出功能没成功」→「他生成了，但是对话框里没有出现，只是放在文件夹里了」）。
+- **图片输出：修掉「生成了但对话里看不到」，并让「没配图片模型」当场说清楚**（用户原话：「plaitcode的图片输出功能没成功」→「他生成了，但是对话框里没有出现，只是放在文件夹里了」）。
   - **先分清两件事**：
     1. `generate_image` **一次都没被调用** —— 查你的 `settings.json`，两个配置档（DeepSeek / Minimax）都**没有 `imageModel`**，按设计这个工具根本不会下发给模型。
     2. 但 agent 确实「出了图」：它自己跑 `npx -y @mermaid-js/mermaid-cli`（**超时 2 分钟**），最后用 `qlmanage` 把自写的 SVG 转成 `architecture.svg.png` 落在工作区里；回复里只写了反引号路径 +「已在编辑器打开」，**没有一行 markdown 图片**，所以对话里当然什么也看不到。
@@ -1652,7 +1689,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - 守护：`src/test/imageRequest.test.ts` **9 条**（中英文要图判定 21 例含 11 个不该命中的反例、两种能力说明、补图的幂等/上限/非图片路径）+ `check-image-output.mjs` 扩到 **36 项**（新增 5 项接线校验）。
   - 全量：**941** 条单测、**48** 个 `check-*.mjs` 全绿。
 
-- **修掉「不同对话相互混乱污染」：两条独立根因，都会让一个对话里出现另一条对话的内容**（用户原话：「hwchat不同的对话相互混乱污染了」→「我在一个对话发的消息，但是别的对话框也出现了我发的消息，回复也是两个对话框都显示一样的」，附六张截图）。
+- **修掉「不同对话相互混乱污染」：两条独立根因，都会让一个对话里出现另一条对话的内容**（用户原话：「plaitcode不同的对话相互混乱污染了」→「我在一个对话发的消息，但是别的对话框也出现了我发的消息，回复也是两个对话框都显示一样的」，附六张截图）。
 
   ### 根因一：整页推送的合并函数不知道「正在看哪条对话」
   - **现象与取证**：截图里对话 A（标题「将这个做成skill」）的末尾出现了对话 B 的回答（`support@instindex.com` 那条），而 A 的存档只有 **4 条消息**、根本没有这条内容 —— 说明这是**显示层**串了，不是写盘串了。同一时刻 B 正在实时输出，那条回复在磁盘上还是 `status: streaming`。
@@ -1675,7 +1712,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.4.0
 
-- **输出图片：能生成了（`generate_image` 工具），也能显示了（正文 markdown 图片）**（用户原话：「hwchat 没有输出图片的能力，是否能增加？」）。
+- **输出图片：能生成了（`generate_image` 工具），也能显示了（正文 markdown 图片）**（用户原话：「plaitcode 没有输出图片的能力，是否能增加？」）。
   - **先把缺口说清楚**：输入图片一直是完整的（`image_url` + data URL），**输出侧一处都没接** —— 客户端不解析 `image_url` / `images` / `b64_json`，渲染层认不出 `![](…)`，也从没调用过 `/images/generations`；而且面板 CSP 的 `img-src` 只有 `${webview.cspSource}` 与 `data:`，远程图片必然被拦成破图。所以「增加输出」不是加个按钮，是三条链路一起补。
   - **① 生成：`generate_image` 工具**（走后端 `POST {baseUrl}/images/generations`，OpenAI 兼容）。
     - 配置：设置页「连接」区新增**每个接口配置档自己的「图片模型」**（`ApiProfile.imageModel`，示例 `gpt-image-1`）。留空就不下发这个工具 —— 摆在模型面前的工具它一定会调，然后每次都撞同一句错误、白烧一轮 token。
@@ -1697,7 +1734,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 ## 0.3.9
 
 - **按你的要求撤掉资源管理器里的历史列表；顺手把示例里用的本机代理端口换成中性占位**。
-  - **① 资源管理器里的「HWChat 对话」列表已整个移除**（0.3.8 才加上的）。历史只在侧栏面板里看：`package.json` 的 `views.explorer` 声明、`registerTreeDataProvider` 注册、`src/views/historyView.ts`、只为它存在的三条文案（`history.pinned` / `history.open` / `history.emptyConversation`）全部删掉，README 里那一节「出厂的两个入口」也撤了 —— 不留半截功能。
+  - **① 资源管理器里的「PlaitCode 对话」列表已整个移除**（0.3.8 才加上的）。历史只在侧栏面板里看：`package.json` 的 `views.explorer` 声明、`registerTreeDataProvider` 注册、`src/views/historyView.ts`、只为它存在的三条文案（`history.pinned` / `history.open` / `history.emptyConversation`）全部删掉，README 里那一节「出厂的两个入口」也撤了 —— 不留半截功能。
     - `test/check-settings-coverage.mjs` 的视图段改成**通用反向规则**：`package.json` 声明了几个视图，`extension.ts` / `ChatPanel` 就必须注册几个。这条规则的由来是另一处真实错漏 —— `HistoryViewProvider` 曾写完却从没注册；现在无论是「声明了没接」还是「接了个没声明的」都不会再悄悄发生。
   - **② 示例里的本机代理端口换掉了（你问的「会不会泄漏我的代理网址」）**。原来设置页占位、README、`package.json` 配置说明、错误提示里都写着 `http://127.0.0.1:7897` —— 那是你本机代理软件的实际端口。
     - **先把事实说清楚**：`127.0.0.1` 是回环地址，只在本机有意义，别人既解析不到也连不上；`7897` 又是 Clash 系代理软件的默认端口，不是凭据。所以它**不构成安全泄漏**。
@@ -1707,13 +1744,13 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.3.8
 
-- **补上盘点出的三个缺口：代理与搜索排除现在有设置界面、资源管理器多了「HWChat 对话」列表、README 架构表重写**（用户原话：「缺口要做，版本号0.3.8」）。
-  - **① `hwchat.proxy` 与 `hwchat.searchExclude` 原来没有任何界面**，只能在 `settings.json` 里手写 —— 而代理恰恰是网络故障时的救命项（Node 的 `fetch` 不读 `HTTPS_PROXY`，VS Code 的 `http.proxy` 也不覆盖扩展）。
+- **补上盘点出的三个缺口：代理与搜索排除现在有设置界面、资源管理器多了「PlaitCode 对话」列表、README 架构表重写**（用户原话：「缺口要做，版本号0.3.8」）。
+  - **① `plaitcode.proxy` 与 `plaitcode.searchExclude` 原来没有任何界面**，只能在 `settings.json` 里手写 —— 而代理恰恰是网络故障时的救命项（Node 的 `fetch` 不读 `HTTPS_PROXY`，VS Code 的 `http.proxy` 也不覆盖扩展）。
     - 连接区新增「接口代理」输入框（占位 `http://127.0.0.1:8080`），保存前校验：`socks://` 明确报错并提示填代理软件给出的 HTTP 端口、非法 URL 拒绝、留空表示直连。
-    - Agent 区新增「搜索排除目录」，逗号 / 顿号 / 换行分隔都能识别，保存时归一成去重数组；读取侧按**每个工作区根**取并集（`hwchat.searchExclude` 是 resource 作用域，只看合并视图会「写了但读不到」）。
+    - Agent 区新增「搜索排除目录」，逗号 / 顿号 / 换行分隔都能识别，保存时归一成去重数组；读取侧按**每个工作区根**取并集（`plaitcode.searchExclude` 是 resource 作用域，只看合并视图会「写了但读不到」）。
     - 新增 `test/check-settings-coverage.mjs` **89 项守护**：每个**未废弃**的配置项必须登记编辑方式（input / profile / internal），登记为 input 的必须同时具备「设置页控件 + webview 字段清单 + `updateSettings` 写回」三段，新增配置项忘了接 UI 会当场变红。
   - **② `src/views/historyView.ts` 是死代码**：`HistoryViewProvider` 写完了却从没注册（package.json 没这个视图、`extension.ts` 没 `registerTreeDataProvider`）。
-    - 选择**接上**而不是删掉：资源管理器新增「HWChat 对话 / HWChat conversations」分组（`when: workspaceFolderCount > 0`），不打开聊天面板也能点开一条历史对话；`onHistoryChanged` 里同步刷新，provider 随扩展一起 dispose。
+    - 选择**接上**而不是删掉：资源管理器新增「PlaitCode 对话 / PlaitCode conversations」分组（`when: workspaceFolderCount > 0`），不打开聊天面板也能点开一条历史对话；`onHistoryChanged` 里同步刷新，provider 随扩展一起 dispose。
   - **③ README 的架构表过时**：`src/providers/` 只写「DeepSeek client」（实际还有 `netDiagnostics` / `netProbe` / `proxyFetch`），`src/core` / `src/agent` / `media` 漏了十来个文件，`test/` 说 44 个却只列了约 22 个、读起来像穷举。
     - 重写为如实的分组描述 + 明确「`test/` 只列代表用例，全部用 `ls test/check-*.mjs` 查」；`media/` 补上 `code-block-meta` / `follow-up-format` / `secret-scan` / `todo-panel-state` / `callout-meta` / `file-reference` / `toast-timing` / `inline-append` / `stream-repair`。
     - 新增「命令与视图」一行，说明除了 webview 面板还有资源管理器里的历史列表。
@@ -1721,9 +1758,9 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
     - 新增 `test/check-screenshot-dict.mjs` **6 项守护**：引用的 158 个词表键必须全部存在、示例状态必须改写成默认值、生成的页面里不许出现 `undefined`。
 
 - **盘点功能清单时发现两个「文档说有、测试全绿、线上没接」的错漏，都已修**。
-  - **① `inline-append.js` 与 `stream-repair.js` 从来没被注入面板 HTML（真 bug，影响线上）**。两个模块写了、单测了、README 与 CHANGELOG 都写着「纯文本直接追加」「半截 markdown 先补全再渲染」，但 `src/views/chatPanel.ts` 的脚本清单里根本没有它们 —— 只有 `test/preview-chat.html` 加载了。于是线上 `globalThis.HWChatInlineAppend` / `HWChatStreamRepair` 恒为 `undefined`：**快路径永不生效、补全永不生效**，而所有浏览器守护跑的都是 preview 页，所以一直全绿。
-    - 修法：把两个模块补进面板的 `mediaUri` + `<script>`；新增 `test/check-webview-scripts.mjs` **34 项守护** —— preview 加载的每个辅助脚本面板必须也加载、面板加载的预览页也必须加载、`chat.js` 必须最后加载，并且 `chat.js` 读的每个 `globalThis.HWChatXxx` 都必须有对应脚本注入（新加模块漏接会当场变红）。
-  - **② 设置页把「对话保留」写成了会过期**。0.3.6 起的规则是「HWChat 不会自己让任何一条对话消失」，该设置现在只决定**多老的对话会在清理时被瘦身缓存**（工具输出 / 推理），对话本身永不删除。但界面文案仍是「对话保留 / 固定的对话不会过期」，读起来像「到期会删」。
+  - **① `inline-append.js` 与 `stream-repair.js` 从来没被注入面板 HTML（真 bug，影响线上）**。两个模块写了、单测了、README 与 CHANGELOG 都写着「纯文本直接追加」「半截 markdown 先补全再渲染」，但 `src/views/chatPanel.ts` 的脚本清单里根本没有它们 —— 只有 `test/preview-chat.html` 加载了。于是线上 `globalThis.PlaitCodeInlineAppend` / `PlaitCodeStreamRepair` 恒为 `undefined`：**快路径永不生效、补全永不生效**，而所有浏览器守护跑的都是 preview 页，所以一直全绿。
+    - 修法：把两个模块补进面板的 `mediaUri` + `<script>`；新增 `test/check-webview-scripts.mjs` **34 项守护** —— preview 加载的每个辅助脚本面板必须也加载、面板加载的预览页也必须加载、`chat.js` 必须最后加载，并且 `chat.js` 读的每个 `globalThis.PlaitCodeXxx` 都必须有对应脚本注入（新加模块漏接会当场变红）。
+  - **② 设置页把「对话保留」写成了会过期**。0.3.6 起的规则是「PlaitCode 不会自己让任何一条对话消失」，该设置现在只决定**多老的对话会在清理时被瘦身缓存**（工具输出 / 推理），对话本身永不删除。但界面文案仍是「对话保留 / 固定的对话不会过期」，读起来像「到期会删」。
     - 修法：改为「缓存瘦身起点」，说明写清「对话本身永远不会被删除」。
 
 - **命令块必须标清「在哪台机器上跑」；守卫拦截后要换策略，不要换拼法硬撞**（用户原话：「需要我执行的命令，代码块要区分是服务器上执行还是本地终端执行，为什么现在不区分本地还是服务器了」，以及「三次失败就停止了任务，为什么不直接更改执行策略使用工作区内的文件夹」）。
@@ -1751,7 +1788,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.3.7
 
-- **放开 git：`clone` / `init` / `fetch` / `pull` 不再要求你先开口，你点了确认就等于授权**（用户原话：「hwchat是不是会拦截拉去克隆仓库到本地，现在即使弹窗点击确认了，还是运行拉取失败」→「请放开git权限，不要影响git正常功能」）。
+- **放开 git：`clone` / `init` / `fetch` / `pull` 不再要求你先开口，你点了确认就等于授权**（用户原话：「plaitcode是不是会拦截拉去克隆仓库到本地，现在即使弹窗点击确认了，还是运行拉取失败」→「请放开git权限，不要影响git正常功能」）。
   - **先说实测的证**（不是在猜）。把真实的授权判定跑了一遍：
 
     ```
@@ -1774,7 +1811,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - 新增 `test/check-git-access.mjs` **20 项守护**（确认信号必须贯通、免授权集合内容、clone/init 必须早于仓库检查、多根歧义保护仍在、8 条端到端回归测试必须在场）。
   - **没有放松的**：工作区外路径仍是硬边界（`git clone /别的目录` 照旧拒绝，克隆进工作区不受影响）；`git push` 在 `每次询问` 预设下仍是硬拒绝，需要你切到 Autopilot / 完全访问，或先把它明确说出口。
 
-- **「动不动失败」的两个真原因：超时被算成了整条回复的总时长；服务端 503 一次都不重试**（用户原话：「hwchat现在动不动失败」，附两条错误：`请求失败：请求超时（120 秒）`，8 个步骤都跑完了；紧接着 `503 Service is too busy`）。
+- **「动不动失败」的两个真原因：超时被算成了整条回复的总时长；服务端 503 一次都不重试**（用户原话：「plaitcode现在动不动失败」，附两条错误：`请求失败：请求超时（120 秒）`，8 个步骤都跑完了；紧接着 `503 Service is too busy`）。
   - **先把两条错误分开**。第一条不是网络断：执行过程里 8 个工具步骤全部成功，说明接口是通的。第二条 `503 … (request_id: …)` 是**服务端过载**，请求没被处理。实测确认这是两个独立缺陷。
   - **① `requestTimeoutSeconds` 是「整条请求的总时长」，不是「多久没数据」**。`setTimeout(() => controller.abort(), 120s)` 只设一次、只在 `finally` 清掉，所以流式回复只要**总时长**超过 120 秒就被掐断 —— 长回答、以及一轮里反复调工具的 agent 回合本来就要更久，而数据一直在流。
     - **真实 HTTP 服务实测**（本机 SSE，每 200ms 一帧、超时阈值设 1 秒，同一份代码 A/B）：
@@ -1786,8 +1823,8 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
     - **顺手修掉两个会让修复失效的坑**：① 每次重试必须用**新的** `AbortController`（被 abort 过的 signal 永久 aborted，复用会让重试立刻又抛超时）；② 超时那一刻必须**先 reject 再 `reader.cancel()`** —— 实测先 cancel 会让挂起的 `read()` 以 `{done:true}` 兑现，`Promise.race` 看到「流正常结束」，超时被吞掉、调用方以为成功。
   - **② 503 一次都不重试**。旧实现只在 `fetch` 自己抛错时重试（那时连响应头都没拿到），拿到 503 就直接把整轮判失败 —— 实测 11ms 内结束。可 `503 / 429 / 5xx` 恰恰意味着**请求没有被处理**，重试既安全又必要。
     - **修法**：新增 `shouldRetryStatus()` / `transientRetryDelayMs()`，对 `408 / 409 / 425 / 429 / 500 / 502 / 503 / 504 / 529` 按 `400ms → 1200ms → 3600ms` 退避重发（最多 4 次）；服务端给了 `Retry-After`（秒数或 HTTP 日期）就听它的，但**上限 10 秒**，否则一个 `Retry-After: 3600` 会把界面冻一小时。`401 / 400` 这类请求本身有问题的**一次都不重试**。
-    - **代理链路补上响应头**：`ResponseLike` 原来没有 `headers`，配了 `hwchat.proxy` 时读不到 `Retry-After`；现在代理响应会透出 `headers.get()`。
-    - **重试用尽后的提示**：明确写「这是服务端临时过载，HWChat 已自动重试仍不成功；稍后再发一次通常就能过」，并记一行 `[net] … 第 n/3 次重试（http/503）` 到输出面板。
+    - **代理链路补上响应头**：`ResponseLike` 原来没有 `headers`，配了 `plaitcode.proxy` 时读不到 `Retry-After`；现在代理响应会透出 `headers.get()`。
+    - **重试用尽后的提示**：明确写「这是服务端临时过载，PlaitCode 已自动重试仍不成功；稍后再发一次通常就能过」，并记一行 `[net] … 第 n/3 次重试（http/503）` 到输出面板。
     - **真实 HTTP 服务实测**：503 场景修复前 **11ms 直接失败**，修复后 **5245ms**（400+1200+3600）后给出带建议的提示。
   - 新增 `test/check-request-timeout.mjs` **14 项守护**：每段数据必须重新计时、流式阶段不许有覆盖整条请求的定时器、每次重试必须新建 controller、必须「先 reject 再 cancel」、超时文案必须说清「没有数据」、可重试状态码集合存在、退避与 `Retry-After` 有上限、代理必须透出响应头，以及四条回归测试必须在场。`src/test/deepseekClient.test.ts` 新增 4 条（数据持续到达不超时 / 真卡住仍超时 / 503 重试后成功且尝试 3 次 / 401 只尝试 1 次）。
   - 另外两处**既有**（不是本版引入）的守护基线已修正，避免把红的说成绿：`check-send-latency` 里两条断言把消息条数写死成 2，而 0.3.6 给夹具页加了示例消息后基线变成 3 —— 改为相对基线断言、并且不假设顺序；`check-tool-detail-lazy` 的「节点/条 <70」改成 `<76`（0.3.6 新增的 `details.execution-fold` 外壳让每条消息多出约 6 个节点，该守护真正要拦的是「先建后藏」的 136）。
@@ -1798,13 +1835,13 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 本轮全部来自真实使用反馈，缺陷与数值都是实测出来的，不是推测。
 
-- **回答改成「我的理解 → 结果 → 需要你做的」，执行过程收进整轮一个折叠**（用户原话：「HWChat 现在对话显示不方便用户理解……执行过程只显示任务清单对应的折叠就行，折叠只显示执行了多少命令，修改了多少文件……需要执行的描述下面显示具体的路径、代码块等，而不是让用户去上面翻历史记录」）。
+- **回答改成「我的理解 → 结果 → 需要你做的」，执行过程收进整轮一个折叠**（用户原话：「PlaitCode 现在对话显示不方便用户理解……执行过程只显示任务清单对应的折叠就行，折叠只显示执行了多少命令，修改了多少文件……需要执行的描述下面显示具体的路径、代码块等，而不是让用户去上面翻历史记录」）。
   - **提示词**（新增 `src/agent/replyShapePrompt.ts`，接在系统提示词最前面）：每轮必须以 `### 我的理解` 开头，用一到三句复述用户要什么；随后直接给「结果」；**禁止**再写工具流水账或「处理过程 共 N 步」（界面自己折叠）；关键路径/命令必须落在结果或对应的待办条目里，不许写「见上文」。
   - **收尾清单**（`followUpPrompt.ts`）：每条下面必须缩进两格给出 `- **位置**：<绝对路径>`、需要执行的命令（缩进围栏，带 `loc=` / `tool=`），以及 `- **预期**：…`，让用户不必往上翻历史。
   - **渲染**（`media/chat.js`）：正文不再逐组插工具卡片 —— 整轮全部工具步骤收进末尾**一个** `details.execution-fold`，summary 只显示 `执行过程 · N 条命令 · M 个文件`（没有命令/文件时退化成「N 个步骤」）；展开后仍是原来的逐步卡片（正文仍延迟到展开才建）。旧消息重新渲染同样生效，不依赖存盘字段。
   - **样式**：`### 我的理解` 带左侧强调色细线的小标题样式（`.is-understanding`），与「结果」区分开；折叠箭头展开时旋转 90°。
   - 新增 `test/check-reply-shape.mjs` **15 项**（8 项源码契约 + 7 项真浏览器行为：整轮只有一个折叠、summary 的命令数与文件数、步骤收在折叠内、「我的理解」在第一块且带样式、无工具不出现折叠、历史重新渲染形状不变、无页面异常）。截图实测：`u1 → a1` 两条消息里，理解块、结果、带路径与命令块的待办、末尾 `执行过程 · 2 条命令 · 1 个文件` 全部按预期呈现。
-- **agent 输出时往上翻历史：消息闪动、画面「退回一点」、翻不动**（用户原话：「HWChat 对话框，在 agent 正在输出的时候，对话框里的对话消息会闪动、往上翻页也会闪动退回一点，没法一直往上翻对话历史记录」）。实测（headless Chrome + 真实 `media/chat.js`，120 条消息、每帧上滚 10px、同时每帧一个 delta）修复前 **1.5 秒内整窗 `replaceChildren` 54 次**、锚点消息单帧多出 **13px** 位移；修复后整窗重建 **1–2 次**、多出位移 **0px**。三个原因：
+- **agent 输出时往上翻历史：消息闪动、画面「退回一点」、翻不动**（用户原话：「PlaitCode 对话框，在 agent 正在输出的时候，对话框里的对话消息会闪动、往上翻页也会闪动退回一点，没法一直往上翻对话历史记录」）。实测（headless Chrome + 真实 `media/chat.js`，120 条消息、每帧上滚 10px、同时每帧一个 delta）修复前 **1.5 秒内整窗 `replaceChildren` 54 次**、锚点消息单帧多出 **13px** 位移；修复后整窗重建 **1–2 次**、多出位移 **0px**。三个原因：
   - `ensureWindowCoversViewport()` 的空洞判定写成「第一条的底部在视口上方」，而上下 overscan 一存在它就**永远为真**，于是每次滚动都判定「有空洞」并整窗重建。改成真正的「整窗都跑到视口外」：`lastRect.bottom < viewportRect.top` 或 `firstRect.top > viewportRect.bottom`。
   - 顶部占位块高度随行高测量变化时没有补偿 `scrollTop`，视口内容整体位移（`overflow-anchor: none` 下必须手工补）。现在 `syncVirtualSpacers()` 按高度差补回滚动位置。
   - `measureVirtualHeights()` 每次重建都把估算值向「当前窗口均值」折中一次，窗口里消息类型配比一变估算值就漂、所有未测量行高度跟着抖。现在只有样本差 25% 以上才重估（`ESTIMATE_REBASE_RATIO`）。
@@ -1828,7 +1865,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.3.5
 
-- **推送的拦截补了一个漏判，「危险命令」的文案也不再自相矛盾**（起源是用户问「hwchat 现在的策略会拦住 git pull push 这些拉取和推送命令吗？」——为了回答这个问题，我把真实分级函数跑了一遍，顺手量出了这两处）。
+- **推送的拦截补了一个漏判，「危险命令」的文案也不再自相矛盾**（起源是用户问「plaitcode 现在的策略会拦住 git pull push 这些拉取和推送命令吗？」——为了回答这个问题，我把真实分级函数跑了一遍，顺手量出了这两处）。
   - **先回答策略本身**（实测四档预设下每条命令的真实结果，不是读注释推断的）：
 
     | 命令 | 档位 | 每次询问 | 风险操作询问 | Autopilot | 完全访问 |
@@ -1867,7 +1904,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 ### 消息列表窗口化 — 只渲染视口附近那一屏（600 条：+231.6 MB → +23.4 MB）
 
 - **消息列表窗口化：只渲染你正在看的那一屏，600 条消息的渲染内存从 +231.6 MB 降到 +23.4 MB**（用户原话：「参考 copilot 的 agent 模式，为什么 copilot 能这么流畅并且占用不高不卡」）。
-  - **Copilot 为什么流畅**：查 VS Code 源码，Copilot 的聊天列表是 **`WorkbenchObjectTree`**（`src/vs/platform/list/browser/listService.ts`）—— 虚拟化列表，`IListVirtualDelegate` 报行高、`IListRenderer` 复用模板，**视口外的行根本没有 DOM**。HWChat 是 webview 里手写的全量 DOM，状态里有多少条消息，DOM 里就有多少条。
+  - **Copilot 为什么流畅**：查 VS Code 源码，Copilot 的聊天列表是 **`WorkbenchObjectTree`**（`src/vs/platform/list/browser/listService.ts`）—— 虚拟化列表，`IListVirtualDelegate` 报行高、`IListRenderer` 复用模板，**视口外的行根本没有 DOM**。PlaitCode 是 webview 里手写的全量 DOM，状态里有多少条消息，DOM 里就有多少条。
   - **实测（headless Chromium + 真实 `media/chat.js`，`ps` 汇总渲染进程 RSS，新旧代码交替跑）**：
 
     | 场景 | 之前 | 现在 |
@@ -1912,7 +1949,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ### 常驻缓存 — 字节闸门，而且看得见
 
-- **内存占用：四处常驻缓存全部加上「字节闸门」，而且现在**看得见**了（用户原话：「hwchat 占用高内存」）。
+- **内存占用：四处常驻缓存全部加上「字节闸门」，而且现在**看得见**了（用户原话：「plaitcode 占用高内存」）。
   - **先说测到的数**（真实 63.4 MB / 1513 条消息档案）：
 
     | 常驻缓存 | 原来的上限 | 实测占用 | 现在 |
@@ -1925,7 +1962,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **页缓存**：条数不等于内存。原来「最多 8 页」看着有节制，但每页最多 6 MB，真打满就是 48 MB。现在加 24 MB 总字节预算，两条上限同时生效，淘汰最旧的；**单页就超预算时干脆不缓存它**，否则它会把别的页一次挤光。
   - **搜索调度缓存是真泄漏**：过期清理只在「用同一个 key 再查一次」时发生，而 agent 一次长任务会发起几十上百种不同参数的搜索 —— 这些条目谁也不会再去读，于是永久留在 Map 里，每条还挂着一份文件路径数组。现在每次写入前先清过期，并强制 48 条上限。
   - **搜索结果缓存**：32 条 × 200 KB 是 6.4 MB 常驻，而它的 TTL 只有 2 秒 —— 拿这么多内存换「同一轮里不重复扫同一份代码」不划算。现在再加 8 MB 字节闸门。
-  - **可观测**：`HWChat: 显示资源统计` 新增四行 `memory · …`，把每处缓存的「当前量 / 上限」和堆/rss 都打出来。之前反馈「占内存高」时，面板里**一个内存数字都没有**，只能靠读代码猜。
+  - **可观测**：`PlaitCode: 显示资源统计` 新增四行 `memory · …`，把每处缓存的「当前量 / 上限」和堆/rss 都打出来。之前反馈「占内存高」时，面板里**一个内存数字都没有**，只能靠读代码猜。
   - 实测（真实档案模拟来回切对话）：5 个对话的首页缓存 **13.22 MB ≤ 24 MB 预算**；淘汰后重读内容完全一致（缓存只是缓存，不影响正确性）。
   - 新增 `test/check-memory-budget.mjs` **6 组守护**（每处缓存必须有字节闸门、超预算必须淘汰或拒收、记账必须成对扣减、必须可观测、行为测试必须在场），`storage.test.ts` 新增 2 条（6 × 5 MB 页面下不超预算、超大单页不挤掉别的页）。
 
@@ -1969,7 +2006,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
     结论：清理确实要花时间，但**不是 63.9 秒** —— 同一份工作是 761ms 量级，那 84 倍的差距来自争抢与设计，不是算法。
   - **根因一：整轮清理是同一个 `enqueueWrite`（154 行的独占任务）**。整轮扫描期间，发消息、流式增量、manifest 写入全都在队列里排队 —— 60 秒的清理就变成 60 秒的「点发送没反应」。现在按**一条对话一个任务**入队，单次写入最坏只等「当前这一条对话」：真实档案实测**中位 41ms / 最坏 169ms**（整轮 366–761ms）。
   - **根因二：激活后 2 秒就开始扫**。那时 VS Code 自己还在加载扩展、建文件索引，我们再去读 60MB 历史就是抢盘。首次清理**延后到 20 秒**。
-  - **根因三：agent 跑着也照扫**。流式输出正在写盘，清理再去读整份历史只会互相拖慢。自动心跳遇到「有对话在跑」**直接跳过**（下一次心跳补上）；用户手动 `HWChat: 立即清理缓存` 仍然照跑。
+  - **根因三：agent 跑着也照扫**。流式输出正在写盘，清理再去读整份历史只会互相拖慢。自动心跳遇到「有对话在跑」**直接跳过**（下一次心跳补上）；用户手动 `PlaitCode: 立即清理缓存` 仍然照跑。
   - **切片带来的新窗口已收口**：轮次之间用户可能已经删了那条对话、或在那张「空对话」里发了消息。现在每条任务开始都会重新 `findSummary` 并**再次确认它仍然是空对话**，才允许移入回收站 —— 否则会出现「刚发的消息所在对话被当空对话清掉」。
   - **顺手去掉一处纯浪费**：`stripMessagePayload` 曾无条件把重字段 `JSON.stringify` 一遍再判断有没有可删内容（1513 条消息 175ms），而绝大多数消息早就瘦过了。现在先做零成本的存在性判断，确有内容才算字节。
   - **实测（真实档案 + 清理进行中连续发消息）**：清理总耗时 366ms，期间 5 次并发写入，**中位等待 40.6ms、最坏 169.4ms**；旧设计的最坏等待约等于整轮清理耗时。
@@ -1979,7 +2016,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.3.3
 
-- **`fetch failed` 不再是一句没法诊断的话：真实原因 + 自动重试 + 分段诊断 + 真正的代理通道**（用户原话：「hwchat对话弹出：请求失败：无法连接到接口：fetch failed」）。
+- **`fetch failed` 不再是一句没法诊断的话：真实原因 + 自动重试 + 分段诊断 + 真正的代理通道**（用户原话：「plaitcode对话弹出：请求失败：无法连接到接口：fetch failed」）。
   - **实测取证**（不是在猜）：
     | 场景 | Node 22 抛出的真实形状 | 旧表现 |
     | --- | --- | --- |
@@ -1991,20 +2028,20 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **错误可读化**（`src/providers/netDiagnostics.ts`）：沿 `cause` 链（含 undici 的 `AggregateError.errors`）找到最内层错误，归类成 dns / connect / tls / http 四个阶段，配错误码 + 一句能照着做的建议。代理环境变量存在时额外点明「扩展的请求不会自动走它」。
   - **有限重试**：只重试「`fetch` 自己抛出」的情况 —— 那意味着连响应头都没拿到，请求不可能已被服务端处理并计费。默认 3 次（400ms / 1200ms 退避），模型列表是幂等 GET 给 4 次。**超时与取消不重试**：`AbortSignal.timeout` 抛的是 `TimeoutError`，按未知错误重试会把一次 120 秒的等待变成 6 分钟（这条是实测发现的坑，已加测试锁住）。
   - **`[net]` 日志**：每次重试与最终失败都写进输出面板（主机 + 阶段 + 错误码 + 等待时长），不含请求正文与凭据。以前面板里只有权限预设和清理记录，故障发生时什么都没留下。
-  - **新命令 `HWChat: 测试网络连接`**：分四段测量并报出耗时 —— DNS 解析（列出**全部**解析到的地址）→ TCP 连接（含本机出口端口）→ TLS 握手（协议版本 + 证书 CN + 有效期）→ HTTP 请求（不带 Key 请求 `/models`，401 也算通）。配了代理时会额外验一遍隧道。
-  - **`hwchat.proxy`：真正的代理通道**。依据：Node 的 `fetch`（undici）**忽略** `HTTPS_PROXY`（把代理指向死端口，fetch 仍能直连成功 —— 实测），VS Code 的 `http.proxy` 也不覆盖扩展（官方文档明写）。现在填了它会走真正的 `CONNECT` 隧道（`net` → `CONNECT` → `tls` → `https.request`），支持带账号密码的代理，`socks://` 明确报错不假装支持。**默认关闭、不做环境变量自动探测**：这台机器上就残留着指向 `127.0.0.1:8080` 的代理变量，自动启用会直接把原本可用的直连弄坏。
+  - **新命令 `PlaitCode: 测试网络连接`**：分四段测量并报出耗时 —— DNS 解析（列出**全部**解析到的地址）→ TCP 连接（含本机出口端口）→ TLS 握手（协议版本 + 证书 CN + 有效期）→ HTTP 请求（不带 Key 请求 `/models`，401 也算通）。配了代理时会额外验一遍隧道。
+  - **`plaitcode.proxy`：真正的代理通道**。依据：Node 的 `fetch`（undici）**忽略** `HTTPS_PROXY`（把代理指向死端口，fetch 仍能直连成功 —— 实测），VS Code 的 `http.proxy` 也不覆盖扩展（官方文档明写）。现在填了它会走真正的 `CONNECT` 隧道（`net` → `CONNECT` → `tls` → `https.request`），支持带账号密码的代理，`socks://` 明确报错不假装支持。**默认关闭、不做环境变量自动探测**：这台机器上就残留着指向 `127.0.0.1:8080` 的代理变量，自动启用会直接把原本可用的直连弄坏。
   - **实测验证（用本机真实运行的 HTTP 代理；地址不写具体端口，避免把个人配置当示例）**：经隧道 `GET https://api.deepseek.com/models` → **HTTP 401「Authentication Fails (governor)」268ms**，说明隧道、TLS、HTTP 三层全通；直连诊断同样四段全绿。
   - **踩坑记录（都写进了代码注释）**：① `createConnection` 写在 request options 上**不生效**，请求会绕过隧道直连 —— 用一个「只说 200、不转发」的黑洞代理测出来的，现在改用 `Agent` 子类覆写；② `CONNECT` 请求头多一个 `\r\n` 会让多出的字节混进 TLS ClientHello，握手直接 `ECONNRESET`；③ `text()` 同步拼接已收到的 chunk 会拿到空串，必须等流结束。
   - 新增 `src/test/netDiagnostics.test.ts` **19 条**（含真实 CONNECT 代理服务器与「请求确实经过隧道」的刚性证明）、`test/check-network-diagnostics.mjs` **6 组守护**。
 
 ## 0.3.2
 
-- **启动不再等全工作区扫描：面板从「一分钟」到「立刻」**（用户原话：「hwchat0.3.1 版本安装后一直在启动中，过了一分钟才加载好，怎么让它加载快点，流畅点」）。
+- **启动不再等全工作区扫描：面板从「一分钟」到「立刻」**（用户原话：「plaitcode0.3.1 版本安装后一直在启动中，过了一分钟才加载好，怎么让它加载快点，流畅点」）。
   - **根因**：`activate()` 里有一句 `await skills.refresh()`，而一次扫描是**三条** `findFiles`，每条都是一次真实的全工作区遍历。VS Code 会等 `activate()` 返回才去解析该扩展的视图，于是这段时间直接表现为「面板一直在转」。实测（21 个目录 / 64GB 多根工作区）：一次 `refresh()` **6754 ms**；真实的 VS Code 全新窗口里还要等它自己的文件索引爬完，所以能到一分钟。
   - **改成「水合」**：`hydrate()` 只做两件与工作区大小无关的事 —— 读两个本地技能目录（`readDirectory`），以及上次扫描存下的 workspace 技能路径（一个小 JSON + 逐个读 `SKILL.md`）。实测首次 **17 ms**、有缓存 **4 ms**，且技能数与全量扫描完全一致（37 个）。
   - **真实扫描移到后台**，扫完通过新增的 `onDidChangeSkills` 事件让面板重推一次状态，补上新增/删除的工作区技能（不用手动重开面板）。水合**不更新** `hasScanned`，所以后台扫描一定照跑。
-  - **一次遍历代替三次**：三条 pattern 的文件集合互不相交，合并成一个花括号 glob（`{**/.hwchat/skills/*.md,**/.agents/skills/**/SKILL.md,**/.claude/skills/**/SKILL.md}`）。实测结果完全一致（连一个技能都没少、一个多余文件都没有），耗时 **3.35s vs 3×3.2s**。VS Code 的 `findFiles` 官方文档明确支持 `{}` 分组。
-  - **顺带修掉另外三处会卡住的入口**：`ChatPanel.open()`（点「打开聊天」）、`newChat()`（点「新建对话」）、`prepareSkillsForSend()`（发消息）原来都会 `await refresh()`，现在一律「水合兜底 + 后台刷新」。`hwchat.rescanSkills` 仍是用户主动点的，保留 await。
+  - **一次遍历代替三次**：三条 pattern 的文件集合互不相交，合并成一个花括号 glob（`{**/.plaitcode/skills/*.md,**/.agents/skills/**/SKILL.md,**/.claude/skills/**/SKILL.md}`）。实测结果完全一致（连一个技能都没少、一个多余文件都没有），耗时 **3.35s vs 3×3.2s**。VS Code 的 `findFiles` 官方文档明确支持 `{}` 分组。
+  - **顺带修掉另外三处会卡住的入口**：`ChatPanel.open()`（点「打开聊天」）、`newChat()`（点「新建对话」）、`prepareSkillsForSend()`（发消息）原来都会 `await refresh()`，现在一律「水合兜底 + 后台刷新」。`plaitcode.rescanSkills` 仍是用户主动点的，保留 await。
   - **实测启动序列**（真实 60.9MB / 1473 条消息档案 + 真实 21 目录工作区）：
     | 步骤 | 耗时 |
     | --- | --- |
@@ -2018,14 +2055,14 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.3.1
 
-- **发送消息不再等 2-3 秒才出现：点发送的同一帧就画出来**（用户原话：「hwchat 的对话框，用户发送消息，到对话框显示消息，有 2-3 秒延迟，这延迟很久」）。
+- **发送消息不再等 2-3 秒才出现：点发送的同一帧就画出来**（用户原话：「plaitcode 的对话框，用户发送消息，到对话框显示消息，有 2-3 秒延迟，这延迟很久」）。
   - **根因不是网络，是顺序**。旧实现里 `submit()` 把文字丢给扩展宿主后**什么都不画**，要等宿主把这一串全干完才推 `messageStart`：落盘 → 扫描技能（三条 `findFiles`，每条遍历整个工作区；本机 21 个目录实测**冷缓存 3.0–3.8 秒/条**，热缓存 0.04–0.12 秒/条）→ 组装上下文（读整条对话）→ 建占位回复。用户看到的就是「输入框清空、界面静止 2-3 秒」。
   - **界面侧：乐观气泡**。`submit()` 现在**同步**把用户这条消息画进列表（带 `optimistic` 标记与「还没执行」状态徽标），不等宿主任何响应。宿主确认（`messageStart`）时用真实消息替换；宿主拒绝（`sendRejected`）时撤掉气泡并把原文还回输入框 —— 用户敲的话不会因为一次校验失败就消失。实测同步耗时 **1ms**。
   - **界面侧：不再整屏重建**。`messageStart` / `messageAdded` 以前都走 `renderMessages()`（`replaceChildren()` + 全量重造），200 条消息实测 **129ms / 190ms**；现在只追加那两个节点，实测 **14ms**。同时补了一处隐患：增量追加后必须重算「画面签名」，否则下一次全量状态会误判「消息没变」而跳过重绘，界面上留下已经不该存在的节点。
   - **宿主侧：先把消息推给界面，再干慢活**。顺序改成「落盘用户消息（~3ms）→ 落盘回复占位（~3ms）→ 推 `messageStart` → 才扫描技能 / 组装上下文 / 组装任务树」。`usedSkills` 是准备完才知道的，改用 `updateMessage` 补回占位回复上，id 由存储分配所以时间顺序不会被破坏。
   - **宿主侧：技能扫描不再挡在发送路径上**。`prepareSkillsForSend` 改成「已扫过 → 直接用缓存清单（`prepare` 是纯内存操作）+ 后台刷新给下一次用；从没扫过（刚激活窗口）→ 这一次仍要等，否则路由表是空的、勾选的技能会被静默忽略」。技能文件真变了有 watcher 兜底，不会漏新技能。
   - **中途来全量状态时的诚实性**：宿主还没收录 → 气泡挂回列表末尾（撤掉会让用户刚发的话凭空消失一下）；宿主已收录（同角色同内容）→ 作废，不会出现两条一样的。连点/连按回车只产生一个气泡（`sendAwaitingHost` 挡住，宿主侧 `pendingSends` 兜底并回 `sendRejected`）。
-  - **可观测**：每次发送在 HWChat 输出面板记一行 `[send] 气泡可见 +Nms，开始执行 +Nms`，以后回归能直接看数字，不用再猜。
+  - **可观测**：每次发送在 PlaitCode 输出面板记一行 `[send] 气泡可见 +Nms，开始执行 +Nms`，以后回归能直接看数字，不用再猜。
   - 新增 `test/check-send-latency.mjs`（**17 项真实浏览器验证**，可重复运行，200 条消息夹具）：同一帧出气泡 / 同步耗时 < 150ms / 确认后正确替换且无残留 / 拒绝后原文回填 / 连点只一个气泡 / 途中状态不闪不重复 / 已收录不重复 / 两条路径都是增量追加 / 宿主顺序与不阻塞扫描的静态不变量。
 
 ## 0.3.0
@@ -2035,7 +2072,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 主要变化：
 
 - **方案决策闸门**：遇到需要拍板的方案时停下来，把每个方案「能做成什么 / 做到什么地步 / 代价」摆出来让你选；卡片可收起、可以先翻对话，也可以不选而自己写一个方案。
-- **数据安全**：HWChat 不再自己删除或搬运任何对话；删除 = 移入回收站，只有你点「清空回收站」才真正销毁。归档标记落盘，manifest 损坏也不会让归档变回可删。
+- **数据安全**：PlaitCode 不再自己删除或搬运任何对话；删除 = 移入回收站，只有你点「清空回收站」才真正销毁。归档标记落盘，manifest 损坏也不会让归档变回可删。
 - **布局**：输入框上方所有面板整体封顶并自己滚动，输入框永远留在视口里。
 - **联网与爬虫**：`fetch_url` 改为真·正文抽取（defuddle → Markdown）并补齐开源许可证合规；三个联网工具的准入 bug 修好。
 - **附件复用**：已发出的图片可以拖回输入框，图文可以一起复制。
@@ -2059,15 +2096,15 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
     极端情况（卡片 985px 高）：面板区可视 347 / 内容 1278，滚动后卡片顶部对齐到可见区顶部，输入框仍在 695–782。
   - `test/check-panel-budget.mjs` 扩展为这条规则的守门人：footer 必须封顶且 ≤60vh/560px、面板区必须 `flex: 0 1 auto` + `min-height: 0` + `overflow-y: auto`、输入框必须 `flex: 0 0 auto`、`#decisionCard`/`#approvalCard`/`#panelStack` 必须在 `#composerPanels` 内而 `<form id="composer">` 在外、footer 的 `div/section/form/details` 标签必须配平；并从 `media/chat.js` 里抽出真实的 `revealInPanelArea()` 跑三种几何（已可见 / 在下方 / 在上方）验证滚动行为。
 
-### 0.3.6 — 数据安全：只有你能销毁对话，HWChat 不再自己搬运或删除
+### 0.3.6 — 数据安全：只有你能销毁对话，PlaitCode 不再自己搬运或删除
 
-- **规则变更：HWChat 不再自己让任何一条对话消失。删什么、什么时候删，由你决定**（用户原话：「用户可以在设置里自己清除归档的内容，但是 hwchat 不能自己吞掉对话」）。
+- **规则变更：PlaitCode 不再自己让任何一条对话消失。删什么、什么时候删，由你决定**（用户原话：「用户可以在设置里自己清除归档的内容，但是 plaitcode 不能自己吞掉对话」）。
   - 0.3.5 虽然把删除改成了「移入回收站」，但**仍然会自己动手**：超期（`historyRetentionDays`，默认 30 天）会把对话搬走，超预算（`cacheBudgetMB`，默认 100MB）会把最旧的搬走，回收站里的东西放满 40 条 / 30 天还会被自动销毁。按这条规则，这些全部拆掉。
-  - **自动清理现在只做两件事**：按 `hwchat.taskCacheRetentionHours` 瘦身缓存；整理「一条消息都没有」的空对话（没有任何内容可丢）。**带内容的对话一条都不会离开列表**。
+  - **自动清理现在只做两件事**：按 `plaitcode.taskCacheRetentionHours` 瘦身缓存；整理「一条消息都没有」的空对话（没有任何内容可丢）。**带内容的对话一条都不会离开列表**。
   - **删除 = 移入回收站**（`reason: manual`）：在历史里点删除，内容原样留在磁盘，列表里不再显示；恢复走命令「恢复已删除的对话」或设置里的按钮。搬不进回收站时（磁盘/权限问题）保持原样并报错，**绝不静默丢失**。
-  - **只有你能销毁**：设置 → 存储 新增「回收站 N 条 · X MB」和两个按钮 ——「恢复回收站里的对话」「清空回收站（永久）」，后者带模态二次确认。命令面板也有 `HWChat: 清空回收站（永久删除）`。这是全扩展唯一会永久销毁对话内容的入口（另一个是原有的「清除本地数据」）。
+  - **只有你能销毁**：设置 → 存储 新增「回收站 N 条 · X MB」和两个按钮 ——「恢复回收站里的对话」「清空回收站（永久）」，后者带模态二次确认。命令面板也有 `PlaitCode: 清空回收站（永久删除）`。这是全扩展唯一会永久销毁对话内容的入口（另一个是原有的「清除本地数据」）。
   - **回收站不再有到期自动清理**：没有「保留 N 天 / N 条」了。工具不能替用户决定「这条放够了，可以真删」。
-  - **超预算只提示**：`hwchat.cacheBudgetMB` 的语义从「超了就从最旧的开始淘汰」改为「超了给提示」，提示里直接给「打开设置」按钮。`hwchat.historyRetentionDays` 同样不再触发任何删除。
+  - **超预算只提示**：`plaitcode.cacheBudgetMB` 的语义从「超了就从最旧的开始淘汰」改为「超了给提示」，提示里直接给「打开设置」按钮。`plaitcode.historyRetentionDays` 同样不再触发任何删除。
   - **搬运失败绝不丢内容**：`moveToTrash` 改成返回布尔值，`cp` 跨设备退化路径先核对目标目录的消息文件数与源一致才删源；`mkdir`/`rename` 任何一步失败都只是「这次不删」，并保留原对话。旧实现在 `cp` 失败时用 `.catch(() => undefined)` 吞掉错误、紧接着无条件 `rm` 原目录 —— 那本身就是一条数据丢失路径。
   - **启动时的归档守护**：新增 `history-v1/safety.json` 记录上次的归档清单。下次启动若发现某条归档既不在磁盘、也不在回收站，立刻弹警告并写日志（只报一次），不再等你自己发现少东西。用户主动删除/清空时会同步刷新快照，不会误报。
   - **真实数据实测**（用户 83MB 档案副本，最激进设置：保留期 0 天 + 缓存 0 小时 + 预算 5MB，连跑 3 轮）：**4 条对话一条不少、3 条归档原样、回收站 0 条**；用户删除 1 条 → 列表 3 条 / 回收站 1 条（`reason=manual`）→ 恢复 → 回到 4 条。
@@ -2076,10 +2113,10 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 ### 0.3.5 — 自动清理改为移入回收站，归档标记落盘
 
 - **自动清理不再物理删除对话，改为移入回收站；归档标记落盘，manifest 丢失也不会被当普通旧对话删掉**（用户原话：「今天的某次更新，把我的归档和对话记录列表的某条记录删掉了，之前对话记录有 2 条，归档记录有十几条」）。
-  - **取证**：`history-v1/manifest.json` 只剩 4 条对话 / 3 条归档；同目录 Oct 27 遗留的 `manifest.json.*.tmp` 里是 **15 条 / 13 条归档**；`conversations/` 只剩 4 个目录，`~/.Trash` 里没有 —— 那 13 条是被 `rm -rf` 物理删除的，**HWChat 存储已无法恢复**（只能靠 Time Machine / 备份）。
-  - **为什么会被删**：单条活跃对话实测 **77MB**（几乎全是 base64 缩略图与工具输出），而 `hwchat.cacheBudgetMB` 默认 100MB。预算回收发现超限时把**整条对话**搬走，而它判断「能不能删」读的是内存里的 `summary.archived`。manifest 读不出来时 `rebuildManifestFromDisk()` 会把所有对话重建成 `archived: false`；manifest 主文件坏了还会回退到 `manifest.json.bak`（那是**上一次**写盘的内容，可能正好是归档之前）—— 保护一失效，82MB 的活跃对话就会把归档对话挤出预算。
+  - **取证**：`history-v1/manifest.json` 只剩 4 条对话 / 3 条归档；同目录 Oct 27 遗留的 `manifest.json.*.tmp` 里是 **15 条 / 13 条归档**；`conversations/` 只剩 4 个目录，`~/.Trash` 里没有 —— 那 13 条是被 `rm -rf` 物理删除的，**PlaitCode 存储已无法恢复**（只能靠 Time Machine / 备份）。
+  - **为什么会被删**：单条活跃对话实测 **77MB**（几乎全是 base64 缩略图与工具输出），而 `plaitcode.cacheBudgetMB` 默认 100MB。预算回收发现超限时把**整条对话**搬走，而它判断「能不能删」读的是内存里的 `summary.archived`。manifest 读不出来时 `rebuildManifestFromDisk()` 会把所有对话重建成 `archived: false`；manifest 主文件坏了还会回退到 `manifest.json.bak`（那是**上一次**写盘的内容，可能正好是归档之前）—— 保护一失效，82MB 的活跃对话就会把归档对话挤出预算。
   - **自动删除一律进回收站**：空草稿、超期、预算回收三处改为 `moveToTrash()`（`rename` 优先，跨设备退化为 `cp` + 删原目录）。用户主动删除仍是立即删除 —— 那是明确意图，不该在回收站留一份假象。回收站保留最近 **40 条 / 30 天**，到期才真正删除。
-  - **新增命令 `HWChat: 恢复已删除的对话`**：列出回收站条目（时间、原因、消息数、是否归档），可多选恢复；恢复时按磁盘重建摘要，不依赖当初那份可能已损坏的 manifest。
+  - **新增命令 `PlaitCode: 恢复已删除的对话`**：列出回收站条目（时间、原因、消息数、是否归档），可多选恢复；恢复时按磁盘重建摘要，不依赖当初那份可能已损坏的 manifest。
   - **`.archived` 标记文件**：归档/取消归档时在对话目录里落一份标记，`rebuildManifestFromDisk` / `reconcileManifest` / 启动时的 `reconcileArchiveMarkers` 都以它为准。规则刻意单向：有标记 → 置为归档；摘要说归档但没标记 → 补写标记（老存档没有标记文件，靠这一步补齐）；**绝不因为「没标记」就清掉归档状态**，那会把用户已归档的对话丢回可删状态。
   - **预算回收改为先瘦身、再考虑删整条**：先削掉可再生的缓存（推理过程、工具输入输出、附件 base64/缩略图、选区原文），按文件真实大小记账，全部瘦身后仍超预算才把最旧的未保护对话移入回收站。与保留期压缩共用同一个 `stripMessagePayload()`，两者删掉的字段集合完全一致。
     - **最近 6 小时的消息一律不削**：否则会出现「刚发出去的图突然变成文件条目」，让人以为功能坏了；预算压力来自长期堆积的历史。削不动就走回收站，那条路径可恢复。
@@ -2100,7 +2137,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ### 0.3.3 — 遇到方案决策先停下来问，命令摘要带上命令本身
 
-- **遇到方案决策时停下来问，并把每个方案「能做成什么 / 做到什么地步 / 代价」摆给你挑**（用户原话：「hwchat 只会闷着头执行，也不和我沟通，经常导致做出来的东西不能用。有没有办法，让它在遇到方案决策的时候，告诉我每个方案能做成什么，做到什么地步，代价是什么，让我决策。而不是闷头做，结果做出一堆不能用毫无逻辑的东西」）。
+- **遇到方案决策时停下来问，并把每个方案「能做成什么 / 做到什么地步 / 代价」摆给你挑**（用户原话：「plaitcode 只会闷着头执行，也不和我沟通，经常导致做出来的东西不能用。有没有办法，让它在遇到方案决策的时候，告诉我每个方案能做成什么，做到什么地步，代价是什么，让我决策。而不是闷头做，结果做出一堆不能用毫无逻辑的东西」）。
   - **为什么只写提示词不够**：文本里问一句「你要 A 还是 B？」会把决定埋在几十行输出中间，而 agent 可以自己猜一个继续做。所以新增一个**工具** `ask_user_choice`：调用它会变成面板里一张可点的卡片，并且**在用户选择之前不返回** —— 模型想绕过决策也走不了。
   - **每项三项必填**（`achieves` 能做成什么 / `extent` 做到什么地步 / `cost` 代价）：缺任何一项就拒绝并让模型补，而不是替它编。用户要的是「能据此拍板」的对比，只给「方案 A / 方案 B」等于把决策成本推回给用户。
   - **什么时候必须问**（写进系统提示词）：① 两个以上方案都可行且结果差异明显；② 需求留了真选择（入口在哪、数据从哪来、做到哪一步、替换还是扩展）；③ 改动昂贵或难以回滚（数据迁移、协议/格式变更、删掉能跑的代码、公开 API）；④ 要做的只有「看到才能判断」的东西（界面、流程、生成物）而布局行为没被指定。
@@ -2134,7 +2171,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **边界处理**：标记前后**不要求空格**（中文写作习惯是「…验收。Triggers: …」，句号后面直接跟标记 —— 早期按 `\s` 判边界的实现会全部漏掉，这次就是这么踩到的）；两段标记**按出现位置排序**，所以 `Triggers` 写在 `USE FOR` 前面也能正确切开；全角冒号、`，、；|` 各种分隔符都认；重复触发词去重保序。
   - **成本**：摘要 180 字符 / 适用 200 / 触发词 160 各段独立封顶，超长显式加 `…`（不静默丢弃）。实测 38 个技能**全部**当路由项时，路由表从 1191 增到约 1519 字符（+328），换来 19 个技能的触发词真正可见。
   - **兼容**：`SkillSummary.description` 仍是「人看的一句话」（摘要 + 适用，仍压到 240），技能面板行为不变；新增 `triggers` 字段在面板里以**悬停提示**露出（列表一行放不下），排查「为什么这个技能没被匹配」时能直接看到。
-  - **真实语料复核**：用 HWChat 自己的 `SkillRegistry` 扫本机 38 个技能 —— 18 个解析出触发词；`search-before-acting` 16 个、`work-principles` 10 个、`apple-app-dev-experience` 25 个、`glass-ui-effects` 18 个，全部完整。
+  - **真实语料复核**：用 PlaitCode 自己的 `SkillRegistry` 扫本机 38 个技能 —— 18 个解析出触发词；`search-before-acting` 16 个、`work-principles` 10 个、`apple-app-dev-experience` 25 个、`glass-ui-effects` 18 个，全部完整。
   - **测试**：新增 `src/test/skillDescription.test.ts` **12 条**（中文/英文标记、全角冒号、无空格边界、只有其中一段、显式 frontmatter triggers 合并去重、无标记时原文即摘要、空值不产生空触发词、路由行含触发词、超长摘要不挤掉触发词、无适用/触发时不写空段、**真实语料不变量**、**端到端：长尾描述的触发词确实进了 `prepare()` 产出的提示词**）；新增 `test/check-skill-routing.mjs` 8 条守护（解析器存在、字段分开存、路由行带触发词与适用、不按空格判边界、按位置排序、摘要仍封顶 240、支持显式 triggers）。全量 **820/820**、**26** 个 `check-*.mjs` 全绿。
 
 ### 0.3.0 — 主体功能：联网参考、正文抽取、附件复用、边界重判、布局修正
@@ -2170,7 +2207,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
     - **拖**：把消息里的图片（或文本附件）直接拖到输入框 —— 输入框出现强调色描边 + 内发光，松手就变成一条待发附件；拖到别处不会误加。
     - **点**：图片右上角有「添加到输入框」按钮（悬停 / 键盘聚焦时浮现；`@media (hover: none)` 的触摸屏上常显，否则入口等于不存在），点一下同样加一份。
   - **为什么不让 `<img>` 自己拖**：图片元素默认拖拽会把**图片文件本身**拖出 webview（落到窗口外就变成系统拖拽），落不进输入框。所以把 `img.draggable = false`，改由外面的 `figure` 承担拖拽，走我们自己的通道。
-  - **只传标识、不搬内容**：拖拽数据里放自定义 MIME `application/x-hwchat-attachment` + 附件 `id`（文本附件用 `path`）。图片可能有几 MB，而扩展侧本来就按 `id` 索引着完整 `dataBase64`；前端搬运一遍既慢又没必要。`drop` 时用它判断「这是我们自己的附件」，而不是靠全局变量猜（拖动被打断时变量会留下过期值）。
+  - **只传标识、不搬内容**：拖拽数据里放自定义 MIME `application/x-plaitcode-attachment` + 附件 `id`（文本附件用 `path`）。图片可能有几 MB，而扩展侧本来就按 `id` 索引着完整 `dataBase64`；前端搬运一遍既慢又没必要。`drop` 时用它判断「这是我们自己的附件」，而不是靠全局变量猜（拖动被打断时变量会留下过期值）。
   - **扩展侧的取内容顺序**：① `attachmentIndex` 里的原始副本（同一次会话几乎总命中，不碰磁盘）→ ② 索引被按字符数 LRU 淘汰了（几 MB 的图先出队）但有 `path`，就用**和「选文件」完全相同的读取器**从磁盘重读（大小上限、二进制判定、敏感文件策略都一致）→ ③ 都没有则明确提示「附件已不可用」，不静默失败。
   - **复制必须去掉 `id`**：`id` 是面板从索引取回完整内容的句柄，跟着复制过去会让两条附件共用一个句柄（删掉一条后另一条点开变成别的内容）。`reuseCopy()` 负责这件事。
   - **配额与「选文件」同口径**：最多 20 条、总量上限一致；数量上限在读盘**之前**就挡住 —— 没必要为一个注定放不下的附件去读几 MB。
@@ -2184,7 +2221,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **顺带修掉归档栏自身的 4px 溢出**：原来 `width: 100%` + `margin: 0 2px` —— 百分比算的是父容器**内容宽**，再加左右各 2px 外边距，整条栏比父容器宽 4px，右端 2px 永远露不出来。改成 `padding: 0 2px` + `max-width: 100%`（右内边距同时计入 scrollable overflow，滚到最右时最后一颗胶囊离裁切边还有 2px）。
   - **验证（真实布局，11 档宽度 360→1400px）**：归档栏右边界不再超出父容器（`overflowParent=0`）、能滚到真正上限（`scrollLeft == scrollWidth - clientWidth`）、最后一颗胶囊完整可见（离栏右边缘 2px）；文档宽度恒等于视口宽、消息区无横向滚动、`.chat-pane`/`.message-area` 列宽恒等于容器宽。极端内容（40 颗胶囊 + 300 字符不换行 + 40 行超宽代码）下同样成立 —— 唯一「超出视口」的元素是代码块内部的横向滚动容器，属设计内。
   - **测试基建修正**：`test/preview-chat.html` 之前**缺 `.chat-pane` 与 `.message-area` 两层包裹**（还把归档栏套在 `.panel-stack` 里），所以宽窗口下的布局测量根本不代表真实结构 —— 这也正是上一轮「面板右边被切割」没能复现的原因。现已按真实模板补齐，宽度扫描才有效。
-  - **守护脚本**：新增 `test/check-layout-containment.mjs` —— 断言 `.chat-pane`/`.message-area` 必须 `grid-template-columns: minmax(0, 1fr)`（并写明为什么）、`.app-shell` 必须是 `overflow-x: clip`、归档栏必须 `max-width: 100%` + 用 padding 内缩（禁止 `margin: 0 2px`）；诊断命令 `HWChat: 复制布局诊断` 增加 `capsuleBar` 一节（栏/父容器矩形、clientWidth/scrollWidth/maxScroll、滚到上限后最后一颗胶囊的位置与被裁多少、margin/padding），以后再出现这类问题一次就能拿到判据。23 个 `check-*.mjs` 全绿，`npm test` 795/795。
+  - **守护脚本**：新增 `test/check-layout-containment.mjs` —— 断言 `.chat-pane`/`.message-area` 必须 `grid-template-columns: minmax(0, 1fr)`（并写明为什么）、`.app-shell` 必须是 `overflow-x: clip`、归档栏必须 `max-width: 100%` + 用 padding 内缩（禁止 `margin: 0 2px`）；诊断命令 `PlaitCode: 复制布局诊断` 增加 `capsuleBar` 一节（栏/父容器矩形、clientWidth/scrollWidth/maxScroll、滚到上限后最后一颗胶囊的位置与被裁多少、margin/padding），以后再出现这类问题一次就能拿到判据。23 个 `check-*.mjs` 全绿，`npm test` 795/795。
 
 - **运行中新消息在小任务边界被重新判断：相关就并进当前分支，不再「隔几条就无限期压着」**（用户原话：「对话框 agent 正在运行，新消息进来，agent 需要执行完小任务后，先读取新消息，如果新消息和正在运行的任务相关，就合并，不管新消息和正在执行的消息之间间隔了多少条消息，都要先停下来判断一下再继续」）。
   - **原来的问题**：一条消息属于「相关指导」还是「独立分支」，只在**发消息那一刻**判一次，判据只有分支标题。一旦判成「排队」，就一直压到整条分支结束 —— 而一条分支可能跑几十轮，这期间它既不会被读、也不会被重新考虑。于是「和正在执行的那条隔了多少条消息」变成了隐式规则：隔得远就等于被无限期搁置。用户截图里那条「灵动岛的待办和书签…」正是这样卡在排队里的。
@@ -2256,7 +2293,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **为什么还要诊断命令**：症状有两种完全不同的成因，截图分不出来 ——
     1. 内容把文档撑出横向滚动（我们的 CSS 问题）；
     2. **webview 宽度与可见区域不同步**（宿主没重排），此时 `文档.scrollWidth == 视口 clientWidth`，两者相等却整体偏右被窗口裁掉。
-    扩展宿主看不到 webview 的任何尺寸，所以新增命令 **`HWChat: 复制布局诊断`**：面板自己量视口宽/高、`devicePixelRatio`、`innerWidth`、文档与 `body` 的 `scrollWidth`、横向溢出量、`#app` / 侧栏 / 聊天栏 / 消息区 / 消息列表 / 输入框 / 工具栏的矩形与 `scrollWidth`、两条媒体查询命中情况，外加最多 8 个越界元素，复制到剪贴板。这样一次就能分清是哪一种。
+    扩展宿主看不到 webview 的任何尺寸，所以新增命令 **`PlaitCode: 复制布局诊断`**：面板自己量视口宽/高、`devicePixelRatio`、`innerWidth`、文档与 `body` 的 `scrollWidth`、横向溢出量、`#app` / 侧栏 / 聊天栏 / 消息区 / 消息列表 / 输入框 / 工具栏的矩形与 `scrollWidth`、两条媒体查询命中情况，外加最多 8 个越界元素，复制到剪贴板。这样一次就能分清是哪一种。
   - **测试**：`test/check-panel-budget.mjs` 增加「`app-shell` 必须用 `overflow-x: clip`」「不许改成 `hidden`」「`message-area` 有 `min-width: 0`」「列表与输入框有 `max-width` 兜底」四条守卫；全量 739/739，22 个 `check-*.mjs` 全绿。
 
 - **修正：任务树 + 任务清单都展开时，对话框被挤到看不见**（用户反馈「这种状态下界面对话框显示不全」）。
@@ -2304,7 +2341,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **单轮节流保留但不再中断**：一轮里超过 12 个调用时，超出的部分仍然不执行，但以前是**结束整次运行**，现在只把「未执行」的 tool 结果回报给模型、循环继续下一轮 —— 模型能看见哪些没跑并据此重新组织，用户不必再回一句「继续」。
   - **剩下的闸门（不限制 ≠ 没有守卫）**：单轮 12 个调用、同一调用连续 3 次判死循环、连续 3 轮全部失败即停、有限档位仍由轮数预算（24 / 68 / 120）封顶、停止按钮随时可用。
   - **测试**：`src/test/toolCallBudget.test.ts` 改写为「无运行总量闸门」的契约；`agentLoop.test.ts` 补一条真机回归 —— 每轮 2 个不同调用连跑 150 轮（**300 次调用**），确认一次都没被拦、没有 `denied` 步骤、没有预算提示；同时把单轮超限那条改成断言「继续到下一轮」。全量 732/732 通过，21 个 `check-*.mjs` 全绿。
-  - **补充说明（不在本次代码范围内）**：命令类工具的逐次确认框由 **VS Code 自己**决定（桥接工具 `delegateApproval: true`），与调用次数无关；要一次配平请用命令 `HWChat: 同步 VS Code 审批预设`。README 中英都已写明这一点。
+  - **补充说明（不在本次代码范围内）**：命令类工具的逐次确认框由 **VS Code 自己**决定（桥接工具 `delegateApproval: true`），与调用次数无关；要一次配平请用命令 `PlaitCode: 同步 VS Code 审批预设`。README 中英都已写明这一点。
 
 - **排队消息改成在「消息气泡」里编辑，保存后任务树同步**。
   - **问题**：任务树一行只显示一句标题，长消息改起来只能看见一行，前后文全都看不见；而且同一个操作在两处（任务树行内编辑 + 消息本身）容易对不上。
@@ -2345,7 +2382,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.2.7
 
-- **思考层级现在和支持它的模型真正打通了：DeepSeek 官方模型可选「默认 / 无 / 低 / 高 / 最大」，与 Copilot 一致**。用户反馈「Copilot 能给 DeepSeek 定思考层级，HWChat 不行，只能看到『能力未知』的灰下拉框」。审计后发现不是没能力发参数——发请求那一侧本来就是对的——而是**能力探测把正确的内置能力表冲掉了**：
+- **思考层级现在和支持它的模型真正打通了：DeepSeek 官方模型可选「默认 / 无 / 低 / 高 / 最大」，与 Copilot 一致**。用户反馈「Copilot 能给 DeepSeek 定思考层级，PlaitCode 不行，只能看到『能力未知』的灰下拉框」。审计后发现不是没能力发参数——发请求那一侧本来就是对的——而是**能力探测把正确的内置能力表冲掉了**：
   - **根因 1：不认 DeepSeek 官方 `/models` 的元数据结构**。官方把档位放在嵌套对象里：`effort: { supported_levels: ["low","high","max"], default_level: "high" }`，而 `reasoningEfforts()` 只认 6 个扁平数组键（`reasoning_efforts` / `thinking_levels` …），`reasoningCapability()` 又去查 `capabilities` 而不是官方的 `api_capabilities` → 一律读不到 → 能力判成 `unknown`。现在新增嵌套读取（`effort.supported_levels` / `supportedLevels` / `levels`、`capabilities.reasoning_efforts`），并在只有 `default_level` 时按官方取值补齐档位，避免把「确实支持思考」判成未知。
   - **根因 2：探测结果整体替换内置能力表**。`modelOptionsForProfile()` 里 `if (discovered?.length) return discovered…` 直接返回探测结果，而探测只修显示名、不补能力，于是 `configurable` 被洗成 `unknown`（刷新窗口后先短暂显示四档、随即变灰，正是这个顺序）。新增 `core/modelCapabilities.ts` 的 `withFallbackCapabilities()`：**探测到的能力优先，探测缺失才回落到内置值**；`discoverModels()` 推给面板的那份也一并补齐。
   - **根因 3：「无」被当成非法值**。DeepSeek 的 `effort.supported_levels` 按官方定义**不含 `none`**（文档原话：`none`, which turns thinking mode off, is not included），于是按声明列表校验时「无」会被静默改回「默认」——用户以为关掉了思考，实际仍在发 `thinking: enabled`，多烧 token。现在 `none` 对任何「可调」模型都合法（`thinking: {type:'disabled'}` + `reasoning_effort: 'none'`，有请求体断言）。
@@ -2437,13 +2474,13 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 - **空对话不再堆卡片；卸载扩展后的残留勾选不再被读取**。两处都是上一版没做对的地方：
   - **「当前就是空对话」时，点新建对话不再产生新卡片**。上一版以为「每点一次都要多一张卡」，结果连点就堆出一串「新对话 · 空对话」（用户截图里 6 张），既分不清是哪一条，也像按钮坏了。现在的规则是：**只有这条对话用过了（有消息），新建才产生下一张卡片**；当前这条还是空的，就只把焦点交还给它。扩展侧（`newChat()` 判 `messageCount === 0`）与界面侧（判 `currentEmpty`）用同一判据，避免「UI 画了卡、服务端没建」的错位。
   - **历史里已经堆起来的空对话会收敛成一张**：清理时只保留最新的那张，其余（0 条消息、未置顶、未归档、非续接、不在保护名单）在 5 分钟宽限期后收掉。这类对话没有任何内容可丢；`prunedDrafts` 会在日志里单列。**「创建成功但从没初始化」的残骸仍按 60 秒规则单独处理**，不参与「保留最新」的竞争。
-  - **卸载了「本地skill快捷调用」后，不再读它留下的 `.skill-quick-launch.json`**。真实原因：卸载扩展不会删这个文件（本机残留 35 个 `active`），而 HWChat 照样读它 → 每个技能都被标成「默认启用」并自动打勾，用户看到的是一屏勾选，自然以为是扩展残留。现在 `scan()` 先看扩展在不在，不在就把全局勾选当成空：**「默认启用」0 个、「已调用」0 个、新对话勾选为空**。用本机真实磁盘实测：技能仍扫到 35 个（它们在 `~/.copilot/skills/`，是 Copilot 的技能目录，不随扩展卸载消失），但 badge 与勾选全部为 0。重新装上后 `extensions.onDidChange` 会立刻把勾选接回来。
+  - **卸载了「本地skill快捷调用」后，不再读它留下的 `.skill-quick-launch.json`**。真实原因：卸载扩展不会删这个文件（本机残留 35 个 `active`），而 PlaitCode 照样读它 → 每个技能都被标成「默认启用」并自动打勾，用户看到的是一屏勾选，自然以为是扩展残留。现在 `scan()` 先看扩展在不在，不在就把全局勾选当成空：**「默认启用」0 个、「已调用」0 个、新对话勾选为空**。用本机真实磁盘实测：技能仍扫到 35 个（它们在 `~/.copilot/skills/`，是 Copilot 的技能目录，不随扩展卸载消失），但 badge 与勾选全部为 0。重新装上后 `extensions.onDidChange` 会立刻把勾选接回来。
   - **未安装时星标面板只显示安装提示，不再列技能**。按产品语义，这时候面板的职责只有一个：告诉用户去装那个扩展（标题带「未安装」角标 + 「打开扩展详情」按钮）。列表隐藏用 `.skills-list[hidden]`（它是 grid，会覆盖 `[hidden]` 的默认 `display:none`）。
   - 新增 2 条测试（空对话不新建、空对话收敛成一张）与 1 条真实磁盘验证；`npm test` 609 全绿。headless Chromium 四项实测：未安装只显示提示不列技能 ✅、已安装列表+勾选出现 ✅、空对话点新建不加卡 ✅、有内容点新建正常加卡 ✅。
 - **星标（Skill）面板与「本地skill快捷调用」彻底对接**。两件事分开说：
   - **没装这个扩展时**：点星标展开面板，**立刻**看到安装提示（标题带「未安装」角标）、一段说明、以及一个「打开扩展详情」按钮。以前只有「勾了某个 copilot skill」才把提示滚出来，所以正常路径下用户只会看到一片勾选列表、不知道该装扩展。按钮优先用内置命令 `extension.open` 在 VS Code 内打开详情页（装完就能顺手勾选），失败退回 `workbench.extensions.search` 筛选，最后才用 `vscode.env.openExternal` 打开商店网页。
-  - **装了之后**：面板显示的勾选状态就是这份扩展的 `active`（`~/.copilot/.skill-quick-launch.json`），并且**只影响本次对话**——在 HWChat 里勾选 / 取消只写当前对话的存档，绝不回写那份全局清单（`skillSelection.test.ts` 有断言禁止出现写回路径）。底部说明文案随安装状态切换：装了才提「只影响本次对话」，没装则说明「新对话从空白开始」。
-  - **装完 / 卸掉立刻生效，不用重载窗口**：新增 `vscode.extensions.onDidChange`（官方定义：*fires when `extensions.all` changes … installed, uninstalled, enabled or disabled*）→ `ChatPanel.refreshSkills()` → 重扫并回推。原有的 `.skill-quick-launch.json` watcher 也接到同一个刷新入口，对面改了勾选，HWChat 的「默认启用」跟着变。
+  - **装了之后**：面板显示的勾选状态就是这份扩展的 `active`（`~/.copilot/.skill-quick-launch.json`），并且**只影响本次对话**——在 PlaitCode 里勾选 / 取消只写当前对话的存档，绝不回写那份全局清单（`skillSelection.test.ts` 有断言禁止出现写回路径）。底部说明文案随安装状态切换：装了才提「只影响本次对话」，没装则说明「新对话从空白开始」。
+  - **装完 / 卸掉立刻生效，不用重载窗口**：新增 `vscode.extensions.onDidChange`（官方定义：*fires when `extensions.all` changes … installed, uninstalled, enabled or disabled*）→ `ChatPanel.refreshSkills()` → 重扫并回推。原有的 `.skill-quick-launch.json` watcher 也接到同一个刷新入口，对面改了勾选，PlaitCode 的「默认启用」跟着变。
   - **「还没动过的对话」跟随全局勾选**：对话一条消息都没有、且用户没在本对话里手动改过勾选时，全局勾选变了它会跟上（并把结果写进这条对话自己的存档）；一旦用户在本对话里勾过/取消过，或已经发过消息，就只看它自己的存档，全局清单不再反过来覆盖它。
   - headless Chromium 实测：未安装时 `hint=true`、按钮文案「打开扩展详情」；已安装时 `hint=false`、两个 copilot skill 打勾且与扩展一致、workspace skill 不打勾；说明文案含「只影响本次对话」。
 
@@ -2455,17 +2492,17 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **没装时，点星标就能看到安装提示**。旧实现只在「用户勾了一个 copilot skill」之后才展开安装提示，于是点开星标只看到一长串勾选框、完全不知道该装扩展。现在 `syncSkillsInstallHint()` 会按安装状态**直接显示/隐藏**提示，面板里有醒目的「未安装」角标、说明文字和按钮；底部说明也随之切换（未装 / 已装两套文案），已装时明确写出「在这里勾选只影响本次对话，不会改动它那边的勾选」。
   - **按钮改成「打开扩展详情」，直接跳到扩展详情页**。原来是打开商店网页；现在按顺序兜底：`extension.open` → `workbench.extensions.search`（`@id:` 精确筛出）→ `vscode.env.openExternal` 商店页。内置命令可用性随版本变化，所以每一步失败都不影响下一步。
   - **安装/卸载能实时反映**。接上官方 `extensions.onDidChange`（原文：*An event which fires when `extensions.all` changes. This can happen when extensions are installed, uninstalled, enabled or disabled*），装完扩展立刻重扫并回推，不用重载窗口；`.skill-quick-launch.json` 的 watcher 也会让「默认启用」角标跟着那边改的勾选走。
-  - **勾选语义按你的要求落地**：新对话的勾选**读取**「本地skill快捷调用」当前的勾选；在 HWChat 面板里勾选 / 取消**只写这条对话的存档**（`updateConversation({ skillIds })`），从不写回那份全局清单。另外补了一条：还没发过消息、用户也没手动改过勾选的对话，会在那边勾选变化时跟着更新（它就是下一次发送要用的那份选择），一旦用户动过或发过消息就只看它自己的存档。
+  - **勾选语义按你的要求落地**：新对话的勾选**读取**「本地skill快捷调用」当前的勾选；在 PlaitCode 面板里勾选 / 取消**只写这条对话的存档**（`updateConversation({ skillIds })`），从不写回那份全局清单。另外补了一条：还没发过消息、用户也没手动改过勾选的对话，会在那边勾选变化时跟着更新（它就是下一次发送要用的那份选择），一旦用户动过或发过消息就只看它自己的存档。
   - headless Chromium 实测两种状态：未安装 → 提示可见 + 按钮文案「打开扩展详情」；已安装 → 提示隐藏、勾选与扩展一致（2 个）、「默认启用」角标在位。
 - **「点新建对话没反应，重载窗口后才出现」：重做交互语义 + 修掉三条根因**。用户截图里连点 4 次、当场毫无变化，重载后冒出 4 条「新对话 · 空对话」。现在点击的语义明确为：**侧边栏立刻出现一条新的对话记录，右侧同时切到这条对话的空对话框**。
   - **新建对话现在是「真建一条对话」并立刻选中它**（以前只把界面切回草稿，历史列表里不会出现卡片）。创建后立刻写入模式与 Skill 勾选（`skillSelectionInitialized: true`），避免出现「建了但没初始化」的半成品。实测点击处理 **5.6ms**；把 `postMessage` 打成黑洞（模拟扩展卡住/失败）时，侧边栏卡片、右侧空对话框、输入框可用三项依然全部成立。
   - **webview 先插一张占位卡**：点击瞬间就在历史列表顶部绘制「新对话」卡片（灰化、操作按钮禁用、点击无副作用），扩展推送的权威列表到达后整体替换它——实测 `pendingCards` 归零、卡片数正好 1 新 + 1 旧、新卡处于选中态，不重复、不残留。
   - **每点一次就多一张卡片**（用户明确要求）：旧实现会在新建时删掉上一条「0 条消息」的空对话，结果是「上一条没实际用过时，再点一次就没有新卡片」，看起来仍像点了没反应。现在每次都建一条新对话，占位卡也**每次各插一张**（不再复用同一张），连点三次就看到三张。空卡片由行内 ✕ 或周期性清理收拾。`send()` 里「先建对话、再写消息」的那几毫秒由 `startingConversationIds` 保护，不会被任何清理逻辑误删。
-  - **根因 1（直接原因）：技能扫描失败会连坐整个界面。** 技能扫描走统一搜索调度层，队列满 24 条时抛 `SearchQueueFullError`——用户刚跑完一堆 Agent 任务时最容易触发。而「新建对话」「打开对话」「激活」都在 `await skills.refresh()`，异常一路抛到 `handleMessage` 的 catch，只发一条 toast（如果 webview 通道本身有问题，连 toast 都看不到）。**搜索队列一满，新建对话就变成死按钮**。现在 `SkillRegistry.refresh()` **永不 reject**：失败时保留上一份清单、把原因交给 `onError`（写进 HWChat 输出），并且**不刷新 30 秒新鲜窗口**，所以下一次调用会立刻重试而不是缓存坏结果。「清单可能稍旧」永远比「按钮点不动」好。
+  - **根因 1（直接原因）：技能扫描失败会连坐整个界面。** 技能扫描走统一搜索调度层，队列满 24 条时抛 `SearchQueueFullError`——用户刚跑完一堆 Agent 任务时最容易触发。而「新建对话」「打开对话」「激活」都在 `await skills.refresh()`，异常一路抛到 `handleMessage` 的 catch，只发一条 toast（如果 webview 通道本身有问题，连 toast 都看不到）。**搜索队列一满，新建对话就变成死按钮**。现在 `SkillRegistry.refresh()` **永不 reject**：失败时保留上一份清单、把原因交给 `onError`（写进 PlaitCode 输出），并且**不刷新 30 秒新鲜窗口**，所以下一次调用会立刻重试而不是缓存坏结果。「清单可能稍旧」永远比「按钮点不动」好。
   - **根因 2：一次点击推两遍全量状态，连点就并发堆叠。** `newChat()` 是 `open()`（内部已 `sendState()`）之后再 `sendState()`；每次 `sendState` 都要读对话列表、读首页 80 条消息、序列化约 3.4MB 推给 webview。4 次连点 = 8 份推送同时跑。现在：`newChat()` **只推一次**，并新增 `core/singleFlight.ts`——并发请求只跑一份、跑完**必须再补一次**（不丢最后一次点击的结果）。实测 4 次连点：8 份 → 4 份（空闲）/ 3 份（Agent 运行中推送 300ms 时），峰值并发 8 → 1，CPU 89ms → 57ms。
   - **根因 3：点击完全依赖往返，本地什么都不做。** 现在 webview 点「新建对话」**立刻**本地切到草稿（清消息区、清附件/待办/任务树、取消历史高亮、回填空草稿、聚焦输入框），随后的 `state` 只做校准。headless Chromium 实测：处理函数 **2.8ms**、强制布局 **0.3ms**；把 `postMessage` 打成黑洞（模拟扩展卡住/失败）后点击仍然生效——消息区 12 条 → 0 条、标题变「新对话」、旧对话取消高亮。
   - **顺带修掉「空对话」残骸的产生与堆积。** 磁盘上那 4 条的形状是：`messageCount: 0` + `skillSelectionInitialized: false` + 完全没有 `permissionPreset`/`agentMaxSteps`/`apiProfileId`——说明对话建好、初始化却没跑完。现在 ① `send()` 若在「创建成功、初始化失败」时抛错，会**把刚建的对话删掉**（回滚，不留残骸）；② `cleanup()` 会收掉这类「建了但从没初始化、也没有任何消息」的记录（留 60 秒宽限期，避开正在创建的那一瞬；置顶/归档/被保护的不动），并在日志里单列 `（其中空残骸 N）`。**用用户真实历史验证：19 条里精确收掉 4 条，误删 0 条。**
-  - **顺带补上「消息丢了没人知道」的观测口。** `post()` 以前把 `postMessage` 的返回值丢掉，webview 不可用时消息静默消失。现在返回 `false`/抛异常都会写一行 `[post] dropped …` / `[post] failed …` 到 HWChat 输出；`handleMessage` 的异常也会先落日志再弹 toast。另外新增 `onDidChangeVisibility`：视图从后台切回来时补推一次完整状态（官方文档写明 webview 内容在切到后台时被销毁、期间的消息会被丢弃），这正是「只能重载才恢复」的形态。
+  - **顺带补上「消息丢了没人知道」的观测口。** `post()` 以前把 `postMessage` 的返回值丢掉，webview 不可用时消息静默消失。现在返回 `false`/抛异常都会写一行 `[post] dropped …` / `[post] failed …` 到 PlaitCode 输出；`handleMessage` 的异常也会先落日志再弹 toast。另外新增 `onDidChangeVisibility`：视图从后台切回来时补推一次完整状态（官方文档写明 webview 内容在切到后台时被销毁、期间的消息会被丢弃），这正是「只能重载才恢复」的形态。
   - `test/newChatResponsiveness.test.ts` 6 条：扫描失败不抛错且会立刻重试、创建失败回滚、清理只收残骸不误删、单飞（连点 5 次只跑 1 份 + 必补 1 次）、空闲调用各自执行、任务抛错不锁死后续推送。
 - **命令运行时间的刷新链路：实测下来它几乎不花 CPU，但确实有两条白做的活，已删掉**。用户提示「执行命令时会显示运行时间，30 秒没反应后每 10 秒刷新一次」。逐段测了这条链路的三个环节，结论是「显示本身可忽略，但两处浪费是真的」：
   - **webview 每秒重绘「已运行 12.3 秒」= 1–2 微秒/次**（headless Chromium，60 条消息 + 1/8/20 张工具卡片三种规模实测：0.0015 / 0.0010 / 0.0020 ms 每 tick）。这个数字说明它不是 CPU 问题的来源，**没有动它**——秒数必须每秒走，否则界面看着像卡死。
@@ -2480,8 +2517,8 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - `test/cleanupIncremental.test.ts` 5 条：不变的对话 0 次读盘且消息数/体积仍然准确、写过的那条照样瘦身、**过了保留期即使没写入也照样删除**（这条曾因窗口只有 8.6ms 而偶发失败，已把窗口放宽到 864ms）、改配置强制重扫、删对话后不再留下扫描记录。
 
 - **按官方文档再压一轮 CPU：懒激活、搜索取消令牌、`files.exclude` 语义、首页分页缓存、审计压缩窗口**。这一轮不是「凭感觉优化」：每一条都先拿到官方 API 原文（`@types/vscode` 1.140.0 的 `index.d.ts` 注释 + code.visualstudio.com 对应文档页）再改；改之前用真实历史（21MB / 606 条消息）和本机技能目录做了 A/B 计时，能测的都给了数字，测不到的下面写清楚。
-  - **扩展改为懒激活，激活时不再做三件重活**。`package.json` 的 `activationEvents` 清空。官方依据原文：*Note: Beginning with VS Code 1.74.0, commands contributed by your extension do not require a corresponding onCommand activation event declaration*，以及 *views contributed by your extension do not require a corresponding onView activation event declaration*（本扩展 `engines.vscode` 是 `^1.106.0`；`extension.ts` 里注册的 16 条 `hwchat.*` 命令与 `contributes.views` 里的视图全部在清单中声明过，逐条比对无遗漏，因此清空是安全的）；同一页还有 *It is best practice to activate only when a user needs your extension*，而 Extension Host 文档的对应表述是 *VS Code lets extensions declare their Activation Events and loads them lazily … This makes sure that extensions do not consume unnecessary CPU and memory*。需要说清楚的是：`onStartupFinished` 的官方说明是 *it will not slow down VS Code startup*（它排在启动关键路径之外），所以这次省的不是启动延迟，而是**每个窗口在启动后白白花掉的 Extension Host CPU**。同时 `activate()` 里三件重活被移出启动路径：`await storage.initialize()`（整份历史读一遍 + 对账，本机 21MB / 19 对话 / 610 消息实测 **122.8ms CPU / 118.4ms 墙钟**）、`storage.stats()`（对所有消息文件 `stat` 一遍只为打一行日志，实测 **13.9ms**）不再执行（存储层每个方法本来就自带 `initialize()`，统计日志改为固定文案）；`skills.refresh()`（三条 `findFiles` = 真实 ripgrep 全工作区遍历）仍保留在激活里——但激活本身现在只由「用户打开面板 / 执行 `hwchat.*` 命令」触发，于是这次扫描发生在正确的时机，`SkillRegistry` 的 30 秒新鲜窗口 + single-flight 继续挡掉重复调用。代价与取舍见下（定时清理只在扩展激活后发生）。
-  - **懒激活的代价，说清楚而不是藏着**：定时清理（`CleanupScheduler` 的保留期清理与 `audit.cleanup`）以及命令面板以外的后台动作，现在只在「这个窗口里 HWChat 被真正用到过」之后才发生；从不打开 HWChat 的窗口不会再替它做磁盘整理。激活时仍会立刻跑一次 `audit.cleanup` 与 `scheduler.run(false)`，所以打开面板的第一时间就会补上该做的清理，语义只是「推迟到有人用」，不是「永不执行」。
+  - **扩展改为懒激活，激活时不再做三件重活**。`package.json` 的 `activationEvents` 清空。官方依据原文：*Note: Beginning with VS Code 1.74.0, commands contributed by your extension do not require a corresponding onCommand activation event declaration*，以及 *views contributed by your extension do not require a corresponding onView activation event declaration*（本扩展 `engines.vscode` 是 `^1.106.0`；`extension.ts` 里注册的 16 条 `plaitcode.*` 命令与 `contributes.views` 里的视图全部在清单中声明过，逐条比对无遗漏，因此清空是安全的）；同一页还有 *It is best practice to activate only when a user needs your extension*，而 Extension Host 文档的对应表述是 *VS Code lets extensions declare their Activation Events and loads them lazily … This makes sure that extensions do not consume unnecessary CPU and memory*。需要说清楚的是：`onStartupFinished` 的官方说明是 *it will not slow down VS Code startup*（它排在启动关键路径之外），所以这次省的不是启动延迟，而是**每个窗口在启动后白白花掉的 Extension Host CPU**。同时 `activate()` 里三件重活被移出启动路径：`await storage.initialize()`（整份历史读一遍 + 对账，本机 21MB / 19 对话 / 610 消息实测 **122.8ms CPU / 118.4ms 墙钟**）、`storage.stats()`（对所有消息文件 `stat` 一遍只为打一行日志，实测 **13.9ms**）不再执行（存储层每个方法本来就自带 `initialize()`，统计日志改为固定文案）；`skills.refresh()`（三条 `findFiles` = 真实 ripgrep 全工作区遍历）仍保留在激活里——但激活本身现在只由「用户打开面板 / 执行 `plaitcode.*` 命令」触发，于是这次扫描发生在正确的时机，`SkillRegistry` 的 30 秒新鲜窗口 + single-flight 继续挡掉重复调用。代价与取舍见下（定时清理只在扩展激活后发生）。
+  - **懒激活的代价，说清楚而不是藏着**：定时清理（`CleanupScheduler` 的保留期清理与 `audit.cleanup`）以及命令面板以外的后台动作，现在只在「这个窗口里 PlaitCode 被真正用到过」之后才发生；从不打开 PlaitCode 的窗口不会再替它做磁盘整理。激活时仍会立刻跑一次 `audit.cleanup` 与 `scheduler.run(false)`，所以打开面板的第一时间就会补上该做的清理，语义只是「推迟到有人用」，不是「永不执行」。
   - **搜索现在会真正把取消传给 `findFiles`**。旧代码注释写着「`findFiles` 没有取消参数」——这是错的：官方签名是 `findFiles(include, exclude?, maxResults?, token?: CancellationToken)`，注释原文 *@param token A token that can be used to signal cancellation to the underlying search engine*。`workspaceSearch.ts` 新增 `bridgeCancellation(signal)`，把调度层的 `AbortSignal` 桥成真实的 `CancellationTokenSource`（用完 `dispose()`），于是「用户点停止」不再只是丢掉结果，而是**让 VS Code 自己停掉底层搜索**——这正是取消后 `rg` 还在啃 CPU 的那一段。`test/workspaceSearch.test.ts` 用 mock 的 `getReceivedSearchTokens()` 断言令牌确实传入、且外部取消后令牌状态变为 cancelled。
   - **自定义 `exclude` 不再意外关掉 `files.exclude`**。官方注释原文：*When `undefined`, default file-excludes (e.g. the `files.exclude`-setting but not `search.exclude`) will apply*——也就是说**只要传了 `exclude`，默认排除就整个被替换掉**。我们原来总是传自己的排除列表，用户 `files.exclude` 里排除掉的大目录（`out`、`DerivedData`、自定义缓存）因此又回到搜索范围。现在 `readFileExcludeNames()` 把 `files.exclude` 里「纯目录名」形状的项（`**/node_modules/**`、`**/.git` 之类）并进默认排除（`simpleDirectoryName()` 只认能安全降级成目录名的形状，复杂 glob 一律不动）。`test/workspaceSearch.test.ts` 覆盖合并结果与 `simpleDirectoryName` 边界。
   - **历史首页加了版本化缓存：`getMessages({limit:80})` 从 28.07ms → 0.01ms**。`sendState()` 每推一次状态都要读当前对话最后 80 条消息，而存储是「一条消息一个 JSON 文件」，80 次 `readFile` + 80 次 `JSON.parse` 每次重做。现在按 `(conversationId, limit, before)` 缓存首页，并在 `appendMessage` / `updateMessage` / `cleanup` / 中断恢复 / 删除对话时**显式失效**（缓存键还带一个随写入递增的代数，宁可多失效也不返回旧内容），命中返回浅拷贝，最多留 8 页。
@@ -2489,7 +2526,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **审计日志压缩加了 60 秒新鲜窗口：36ms → 0.05ms**。5MB 的 `agent-audit.jsonl` 每压缩一次都要整份读进内存逐行 `JSON.parse`（实测 **36ms**），而它挂在「保存设置」「清理完成」等路径上，几乎每次都是白算。现在同一保留天数下 60 秒内直接跳过，但**先 `stat` 一次**：文件一旦超过 5MB 上限就立刻压缩，上限语义不变；显式操作可 `cleanup(days, { force: true })` 强制。`test/auditLog.test.ts` 新增一条：窗口内第二次压缩确实被跳过（过期行还在），`force` 后立刻清除。
   - **明确「不做」的两件事，附官方原文**。① 不启用 `retainContextWhenHidden`：官方 Webview 文档写的是 *Although retainContextWhenHidden may be appealing, keep in mind that this has high memory overhead and should only be used when other persistence techniques will not work*，同一页还写明 *getState and setState are the preferred way to persist state, as they have much lower performance overhead than retainContextWhenHidden*；本面板本来就能靠 `sendState` 秒级全量恢复。② 不做「只发变化的消息」增量协议：官方文档写明 webview 的内容 *created when the webview becomes visible and destroyed when the webview is moved into the background*，重新可见时按 `webview.html` **重建**、*Any state inside the webview will be lost*——面板被切到后台再切回来，一个只发增量的协议就会少消息（省下的只是 `JSON.stringify` 实测 7.69ms / 3.5MB 的那点开销）。所以改为上面那条「全量状态 + 签名不变就不重建」：语义与今天完全一致，风险为零。
 
-- **新对话的三项初始值改为固定：每次询问 / 24 步 / 默认（模型官方）**。用户反馈「新对话初始的权限预设、最大步数、思考深度没有按要求设置」。排查后确认不是常量写错，而是**初始值来自配置**：`readSettings()` 把 `hwchat.permissionPreset`、`hwchat.agentMaxSteps`、`hwchat.reasoningEffort` 当作新对话的默认值，而旧版本的面板会把选择写进这三项全局设置——本机 `settings.json` 里因此留着 `permissionPreset: autopilot`、`agentMaxSteps: 0`（无限制），于是每条新对话一开就自动执行、无限步，界面上却写着「每次询问 / 24 步」。
+- **新对话的三项初始值改为固定：每次询问 / 24 步 / 默认（模型官方）**。用户反馈「新对话初始的权限预设、最大步数、思考深度没有按要求设置」。排查后确认不是常量写错，而是**初始值来自配置**：`readSettings()` 把 `plaitcode.permissionPreset`、`plaitcode.agentMaxSteps`、`plaitcode.reasoningEffort` 当作新对话的默认值，而旧版本的面板会把选择写进这三项全局设置——本机 `settings.json` 里因此留着 `permissionPreset: autopilot`、`agentMaxSteps: 0`（无限制），于是每条新对话一开就自动执行、无限步，界面上却写着「每次询问 / 24 步」。
   - 三项的**唯一出处**收拢到 `core/conversationControls.ts` 的 `NEW_CONVERSATION_CONTROLS`（每次询问 / 24 步 / `default`），`resolveNewConversationControls()` 只用它加当前草稿的临时选择。`readSettings()` 不再读取这三项，`updateSettings()` 也不再写入它们——配置里的旧值只出现在「显示权限来源」的诊断输出里，并明确标注「声明值不参与判定」。
   - 三个配置键仍保留在 `contributes.configuration` 并加了 `deprecationMessage`（旧的 `settings.json` 不会报未知配置项，也不会被静默删除），设置页对应的三个下拉控件一并移除，改为一段固定说明 + 原有的权限边界对照表（表格里把「每次询问」这一档标出来）。删掉不会生效的控件，而不是留着让人以为改得动。
   - `newChat()` 现在会清空 `draftControls`：上一条新对话里临时改过的预设 / 步数 / 深度不再漏到下一条（旧实现只在发送成功后清空）。
@@ -2503,13 +2540,13 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 - **「CPU 100% / `spawn rg EAGAIN`」这一轮的根因审计与修复：四处仍在重复烧 CPU 的路径**。搜索调度层、Agent 步数预算、EAGAIN 退避与取消回收在上一轮已经落地；这次把剩下的「无上限、重复、按缓冲区大小线性」的路径逐条改掉，并用可重复的测试钉住。
   - **技能清单不再跟着每次状态重发去全工作区扫描（本次最大的重复搜索来源）**。`ChatPanel.sendState()` 以前第一件事就是 `skills.refresh()`，而一次扫描 = 三条 `findFiles` pattern（每条在 VS Code 里都是一次真实的 ripgrep 全工作区遍历）+ 逐个读取 `SKILL.md`。`sendState` 会被十几次界面操作与每轮 Agent 结束触发——点一下界面就是几十次全工作区扫描，正是「CPU 顶满 + 进程表打空 → `rg EAGAIN`」的形态。现在 `sendState` 只读内存里的清单；`SkillRegistry.refresh()` 自带 **30 秒新鲜窗口 + single-flight**（并发调用共享同一次扫描），刷新点收窄为：激活、watcher（文件真的变了，强制）、显式「重新扫描」、打开/新建对话、以及**发送消息前一次**（模型拿到的技能清单仍然是新的）。`test/skillRefresh.test.ts` 用调度层的真实完成计数断言：一次扫描 = 3 次搜索、窗口内 10 次刷新 = 0 次搜索、5 个并发刷新 = 1 次扫描、200 个文件事件被 debounce 合并成最多 1 次扫描。
-  - **不再在 VS Code 启动时无条件激活所有「提供语言模型工具」的扩展**。旧代码在 ChatPanel 构造后 1 秒执行 `warmToolContributors()`，对**所有**声明了 `languageModelTools` 且未运行的扩展调用 `extension.activate()`。本机日志里能直接看到这条链（`root cause: honor-world.hwchat`）；在装了 Copilot Chat、Claude Code、Codex 这类重扩展的机器上，等于「装了 HWChat，开机就被别人吃 CPU」。现在只在**打开 HWChat 面板**或**发送消息**时预热，并且所有调用方共享同一个预热 Promise（旧实现先置布尔标记，`send()` 可能在激活完成前就去读工具列表，导致这一轮工具定义缺项）。`test/nativeToolWarmup.test.ts` 断言：只激活真正的工具贡献者、无关扩展不被拉起、并发调用共享同一次预热并等它结束、单个扩展激活失败不影响其它工具。
+  - **不再在 VS Code 启动时无条件激活所有「提供语言模型工具」的扩展**。旧代码在 ChatPanel 构造后 1 秒执行 `warmToolContributors()`，对**所有**声明了 `languageModelTools` 且未运行的扩展调用 `extension.activate()`。本机日志里能直接看到这条链（`root cause: plaitcode.plaitcode`）；在装了 Copilot Chat、Claude Code、Codex 这类重扩展的机器上，等于「装了 PlaitCode，开机就被别人吃 CPU」。现在只在**打开 PlaitCode 面板**或**发送消息**时预热，并且所有调用方共享同一个预热 Promise（旧实现先置布尔标记，`send()` 可能在激活完成前就去读工具列表，导致这一轮工具定义缺项）。`test/nativeToolWarmup.test.ts` 断言：只激活真正的工具贡献者、无关扩展不被拉起、并发调用共享同一次预热并等它结束、单个扩展激活失败不影响其它工具。
   - **命令输出累积从「每个 chunk 重拼整个缓冲区」改成有界 O(chunk)**。`spawnCommand` 的 `collect()` 以前每收到一个 data 事件就 `stdout = truncate(stdout + chunk, max)`，而 `truncate` 先对整个字符串做一次 `Buffer.byteLength`（UTF-8 全量编码）再切片。留 200KB 输出时，watch 模式 / dev server / 详细测试输出每秒上千个 chunk 就是每秒几百 MB 的无谓编码与拷贝——命令本身几乎不占 CPU，Extension Host 却顶到 100%。新增 `appendBoundedText` / `renderBoundedText`：越界时只做一次前缀截断，之后只记账不拼接，内存与 CPU 都是 O(chunk)。A/B 基准（2 万个 chunk、200KB 上限）：旧写法 3.8 秒 CPU，新实现 2 毫秒；语义保持一致（保留开头 75%，按全部输出字节报告原始大小），并由 `test/commandOutput.test.ts` 的 6 项断言（含真实 `spawn` 跑一条 500KB 输出）覆盖。
   - **命令侧也有资源压力冷却了**。搜索调度层本来就会在 `EAGAIN` 后把并发压到 1；命令侧只有「单条命令自己退避重试」，排队中的另一条命令会立刻补上空出的并发名额继续 fork，EAGAIN 因此连成一片。`CommandScheduler` 新增 `markResourcePressure()`：命令重试时登记 5 秒冷却，冷却期内并发降为 1，冷却结束后恢复。`test/commandPressure.test.ts` 用可注入时钟断言冷期内峰值并发 = 1、冷却后恢复 = 2、排队中被取消的命令不会执行、dispose 后不再接单。
   - **启动时历史只读一遍**。`initialize()` 以前先 `recoverInterruptedMessages()` 全量读一遍消息，再 `reconcileManifest()` 全量读一遍（首尾文件还额外再读两次）。现在中断消息的修复合进对账的同一次遍历：21MB / 606 条历史的实测 `initialize` 从 **252ms CPU / 305ms 墙钟** 降到 **122ms CPU / 117ms 墙钟**，语义完全一致（`storage.test.ts` 的中断恢复、清单重建、token 合计用例全部通过）。
   - **废弃的单项权限策略不再写回用户设置**。`updateSettings()` 还会把 `fileReadPolicy` / `commandPolicy` / `dangerousCommandPolicy` 等五项写进 settings.json，尽管判定完全由预设推导、读取侧从不使用它们——留下的只是「日志里写着 `allow`、实际另有来源」的混淆。这些键仍保留在 `contributes.configuration` 并带 `deprecationMessage`（老配置不报未知项），但不再被写入；`settings.test.ts` 新增一条断言钉住「保存设置不会落盘这五项」。
   - **架构边界进测试**。`test/searchBoundary.test.ts` 静态断言：`workspace.findFiles` 只允许出现在 `agent/workspaceSearch.ts`；`spawn` / `node:child_process` 只允许出现在 `agent/toolExecutor.ts`；递归文件监听只允许出现在 `agent/skillRegistry.ts`；默认排除列表必须包含依赖/构建/缓存目录；并且 `sendState()` 的方法体里不能再出现 `skills.refresh`。这些是行为测试覆盖不到、只有真机才会暴露的越界。
-  - 明确**没有**改的：`hwchat.agentMaxSteps` 的 `0 = 无限制` 语义保持不变（四档：24 / 68 / 120 / 无限制），因为「无限制」并不是无限循环——`ToolLoopGuard`（同一调用连续 3 次）、连续 3 轮无进展、单次运行 200 次工具调用硬上限、以及取消都会先终止它；`agentLoop.test.ts` 覆盖了这四道闸，`agentBudget.test.ts` 覆盖了脏值与 200 步安全上限。文件引用核实的 `exclude: 'minimal'` 也保留：它需要能解析到 `out/extension.js` 这类构建产物，改成默认排除会让正文里的引用点不开。
+  - 明确**没有**改的：`plaitcode.agentMaxSteps` 的 `0 = 无限制` 语义保持不变（四档：24 / 68 / 120 / 无限制），因为「无限制」并不是无限循环——`ToolLoopGuard`（同一调用连续 3 次）、连续 3 轮无进展、单次运行 200 次工具调用硬上限、以及取消都会先终止它；`agentLoop.test.ts` 覆盖了这四道闸，`agentBudget.test.ts` 覆盖了脏值与 200 步安全上限。文件引用核实的 `exclude: 'minimal'` 也保留：它需要能解析到 `out/extension.js` 这类构建产物，改成默认排除会让正文里的引用点不开。
 
 - **流式输出不再「一闪一闪」地跳**。用户反馈：助手回答时整块内容一直在跳。根因是**每个 delta 都触发一次整段重建**——`streamDelta` 70ms 来一次，每次都调 `renderMessages()`，而它第一件事就是 `messageList.replaceChildren()` 把整个列表清空，再把 N 条消息全部重新造一遍。于是每个 tick 都在做 O(N) 的销毁 + 重建，四个症状同时出现：
   - `.stream-cursor` 每次都是新节点，`blink` 关键帧每 70ms 从头开始——光标在抖；
@@ -2529,7 +2566,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - 反向验过三种坏形状，都能被打挂：换回旧路径 → 「不出 viewBox」「圆环居中」「墨迹居中」「与 export 尺寸相近」四条失败；圆环半径缩到 6 → 三条居中断言 + 两条尺寸断言失败；整体右移 1.5 格（偏心但不出界）→ 两条居中断言失败。验完自动还原源码。
   - 顺带记录一处**刻意没动**的：`skills`（星形）的墨迹中心在 (12, 9.75)，比网格中心高 2.25 格。星形只有一个顶点朝上，包围盒中心本来就不等于视觉重心，它也不参与旋转；几何脚本只断言它不出界，没断言它居中。要不要一并调，等你决定。
 
-- **标题旁的项目徽标改成本对话涉及的全部项目**。用户反馈：这一轮确实改了「本地skill快捷调用」那个项目（`src/activeState.ts`、`CHANGELOG.md` 等），可标题下方仍然只显示 `DeepSeek-HWChat`。原因是徽标只认一个 `projectRoot`——它在**首次**写盘时绑定，之后只读不改，所以「这次改过哪些项目」这件事根本没有被记录过。
+- **标题旁的项目徽标改成本对话涉及的全部项目**。用户反馈：这一轮确实改了「本地skill快捷调用」那个项目（`src/activeState.ts`、`CHANGELOG.md` 等），可标题下方仍然只显示 `PlaitCode`。原因是徽标只认一个 `projectRoot`——它在**首次**写盘时绑定，之后只读不改，所以「这次改过哪些项目」这件事根本没有被记录过。
   - 采集：`ToolExecutionScope` 里那个一直声明着却**从未被调用**的 `touchProjectRoot` 接上了。写文件、替换、移动、删除成功后各上报一次项目根，跨项目移动时两端都算；git 写操作（暂存、提交这类会改动仓库状态的命令）成功时也算。
   - 口径：只在改动**已经成功落盘之后**上报。被权限拒绝、被版本号策略拦下、或写失败的调用没有改动任何文件，不该让徽标凭空多出一个项目；只读命令（查状态、跑测试）同样不算——把只读命令算进去比漏掉更误导。
   - 落库：新的 `projectRoots` 字段只做展示，`projectRoot` 仍是相对路径与 git 写操作归属的唯一依据，二者不互相改写。同一对话里写 30 个文件只入库一次（面板按对话登记已上报的项目根，避免每次都读一遍存档）；读盘时逐项校验必须是绝对路径并去重，脏值直接丢掉。
@@ -2546,12 +2583,12 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 - 测试 471 → **477**（`npm test`）：`src/test/todoArchives.test.ts` 增 7 条（全绿立刻归档、没全绿不归档、空清单不归档、重复提交不重复追加但应撤掉清单、内容变了算新的一份、归档上限仍丢最早的、`sameTodoList` 的顺序/条数/状态判定，以及一条接线断言：`planCompletedList` 在写入口与读取入口各调一次、存档与推送都用 `keepList` 分支而不是未过滤的 `submitted`）。`test/check-todo-scope.mjs` 的三处断言原来是按旧字面量匹配的（`todos,` / `type: 'todos', conversationId, todos,`），改成从过滤那一行往后定位写入区块，并新增一条「写入口里不许出现 `submitted`」——否则「过滤后的清单才落库」这条底线会随着代码形状变化而失效。
 
-- **勾选归属改成「对话级」：扩展提供新对话的默认值，对话自己说了算**。上一版把 HWChat 的勾选直接写进 `~/.copilot/.skill-quick-launch.json`，于是在一条对话里临时取消某个 Skill，等于顺手改掉了以后所有对话的默认值——另一个面板里会看到自己的全局配置被悄悄改了。现在按需求分成两层：
+- **勾选归属改成「对话级」：扩展提供新对话的默认值，对话自己说了算**。上一版把 PlaitCode 的勾选直接写进 `~/.copilot/.skill-quick-launch.json`，于是在一条对话里临时取消某个 Skill，等于顺手改掉了以后所有对话的默认值——另一个面板里会看到自己的全局配置被悄悄改了。现在按需求分成两层：
   - **新对话**读一次「本地skill快捷调用」的全局勾选（`active`），作为这条对话的初始勾选；
   - **对话里勾选 / 取消只影响当前这条对话**（写 `skillIds` 存档），不再写回共享文件。已有对话的选择不受全局清单后续变化影响——否则用户在对话里取消的技能会被全局清单顶回来，勾选框「自己弹回去」。
   - 判据收在一个纯函数 `resolveSkillSelection(initialized, storedIds, sharedActiveIds)` 里：有记录用自己的（包括「全都取消」这个空集合），没记录才取全局。这一条决定了两种 bug 都不出现，所以单独测。
   - 仍会写回共享文件的只剩 `lastUsed`（「这个技能最近被真正加载过」，供那个扩展显示「已调用」角标），且**只写它认得的那个名字**（`sharedName`：frontmatter 名 → 目录名）。勾选字段一个都不碰。
-  - 快捷调用面板改了勾选，HWChat 会收到通知（`RelativePattern` 盯住那个文件）并刷新画面：已有对话不动选择，只有**还没被用户动过的草稿**跟着变——那一稿就是「下一份新对话」。
+  - 快捷调用面板改了勾选，PlaitCode 会收到通知（`RelativePattern` 盯住那个文件）并刷新画面：已有对话不动选择，只有**还没被用户动过的草稿**跟着变——那一稿就是「下一份新对话」。
   - 运行中（正在跑或排队）改勾选会被拒绝并回推一次真实状态，避免勾选框停在一个没生效的位置。
 
 - **没装「本地skill快捷调用」时不再拦着勾选**，只展开一段安装提示。上一版是「必须先装才能勾」，理由是勾选要写进它的文件；勾选改成对话级之后这条理由不成立，拦着反而让不想装那个扩展的人完全用不了 Skill。现在点受它托管的 Skill（`source === 'copilot'`）的勾选框时，勾选照常生效，同时展开说明：新对话的默认勾选来自那个扩展，没装时每个新对话都从空白开始，并给出「打开扩展商店」按钮。提示块默认隐藏，装上后随状态回推自动收起；样式显式声明 `[hidden] { display: none }`，否则 `display: grid` 会把它盖成常显。
@@ -2603,17 +2640,17 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - 纯逻辑在 `src/agent/fileReferenceResolve.ts`：不 import `vscode`，存在性由 `exists` 注入、命中集合由调用方用 `workspace.findFiles` 取来喂进去，所以「同名多份不认」这类判断能单测，不用起编辑器。
 - 测试 431 → **446**（`npm test`）：新增 `src/test/fileReferenceResolve.test.ts`（15 条：根目录命中优先、唯一命中才认、同名多份不认、带目录不回退搜索、多根工作区的优先级、绝对路径必须在工作区内、glob 元字符不拿去搜、Windows 大小写合并）。`test/check-file-reference-dom.mjs` 43 → **61** 项：6 条接线断言（`verifyFileReferences` 消息存在、扩展侧确实用 `chooseReferenceMatch` 实探而不是猜、只有裸文件名才 `findFiles`、搜索不排除 `out` 这类构建目录、同名多份只认唯一命中、核实结论确实回给界面）加 12 条**运行时**断言（一条消息只发一次核实请求、请求里带正文原始写法与项目根、核实不到就降级、降级后原文一字不差、核实到 `out/extension.js` 后标签/悬停/点击目标一起换、反引号里的裸文件名也先渲染成引用、没有工作区根时不瞎拼）——后半部分只能靠真实渲染验证。
 
-- **本地安装收成一条命令**：仓库里新增 `scripts/install-local.sh`，自动挑项目根目录最新的 VSIX、自动定位 `code` 命令行工具、同版本带 `--force` 覆盖安装。找不到 `code` 时不直接失败，而是打印两条替代路径（`Shell Command: Install 'code' command in PATH`，或扩展视图 `⋯` → `Install from VSIX…`）——`code` 不在 PATH 是 macOS 上的常见默认状态，只报错等于把人丢在原地。`--check` 只报告会装哪个包、当前装了什么；`--list` 只列已装版本；`HWCHAT_CODE_CLI=/path/to/code` 可指向 Insiders 这类非默认安装。脚本本身不进安装包（`.vscodeignore` 已排除 `scripts/**`）。
+- **本地安装收成一条命令**：仓库里新增 `scripts/install-local.sh`，自动挑项目根目录最新的 VSIX、自动定位 `code` 命令行工具、同版本带 `--force` 覆盖安装。找不到 `code` 时不直接失败，而是打印两条替代路径（`Shell Command: Install 'code' command in PATH`，或扩展视图 `⋯` → `Install from VSIX…`）——`code` 不在 PATH 是 macOS 上的常见默认状态，只报错等于把人丢在原地。`--check` 只报告会装哪个包、当前装了什么；`--list` 只列已装版本；`PLAITCODE_CODE_CLI=/path/to/code` 可指向 Insiders 这类非默认安装。脚本本身不进安装包（`.vscodeignore` 已排除 `scripts/**`）。
   - 顺手挡掉一个只在老 bash 上出现的坑：`$VAR` 后面紧跟全角括号时，macOS 自带的 bash 3.2 会把括号的首字节算进变量名，`set -u` 下直接 `VSIX…: unbound variable` 并中止。所以脚本里紧贴中文的变量引用一律写成 `${VAR}`，另加一条静态检查确认没有漏网。
   - 安装路径与分支都用桩 CLI 跑过：未安装走「全新安装」、已装同版本走「`--force` 覆盖」、已装旧版本走「改为 x.y.z」、安装失败给出排查清单、`--list` / `--check` / 非法参数（退出码 2）各自正确。
 
-- **搜索与子进程不再无上限并发，`spawn rg EAGAIN` 有了确定的处理路径**。现场：macOS 上跑 Agent 任务时 CPU 顶到 100%、VS Code 卡死，日志里是 `spawn …/@vscode/ripgrep-universal/bin/darwin-arm64/rg EAGAIN`。审计本地源码后确认 HWChat 自己就是 rg 的调用方：
+- **搜索与子进程不再无上限并发，`spawn rg EAGAIN` 有了确定的处理路径**。现场：macOS 上跑 Agent 任务时 CPU 顶到 100%、VS Code 卡死，日志里是 `spawn …/@vscode/ripgrep-universal/bin/darwin-arm64/rg EAGAIN`。审计本地源码后确认 PlaitCode 自己就是 rg 的调用方：
   - `list_files` / `search_files` 每次都用 `workspace.findFiles`（VS Code 的文件搜索会启动 ripgrep），而且**多根工作区里逐根循环**——真实会话有 17 个根，一次工具调用就是 17 次 rg 启动；
   - 没有并发上限、没有去重、没有缓存：同一轮里模型连发几次相同搜索，就是几十个 rg；`agentMaxSteps` 还是 `0 = 不限制` 时能一直堆下去；
   - 失败被原样丢回模型，模型立刻换措辞重试，`EAGAIN` 因此变成了正反馈。
   - 现在所有内部搜索都走新的 `src/agent/searchScheduler.ts` + `src/agent/workspaceSearch.ts`：活动搜索默认 **1** 个、队列上限 24（满了直接拒绝并说明原因）、相同参数的并发请求用 single-flight 合并、成功结果缓存 1.5 秒并在每次写入/保存/删除/重命名后立刻失效。`EAGAIN`/`EMFILE`/`ENFILE`/`ENOMEM` 归为暂时性资源错误，最多 3 次退避重试（200/600/1500ms），期间把并发压到 1；用完仍失败就返回「系统暂时无法启动搜索进程」并提示缩小范围。语法错误、路径不存在等一律不重试。
   - Skill 注册表也改走这一层（一次保存会触发多个 watcher 事件，现在合并成一次 250ms 防抖刷新），并给 `git rev-parse` 补了 5 秒上限——网络盘上它同样可能把整个工具调用拖住。
-  - 默认排除依赖、构建、缓存与工具链目录（`.git`、`node_modules`、`dist`、`build`、`out`、`coverage`、`.next`、`.turbo`、`.venv`、`venv`、`__pycache__`、`DerivedData`、`.cache`），并新增 `hwchat.searchExclude` 供项目级追加。不再用「全工作区递归 FileSystemWatcher」做失效——那本身就贵，改用保存/新建/删除/重命名事件 + 短 TTL。
+  - 默认排除依赖、构建、缓存与工具链目录（`.git`、`node_modules`、`dist`、`build`、`out`、`coverage`、`.next`、`.turbo`、`.venv`、`venv`、`__pycache__`、`DerivedData`、`.cache`），并新增 `plaitcode.searchExclude` 供项目级追加。不再用「全工作区递归 FileSystemWatcher」做失效——那本身就贵，改用保存/新建/删除/重命名事件 + 短 TTL。
   - `search_files` 的扫描也收了边界：24MB 读取预算（1500 个 512KB 文件曾经等于几百 MB IO）、命中上限 120、逐文件取消检查，并且先用整篇小写文本判断「有没有命中」，只有命中的文件才按行拆分——旧实现无条件对每一行跑 `toLocaleLowerCase`，是 Extension Host CPU 打满的直接来源之一。遇到符号链接逃逸只跳过该文件，不再让整次搜索失败。
 - **Agent 循环有了真正的单轮预算与死循环保护**：
   - `agentMaxSteps` 默认 24、绝对上限 200。`0`（旧的「不限制」）与非法值一律回落到默认值——历史会话存档里的 0 也会被夹住（`normalizeStoredSteps` 直接丢弃 0）。
@@ -2626,11 +2663,11 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - 命令有独立的并发闸门（2 个活动、8 个排队，满了直接拒绝），不再和搜索抢同一个很小的全局并发；
   - `ToolExecutor.dispose()` 不再是什么都不做：取消排队命令、杀掉仍在运行的进程树、释放搜索调度器与缓存；
   - 调度器释放/取消后，排队中的任务不会「稍后偷偷执行」。
-- **结构化诊断**：每次工具调用向 HWChat 输出面板写一行 JSON（`turnId`、`toolCallId`、`toolName`、`operation`、`queueWaitMs`、`durationMs`、`activeSearches`、`pendingSearches`、`activeCommands`、`resultCount`、`truncated`、`cancelled`、`errorCode`，不含命令正文/文件内容/凭据），并新增命令 **HWChat: 显示资源统计**（`hwchat.showResourceStats`）查看实时计数。
+- **结构化诊断**：每次工具调用向 PlaitCode 输出面板写一行 JSON（`turnId`、`toolCallId`、`toolName`、`operation`、`queueWaitMs`、`durationMs`、`activeSearches`、`pendingSearches`、`activeCommands`、`resultCount`、`truncated`、`cancelled`、`errorCode`，不含命令正文/文件内容/凭据），并新增命令 **PlaitCode: 显示资源统计**（`plaitcode.showResourceStats`）查看实时计数。
 - **权限审计结论（未改判定逻辑）**：日志里的 `permissionPreset → autopilot` + `dangerousCommandPolicy → allow` 是 **Autopilot 预设本身的既定语义**（自动执行危险命令，仅拦敏感文件），不是用户级单项配置把权限放开了；五项单项策略完全由预设推导，用户级 `dangerousCommandPolicy: allow` 不会放宽 `review`。这两点已补测试钉死。
 - 测试 477 → **524**（`npm test`）：新增 `src/test/searchScheduler.test.ts`（13 条：10 次并发合并成 1 次、峰值并发 ≤ 上限、队列容量拒绝、取消排队任务不执行、取消运行中任务释放名额且不影响其他等待者、缓存失效、失败后可恢复、EAGAIN 重试成功/重试耗尽、普通错误不重试、取消后不再重试、dispose 清理）、`src/test/agentLoop.test.ts`（9 条：有限预算、0 回落默认、超限夹到 200、重复调用拦截、正常任务不受影响、取消后不再调用、单轮超量、连续失败停止、参数键序不影响判重）、`src/test/resourceCleanup.test.ts`（9 条：已取消不启动进程、取消杀掉进程组、命令并发/队列、排队取消、取消命令、dispose 杀进程、暂时性错误识别、重试上限与取消优先、EAGAIN 映射成可读错误）、`src/test/workspaceSearch.test.ts`（10 条：默认排除目录、文件级/项目级 `searchExclude`、`minimal` 档仍看得见构建产物、相同搜索合并、相同查询只扫一次、写文件后缓存失效、已取消不搜索、搜索中途取消）、`src/test/perfSearch.test.ts`（3 条算法级 A/B：10 次相同搜索从 10 次真实搜索 + 10 次扫描降到 1 次；排除列表对比 1000 → 400 个文件），并把 `conversationControls` / `agentRunner` 的「0 = 无限」旧断言改成「0 回落默认」。性能测试只用进程内替身，不消耗模型额度。
 
-- **正文文件引用核实不再把整机 CPU 打到 98%**（真实故障，实机复现并定位）。现场：一条总结消息里几十个裸文件名，HWChat 为**每个名字各搜一次** 17 根工作区（`findFiles` + `--follow`，实测单次 1.7 s、76% 是内核 sys 时间），且**未命中的名字每 10 秒重搜一次**——消息只是显示在屏幕上，CPU 就长期 96–99%、VS Code 卡死。证据：rg 命令行用的是 `minimal` 排除档 `**/{node_modules,.git}/**`（只有这条路径用它），`-g` 全是正文裸文件名，同一时间 HWChat 日志里 `[tool]` 为 0 条（不是 Agent 工具循环）。
+- **正文文件引用核实不再把整机 CPU 打到 98%**（真实故障，实机复现并定位）。现场：一条总结消息里几十个裸文件名，PlaitCode 为**每个名字各搜一次** 17 根工作区（`findFiles` + `--follow`，实测单次 1.7 s、76% 是内核 sys 时间），且**未命中的名字每 10 秒重搜一次**——消息只是显示在屏幕上，CPU 就长期 96–99%、VS Code 卡死。证据：rg 命令行用的是 `minimal` 排除档 `**/{node_modules,.git}/**`（只有这条路径用它），`-g` 全是正文裸文件名，同一时间 PlaitCode 日志里 `[tool]` 为 0 条（不是 Agent 工具循环）。
   - 新增 `src/agent/fileReferenceBatch.ts`（纯逻辑、可单测）：缓存 + `existsSync` 先判，剩下的裸文件名**合并成一次**花括号 glob 搜索；**最多两次搜索**（先只搜本项目根，未命中再搜全部根），与引用个数无关。
   - 超过合并上限（64 个名字）或名字含 glob 元字符的，**直接降级成普通文本**，不再逐个补搜。
   - 未命中的结论缓存从 **10 秒 → 10 分钟**（写入文件会让搜索代数 +1 主动失效），彻底断开「每 10 秒重搜一遍」的循环。
@@ -2638,14 +2675,14 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.2.4
 
-- 发布版本号推进到 **0.2.4**，构建产物为 `hwchat-0.2.4.vsix`。0.2.3 已发布，同一个版本号传不上去，所以这次以补丁号发出。本版把「附件可点击查看、通知停留时长按阅读量自适应、续跑作用域只绑定一次、任务分类先判不相关、任务清单排除推送与版本号、正文里的文件引用可点开并定位到系统文件管理器或 VS Code 资源管理器」合并为同一个发布。
+- 发布版本号推进到 **0.2.4**，构建产物为 `plaitcode-0.2.4.vsix`。0.2.3 已发布，同一个版本号传不上去，所以这次以补丁号发出。本版把「附件可点击查看、通知停留时长按阅读量自适应、续跑作用域只绑定一次、任务分类先判不相关、任务清单排除推送与版本号、正文里的文件引用可点开并定位到系统文件管理器或 VS Code 资源管理器」合并为同一个发布。
 
 - **正文里被提到的文件可以点开，也能直接在系统的文件管理器里定位**。模型回复里出现的路径（`src/core/ids.ts`、`media/chat.js:745`）不再只是一段等宽的代码片段：
   - **显示**：写在反引号里（引用格式）的路径渲染成一枚小标签，显示相对路径 + 行号——短、好读，并且会先按工作区根解析一次，确认它到底指向哪个文件；正文里**没写引用格式**的裸路径同样认得出，但显示**完整绝对路径**。这条是用户明确要求的：完整路径能让人在 VS Code 之外（Finder / 资源管理器）对着它找到文件。落在工作区外的路径没有相对写法，也只能整条显示。
   - **悬停**：标签轻微上浮并带一层同色阴影，提示里给出完整绝对路径和「左键 / 右键分别能做什么」。`prefers-reduced-motion` 下不位移、不加阴影，只保留颜色变化。
   - **左键**：在编辑器里打开；带行号时定位到那一行那一列。行号可能已经过期（文件被改短了），所以一律夹到合法范围内，不会抛一个跟「点了个链接」无关的异常。
   - **右键**：菜单四项——在 Finder / 资源管理器中显示（用 VS Code 官方的 `revealFileInOS`，打开文件管理器并**选中该文件本身**）、在资源管理器视图中显示（`revealInExplorer`，只动 **VS Code 自己的侧边栏**，把项目树展开并选中该文件，编辑器内容不变）、在编辑器中打开、复制完整路径。三平台命名分开：macOS 叫 Finder，Windows 叫资源管理器，其余统一叫文件管理器；平台判断只有一处（`revealTargetFor`），界面只负责查文案表。
-  - **两条「显示」为什么要分开**：前者是「离开 VS Code 去系统里找」，后者是「留在编辑器里看它在项目树的哪一层」，命令和失败条件都不同，所以走两条独立消息（`revealFile` / `revealFileInExplorer`），不是同一条加个参数。第二项还有一道额外判断：`revealInExplorer` 对**工作区外**的文件静默无效，不报错也不移动，用户点了会毫无反应——所以先用 `isInsideWorkspace` 判一次，界外直接给提示。定位完还会把资源管理器视图调出来，否则树折叠着或视图被切走，「选中了但看不见」等于没做（HWChat 在 `secondarySidebar`，资源管理器在 `primarySidebar`，切换不会把聊天面板挤掉）。
+  - **两条「显示」为什么要分开**：前者是「离开 VS Code 去系统里找」，后者是「留在编辑器里看它在项目树的哪一层」，命令和失败条件都不同，所以走两条独立消息（`revealFile` / `revealFileInExplorer`），不是同一条加个参数。第二项还有一道额外判断：`revealInExplorer` 对**工作区外**的文件静默无效，不报错也不移动，用户点了会毫无反应——所以先用 `isInsideWorkspace` 判一次，界外直接给提示。定位完还会把资源管理器视图调出来，否则树折叠着或视图被切走，「选中了但看不见」等于没做（PlaitCode 在 `secondarySidebar`，资源管理器在 `primarySidebar`，切换不会把聊天面板挤掉）。
   - **第二项的措辞是选过的**：Windows 上系统文件管理器也叫「资源管理器」，两项若都叫「在资源管理器中显示」就分不清哪个开系统窗口、哪个定位侧边栏。所以第二项采用 VS Code 自带右键菜单的措辞「在资源管理器视图中显示」/ `Reveal in Explorer View`。校验脚本里有一条断言专门盯这个区分。
   - **判定用扩展名白名单，不用「看着像路径」**：正文里到处都是 `v0.2.4`、`e.g.`、`example.com`、`https://…`、`--force`，只要「有扩展名就算文件」，它们全会长出右键菜单，点下去是一个不存在的文件。`com` / `org` / `net` / `io` / `dev` / `app` 刻意不收——它们恰好是最常见的域名后缀。带空格的路径只在反引号里认：正文里没有边界能判断起止，宁可漏认也不误认。
   - **中文贴着路径也能认**：`修改src/core/ids.ts。` 里能准确捞出 `src/core/ids.ts`。按空白切词会把前面的汉字一起吃进路径，于是拼出一条不存在的绝对路径、点开就报「文件不存在」——所以只捞 ASCII 片段，汉字天然被当成分隔符，同一句里的多个路径也能一次捞出。
@@ -2676,7 +2713,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - 发送后清空输入框的同时把草稿槽删掉（`saveDraft` 遇到空串即删键），不会残留空字符串把下次切回来弄成「看起来有草稿」。`openSelection` 注入的 `draft` 消息也写进草稿槽，切走再切回不丢。
   - 新增 `test/check-draft-isolation.mjs`（17 项断言）：把 `chat.js` 里 `case 'state': { ... }` 这一整块**原样抽出来**配最小 state 跑，而不是另写一份逻辑来测逻辑——那样改坏了 `chat.js` 照样全绿。覆盖切到 B 清空、A 的草稿入槽、切回 A 恢复、同 id 刷新不动输入框、新建对话空格、`draft` 槽往返、发送后删槽。这个脚本用 `git show HEAD:media/chat.js` 的旧版代码反向验证过：旧代码跑出来输入框仍是「A 里还没发出去的话」，确实复现了你报的现象。运行 `node test/check-draft-isolation.mjs`。
 
-- 发布版本号推进到 **0.2.3**，构建产物为 `hwchat-0.2.3.vsix`。0.2.2 已发布，同一个版本号传不上去，所以这次修复以补丁号发出。
+- 发布版本号推进到 **0.2.3**，构建产物为 `plaitcode-0.2.3.vsix`。0.2.2 已发布，同一个版本号传不上去，所以这次修复以补丁号发出。
 - **修复「面板区有滚动条却滚不动、内容被截断」**。上一条改动给 `.panel-stack` 加了 `max-height` + `overflow-y: auto`，但滚动实际上从未生效，根因是 **flex 把面板压扁了**：
   - 三个面板是 `.panel-stack` 的 flex 子项，默认 `flex-shrink: 1`；而 `.todo-panel` / `.task-tree` 都设了 `overflow: hidden`，按 Flexbox 规范这类子项的自动最小尺寸会归零，于是总高超过 `max-height` 时浏览器把面板**压缩**到刚好塞进容器；
   - 多出来的条目被面板自己的 `overflow: hidden` 裁掉，**容器因此从不溢出**，`overflow-y: auto` 不生成滚动条，滚轮也就没有滚动对象——看到的不是「滚走了」，而是「被裁掉了」，滚不回来。
@@ -2714,12 +2751,12 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **两类分开成段给建议**：密钥要「吊销并轮换」，身份证/卡号「无法吊销、发出去就是永久的」，要挂失、留意盗刷。混成一张列表会让人照着「吊销密钥」的建议去处理身份证。标题随之分三档：只有凭据、只有隐私、两者都有。
   - 仍然**绝不回显号码原文**，只说类型与长度；`NOTICE_PROMPT` 的第 (3) 类与「已经出现在对话里」那一条同步补上个人隐私，并明确「隐私不能轮换，只说类型和长度，提示用户留意诈骗、必要时挂失或报警」。
   - 测试 338 → 344：`secretScan.test.ts` 加 6 条（三型隐私各自识别并带 `privacy` 分类、凭据类仍是 `credential`、身份证校验位错误不报且不被误报成银行卡、银行卡 Luhn 错误不报、6 类不该误报的内容、`kinds()` 含隐私类），`check-secret-warning.mjs` 25 → 42 项（身份证/银行卡/手机号各自生成 `danger` 提醒、标题走隐私文案、两类同时出现时标题说明两类都有且两段建议都在、**整棵 DOM 不含号码原文**、4 类不误报）。
-- **命令卡住时 HWChat 必须通知用户，不能再无声转圈**。这是一次真实故障的修复，现场证据：Agent 执行 `cargo test --offline 2>&1 | tail -30`，卡片一直停在「准备运行命令」，30 分钟后实测测试进程只用了 **0.01 秒 CPU**（子进程 `qlmanage` 0.03 秒），3 秒两次采样 CPU 时间完全不变——它不是在跑，是彻底卡住了。原因有两条，叠在一起才变成「永远不动」：
+- **命令卡住时 PlaitCode 必须通知用户，不能再无声转圈**。这是一次真实故障的修复，现场证据：Agent 执行 `cargo test --offline 2>&1 | tail -30`，卡片一直停在「准备运行命令」，30 分钟后实测测试进程只用了 **0.01 秒 CPU**（子进程 `qlmanage` 0.03 秒），3 秒两次采样 CPU 时间完全不变——它不是在跑，是彻底卡住了。原因有两条，叠在一起才变成「永远不动」：
   - **被测代码自己卡住**：那条 `cargo test` 里有个 macOS 用例对「按名字排序后的第一个 App」调 `qlmanage -t` 生成缩略图，`qlmanage` 在这台机器上不返回，测试线程就一直等。
-  - **HWChat 的超时只杀掉了 shell**：`child.kill()` 作用于直接子进程（`sh`），`cargo`/`tail`/`qlmanage` 全部存活并被 init 收养（实测 `cargo` 的 PPID 变成 1）。它们仍攥着 stdout 管道，而代码只等 `'close'`——管道不关，这个 Promise 永不 resolve，工具调用与卡片就永久挂起。**顺带说明**：请求里的 `timeoutSeconds: 420` 从来没生效过，实际取 `min(设置值, 请求值)`，默认设置是 120 秒。
+  - **PlaitCode 的超时只杀掉了 shell**：`child.kill()` 作用于直接子进程（`sh`），`cargo`/`tail`/`qlmanage` 全部存活并被 init 收养（实测 `cargo` 的 PPID 变成 1）。它们仍攥着 stdout 管道，而代码只等 `'close'`——管道不关，这个 Promise 永不 resolve，工具调用与卡片就永久挂起。**顺带说明**：请求里的 `timeoutSeconds: 420` 从来没生效过，实际取 `min(设置值, 请求值)`，默认设置是 120 秒。
   - **三重结算，任何一条都能保证返回**：`'close'` 正常结束；`'exit'` 之后给 1.5 秒宽限（子进程退出 ≠ 管道关闭），等不到就按已拿到的输出结算；超时并 SIGKILL 之后再挂 3 秒硬结算，无条件返回。结算时主动 `destroy()` 掉 stdout/stderr，不留悬挂的读端。
   - **按进程组杀**：POSIX 下 `detached: true` 让 shell 成为新进程组组长，超时时 `process.kill(-pid)` 杀掉整组，`cargo`/`qlmanage` 这类孙进程不再变成孤儿。Windows 上退回 `child.kill()`（没有进程组语义），属于**已知降级**，已在代码注释里写明。
-  - **stdin 接到 /dev/null**：需要密码或确认的命令（`sudo`、`ssh`、不带 `-m` 的提交命令）立刻读到 EOF 失败，而不是无限等待一个永远不会到来的输入。这也说明一件事——**HWChat 没有「把终端交给用户」的能力**，`sudo` 的密码框永远不会出现，只能改用无交互方式。
+  - **stdin 接到 /dev/null**：需要密码或确认的命令（`sudo`、`ssh`、不带 `-m` 的提交命令）立刻读到 EOF 失败，而不是无限等待一个永远不会到来的输入。这也说明一件事——**PlaitCode 没有「把终端交给用户」的能力**，`sudo` 的密码框永远不会出现，只能改用无交互方式。
   - **运行中显示实时计时**：卡片按秒刷新「命令 · 已运行 12.3 秒」。此前耗时只在结束后才出现，于是「在算」和「卡死」在界面上长得一样。
   - **停滞检测 + 主动提醒**：超过 30 秒没有输出，卡片变成警示色并在正文写明「已 40 秒无输出，可能在等终端输入」，同时弹一条 toast。
   - **秒数每 10 秒刷新一次，不再冻住**：上一版 `stall` 只推一次，于是卡片左边「已运行 43.3 秒」在跳、右边「已 30 秒无输出」定格在 30，两个数字对不上，看着像界面又卡了。现在按 10 秒刷新（30 → 40 → 50…），既不刷屏也不撒谎。判定抽成纯函数 `shouldReportStall(idleSeconds, lastReportedIdle)`，才能在毫秒级单测里验证刷新节奏，而不是真等 40 秒写一条没有意义的静态断言。
@@ -2730,7 +2767,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - **toast 显示时长按文字量算，不再一律 4.2 秒**：实测反馈是「弹了一次但消失太快，没看清」——提示确实弹了，但六十多个汉字的停滞提醒在 4.2 秒里读不完，等于没起作用。现在 `media/toast-timing.js` 按「阅读单位」算时长：中文一字算一、拉丁字符折 0.4（英文按词读快两三倍，不折算会得到两三倍过长的弹窗），每秒 6 单位，`neutral` / `warning` / `error` 下限 4 / 6 / 7 秒，封顶 20 秒。中文停滞提醒由 4.2 秒变成 **9.1 秒**，短提示（「标题已保存」）仍是 4 秒不变。另外 toast 现在**点一下就收起**，何时消掉由用户决定；模块读不到时退回原来的 4.2 秒，与改动前一致。
   - 测试 352 → 359：新增 `src/test/toastTiming.test.ts`（7 条）：长警告至少翻倍、短提示维持 4 秒、语气只抬下限（含未知语气不返回 `NaN`）、时长随文字量单调增长、封顶 20 秒、中文一字 / 拉丁 0.4 的折算、英文长警告不因字符数多而顶到上限。另新增 `test/check-toast-duration.mjs`（20 项）：加载真实的 `toast-timing.js` 直接调用，并核对 `chat.js` 读取模块、保留 4200 退化兜底、`hideToast` 会清掉待触发的定时器、点击关闭、`role="status"` 未被破坏、注入顺序早于 `chat.js`。
 
-- **「需要你做的」清单里的 `[ ]` 方括号从根上修掉了**。用户反复反馈「又冒出来了」，而上一轮只是把它记成「改用户级 skill」的待办，**HWChat 自己的系统提示词里一个字都没有这条规则**——`src/agent/` 下只有 `todoPrompt` / `noticePrompt` / `commandPrompt` / `releasePolicy` 四个提示词模块。模型爱写 `1. [ ] **动作**`，渲染出来就是一串字面方括号，没有任何一层拦它。现在改成两层：
+- **「需要你做的」清单里的 `[ ]` 方括号从根上修掉了**。用户反复反馈「又冒出来了」，而上一轮只是把它记成「改用户级 skill」的待办，**PlaitCode 自己的系统提示词里一个字都没有这条规则**——`src/agent/` 下只有 `todoPrompt` / `noticePrompt` / `commandPrompt` / `releasePolicy` 四个提示词模块。模型爱写 `1. [ ] **动作**`，渲染出来就是一串字面方括号，没有任何一层拦它。现在改成两层：
   - **提示词**：新增 `src/agent/followUpPrompt.ts`，接进 `agentSystemPrompt()`，排在对话历史摘要之前（不会被历史挤掉）。规则是「普通有序列表 `1. **动作**`，禁止 `[ ]` / `[x]` 复选框标记」，并说明为什么——面板会把方括号原样显示出来。
   - **渲染兜底**：新增 `media/follow-up-format.js`，`appendList` 在构造列表项时剥掉开头的复选框标记。提示词管「尽量别写」，这一层管「写了也不显示」，所以即使模型不听话，界面上也不会再出现方括号。
   - **只剥有序列表**：`- [ ]` / `* [x]` 是 GFM 合法的任务列表写法，模型用它表示「这是一份任务清单」时是有意义的，抽掉会丢信息；而 `1. [ ]` 这种「数字 + 方括号」在正常排版里没有语义，正是截图里那种情况。`[x]foo` 这种紧贴文字的也不算标记。剥离只作用于渲染，消息原文不变，复制按钮复制的仍是模型写的原文。
@@ -2779,7 +2816,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 - **描边宽度按「最小渲染尺寸」反推**，不是随手填的：最小一档是 10px（`.todo-status .ui-icon svg`），16 格网格上 2.0 的描边渲染出来是 `2/16×10 = 1.25px`，这是能看清的下限。白色对勾画在彩色圆底上要更重，单独提到 2.6（≈1.63px）；空心圆环 2.4（≈1.5px），和原来 12px 圆圈的 1.6px 边框基本一致，否则它会比旁边的勾明显发虚。
 - **折叠箭头改成「一个遮罩 + 旋转」**：`::before` 用 `mask` 加载 `chevronRight` 的 data URI，展开时 `transform: rotate(90deg)`，不再在两套字符之间切换——字符切换会让箭头大小和中心点跳动。CSS 里这条路径和 `ui-icons.js` 是同一份（测试会比对 `d=` 字符串，防止两处各画一套）。`prefers-reduced-motion` 下旋转过渡也关掉。
 - **`chat.js` 的 `statusSymbol` / `taskStatusSymbol` 换成图标节点**：`iconNode()` 用 `DOMParser` 以 `image/svg+xml` 解析后再 `importNode`（SVG 是外来命名空间，用 HTML 解析器容易走错分支）。**保留文字退路**：`ui-icons.js` 没加载成功或解析器报错时退回原来的字符——字形不好看总比徽标变成空白好。同时把会话行的操作按钮（继续 / 固定 / 归档 / 删除）和附件删除按钮也改成图标。
-- **`ui-icons.js` 必须在 `chat.js` 之前注入**（`chat.js` 启动时就要读 `HWChatIcons`）；测试会检查 `<script>` 标签的先后顺序，而不是源码里的变量声明顺序。
+- **`ui-icons.js` 必须在 `chat.js` 之前注入**（`chat.js` 启动时就要读 `PlaitCodeIcons`）；测试会检查 `<script>` 标签的先后顺序，而不是源码里的变量声明顺序。
 - **不引入第三方图标库**：图形全部自绘，所以没有额外的许可与署名义务，也不存在上游改许可证的风险。
 - 测试 278 → 291：新增 `src/test/uiIcons.test.ts`（13 条，覆盖同 viewBox、名字唯一、未知名字不抛错、只用 `currentColor`、无硬编码颜色、不引用外部资源、坐标不越出 16 格、实心元素必须 `stroke="none"`、描边宽度下限、CSS 与 JS 路径一致、`chat.css` 不再出现 `▸`/`▾` 字符、`chat.js` 已换图标且保留退路、`<script>` 注入顺序）。
 - 新增 `test/check-icons-dom.mjs`（29 项断言）：把 `chat.js` 里那段图标代码原样切出来配最小 DOM 跑，验证每个图标名都真的产出了 `<svg>`、没有写成文字内容、脚本缺失与解析失败时正确退化。运行 `node test/check-icons-dom.mjs`。
@@ -2828,7 +2865,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.2.2
 
-- 发布版本号定为 **0.2.2**，构建产物为 `hwchat-0.2.2.vsix`。本版把「面板互斥展开、归档胶囊配色与状态边框、任务清单唤起修复」和「命令块的位置/工具标注、列表内围栏不再漏成纯文本」合并为同一个发布。
+- 发布版本号定为 **0.2.2**，构建产物为 `plaitcode-0.2.2.vsix`。本版把「面板互斥展开、归档胶囊配色与状态边框、任务清单唤起修复」和「命令块的位置/工具标注、列表内围栏不再漏成纯文本」合并为同一个发布。
 - **同一时刻只展开一个面板（任务树 / 任务清单 / 归档快照）**：此前三个 `<details>` 可以同时展开，点开底下胶囊里那份归档清单时，上面的任务树和「正在执行的清单」还占着版面，内容一多就把输入框挤出窗口。现在：
   - 点开胶囊里的归档清单 → 任务树与当前任务清单自动收起并**锁住**（标题变暗、光标 `not-allowed`、点击给出提示而不是静默无反应），屏幕上只显示那一份清单；
   - 收起归档清单（点它自己的标题栏）或**再点一次同一颗胶囊** → 解锁，并**还原进入前的展开状态**（原来开着的会重新打开，原来收着的仍收着）；
@@ -2849,7 +2886,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 - 胶囊的无障碍名称精简为「归档任务清单 {done}/{total} 完成」，不再拼进条目预览（预览已无悬停提示可显示）。
 - 测试 254 → 263：新增 `src/test/todoPanelState.test.ts`（9 条：清单签名只看内容不看状态、空清单与脏输入返回空串、新清单自动展开、同一清单推进度不重复展开、归档后来同样内容仍算新清单、胶囊圆角显著小于整圆且最小值托底、`chat.js` 确实接上 `open` 且没有 `todo-capsule-mark` / `capsule.title`、`chat.css` 用 `--capsule-radius` 且不存在 `999px`、提示词三条关键约束）。
 - **简介不再硬编码版本号与仓库地址**（方案 2）。Marketplace 详情页右侧的「版本」读 manifest、发布后立即更新，而描述正文来自 README、更新存在延迟，于是出现过「右侧显示 0.2.1、正文写着 0.2.0」的错位。现在两份 README 的简介只保留一句定位描述：版本号、仓库、许可证、问题链接全部由 `package.json` 提供，扩展视图与 Marketplace 会自动显示，打包时不再需要改 README。
-- 安装与构建段落不再绑定具体版本号：安装命令改为安装项目根目录下最新的 VSIX（`$(ls -t hwchat-*.vsix | head -n 1)`），构建产物写作 `hwchat-<version>.vsix`。
+- 安装与构建段落不再绑定具体版本号：安装命令改为安装项目根目录下最新的 VSIX（`$(ls -t plaitcode-*.vsix | head -n 1)`），构建产物写作 `plaitcode-<version>.vsix`。
 - **命令不再漏成纯文本：列表里的代码块能正常渲染**。此前 `appendList` 把「缩进的续行」一律 trim 后拼进条目正文，再用 `appendInline` 渲染，于是写在列表项里的围栏（`- 打开窗口` / `  ```bash` / `  cd …`）整段被当成正文，屏幕上直接显示三连反引号——而这种「要你手动跑的命令」几乎总出现在列表里。现在缩进的围栏由 `collectFenceBlock` 整块收走，用占位符记住位置，渲染时按原顺序还原成 `<div class="code-block">`，前后的说明文字仍走原来的行内格式；没有代码块的条目完全走旧路径，渲染结果不变。
 - **需要用户自己执行的命令会标出「位置」和「工具」，并可直接复制**。标题栏显示 `位置：本地终端` / `位置：服务器终端` / 自定义位置（如 `loc="GitHub Actions runner"`）与 `工具：bash`、`工具：cmd`、`工具：powershell`；服务器位置额外用警示色（`.is-remote`）区分，避免把远程命令贴进本地终端。复制按钮只复制命令本身，不含任何标注。围栏写法：```` ```bash loc=local tool=bash ````、```` ```sh loc=server tool=bash ````；未标注位置时退回旧行为，只显示工具。
 - 围栏解析抽成 `media/code-block-meta.js`（纯函数、不碰 DOM）：`parseFenceInfo` / `normalizeLocation` / `collectFenceBlock` / `dedentCode` / `matchFenceStart` / `isShellLanguage`。由 `chatPanel` 在 `chat.js` **之前**注入，脚本没加载成功时 `chat.js` 退化为「只认语言」的旧行为，代码块照旧能渲染和复制。代码块还会去掉列表缩进（`dedentCode` 只删公共前缀，保留 YAML / Python 的相对层级），复制出去的命令不会带前导空格。
@@ -2862,14 +2899,14 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.2.1
 
-- 发布版本号定为 **0.2.1**（沿用 0.2.x 补丁号），构建产物为 `hwchat-0.2.1.vsix`。本版把「任务清单归档胶囊 / 多线程对话」与「git、项目、版本三条边界 + 每条对话独立设置」合并为同一个发布。
+- 发布版本号定为 **0.2.1**（沿用 0.2.x 补丁号），构建产物为 `plaitcode-0.2.1.vsix`。本版把「任务清单归档胶囊 / 多线程对话」与「git、项目、版本三条边界 + 每条对话独立设置」合并为同一个发布。
 - **版本号也不再主动升级，改为「任务完成后询问」**（用户规则第 4 条）。以前模型很容易把「顺手把版本号也改了」当成收尾步骤，而没有任何一处区分「用户要升版本」和「模型自己想升」。现在：
   - 提示词硬规则（`VERSION_RULE_PROMPT`，`src/agent/releasePolicy.ts`）：不得自行改动版本清单里的 `version` 字段，不得跑 `npm version` / `yarn version` / `cargo set-version` / `standard-version`，不得打 tag。需要升版本或提交时，**只在这两个时刻**问一次——短任务：本轮对话里提到的所有问题都做完、验证过之后；长任务：明确的阶段边界或整个任务做完之后。任务进行中不问，得到明确同意之前不动版本与 git。
   - 运行时闸门 `ToolExecutor` + `releasePolicy`：`write_file` / `replace_in_file` 在落盘前比较版本清单里**项目自身**的 `version` 字段，变了就拒绝并提示「先去问用户」；`run_command` 识别 `npm version` 一类升版本命令并拒绝；桥接的 VS Code 工具用 `argumentsMentionVersionBump()` 检查 JSON 参数，换个通道也绕不过去。只读查询（`npm --version`、`git tag -l`）始终放行。
   - 只认项目级版本号，不做粗粒度文本匹配：`package-lock.json` 里依赖的版本变化、`Cargo.toml` 依赖表里的 `version = "1.0"` 都不会被误判；清单解析失败（例如文件被写坏）时**不拦**，宁可放过也不打断正常的文件修复。支持 JSON / TOML / YAML / MSBuild / Info.plist 五类清单。
   - 授权口径与 git 一致：用户本轮明确要求（`不要升版本` 这类否定写法排除）或已启用技能规则要求，二者之一即放行。
 - 测试 216 → 240：新增 `src/test/releasePolicy.test.ts`（20 条：五类清单的版本提取、新建文件不算升版本、依赖版本不被误判、解析失败不拦、升版本命令识别与 `npm --version` / `echo` / 提交说明不误杀、命令链与 npx 包装、桥接参数、中英文意图与否定写法、技能规则、提示词是否同时写明「不主动升版本」与两种询问时机），以及 `src/test/toolExecutorVersion.test.ts`（4 条端到端：未授权时版本改动被拒绝**且文件保持原样**、授权后正常写入、普通字段与非清单文件不受影响、`npm version` 被拒而 `npm --version` 放行）。
-- **HWChat 不再主动提交 git**。以前「收尾顺手提交」完全靠模型自觉，而默认预设 `review` 会把 `git add` / `git commit` 判成「正常命令」直接放行，于是模型把提交当收尾步骤时既没人拦、也不弹审批。现在有两道保证：
+- **PlaitCode 不再主动提交 git**。以前「收尾顺手提交」完全靠模型自觉，而默认预设 `review` 会把 `git add` / `git commit` 判成「正常命令」直接放行，于是模型把提交当收尾步骤时既没人拦、也不弹审批。现在有两道保证：
   - 提示词里写成硬规则：除非用户在本轮明确要求，或已启用技能的规则要求「完成后提交」，否则不得执行任何 git 写操作（`git add / commit / push / tag / reset / clean / merge / rebase / checkout / restore / stash`）；只读检查（`status / diff / log / show`）始终允许。
   - 运行时闸门 `src/agent/conversationScope.ts` + `ToolExecutor.gitWriteBlockReason()`：每次 `run_command` 都解析命令里的 git 子命令，未获授权直接拒绝并给出可执行的下一步，**不再依赖模型是否遵守提示词**。授权来源只有两个——用户本轮消息里的明确要求（含「不要提交」这类否定写法的排除），或已启用技能正文里的提交规则（技能正文是说明文字，用宽松匹配识别）。
 - 桥接通道同样受控：VS Code 侧工具（如 `run_in_terminal`）的授权委托给 VS Code，模型换个通道就能绕过原生闸门。现在对桥接工具的 JSON 参数做递归检查（`argumentsMentionGitWrite()`），未授权时直接拒绝，两条通道口径一致。
@@ -2877,7 +2914,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
   - `ConversationSummary` 新增 `projectRoot`，首次写入文件或显式指定 `cwd` 时绑定（`resolveWorkspacePath` 新增 `preferredRoot`，`'.'` 直接解析成该项目根，多根同名文件优先取项目内的那一份，新文件也在项目里创建）。
   - git 写操作前用 `git rev-parse --show-toplevel` 取真实仓库根，要求它与项目根一致（或项目根在某个工作区根之内）；**仓库根若还罩着另一个工作区项目，也拒绝**——否则一次 `git add -A` 会把别的项目改动一起收进去。
   - 项目根尚未绑定时，git 写操作只接受**显式 `cwd`**，绝不把「默认落到第一个根」当成项目归属。
-- **每条对话的运行时设置互不污染**（多线程对话的前提）。以前权限预设 / 最大步骤 / 思考深度 / 模型全部写进 `hwchat.*` 全局设置：在对话 A 把预设调成「完全访问」，正在后台跑的对话 B 会立刻跟着放宽；对话 B 把步骤数改成 8，正在跑的 A 下一轮就被截断。现在这三项 + 模型都归属对话（`ConversationSummary.permissionPreset / agentMaxSteps / reasoningEffort / model`），采用与模式一致的优先级：**对话存档值 → 工具条草稿选择 → 全局默认值**（`src/core/conversationControls.ts`）。全局设置只作为新对话的默认值，面板上的改动写回当前对话。
+- **每条对话的运行时设置互不污染**（多线程对话的前提）。以前权限预设 / 最大步骤 / 思考深度 / 模型全部写进 `plaitcode.*` 全局设置：在对话 A 把预设调成「完全访问」，正在后台跑的对话 B 会立刻跟着放宽；对话 B 把步骤数改成 8，正在跑的 A 下一轮就被截断。现在这三项 + 模型都归属对话（`ConversationSummary.permissionPreset / agentMaxSteps / reasoningEffort / model`），采用与模式一致的优先级：**对话存档值 → 工具条草稿选择 → 全局默认值**（`src/core/conversationControls.ts`）。全局设置只作为新对话的默认值，面板上的改动写回当前对话。
 - 存档侧同样做了脏值防御：`normalizeStored*` + `sanitizeSummary()` 在载入时把非法枚举、非数字步骤、非字符串项目根一律丢掉（回落到全局默认），而不是带着脏值去猜；`agentMaxSteps` 保留 `0 = 不限步` 的语义，字符串 `'99'` 不会被当成 99 或「不限」。
 - 测试 189 → 216：新增 `conversationScope.test.ts`（13 条：写的识别、读子命令不误判、`git -C` / 全局选项、命令链拆分、`echo "git commit"` 不误杀、混合子命令按参数分类、中英文意图与否定写法、技能规则授权、桥接 JSON 参数检测）、`conversationControls.test.ts`（6 条：默认继承、对话值优先且不反向污染全局、非法预设回落、步骤 0 与脏值、思考深度回落而非变成 `default`、枚举校验）、`workspacePaths.test.ts` 新增 5 条 `preferredRoot` 用例、storage 新增 2 条（项目根与三项设置随 manifest 持久化且不影响其他对话；非法值载入时丢弃）。
 - **中断的清单（停止 / 失败 / 关窗口）改成「保守待办」显示**，不再出现「什么都没在跑、界面却一直跳执行中」的假象。运行结束的结算收敛到一个纯函数 `planTodoSettlement()`（`src/core/todoArchives.ts`）：全部完成 → 归档成胶囊；否则 → 清单留在面板上，把 `in_progress` 降级成 `pending` 并记 `todosInterrupted: true`。`send()` 的 `finally` 对成功 / 失败 / 停止走同一条路径，所以模型报错、网络中断、用户点停止的处理完全一致。
@@ -2899,13 +2936,13 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 
 ## 0.2.0
 
-- 发布版本号提升到 **0.2.0**，构建产物为 `hwchat-0.2.0.vsix`。次版本号递增而不是补丁号，因为这个包改变了运行时行为（模式的取值来源与工具集都变了），不是纯文案/样式变更。
-- 修复「HWChat 不认自己在界面里设置的工作模式」。根因有两处，都在 `ChatPanel`：`activeMode` 被写死成 `'agent'`，只在 `newChat()` / 切换会话时才去读一次 `hwchat.defaultMode`；而 `sendState()` 又用 `conversation?.mode ?? this.activeMode` 推给界面。于是面板首次打开（以及设置页改了默认模式、窗口重载后再打开视图）显示和实际执行都还是 Agent——界面明明选了 Plan/Chat，发的却是 Agent 那一套工具与提示词。现在模式的取值收敛到 `src/core/modes.ts`：`resolveActiveMode()` 定义优先级（存档模式 → 工具条里的草稿选择 → `hwchat.defaultMode` → `agent`），`sendState` / `send` / `setMode` 四处都调用它，`resolveConversationMode()` 负责单值校验，非法值不再可能悄悄落进 Agent 分支。
+- 发布版本号提升到 **0.2.0**，构建产物为 `plaitcode-0.2.0.vsix`。次版本号递增而不是补丁号，因为这个包改变了运行时行为（模式的取值来源与工具集都变了），不是纯文案/样式变更。
+- 修复「PlaitCode 不认自己在界面里设置的工作模式」。根因有两处，都在 `ChatPanel`：`activeMode` 被写死成 `'agent'`，只在 `newChat()` / 切换会话时才去读一次 `plaitcode.defaultMode`；而 `sendState()` 又用 `conversation?.mode ?? this.activeMode` 推给界面。于是面板首次打开（以及设置页改了默认模式、窗口重载后再打开视图）显示和实际执行都还是 Agent——界面明明选了 Plan/Chat，发的却是 Agent 那一套工具与提示词。现在模式的取值收敛到 `src/core/modes.ts`：`resolveActiveMode()` 定义优先级（存档模式 → 工具条里的草稿选择 → `plaitcode.defaultMode` → `agent`），`sendState` / `send` / `setMode` 四处都调用它，`resolveConversationMode()` 负责单值校验，非法值不再可能悄悄落进 Agent 分支。
 - 工具条切换模式不再可能「显示新值、实际按旧值跑」：`setMode()` 在任务执行中不再静默 `return`，而是把真正生效的模式回推给界面并提示「当前任务还在执行，模式改动没有生效」；没有落库对话时的选择记为草稿模式，随新对话一起落库。
 - `createConversation()` 新增 `mode` 参数（默认仍是 `agent`），新对话在建库那一刻就带上正确模式，不再先写 Agent 等 `send()` 事后纠正——任何在建库与发送之间读摘要的路径都不会看到错的值。
 - 系统提示词里的模式说明改由 `modePromptInstruction()` 统一生成，明确写出当前模式名（与下拉文案 Agent / Plan / Chat 完全一致），并声明「以本轮为准、不要沿用历史消息里的模式假设」；此前只有一句 "You are in X mode"，同一对话里跨模式发消息时模型容易沿用旧假设。
 - 状态栏的可用工具数按当前模式统计（`toolExecutor.definitions(mode)`）；Chat 模式本轮不下发任何工具，工具数固定为 0，不再显示一个根本调不到的数量。
-- 新增 `src/test/modes.test.ts`（7 条，含「存档 > 草稿选择 > 设置默认值 > agent」的优先级用例）与 `createConversation` 模式落库、`hwchat.defaultMode` 非法值回落两条回归，测试 165 → 174。
+- 新增 `src/test/modes.test.ts`（7 条，含「存档 > 草稿选择 > 设置默认值 > agent」的优先级用例）与 `createConversation` 模式落库、`plaitcode.defaultMode` 非法值回落两条回归，测试 165 → 174。
 
 ## 0.1.9
 
@@ -2913,7 +2950,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 - 修正 `package-lock.json` 里滞后三个版本的 `version` 字段：它一直停在 `0.1.5`，与 `package.json` 不符。锁文件不参与打包（`.vscodeignore` 已排除），但版本号对不上会让后续 `npm version` 或依赖审计误判。现在两处都是 `0.1.9`。
 - README 截图改为「输入框不显示任何文字」的空界面。此前截图把预览页模拟粘贴的示例文字留在了输入框里，根因是 `docs/screenshots/build.mjs` 清空输入框时依赖一条中间产物（先把「混合剪贴板文字」译成英文、再按英文清空），而预览页的样例文案后来改成了「宿主剪贴板文字」——两条替换同时静默失效，脚本只打印“未命中”就继续出图。现在改为按结构清空：模拟粘贴携带的 `clipboardData` 与剪贴板回读两处都清，占位提示（`chat.promptPlaceholder*`）也在生成截图页时从词表置空。
 - `docs/screenshots/build.mjs` 新增渲染后断言：画面不能残留任何中文（同时检查 `innerText`、表单 `value` 与 `placeholder`——`<textarea>` 的 `textContent` 不等于 `value`，只扫文本节点会漏掉输入框），且输入框的值与占位提示都必须为空。两条断言都用反向对照验证过：注入中文会被中文探针拦住，注入英文会被空输入框断言拦住。
-- 两份 README 的「当前版本」、安装示例与构建产物名同步为 `0.1.9` / `hwchat-0.1.9.vsix`。
+- 两份 README 的「当前版本」、安装示例与构建产物名同步为 `0.1.9` / `plaitcode-0.1.9.vsix`。
 
 ## 0.1.8
 
@@ -2924,14 +2961,14 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 - 执行过程措辞改为面向非技术读者：`N 个执行步骤 · 修改 M 个文件` → `处理过程 · 共 N 步，改动 M 个文件`，工具详情标题 `输入` / `结果` → `提交内容` / `返回结果`，等待态 `等待执行结果。` → `正在等待结果…`。
 - 输入框右下角四个按钮（添加文件 / 语音输入 / 发送 / 停止）的尺寸现在按实算统一。原来按钮框是 `26 / 26 / 30 / 30`、图标框 `14 / 17 / 14 / 13`；把四个 SVG 路径解析成墨迹包围盒之后，问题有多不对称一目了然——24 格网格里回形针占 `20.96×22.74`、麦克风 `15.80×21.80`、发送箭头 `15.80×15.80`、停止方块 `12.00×12.00`，给同样大的图标框，画出来的最大边会从 `6.50px` 差到 `15.44px`，也就是麦克风大一圈、停止小一圈。现在按钮框统一 `26×26`（窄屏 24×24），图标框按「墨迹最大边统一到约 10.4px」逐个反解：回形针 `11px`、麦克风 `11.5px`、发送 `16px`、停止 `18px`。回形针收得最多（它最满），发送箭头反而要放大（它最虚），停止是实心方块、同尺寸下读起来更重，所以墨迹收到 `9px` 才和邻居齐平。最大边跨度从 `8.94px` 收到 `1.53px`（`9.00~10.53px`），窄屏按比例各降约 1px。尺寸只剩 `--icon-box-*` 一组来源，`.stop-button .icon` 和窄屏那段重复声明都已删除。
 - 危险命令分级与 `approvalPlan.ts` 对齐：`git push`（不再只限 `--force`）与 `curl` / `wget`（除纯 `--version` / `--help`）现在都算 `severe`。此前这两类被判成 `standard`，`review` 预设下会被静默执行，而同一个产品在写入 VS Code 自己的 `chat.tools.terminal.autoApprove` 时却把它们列为不可自动批准——两套口径互相矛盾，且推送与网络下载都是不可撤销的对外动作。`git fetch`、`git commit`、`npm test` 等仍为 `standard`。
-- 打包加固：`.vscodeignore` 现在排除 `.hwchat-*`、`.tmp-*`、`.vsix-check/**`。排查过程中留在仓库根的 `.hwchat-approval-probe.txt` 和一次性探针 bundle `.tmp-perm-probe.mjs` 都曾被静默打进 `hwchat-0.1.8.vsix`，这两类临时产物现在不会再出现在用户安装的包里。
+- 打包加固：`.vscodeignore` 现在排除 `.plaitcode-*`、`.tmp-*`、`.vsix-check/**`。排查过程中留在仓库根的 `.plaitcode-approval-probe.txt` 和一次性探针 bundle `.tmp-perm-probe.mjs` 都曾被静默打进 `plaitcode-0.1.8.vsix`，这两类临时产物现在不会再出现在用户安装的包里。
 - 修复 Agent 多轮执行时正文「挤成一行」的排版问题。模型在每次调用工具前会写一句行动说明（「先读 X，再确认 Y」），这些文字与最终回答共用一个 `message.content` 字段，而 `agentRunner.ts` 里的 `content += delta.content` 与面板侧的 `response.content += delta.content` 都只做字符串累加，轮次之间**没有插入任何分隔符**——于是十几轮下来，所有句子首尾相接。正文默认 `white-space: pre-wrap`（真实换行是保留的），所以问题不在样式，而在拼接处根本没产生换行。现在每轮确认还有工具调用、会继续往下说时，给累积正文补一个段落分隔（已以空行结尾则不重复叠加），同时通过 `onDelta` 同步推给前端，保证流式展示与刷新后的存档完全一致；发给模型的历史仍用当轮 `round.content`，行为不受影响。测试 147 → 149。
 - 回复里的「行动说明」和它触发的步骤现在交错显示：先说「我打算做什么」，紧跟着这一步真正执行了什么、结果如何，再回到下一段说明。以前整轮的说明全部拼在正文里，步骤列表另成一块堆在正文之前，读的人得在两处之间来回对照才知道哪一步对应哪句话。做法是在每条步骤上记一个 `contentOffset`（`core/types.ts`），面板在 `onToolsChanged` 里把正文当时的长度钉在**新出现**的那条步骤上（按 `callId` 存在 `toolContentOffsets` 里，否则后面几次快照会把边界覆盖掉），渲染时按这些边界把正文切成若干段，每段后面紧跟它那一组步骤。同一轮连续调用的多个工具边界相同，因此合成一组；空段直接跳过，不留空白。`groupToolsByOffset` 返回 `null` 表示这条消息没有边界信息（旧数据），自动退回原来的「步骤块 + 正文」排法，历史对话不受影响。另外一组只有一步时不再显示「处理过程 · 共 1 步」标题——分段后每组通常只有一两步，重复标题只会把版面撑长。`test/preview-chat.html` 的样例消息改成「说明 → 步骤 → 说明 → 步骤 → 结论」，并把 `flow` 顺序写进 `dataset.layoutMetrics`，可直接用浏览器核对。
 - 审批弹窗的默认按钮改成「拒绝」。VS Code 模态框里第一个按钮是默认项，按回车就直接选中，而这里原本把「允许一次」排在第一位——急着回车或手滑就等于批准，危险命令会被这么放过去。现在「拒绝」在前，「允许一次」在后：回车 / Esc 都只做保守处理，真要同意必须主动点第二个按钮。放行条件仍是 `answer === '允许一次'`，误触不会再变成授权。
 - 分级补一个漏判：单写一条 `sudo`（不带参数、等着输密码）原先被判成 `standard`，因为提权正则要求命令名后必须跟一个空白。改成「后面是空白或字符串结束」都算 `severe`，`sudo -n true`、`doas ls`、`su - root`、`cd sub && sudo -n true` 一并纳入回归测试。
 - 修掉设置页权限矩阵与真实策略不一致：`media/settings.js` 里手写了一份 `[读取, 写入, 只读命令, 正常命令, 危险命令, 敏感文件]` 镜像表，用于切换预设时填充那几个锁定的下拉框。它的 Autopilot 一行把「危险命令」写成 `ask`，而 `src/core/permissions.ts` 里的真实策略是 `allow`——于是同一个页面上，上方的对照表写着「自动允许」，下方的危险命令下拉框却显示「逐次确认」，把档位显示得比实际更严格。改为 `allow` 与真实策略对齐。新增回归断言：直接解析 `media/settings.js`，把这张镜像表与 `PERMISSION_PRESET_PROFILES` 逐项比对（已验证把旧值放回去时该断言会失败）。测试 149 → 150。
-- 移除权限预设里的「自定义」档位，现在只剩四个内置档位（每次询问 / 风险操作询问 / Autopilot / 完全访问），设置页那五个策略下拉框始终锁定、只作展示。移除前只有「自定义」会让这几列真正参与判定，其余三档一律被预设覆盖——同一项配置在不同档位下时灵时不灵，很容易让人以为“我把它调严了”，实际运行时却按预设放行。改动面：`PermissionPreset` 类型、`PERMISSION_PRESET_PROFILES` / `PERMISSION_PRESET_DETAILS`、`commandPolicyFor` 与 `sensitiveFilePolicyFor` 的 `custom` 分支、`isPermissionPreset` 校验、两个面板的 `isRiskyPermissionPreset`、`package.json` 的枚举与枚举说明、`media/settings.js` 的解锁条件。`readSettings()` 不再读取那五项单项策略，`resolvePolicyValue` / `resolveGuardedValue` / `POLICY_RESTRICTIVENESS` 随之删除；这些配置项仍在 `package.json` 里注册但已标记为弃用，并有明确说明“由预设推导、手动修改不生效”，以免出现“设置里写着禁止、实际按预设放行”的错觉。旧配置若残留 `"hwchat.permissionPreset": "custom"`，读取时按非法值回落到 `review`，不会让策略表出现查不到的档位（已加断言覆盖）。顺手修掉 README 权限表里 Autopilot 的「危险命令」被写成“逐次确认”的错误——真实策略是 `allow`，与之前设置页镜像表属同一处笔误。测试 150 项全过。
-- 新增全局中英文切换：设置页「通用 → 界面语言」可选 `自动` / `中文` / `English`，配置键为 `hwchat.language`（`auto` 跟随 VS Code 显示语言，中文环境用中文、其余用英文）。词表集中在 `src/core/i18n.ts`，扩展宿主用 `tt()` 取值，两个 webview 则在生成 HTML 时把当期语言的扁平表注入为 JSON 块（`messageScriptTag`）——文案只有一份来源，界面、通知与错误提示不会各写一句。切换后 `refresh()` 检测到 `renderedLanguage` 与当前语言不一致会重建整页 HTML，立即生效、不需要重载窗口。
+- 移除权限预设里的「自定义」档位，现在只剩四个内置档位（每次询问 / 风险操作询问 / Autopilot / 完全访问），设置页那五个策略下拉框始终锁定、只作展示。移除前只有「自定义」会让这几列真正参与判定，其余三档一律被预设覆盖——同一项配置在不同档位下时灵时不灵，很容易让人以为“我把它调严了”，实际运行时却按预设放行。改动面：`PermissionPreset` 类型、`PERMISSION_PRESET_PROFILES` / `PERMISSION_PRESET_DETAILS`、`commandPolicyFor` 与 `sensitiveFilePolicyFor` 的 `custom` 分支、`isPermissionPreset` 校验、两个面板的 `isRiskyPermissionPreset`、`package.json` 的枚举与枚举说明、`media/settings.js` 的解锁条件。`readSettings()` 不再读取那五项单项策略，`resolvePolicyValue` / `resolveGuardedValue` / `POLICY_RESTRICTIVENESS` 随之删除；这些配置项仍在 `package.json` 里注册但已标记为弃用，并有明确说明“由预设推导、手动修改不生效”，以免出现“设置里写着禁止、实际按预设放行”的错觉。旧配置若残留 `"plaitcode.permissionPreset": "custom"`，读取时按非法值回落到 `review`，不会让策略表出现查不到的档位（已加断言覆盖）。顺手修掉 README 权限表里 Autopilot 的「危险命令」被写成“逐次确认”的错误——真实策略是 `allow`，与之前设置页镜像表属同一处笔误。测试 150 项全过。
+- 新增全局中英文切换：设置页「通用 → 界面语言」可选 `自动` / `中文` / `English`，配置键为 `plaitcode.language`（`auto` 跟随 VS Code 显示语言，中文环境用中文、其余用英文）。词表集中在 `src/core/i18n.ts`，扩展宿主用 `tt()` 取值，两个 webview 则在生成 HTML 时把当期语言的扁平表注入为 JSON 块（`messageScriptTag`）——文案只有一份来源，界面、通知与错误提示不会各写一句。切换后 `refresh()` 检测到 `renderedLanguage` 与当前语言不一致会重建整页 HTML，立即生效、不需要重载窗口。
 - 中英文覆盖范围：对话面板与设置页全部静态文案、运行时 toast、确认框（隐私同意、权限预设变更、删除对话、语音输入）、工具执行摘要与详情（读取 / 修改 / 运行命令 / 退出码 / 超时）、路径隔离与敏感文件提示、API 错误、Agent 进度标签、权限预设名称与七列对照表。权限对照表不再手写文字，改为由 `PERMISSION_PRESET_PROFILES` 的策略值推导（`matrixCell`），界面与真实策略在结构上不可能再出现不一致。
 - 扩展壳层按 VS Code 官方 NLS 本地化：`package.json` 里的命令标题、配置说明、枚举说明、视图欢迎页都换成 `%key%` 占位符，由 `package.nls.json`（英文，默认）与 `package.nls.zh-cn.json`（中文）提供文案，共 77 条，跟随编辑器显示语言。扩展描述默认英文。
 - 新增 `src/test/i18n.test.ts`（8 条断言）：中英两边键集合一致且无空文案；同名键不能中英照抄（防止漏译）；扫描源码与前端脚本里所有 `t(...)` / `tt(...)` 的字面量键，断言键真实存在（防拼错）；`resolveLanguage` 的 auto / 显式 / 非法值行为；`t()` 占位符插值与缺值保留；`messageScriptTag` 生成的 JSON 块可解析且不含裸尖括号。测试 150 → 158。
@@ -2944,38 +2981,38 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 - 任务清单改成可折叠：结构从 `<section>` 换成 `<details>` + `<summary>`，点标题就能收起和展开，与任务树一致。`summary` 一旦是 `display: flex`，浏览器就不再绘制 `::marker`，所以箭头改成自绘（`▸` 收起 / `▾` 展开，沿用 `.reasoning` 的写法），并给任务树补上同一个箭头——它此前同样没有可见的折叠提示。默认展开，用户收起后在同一次会话里保持收起（面板不重建就不会被重置）。实测：面板高度 173 → 30（收起）→ 173（再展开），箭头随 `open` 状态切换。
 ## 0.1.7
 
-- Added `HWChat: 查看生效权限与来源` plus an automatic log line in the `HWChat` output channel (at activation and whenever `hwchat.*` configuration changes). It prints every permission key with the value that is actually in effect and the raw value found at each scope — `文件夹: DeepSeek-HWChat="review"｜工作区: 无｜用户: "autopilot"｜默认: 无` — so “我写了 review 但危险命令还是直接跑” can be answered without reading source. The resolver already prefers the most specific scope; this makes its decision auditable in the running build. Test count 144 → 146.
+- Added `PlaitCode: 查看生效权限与来源` plus an automatic log line in the `PlaitCode` output channel (at activation and whenever `plaitcode.*` configuration changes). It prints every permission key with the value that is actually in effect and the raw value found at each scope — `文件夹: PlaitCode="review"｜工作区: 无｜用户: "autopilot"｜默认: 无` — so “我写了 review 但危险命令还是直接跑” can be answered without reading source. The resolver already prefers the most specific scope; this makes its decision auditable in the running build. Test count 144 → 146.
 
 ## 0.1.6
 
-- Fixed permission settings written into a folder's `.vscode/settings.json` being silently ignored in a multi-root workspace. `readSettings()` used `workspace.getConfiguration('hwchat')` **without a resource**, and per `vscode.d.ts` a `workspaceFolderValue` only applies to "one of the workspace folders under which the requested resource belongs" — so the documented `"hwchat.permissionPreset": "review"` in a root never reached the executor. With the user settings on `autopilot`, `chmod 777 <file>` therefore ran with no confirmation at all while the repo claimed `review`: the preset on disk had no effect. Permission keys (`permissionPreset`, `fileReadPolicy`, `fileWritePolicy`, `commandPolicy`, `dangerousCommandPolicy`, `sensitiveFilePolicy`) are now resolved explicitly — most specific scope first (workspace folder → `.code-workspace` → user settings), strictest value winning when several folders disagree (`askAll` > `review`/`custom` > `autopilot` > `full`, and `deny` > `ask` > `allow` for the policy columns). The six keys also declare `"scope": "resource"` so VS Code accepts folder-level overrides officially. The test `vscode` stand-in now models `workspaceFolderValue` the same way (only with a resource), which is why this class of bug was previously invisible to tests. Test count 137 → 144.
+- Fixed permission settings written into a folder's `.vscode/settings.json` being silently ignored in a multi-root workspace. `readSettings()` used `workspace.getConfiguration('plaitcode')` **without a resource**, and per `vscode.d.ts` a `workspaceFolderValue` only applies to "one of the workspace folders under which the requested resource belongs" — so the documented `"plaitcode.permissionPreset": "review"` in a root never reached the executor. With the user settings on `autopilot`, `chmod 777 <file>` therefore ran with no confirmation at all while the repo claimed `review`: the preset on disk had no effect. Permission keys (`permissionPreset`, `fileReadPolicy`, `fileWritePolicy`, `commandPolicy`, `dangerousCommandPolicy`, `sensitiveFilePolicy`) are now resolved explicitly — most specific scope first (workspace folder → `.code-workspace` → user settings), strictest value winning when several folders disagree (`askAll` > `review`/`custom` > `autopilot` > `full`, and `deny` > `ask` > `allow` for the policy columns). The six keys also declare `"scope": "resource"` so VS Code accepts folder-level overrides officially. The test `vscode` stand-in now models `workspaceFolderValue` the same way (only with a resource), which is why this class of bug was previously invisible to tests. Test count 137 → 144.
 
 - Fixed command path isolation missing the bare filesystem root: `rm -rf /` — also `chmod -R 777 /`, `chown -R me:me /`, `ls -la /` — passed the path scan because the absolute-path pattern requires at least one character after `/`. The real root can never fall inside a workspace root, so a lone `/` token is now detected separately and refused with `路径 / 不在当前工作区内`. Redirections to `/dev/null`, quoted absolute workspace paths, and outputs such as `date +%Y/%m/%d` are unaffected; tests cover both sides. Test count 135 → 137.
 
 - Fixed `run_command` rejecting legitimate `sed` / `grep` invocations whose *pattern* is slash-wrapped: `sed -n '/"name"/,/displayName/p' package.json` was refused as “路径 … 不在当前工作区内”, and the only escape was rewriting the command. Pattern/script positions are now masked before the path scan — the argument after `-e` / `--expression` / `--regexp`, and the first non-option operand of `sed` / `grep` / `rg` / `awk` — while real file arguments (`sed -n 'p' /etc/hosts`, `sed -f /etc/x.sed`) and unrelated commands (`cat /etc/hosts`) are still refused. Shell segments (`&&`, `||`, `;`, `|`) are analysed one by one so `cd x && grep …` keeps working. Tests cover the allowed and still-blocked shapes.
 - VS Code bridge tools now say when their file arguments must be absolute (`path` / `filePath` 必须传工作区内绝对路径) instead of letting a relative path fail with VS Code's `Invalid input path: … Be sure to use an absolute path.` The hint is derived from each tool's declared input schema, so it only appears on tools that really take a path.
 - Composer bottom row: removed the trailing hint text (`Enter 发送 · Shift+Enter 换行`, `发送后自动判断任务关系`, `归档对话为只读`). It sat to the right of the three selectors and squeezed them, so values collapsed to `Autopil…` / `能力未…`. The freed width now belongs to 权限预设 / 最大步骤 / 思考深度 (150/132/132 → 190/150/158). Keyboard behavior is unchanged (Enter sends, Shift+Enter inserts a newline), and the archived / streaming status remains visible in the textarea placeholder.
-- Added `HWChat: 同步 VS Code 审批预设` / `HWChat: 还原 VS Code 审批设置`. VS Code extension tools (anything routed through `vscode.lm`, such as `run_in_terminal`) are authorized by VS Code through each tool's own `prepareInvocation`, so `hwchat.permissionPreset` can never suppress those prompts. The new commands write VS Code's own `chat.tools.*` approvals instead: at runtime they detect which of `chat.tools.terminal.autoApprove`, `chat.tools.terminal.enableAutoApprove`, `chat.tools.edits.autoApprove`, `chat.tools.global.autoApprove`, `chat.tools.autoApprove` actually exist in the installed build, show a full diff before writing, only touch user settings, and back up the previous values so one command can revert. Off / read-only / read-only + build / everything are the four levels; dangerous prefixes (sudo, rm, shred, git push, git reset --hard, publish, curl/wget, chmod) are always written as explicit denies after the allow rules. Pure planning logic lives in `src/core/approvalPlan.ts` with unit tests, including a `find` rule that excludes `-exec` / `-delete`.
+- Added `PlaitCode: 同步 VS Code 审批预设` / `PlaitCode: 还原 VS Code 审批设置`. VS Code extension tools (anything routed through `vscode.lm`, such as `run_in_terminal`) are authorized by VS Code through each tool's own `prepareInvocation`, so `plaitcode.permissionPreset` can never suppress those prompts. The new commands write VS Code's own `chat.tools.*` approvals instead: at runtime they detect which of `chat.tools.terminal.autoApprove`, `chat.tools.terminal.enableAutoApprove`, `chat.tools.edits.autoApprove`, `chat.tools.global.autoApprove`, `chat.tools.autoApprove` actually exist in the installed build, show a full diff before writing, only touch user settings, and back up the previous values so one command can revert. Off / read-only / read-only + build / everything are the four levels; dangerous prefixes (sudo, rm, shred, git push, git reset --hard, publish, curl/wget, chmod) are always written as explicit denies after the allow rules. Pure planning logic lives in `src/core/approvalPlan.ts` with unit tests, including a `find` rule that excludes `-exec` / `-delete`.
 - `Autopilot` now means what its name says: dangerous commands are auto-approved too, and only sensitive-file reads stay blocked. It was previously identical to `风险操作询问` in every column, so the option did nothing. Presets now differ: `风险操作询问` asks for dangerous commands, `Autopilot` runs them, `完全访问` runs them and also asks before reading sensitive files.
 - Fixed command path isolation rejecting legitimate absolute paths: the old check denied any command containing `/Users`, `/home`, `/etc`, … even when the path was inside the workspace, so `cd "…/AI projects/some repo" && npm test` was refused. Absolute paths are now resolved one by one and only rejected when they fall outside every workspace root; HOME expansion (`~`, `~user`, `$HOME`), `..`, and outside paths are still blocked, and `/dev/null` style redirections stay allowed. The logic moved to `src/agent/commandPaths.ts` with unit tests.
-- Fixed settings changes silently not taking effect when the key was already defined in a `settings.json`: `updateSettings` always wrote to the Global target, so any workspace- or folder-scoped `hwchat.*` value kept overriding the UI (the permission preset dropdown looked dead). Writes now go back to the scope that actually defines the key — folder level first, then `.code-workspace`, then global.
-- Added `hwchat.permissionPreset` to `capabilities.untrustedWorkspaces.restrictedConfigurations`; without it an untrusted workspace's `.vscode/settings.json` could still change the preset.
+- Fixed settings changes silently not taking effect when the key was already defined in a `settings.json`: `updateSettings` always wrote to the Global target, so any workspace- or folder-scoped `plaitcode.*` value kept overriding the UI (the permission preset dropdown looked dead). Writes now go back to the scope that actually defines the key — folder level first, then `.code-workspace`, then global.
+- Added `plaitcode.permissionPreset` to `capabilities.untrustedWorkspaces.restrictedConfigurations`; without it an untrusted workspace's `.vscode/settings.json` could still change the preset.
 - Fixed relative paths resolving to the wrong folder in a multi-root workspace. `resolveWorkspacePath` only ever tried the first root for a relative input (`if (!absoluteCandidate && index > 0) continue;`), so `read_file` with `src/agent/commandPaths.ts` stat'ed `<first root>/src/agent/commandPaths.ts` and surfaced a bare `ENOENT` pointing at a folder the user never mentioned. Resolution now takes an optional existence probe: a relative path is checked in every root, the single existing match wins, zero matches still fall back to the first root, and a path that exists in several roots raises an error naming the candidates and asking for a root-name prefix. Absolute paths and explicit `Root/…` prefixes are unchanged. `src/agent/workspacePaths.ts` keeps the logic pure and unit-testable; both callers (`toolExecutor`, `vscodeTools`) pass `fs.existsSync`.
 - Composer bottom row is now forced onto a single line at every width: `flex-wrap: nowrap`, and the `max-width: 560px` rules that gave the selector group and the icon group `flex: 1 1 100%` (the actual cause of the two-row layout) are removed. The footer is declared a size container, so the row reacts to its own width instead of the viewport: labels hide in the requested order — 思考深度 first, then 最大步骤, then 权限预设 — while each select keeps its currently selected value visible, and attach / voice / send never leave the row.
 - Raised composer control contrast. Labels no longer use `--muted` (`descriptionForeground`) but 85% foreground, and grew from 9px/8px to 10px/9px; the select caret went from `--muted` to 72% foreground; a disabled select now renders at `opacity: .82` instead of `.5`. The reasoning selector is disabled whenever the model does not declare configurable effort (`media/chat.js:533`), so `能力未知` used to be painted at half opacity — that was the washed-out text.
-- Removed the manual collapse button at the bottom right of the conversation pane, reverting to 0.1.5 behaviour: the conversation list is no longer collapsible by a button, and the side-bar boundary is the only control. Above 720px the 268px list is a permanent column; at 720px and below (where the 420px `initialSize` default lands) it is an overlay drawer toggled by the 对话记录 toolbar icon. Every intermediate variant is gone: the `⌘B` primary-side-bar toggle, the `⌘⌥B` auxiliary-bar hide, the whole-`.app-shell` slide-out, the rightward `translateX(100vw)` fold, and the `workbench.action.increaseViewWidth` / `decreaseViewWidth` calls that narrowed the host panel in 60px steps. Those calls were the headline of the previous revision, but a fixed 60px increment cannot match a 268px column (4 steps move 240px) and the rounding showed up in the chat width, so the panel-width borrowing, the persisted owed-step counter, and the status-bar 展开对话列表 entry are all deleted too. Dropped with it: the `.history-footer` wrapper and its styles (设置 is a direct child of the aside again), the `collapse` icon and its `IconName` member, and the `hwchat.expandCollapsedSidebar` command.
-- Task tree rows show their status label (`执行中` / `判断关联性` / `排队` / `已合并` / `完成` / `已取消` / `失败`) again on narrow panels. `@media (max-width: 720px)` carried `.task-node small { display: none; }`, and HWChat opens in a secondary side bar whose `initialSize` is 420px, so that branch always applied: the label was still in the DOM (`renderTaskTree` appends `taskStatusLabel(node.status)` as the third grid column) but painted nowhere, leaving the right half of every row blank. The rule is now `display: block`; the title column keeps `text-overflow: ellipsis`, so a long title truncates instead of pushing the label out.
+- Removed the manual collapse button at the bottom right of the conversation pane, reverting to 0.1.5 behaviour: the conversation list is no longer collapsible by a button, and the side-bar boundary is the only control. Above 720px the 268px list is a permanent column; at 720px and below (where the 420px `initialSize` default lands) it is an overlay drawer toggled by the 对话记录 toolbar icon. Every intermediate variant is gone: the `⌘B` primary-side-bar toggle, the `⌘⌥B` auxiliary-bar hide, the whole-`.app-shell` slide-out, the rightward `translateX(100vw)` fold, and the `workbench.action.increaseViewWidth` / `decreaseViewWidth` calls that narrowed the host panel in 60px steps. Those calls were the headline of the previous revision, but a fixed 60px increment cannot match a 268px column (4 steps move 240px) and the rounding showed up in the chat width, so the panel-width borrowing, the persisted owed-step counter, and the status-bar 展开对话列表 entry are all deleted too. Dropped with it: the `.history-footer` wrapper and its styles (设置 is a direct child of the aside again), the `collapse` icon and its `IconName` member, and the `plaitcode.expandCollapsedSidebar` command.
+- Task tree rows show their status label (`执行中` / `判断关联性` / `排队` / `已合并` / `完成` / `已取消` / `失败`) again on narrow panels. `@media (max-width: 720px)` carried `.task-node small { display: none; }`, and PlaitCode opens in a secondary side bar whose `initialSize` is 420px, so that branch always applied: the label was still in the DOM (`renderTaskTree` appends `taskStatusLabel(node.status)` as the third grid column) but painted nowhere, leaving the right half of every row blank. The rule is now `display: block`; the title column keeps `text-overflow: ellipsis`, so a long title truncates instead of pushing the label out.
 - Added a "back to latest message" button so scrolling up through history no longer requires dragging the scrollbar back down. It floats at the bottom-right of the message area — `bottom: 12px` (10px on narrow panels), i.e. just above the composer, since `.message-area` ends exactly where `.composer-wrap` (status line, task tree, input) begins — and appears **only when needed**: the viewport must actually overflow (more than 120px of hidden content) and the user must be away from the bottom, reusing the same `isNearBottom()` signal that drives `autoFollow` — so the button disappears by itself once reached, and never shows in an empty or short conversation. The message viewport is now wrapped in `.message-area`, which is the positioning reference: an absolutely positioned child *inside* the scroll container would slide away with the content. Clicking it re-enables `autoFollow` and smooth-scrolls to the end, so streaming resumes following.
-- Fixed `list_files` / `search_files` answering "找到 0 个文件" when the glob carried a workspace-root prefix. `path` arguments already accepted `Root/...`, but a glob such as `DeepSeek-HWChat/src/**/*.ts` was handed to `findFiles` unchanged, matched nothing in any root, and reported an empty result — indistinguishable from "the file really isn't there". `normalizeWorkspaceGlob` now strips the prefix on the same convention as `path` and scopes the hits back to that root.
+- Fixed `list_files` / `search_files` answering "找到 0 个文件" when the glob carried a workspace-root prefix. `path` arguments already accepted `Root/...`, but a glob such as `PlaitCode/src/**/*.ts` was handed to `findFiles` unchanged, matched nothing in any root, and reported an empty result — indistinguishable from "the file really isn't there". `normalizeWorkspaceGlob` now strips the prefix on the same convention as `path` and scopes the hits back to that root.
 - Fixed `list_directory` without a `path` silently listing only the first workspace root in a multi-root workspace, which returned a different project's tree while the caller was working in another one. It now lists every root under its own `## <root>` heading.
 - Fixed command path isolation rejecting every `..`, even when it resolved inside the workspace (`cat ../package.json` from `<root>/src`). `..` is now resolved against the command's `cwd` — which is itself validated — and only rejected when it lands outside every root; without a known `cwd` it stays conservatively blocked, and the HOME / `~user` / outside-absolute rules are unchanged.
 - When a quoted token is really a sed/grep address (`sed -n '/a/,/^b/p'`), the isolation error now says so and points at `grep -e` / `sed -e` instead of reporting an unexplained outside path.
-- Fixed `list_files` / `search_files` returning nothing for a glob that reduced to a bare `**` after the root prefix was stripped (`DeepSeek-HWChat/**` → `**`). `findFiles` matches no file at all for a lone `**`, so the tool answered "没有匹配文件" while the directory was full of them. Stripping now normalises a bare `**` to `**/*`; `src/**` and `src/**/*.ts` are untouched.
+- Fixed `list_files` / `search_files` returning nothing for a glob that reduced to a bare `**` after the root prefix was stripped (`PlaitCode/**` → `**`). `findFiles` matches no file at all for a lone `**`, so the tool answered "没有匹配文件" while the directory was full of them. Stripping now normalises a bare `**` to `**/*`; `src/**` and `src/**/*.ts` are untouched.
 - Fixed multi-root glob queries silently scanning only the first workspace root. Unscoped `findFiles` applies its limit across *all* roots, so the old `200` ceiling was spent entirely on the first root — an 18-root workspace searched 200 files from one project and reported "找到 0 处匹配" for strings that existed in 17 others. Unscoped queries now run once per root via `RelativePattern` with a per-root ceiling, and every truncated result says so (`已达上限，可能还有更多`) instead of pretending to be complete. `search_files` additionally stops at a file-read budget and reports when it does.
 - Fixed `search_files` failing the whole search when any file in range was binary: the NUL-byte check threw and aborted the run, so one `.vsix` / `.png` in the glob produced `该文件似乎是二进制文件` instead of results. Unreadable and binary files are now skipped and the search continues.
 - Added `src/test/support/vscodeMock.ts` plus an esbuild alias for test builds, so `ToolExecutor` — the layer that actually enforces permissions — can finally run under `node --test`. The new `toolExecutor.test.ts` covers the preset matrix (askAll / review / autopilot / full / custom), plan mode, untrusted workspaces, sensitive files, path escape, unknown tools, audit records, and the external `vscode.lm` approval path. Test count 80 → 114.
-- Fixed a **security hole in the VS Code bridge**: `hwchat_vscode_copilot_readFile` with `/etc/hosts` returned the file, and `copilot_listDirectory` with `/etc` listed the whole system directory. HWChat's own `read_file` / `run_command` are confined to the workspace roots, but anything routed through `vscode.lm.invokeTool` was passed straight through with no path check — the same product shipped one locked door and one unlocked one. `externalToolPathViolation` now inspects path-shaped arguments (`path`, `filePath`, `files`, `directory`, `cwd`, `target`, …) before the tool is invoked and refuses HOME references (`~`, `$HOME`), absolute paths outside every root, and `..` traversal that escapes. Only *argument names* are matched, so payload arguments such as `content` / `command` / `text` are never mistaken for paths. Rejected calls never reach VS Code, and the message is a plain `路径隔离策略拦截：…` instead of the opaque `Invalid stream` that an out-of-workspace `copilot_createFile` used to produce. Tests cover the pure rule and an end-to-end bridge call that asserts `invokeTool` is never reached.
-- Fixed root-prefixed globs still returning 0 files after the earlier `**` normalisation. Normalising `DeepSeek-HWChat/**` to `**/*` was not enough: the scoped branch passed that *string* glob to `findFiles`, which searches **every** workspace folder and shares one limit. In an 18-root workspace the 1000-file ceiling was spent on the first 16 roots, so filtering the hits back to `DeepSeek-HWChat` left zero — and because the pre-filter count hit the ceiling, the tool even added `已达上限，可能还有更多` to a result that contained nothing. Scoped queries now use `new vscode.RelativePattern(folder, glob)` so the scan really is confined to the named root. Regression test builds 1050 files in the first root and one file in the second and asserts the second is found with a plain `找到 1 个文件`.
+- Fixed a **security hole in the VS Code bridge**: `plaitcode_vscode_copilot_readFile` with `/etc/hosts` returned the file, and `copilot_listDirectory` with `/etc` listed the whole system directory. PlaitCode's own `read_file` / `run_command` are confined to the workspace roots, but anything routed through `vscode.lm.invokeTool` was passed straight through with no path check — the same product shipped one locked door and one unlocked one. `externalToolPathViolation` now inspects path-shaped arguments (`path`, `filePath`, `files`, `directory`, `cwd`, `target`, …) before the tool is invoked and refuses HOME references (`~`, `$HOME`), absolute paths outside every root, and `..` traversal that escapes. Only *argument names* are matched, so payload arguments such as `content` / `command` / `text` are never mistaken for paths. Rejected calls never reach VS Code, and the message is a plain `路径隔离策略拦截：…` instead of the opaque `Invalid stream` that an out-of-workspace `copilot_createFile` used to produce. Tests cover the pure rule and an end-to-end bridge call that asserts `invokeTool` is never reached.
+- Fixed root-prefixed globs still returning 0 files after the earlier `**` normalisation. Normalising `PlaitCode/**` to `**/*` was not enough: the scoped branch passed that *string* glob to `findFiles`, which searches **every** workspace folder and shares one limit. In an 18-root workspace the 1000-file ceiling was spent on the first 16 roots, so filtering the hits back to `PlaitCode` left zero — and because the pre-filter count hit the ceiling, the tool even added `已达上限，可能还有更多` to a result that contained nothing. Scoped queries now use `new vscode.RelativePattern(folder, glob)` so the scan really is confined to the named root. Regression test builds 1050 files in the first root and one file in the second and asserts the second is found with a plain `找到 1 个文件`.
 - Fixed `search_files` without a glob still answering `找到 0 处匹配` after the per-root query fix. Per-root `findFiles` was correct, but the merged list was `root1 files → root2 files → …`, so the 1500-file scan budget was consumed before the last roots were ever opened — which is exactly why searching `scrollToBottomButton` in the 17th root reported nothing while the symbol existed. The merge now interleaves the per-root arrays round-robin, so the budget is shared instead of spent on whichever root sorts first. Regression test uses four noise roots of 420 files each plus a target root placed last. Test count 114 → 130.
 
 ## 0.1.5
@@ -2983,7 +3020,7 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 - Rebuilt the chat header so the conversation title keeps its own row; work mode, API profile, model, refresh, and the right-aligned Skill, archive, export, and settings controls moved to a dedicated row underneath and wrap instead of squeezing the title. The Skill button now sits directly left of settings.
 - Merged the composer into one bordered card: the textarea sits on top, and a single bottom row inside the card holds the permission preset, maximum steps, reasoning depth, and the attach, voice, and send/stop buttons (attach is now left of the voice button).
 - Reworked the permission matrix to the requested shape: presets now carry six independent columns (read, write, read-only commands, regular commands, dangerous commands, sensitive files). Read-only and regular commands are auto-approved from "review risky actions" upward, "full access" also auto-runs dangerous commands, and sensitive-file reads are confirmed one by one even in "full access".
-- Replaced the `allowSensitiveFiles` / `allowDangerousCommands` booleans with the tri-state `hwchat.sensitiveFilePolicy` and `hwchat.dangerousCommandPolicy` (allow / ask / deny). Old booleans are kept as deprecated fallbacks and migrated on read.
+- Replaced the `allowSensitiveFiles` / `allowDangerousCommands` booleans with the tri-state `plaitcode.sensitiveFilePolicy` and `plaitcode.dangerousCommandPolicy` (allow / ask / deny). Old booleans are kept as deprecated fallbacks and migrated on read.
 - Added a sensitive-file guard that asks once per tool call with the concrete target paths, denies them under stricter presets, and keeps skipping them in workspace-wide searches unless the policy is "allow".
 - Updated the settings matrix, composer preset tooltips, `package.json` enum descriptions, and docs to the new six-column model.
 - Consolidated the permission model in `src/core/permissions.ts` as the single source of truth: command tiers (read-only / regular / dangerous), the six-column preset table, and the sensitive-file policy all resolve from there, so the settings matrix, composer tooltips, and runtime checks cannot drift apart.
@@ -3011,10 +3048,10 @@ webview 被注入后能自己批准自己、切个对话附件就挂到别人身
 ## 0.1.3
 
 - Changed model discovery to query each configured API's `/models` endpoint directly, preserving provider display names without depending on Copilot or models registered by other VS Code extensions.
-- Updated the official DeepSeek fallback catalog to `deepseek-flash` and `deepseek-v4-pro`; when the API directory no longer contains the selected model, HWChat now switches the UI and active conversation to the first available model together.
+- Updated the official DeepSeek fallback catalog to `deepseek-flash` and `deepseek-v4-pro`; when the API directory no longer contains the selected model, PlaitCode now switches the UI and active conversation to the first available model together.
 - Kept the chat mode, Skill count, and settings controls visible on one responsive toolbar row, with profile and model selectors sharing the available width below it.
 - Added persisted thumbnails for pasted images and included them in scheduled completed-task cache compaction.
-- Fixed the unregistered `hwchat.reasoningEffort` upgrade-window error with a local fallback, and fixed active-section tracking in the settings navigation.
+- Fixed the unregistered `plaitcode.reasoningEffort` upgrade-window error with a local fallback, and fixed active-section tracking in the settings navigation.
 - Made the settings navigation fixed while content scrolls, removed gradient styling, and improved foreground/background contrast in light and dark VS Code themes.
 - Tightened the composer action controls and hid the textarea scrollbar while preserving keyboard, wheel, and touch scrolling.
 - Replaced the boxed runtime dropdowns with compact labeled text selectors for permission preset, maximum steps, and reasoning depth.

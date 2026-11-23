@@ -22,7 +22,7 @@ import { commandSubstitutions } from '../core/permissions';
 const ESCAPING_PATH = /(^|[\s'"=(,;])(?:~[A-Za-z0-9._-]*(?:\/|\s|$)|\$(?:\{)?HOME\}?\b)/i;
 /**
  * 上级目录引用。`..` 本身不能一律拒绝：cwd 已知时它完全可以落在工作区内
- * （例如在 `DeepSeek-HWChat/src` 里执行 `cat ../package.json`）。旧实现把所有
+ * （例如在 `PlaitCode/src` 里执行 `cat ../package.json`）。旧实现把所有
  * `..` 都当成越界，会逼调用方改用更绕的写法。
  */
 const PARENT_REFERENCE = /(^|[\s'"=(,;:])(\.\.(?!\.)(?:[/\\][^\s'"`;&|<>(){}]*)?)/g;

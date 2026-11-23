@@ -45,7 +45,7 @@ function positiveInt(value: unknown): number | undefined {
  * 返回 `undefined` 表示这条消息不该被执行：
  *  - 空路径、纯空白；
  *  - `~` 开头的家目录写法——展开它等于替用户猜测主目录在哪里，
- *    HWChat 在工具参数里也是同样的口径（见 workspacePaths 的 homeReference）；
+ *    PlaitCode 在工具参数里也是同样的口径（见 workspacePaths 的 homeReference）；
  *  - 含控制字符的路径（粘贴或模型输出里常见的脏数据）。
  */
 export function normalizeFileReference(input: { path?: unknown; line?: unknown; column?: unknown }): FileReferenceTarget | undefined {

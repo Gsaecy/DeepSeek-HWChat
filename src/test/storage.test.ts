@@ -9,7 +9,7 @@ import { AGENT_STEP_SAFETY_CAP } from '../core/agentLimits';
 async function withStorage(
   run: (storage: ConversationStorage, root: string) => Promise<void>,
 ): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-storage-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-storage-'));
   try {
     const storage = new ConversationStorage(root);
     await storage.initialize();
@@ -511,7 +511,7 @@ test('对话的项目根与运行时设置随 manifest 持久化', async () => {
   await withStorage(async (storage, root) => {
     const conversation = await storage.createConversation('per-conversation settings');
     await storage.updateConversation(conversation.id, {
-      projectRoot: join('workspace', 'DeepSeek-HWChat'),
+      projectRoot: join('workspace', 'PlaitCode'),
       permissionPreset: 'full',
       agentMaxSteps: 8,
       reasoningEffort: 'max',
@@ -521,7 +521,7 @@ test('对话的项目根与运行时设置随 manifest 持久化', async () => {
     const reloaded = new ConversationStorage(root);
     await reloaded.initialize();
     const loaded = await reloaded.getConversation(conversation.id);
-    assert.equal(loaded?.projectRoot, join('workspace', 'DeepSeek-HWChat'));
+    assert.equal(loaded?.projectRoot, join('workspace', 'PlaitCode'));
     assert.equal(loaded?.permissionPreset, 'full');
     assert.equal(loaded?.agentMaxSteps, 8);
     assert.equal(loaded?.reasoningEffort, 'max');
@@ -560,7 +560,7 @@ test('manifest 里非法的项目根与运行时设置在载入时被丢掉', as
 test('涉及多个项目：projectRoots 随 manifest 持久化，且不碰主项目', async () => {
   await withStorage(async (storage, root) => {
     const conversation = await storage.createConversation('multi project');
-    const primary = join(root, 'workspace', 'DeepSeek-HWChat');
+    const primary = join(root, 'workspace', 'PlaitCode');
     await storage.updateConversation(conversation.id, {
       projectRoot: primary,
       projectRoots: [join(root, 'workspace', 'Local_skill_quick_access')],
@@ -1070,7 +1070,7 @@ test('getMessage：把存档里认不出来的执行状态丢掉（与其它读�
 test('页缓存受总字节预算约束：多份大页不会同时常驻', async () => {
   await withStorage(async (storage) => {
     /*
-     * 现场：用户反馈「hwchat 占用高内存」。这份缓存原来只限「最多 8 页」，
+     * 现场：用户反馈「plaitcode 占用高内存」。这份缓存原来只限「最多 8 页」，
      * 每页最多 6 MB → 上限 48 MB；本机 5 个对话的首页实测就占 17.7 MB。
      * 现在多了 24 MB 的总字节闸门，并且通过 `cacheStats()` 可以**直接观测**。
      */

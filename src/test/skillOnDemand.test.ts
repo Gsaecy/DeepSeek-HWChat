@@ -23,7 +23,7 @@ import { setInstalledExtension } from './support/vscodeMock';
 const BODY_MARKER = '这是技能正文第一句，绝不该在提示词里出现。';
 
 async function makeRegistry(): Promise<{ registry: SkillRegistry; root: string }> {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-skill-ondemand-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-skill-ondemand-'));
   const body = `---\nname: long-tail\ndescription: '处理日志与崩溃排查。USE FOR: 排查崩溃。Triggers: 崩溃, crash-log'\n---\n\n# 长技能\n\n${BODY_MARKER}\n\n${'补充说明。'.repeat(800)}\n`;
   // 用户技能是 user-skills/*.md（平铺），不是 <name>/SKILL.md（那是 copilot 源）。
   await mkdir(join(root, 'user-skills'), { recursive: true });
@@ -97,7 +97,7 @@ test('chat 模式没有工具：仍然内联全文，否则技能等于没启用
 
 test('清单有字节上限：技能很多时截断并说明可以按 id 加载', async () => {
   setInstalledExtension(undefined);
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-skill-many-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-skill-many-'));
   try {
     for (let index = 0; index < 60; index += 1) {
       const name = `技能${index}`;

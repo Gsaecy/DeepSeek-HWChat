@@ -100,7 +100,7 @@
     return Math.max(2, Math.round(value * 0.3));
   }
 
-  globalThis.HWChatTodoPanelState = {
+  globalThis.PlaitCodeTodoPanelState = {
     todoSignature,
     shouldRevealTodoPanel,
     capsuleRadius,

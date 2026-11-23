@@ -5,7 +5,7 @@ import { LanguageSetting, normalizeLanguageSetting } from './i18n';
 import { resolveConversationMode } from './modes';
 import { normalizeAgentMaxSteps, DEFAULT_AGENT_MAX_STEPS } from './agentLimits';
 
-const SECTION = 'hwchat';
+const SECTION = 'plaitcode';
 
 /**
  * 新对话的默认思考深度：`default` = 不发送任何思考参数。
@@ -15,7 +15,7 @@ const SECTION = 'hwchat';
  * 由我们猜一个 `high` 发出去，等于替模型改默认值，还会多烧 token。
  * 所以初始值固定为 `default`；想更深/更浅由用户在工具条上显式选四档深度之一。
  *
- * 与 `package.json` 里 `hwchat.reasoningEffort` 的 default 必须一致（有测试钉住）。
+ * 与 `package.json` 里 `plaitcode.reasoningEffort` 的 default 必须一致（有测试钉住）。
  */
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'default';
 
@@ -37,9 +37,9 @@ function readSearchExclude(): string[] {
     }
   };
   try {
-    add(vscode.workspace.getConfiguration('hwchat').get<unknown>('searchExclude', []));
+    add(vscode.workspace.getConfiguration('plaitcode').get<unknown>('searchExclude', []));
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
-      add(vscode.workspace.getConfiguration('hwchat', folder.uri).get<unknown>('searchExclude', []));
+      add(vscode.workspace.getConfiguration('plaitcode', folder.uri).get<unknown>('searchExclude', []));
     }
   } catch {
     return [...collected];
@@ -66,7 +66,7 @@ export function readSettings(): ChatSettings {
   // 新对话一律从固定的最保守初始值开始（每次询问 / 24 步 / 模型官方思考默认），
   // 需要调整只能在某条对话的工具条上显式改，改完随该对话存档。
   //
-  // 为什么连配置都不读（真实故障）：旧版本会把面板上的选择写进 `hwchat.*`，
+  // 为什么连配置都不读（真实故障）：旧版本会把面板上的选择写进 `plaitcode.*`，
   // 用户设置里因此留下了 `permissionPreset: autopilot`、`agentMaxSteps: 0`；
   // 之后每一条新对话一开就自动执行、无限步，与「每次询问 / 24 步」完全相反。
   // 声明值仍由 `describePermissionScope()` 如实汇报（便于对账），但不参与判定。
@@ -161,7 +161,7 @@ export async function updateSettings(values: Partial<ChatSettings>): Promise<voi
     if (value === undefined) continue;
     // 写回“已经定义该键的最近一层作用域”。此前固定写 Global，一旦用户在
     // settings.json（.code-workspace 或某个文件夹的 .vscode/settings.json）里
-    // 出现过 hwchat.*，面板里的修改就会被更高优先级的作用域覆盖，表现为
+    // 出现过 plaitcode.*，面板里的修改就会被更高优先级的作用域覆盖，表现为
     // “预设改了但没生效”。多根工作区里每个文件夹要分别带资源 URI 才能判断。
     const plan = updatePlan(key);
     for (const step of plan) {
@@ -419,7 +419,7 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
 }
 
 /**
- * 读一次旧版本写在 `hwchat.*` 里的三项（升级前工具条唯一的落盘位置）。
+ * 读一次旧版本写在 `plaitcode.*` 里的三项（升级前工具条唯一的落盘位置）。
  *
  * 只给**升级前已经有消息的老对话**补存档值用（见 `ConversationStorage` 的
  * `legacyControls`）：0.2.5 起这三项改成按对话存，老对话存档里没有这些字段；

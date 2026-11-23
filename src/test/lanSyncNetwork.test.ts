@@ -23,7 +23,7 @@ async function makeService(peer: SyncPeer, options: {
   onRequirement?: (requirement: SyncRequirement) => Promise<boolean>;
   onNote?: (note: SyncNote) => Promise<boolean>;
 } = {}): Promise<{ service: LanSyncService; dir: string; ledgers: string[] }> {
-  const dir = await mkdtemp(join(tmpdir(), 'hwchat-sync-'));
+  const dir = await mkdtemp(join(tmpdir(), 'plaitcode-sync-'));
   const ledgers: string[] = [];
   const service = new LanSyncService(join(dir, 'state.json'), {
     peer: () => peer,
@@ -131,7 +131,7 @@ test('协作消息：主机发一条，对端 agent 收到；纯陈述不触发�
   const hub = await makeService(winPeer);
   const notes: SyncNote[] = [];
   const statements: SyncNote[] = [];
-  const dir = await mkdtemp(join(tmpdir(), 'hwchat-sync-note-'));
+  const dir = await mkdtemp(join(tmpdir(), 'plaitcode-sync-note-'));
   const peer = new LanSyncService(join(dir, 'state.json'), {
     peer: () => macPeer,
     runRequirement: async () => true,
@@ -173,8 +173,8 @@ test('一键连接：陌生设备弹一次「允许」即可加入，之后重�
    * 这是「傻瓜式」的核心：用户不抄配对码，只在弹窗上点一次「允许」。
    * 允许之后这台设备被记住，重连不再打扰。
    */
-  const dir = await mkdtemp(join(tmpdir(), 'hwchat-sync-approve-'));
-  const dir2 = await mkdtemp(join(tmpdir(), 'hwchat-sync-approve2-'));
+  const dir = await mkdtemp(join(tmpdir(), 'plaitcode-sync-approve-'));
+  const dir2 = await mkdtemp(join(tmpdir(), 'plaitcode-sync-approve2-'));
   const asked: string[] = [];
   const hub = new LanSyncService(join(dir, 'state.json'), {
     peer: () => winPeer,
@@ -221,8 +221,8 @@ test('一键连接：陌生设备弹一次「允许」即可加入，之后重�
 });
 
 test('一键连接：用户点「拒绝」时连不进来', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'hwchat-sync-reject-'));
-  const dir2 = await mkdtemp(join(tmpdir(), 'hwchat-sync-reject2-'));
+  const dir = await mkdtemp(join(tmpdir(), 'plaitcode-sync-reject-'));
+  const dir2 = await mkdtemp(join(tmpdir(), 'plaitcode-sync-reject2-'));
   const hub = new LanSyncService(join(dir, 'state.json'), {
     peer: () => winPeer,
     runRequirement: async () => true,

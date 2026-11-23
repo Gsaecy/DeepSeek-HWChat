@@ -78,7 +78,7 @@ export interface ResumeScopeInput {
   text: string;
   /** 发送瞬间该对话上留存的清单（续跑按钮会先清中断标记，但清单本身还在）。 */
   todos?: readonly TodoItem[];
-  /** 来自「继续执行」按钮：由 HWChat 自己生成，不需要再靠文本猜测。 */
+  /** 来自「继续执行」按钮：由 PlaitCode 自己生成，不需要再靠文本猜测。 */
   explicitResume?: boolean;
 }
 

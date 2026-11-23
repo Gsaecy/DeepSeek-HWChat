@@ -18,7 +18,7 @@ const NAME_B = 'b'.repeat(32) + '.jpg';
 const NAME_C = 'c'.repeat(32) + '.png';
 
 async function withCache(run: (directory: string) => Promise<void>): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), 'hwchat-attach-'));
+  const directory = await mkdtemp(join(tmpdir(), 'plaitcode-attach-'));
   try {
     await run(directory);
   } finally {
@@ -83,7 +83,7 @@ test('附件缓存：不认识的文件夹内容不删', async () => {
 });
 
 test('附件缓存：目录不存在时安静返回（从没点开过图片）', async () => {
-  const missing = join(tmpdir(), 'hwchat-attach-does-not-exist-1234');
+  const missing = join(tmpdir(), 'plaitcode-attach-does-not-exist-1234');
   const result = await pruneAttachmentCache(missing);
   assert.deepEqual(result, { removed: 0, freedBytes: 0, keptBytes: 0, keptFiles: 0 });
 });

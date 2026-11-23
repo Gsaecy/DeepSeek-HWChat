@@ -29,7 +29,7 @@ test('入参清洗：空路径与控制字符一律丢弃', () => {
 });
 
 test('入参清洗：不展开家目录写法', () => {
-  // 展开 `~` 等于替用户猜主目录；HWChat 在工具参数里也是同样的口径。
+  // 展开 `~` 等于替用户猜主目录；PlaitCode 在工具参数里也是同样的口径。
   assert.equal(normalizeFileReference({ path: '~/.zshrc' }), undefined);
   assert.equal(normalizeFileReference({ path: '~/a.ts' }), undefined);
 });
@@ -45,7 +45,7 @@ test('入参清洗：行号列号只收正整数，其余忽略', () => {
 });
 
 test('入参清洗：合法路径原样保留（含空格）', () => {
-  const spaced = '/Users/guohongyu/AI projects/DeepSeek-HWChat/media/chat.js';
+  const spaced = '/Users/guohongyu/AI projects/PlaitCode/media/chat.js';
   assert.deepEqual(normalizeFileReference({ path: `  ${spaced}  ` }), { path: spaced });
 });
 

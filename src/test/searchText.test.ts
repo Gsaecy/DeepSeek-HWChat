@@ -70,7 +70,7 @@ test('多义：只有一条对应时不算冲突', () => {
 /* ── 真实存储：窗口切掉的历史会被自动检索回来 ─────────────────────── */
 
 async function withStorage(run: (storage: ConversationStorage) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-recall-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-recall-'));
   try {
     const storage = new ConversationStorage(root);
     await storage.initialize();

@@ -32,8 +32,8 @@ function loadSecretScan(): SecretScan {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(readFileSync('media/secret-scan.js', 'utf8'), sandbox);
-  const api = sandbox.HWChatSecretScan as SecretScan | undefined;
-  assert.ok(api, 'media/secret-scan.js 必须挂载 HWChatSecretScan');
+  const api = sandbox.PlaitCodeSecretScan as SecretScan | undefined;
+  assert.ok(api, 'media/secret-scan.js 必须挂载 PlaitCodeSecretScan');
   return api;
 }
 

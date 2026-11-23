@@ -4,11 +4,11 @@ import { BRIDGED_TOOL_PREFIX, trimToolSurface, wantsBridgedTools } from '../agen
 
 /**
  * 工具清单裁剪（用户 2026-11-22：「Copilot Chat 用同一个 DeepSeek 模型也很流畅，
- * HWChat 却很难用」）。
+ * PlaitCode 却很难用」）。
  *
- * 差别之一是清单：HWChat 之前把 VS Code 里**所有**扩展的语言模型工具都下发给模型
+ * 差别之一是清单：PlaitCode 之前把 VS Code 里**所有**扩展的语言模型工具都下发给模型
  * （上限 400，等于不设限），几十个候选 + 上万字符 schema。候选越多，选错越多，
- * 挑中一个在 HWChat 上下文里调不通的桥接工具就是一轮白烧。
+ * 挑中一个在 PlaitCode 上下文里调不通的桥接工具就是一轮白烧。
  */
 
 const native = ['read_file', 'search_files', 'replace_in_file', 'run_command', 'update_todos'];

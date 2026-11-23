@@ -26,7 +26,7 @@ const CANCEL_PATTERNS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
 function sourceRoot(): string {
   const candidates = [
     path.join(process.cwd(), 'src'),
-    path.join(process.cwd(), 'DeepSeek-HWChat', 'src'),
+    path.join(process.cwd(), 'PlaitCode', 'src'),
   ];
   const found = candidates.find((candidate) => existsSync(candidate));
   assert.ok(found, '找不到 src 目录');

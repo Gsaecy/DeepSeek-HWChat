@@ -27,7 +27,7 @@ let executor: ToolExecutor;
 let settings: ChatSettings;
 
 before(async () => {
-  workspaceRoot = await mkdtemp(join(tmpdir(), 'hwchat-tool-access-'));
+  workspaceRoot = await mkdtemp(join(tmpdir(), 'plaitcode-tool-access-'));
   await mkdir(join(workspaceRoot, 'proj'), { recursive: true });
   setWorkspaceRoots([join(workspaceRoot, 'proj')]);
   executor = new ToolExecutor(new AuditLog(join(workspaceRoot, 'audit.jsonl')), () => true);
@@ -116,7 +116,7 @@ test('模型凭空编出来的工具名仍然拒绝（白名单没被放宽成�
 
 test('端到端：开关打开时 fetch_url 真的走到读取逻辑（不再是「未被允许」）', async () => {
   const result = await executor.execute(
-    call('fetch_url', { url: 'https://hwchat-does-not-exist.invalid/page' }),
+    call('fetch_url', { url: 'https://plaitcode-does-not-exist.invalid/page' }),
     'agent',
     settings,
     async () => true,
@@ -125,7 +125,7 @@ test('端到端：开关打开时 fetch_url 真的走到读取逻辑（不再是
   // 说明已经过了访问检查与审批。若又回「未被允许」，就是白名单又漏了。
   assert.equal(/未被允许/.test(result.content), false, `又被准入挡下了：${result.content}`);
   assert.equal(/未被允许/.test(result.summary), false);
-  assert.match(result.content, /hwchat-does-not-exist\.invalid|超时|失败/);
+  assert.match(result.content, /plaitcode-does-not-exist\.invalid|超时|失败/);
 });
 
 test('端到端：开关打开时 fetch_url 仍拒本机与内网地址', async () => {

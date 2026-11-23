@@ -10,7 +10,7 @@ import { encodeQr, qrSvg } from '../sync/qr';
  */
 
 test('二维码：版本 1 的定位图案、定时图案与暗模块都在规范位置', () => {
-  const matrix = encodeQr('HWCHAT');
+  const matrix = encodeQr('PLAITCODE');
   assert.equal(matrix.version, 1);
   assert.equal(matrix.size, 21);
 
@@ -51,8 +51,8 @@ test('二维码：放不下的内容直接报错，不返回半张坏图', () =>
 });
 
 test('二维码 SVG：静区、尺寸与路径都按模块数算', () => {
-  const matrix = encodeQr('HWCHAT');
-  const svg = qrSvg('HWCHAT', { module: 4, quiet: 4 });
+  const matrix = encodeQr('PLAITCODE');
+  const svg = qrSvg('PLAITCODE', { module: 4, quiet: 4 });
   const dimension = (matrix.size + 8) * 4;
   assert.match(svg, new RegExp(`width="${dimension}"`));
   assert.match(svg, /shape-rendering="crispEdges"/);

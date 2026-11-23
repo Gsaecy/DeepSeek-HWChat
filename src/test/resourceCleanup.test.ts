@@ -28,7 +28,7 @@ let workspaceRoot: string;
 let auditPath: string;
 
 before(async () => {
-  workspaceRoot = await mkdtemp(join(tmpdir(), 'hwchat-resource-'));
+  workspaceRoot = await mkdtemp(join(tmpdir(), 'plaitcode-resource-'));
   await mkdir(join(workspaceRoot, 'src'), { recursive: true });
   await writeFile(join(workspaceRoot, 'src', 'a.ts'), 'export const a = 1;\n', 'utf8');
   auditPath = join(workspaceRoot, 'audit.jsonl');

@@ -4,7 +4,7 @@
   // 词表由扩展在生成 HTML 时按当前语言注入，脚本只做查表，不保存任何文案。
   const messages = (() => {
     try {
-      const node = document.getElementById('hwchat-i18n');
+      const node = document.getElementById('plaitcode-i18n');
       return node ? JSON.parse(node.textContent || '{}') : {};
     } catch {
       return {};

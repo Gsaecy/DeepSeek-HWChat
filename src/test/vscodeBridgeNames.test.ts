@@ -6,7 +6,7 @@
  *     open_browser_page {"url":"http://127.0.0.1:5199/pet.html"}
  *     → 工具 open_browser_page 未被允许。
  *
- * 清单里下发的是 `hwchat_vscode_open_browser_page_<hash>`，而模型在历史里看到的是
+ * 清单里下发的是 `plaitcode_vscode_open_browser_page_<hash>`，而模型在历史里看到的是
  * 自然名字（「调用 VS Code 工具：open_browser_page」），照着它调用就落到原生执行器，
  * 得到一句「未被允许」。名字对不上不该让用户承担。
  */
@@ -75,9 +75,9 @@ test('不存在的裸名不会被误当成工具（仍交给下游拒绝）', as
 });
 
 test('宿主自己的命名空间不参与裸名匹配（避免遮蔽内建工具）', async () => {
-  setLmTools([{ name: 'hwchat_internal_thing', description: '', inputSchema: { type: 'object', properties: {} } }]);
+  setLmTools([{ name: 'plaitcode_internal_thing', description: '', inputSchema: { type: 'object', properties: {} } }]);
   const { vscode } = bridge();
-  const dispatched = await vscode.execute(call('hwchat_internal_thing'), 'agent', settings, approvals, 'conv-1');
+  const dispatched = await vscode.execute(call('plaitcode_internal_thing'), 'agent', settings, approvals, 'conv-1');
   assert.equal(dispatched, undefined);
   setLmTools([]);
 });

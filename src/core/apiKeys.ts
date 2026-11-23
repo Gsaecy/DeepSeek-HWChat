@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 
-const LEGACY_KEY = 'hwchat.apiKey';
+const LEGACY_KEY = 'plaitcode.apiKey';
 
 export function apiKeyStorageKey(profileId: string): string {
-  return `hwchat.apiKey.${profileId}`;
+  return `plaitcode.apiKey.${profileId}`;
 }
 
 /**
@@ -15,7 +15,7 @@ export function apiKeyStorageKey(profileId: string): string {
  * 所以这里给「向量」单独一把 Key，按配置档 id 分开存。
  */
 export function embeddingKeyStorageKey(profileId: string): string {
-  return `hwchat.embeddingKey.${profileId}`;
+  return `plaitcode.embeddingKey.${profileId}`;
 }
 
 export async function getEmbeddingKey(secrets: vscode.SecretStorage, profileId: string): Promise<string | undefined> {

@@ -37,7 +37,7 @@ test('模式：显示名与界面下拉完全一致', () => {
 test('模式：提示词写清当前模式，并声明以本轮为准', () => {
   for (const [mode, label] of [['agent', 'Agent'], ['plan', 'Plan'], ['chat', 'Chat']] as const) {
     const prompt = modePromptInstruction(mode);
-    assert.match(prompt, new RegExp(`Current HWChat mode: ${label}`));
+    assert.match(prompt, new RegExp(`Current PlaitCode mode: ${label}`));
     // 历史消息可能是在别的模式下发的，必须明确「以本轮为准」，否则模型会沿用旧假设。
     assert.match(prompt, /authoritative for the current turn/);
   }
@@ -57,7 +57,7 @@ test('模式：三种模式的工具边界互不相同', () => {
 
 test('模式：非法模式按 Agent 生成提示词，不会退化成「没有模式说明」', () => {
   const prompt = modePromptInstruction('unknown' as never);
-  assert.match(prompt, /Current HWChat mode: Agent/);
+  assert.match(prompt, /Current PlaitCode mode: Agent/);
 });
 
 test('生效模式：存档 > 草稿选择 > 设置默认值 > agent', () => {

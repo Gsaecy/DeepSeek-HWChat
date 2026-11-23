@@ -181,7 +181,7 @@ test('generateImage explains a missing image model instead of calling the API', 
 });
 
 test('saveMessageImage keeps bytes on disk and only metadata in the message', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-image-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-image-'));
   try {
     const storage = new ConversationStorage(root);
     await storage.initialize();
@@ -223,7 +223,7 @@ test('saveMessageImage keeps bytes on disk and only metadata in the message', as
 });
 
 test('saveMessageImage rejects empty payloads instead of writing an empty file', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-image-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-image-'));
   try {
     const storage = new ConversationStorage(root);
     await storage.initialize();

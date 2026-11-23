@@ -28,7 +28,7 @@ export function resolveConversationMode(value: unknown, fallback: ConversationMo
  *
  * 1. 存档里的对话模式（已落库对话以自己的记录为准）；
  * 2. 用户在工具条里为「还没有落库的新对话」选的草稿模式；
- * 3. 设置里的 `hwchat.defaultMode`；
+ * 3. 设置里的 `plaitcode.defaultMode`；
  * 4. 兜底 `agent`。
  *
  * 把这条规则独立出来，是因为它以前散落在四个地方（`sendState` / `send` / `setMode` /
@@ -40,7 +40,7 @@ export function resolveActiveMode(input: {
   conversationMode?: unknown;
   /** 用户在工具条里为草稿会话做的选择；没有选择时传 `undefined`。 */
   draftOverride?: unknown;
-  /** 设置里的 `hwchat.defaultMode`。 */
+  /** 设置里的 `plaitcode.defaultMode`。 */
   defaultMode?: unknown;
 }): ConversationMode {
   if (isConversationMode(input.conversationMode)) return input.conversationMode;
@@ -73,7 +73,7 @@ export function modePromptInstruction(mode: ConversationMode): string {
       ? 'Use only read-only tools. Do not edit files and do not run commands. Investigate the workspace first, then produce a concrete implementation plan.'
       : 'Do not call workspace tools and do not edit files; answer using the supplied conversation context and your own knowledge.';
   return [
-    `Current HWChat mode: ${modeLabel(resolved)} (the user selected it in the HWChat UI).`,
+    `Current PlaitCode mode: ${modeLabel(resolved)} (the user selected it in the PlaitCode UI).`,
     rule,
     'This selection is authoritative for the current turn: do not claim that another mode is active, and do not carry over mode assumptions from earlier messages.',
   ].join(' ');

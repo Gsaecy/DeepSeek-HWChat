@@ -9,7 +9,7 @@
  *   · 而用户的机器上确实跑着一个 HTTP 代理（`curl -x http://127.0.0.1:8080` 正常），
  *     直连在别的时刻又不稳定 —— 这就是「有时候 fetch failed，重试又好了」的典型现场。
  *
- * 所以给 `hwchat.proxy` 一条真正的通路：自己开 TCP → 发 `CONNECT` → 在该 socket 上
+ * 所以给 `plaitcode.proxy` 一条真正的通路：自己开 TCP → 发 `CONNECT` → 在该 socket 上
  * 做 TLS → 用 `https.request` 发原始 HTTP，再把结果包装成 fetch 兼容的最小对象，
  * 这样上层的 SSE 解析、错误读取、模型列表都无需改动。
  *

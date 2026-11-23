@@ -14,7 +14,7 @@ import {
  * 改写 VS Code 自己的 Agent 审批设置（chat.tools.*）。
  *
  * 为什么需要它：桥接工具（run_in_terminal 等）的确认由 VS Code 决定
- * （agent/vscodeTools.ts 传 delegateApproval: true），HWChat 的
+ * （agent/vscodeTools.ts 传 delegateApproval: true），PlaitCode 的
  * permissionPreset 只作用于自己实现的工具。想让“只读命令不要每次弹窗”，
  * 只能改 VS Code 那一侧的设置。
  *
@@ -25,8 +25,8 @@ import {
  * 4. 首次写入前把旧值备份到 globalState，可一键还原。
  */
 
-const BACKUP_KEY = 'hwchat.vscodeApprovals.backup.v1';
-const LEVEL_KEY = 'hwchat.vscodeApprovals.level.v1';
+const BACKUP_KEY = 'plaitcode.vscodeApprovals.backup.v1';
+const LEVEL_KEY = 'plaitcode.vscodeApprovals.level.v1';
 
 interface ApprovalBackupEntry {
   id: string;
@@ -106,7 +106,7 @@ export async function showApprovalBridge(context: vscode.ExtensionContext): Prom
       level: detail,
     })),
     {
-      title: 'HWChat：同步 VS Code 审批预设',
+      title: 'PlaitCode：同步 VS Code 审批预设',
       placeHolder: '选择 VS Code 侧 Agent 工具的审批档位',
       ignoreFocusOut: true,
     },
@@ -142,7 +142,7 @@ export async function showApprovalBridge(context: vscode.ExtensionContext): Prom
     ? `；当前版本不存在：${plan.unavailable.map((target) => target.id).join('、')}`
     : '';
   void vscode.window.showInformationMessage(
-    `已写入 ${applied.length} 项 VS Code 审批设置${skipped}。可用「HWChat: 还原 VS Code 审批设置」撤回。`,
+    `已写入 ${applied.length} 项 VS Code 审批设置${skipped}。可用「PlaitCode: 还原 VS Code 审批设置」撤回。`,
   );
 }
 
@@ -150,7 +150,7 @@ export async function showApprovalBridge(context: vscode.ExtensionContext): Prom
 export async function revertApprovalBridge(context: vscode.ExtensionContext): Promise<void> {
   const backup = context.globalState.get<ApprovalBackupEntry[]>(BACKUP_KEY);
   if (!backup?.length) {
-    void vscode.window.showInformationMessage('没有可还原的备份（尚未通过 HWChat 写入过审批设置）。');
+    void vscode.window.showInformationMessage('没有可还原的备份（尚未通过 PlaitCode 写入过审批设置）。');
     return;
   }
 

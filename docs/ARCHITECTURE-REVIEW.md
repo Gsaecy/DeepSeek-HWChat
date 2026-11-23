@@ -1,4 +1,4 @@
-# HWChat 架构评审手册
+# PlaitCode 架构评审手册
 
 > 版本：0.4.8 生成，随版本增量修订至 **0.4.15**（最近修订 2026-11-09：§6 增加跨对话记忆层、刷新规模与自检计数）
 > 用途：把这份文档整份贴给 Claude / GPT，让它们针对**具体代码坐标**评审，而不是泛泛而谈。
@@ -18,7 +18,7 @@
 |---|---|
 | 形态 | VS Code 扩展，单 webview 面板（辅助侧栏），无自建后端 |
 | 语言/构建 | TypeScript → esbuild → `out/extension.js`；无框架、无运行时依赖注入 |
-| 规模 | 229 个 `.ts` / 57,593 行 + webview 资源 ~9.2k 行（0.4.29 实测） |
+| 规模 | 232 个 `.ts` / 58,454 行 + webview 资源 ~9.2k 行（0.5.0 实测） |
 | 最大单文件 | `src/views/chatPanel.ts` 6,826 行；`src/agent/toolExecutor.ts` 3,088；`src/core/storage.ts` 2,436 |
 | 对外接口 | 任意 OpenAI 兼容端点（chat / images / models / embeddings） |
 | 密钥 | 只在 `SecretStorage`（`src/core/apiKeys.ts`），不进 settings.json |
@@ -122,7 +122,7 @@ Runner
 | 搜索退出码 1 | `findstr` / `grep` / `rg` 无匹配（stdout+stderr 皆空）→ 记为成功；真报错仍失败 | `toolExecutor.ts`（`noMatchExit`） |
 | 路径校验 | 正则字面量 `/…/flags` 跳过；真路径照旧校验 | `commandPaths.ts`（`looksLikeRegexLiteral`） |
 | 参数归一化 | 别名补位（file→path、oldString→oldText…）、字符串数字转数字、缺参数报出已收到的键 | `toolExecutor.ts`（`normalizeToolArguments`） |
-| 工具清单裁剪 | 未请求扩展能力时不下发 `hwchat_vscode_*` 桥接工具；超过 28 个先砍桥接 | `toolSurface.ts`（`trimToolSurface`） |
+| 工具清单裁剪 | 未请求扩展能力时不下发 `plaitcode_vscode_*` 桥接工具；超过 28 个先砍桥接 | `toolSurface.ts`（`trimToolSurface`） |
 | 运行内工具全文 | 只留最近 3 条 | `agentRunner.ts:536` |
 | 读取窗口 | `read_file` 默认 600 行 / 48 KB，带行号 + 继续读起点 | `toolExecutor.ts`（`READ_WINDOW_LINES`） |
 | 命令输出 | 单条最多 32 KB，头 60% + 尾 40%，中间折叠并给出收窄写法 | `toolExecutor.ts`（`COMMAND_OUTPUT_WINDOW_BYTES`） |
@@ -134,7 +134,7 @@ Runner
 | 队友消息防接龙 | 只有真的在问才触发对端自动运行；来自同步的消息不再广播 | `lanProtocol.shouldAutoRespond` / `chatPanel.send` |
 | 团队群对齐 | 六阶段（需求/解析/追问/甲方回复/确认/进度/结果）+ `groupAgreement` 状态机；追问后必须停下等甲方，未确认不执行 | `lanProtocol.ts` |
 | 群记录 | `docs/TEAM-CHAT.md` 按需求分组记录发言；工具流水永不进群 | `lanProtocol.renderGroupTranscript` |
-| 手机遥控 | 同一 WiFi 用浏览器指挥；6 位单次码 → 12h `HttpOnly`+`SameSite=Strict` 会话；错 5 次锁 5 分钟；`/m/{send,approve}` 额外要求 `x-hwchat-mobile` 头（挡 CSRF）；端口可填 0 由系统分配 | `sync/mobileControl.ts` / `lanSync.handleMobileRequest` |
+| 手机遥控 | 同一 WiFi 用浏览器指挥；6 位单次码 → 12h `HttpOnly`+`SameSite=Strict` 会话；错 5 次锁 5 分钟；`/m/{send,approve}` 额外要求 `x-plaitcode-mobile` 头（挡 CSRF）；端口可填 0 由系统分配 | `sync/mobileControl.ts` / `lanSync.handleMobileRequest` |
 | 授权竞速 | 电脑卡片与手机卡片并行，谁先点谁算数；危险档在手机授权开启时改用非模态（否则模态框会卡住屏幕）；3 分钟无人处理按拒绝收尾 | `chatPanel.requestToolApproval` / `lanSync.awaitApproval` |
 | 二维码 | 自写最小 QR 编码器（byte 模式 / 纠错 M / 版本 1–10 / 掩码择优），不引依赖、不调第三方图片服务 | `sync/qr.ts` |
 
@@ -237,7 +237,7 @@ Runner
 ## 6. 上下文与记忆（四层）
 
 ```
-⓪ 跨对话记忆 = 项目技术文档       （docs/HWCHAT-PROJECT-NOTES.md，写在项目里）
+⓪ 跨对话记忆 = 项目技术文档       （docs/PLAITCODE-PROJECT-NOTES.md，写在项目里）
 ① 长期记忆 = 任务树 + 约束 + 清单   （落库 ConversationSummary.taskNodes）
 ② 最近原文 = 12 条 / 768 KB       （chatPanel.ts:446/454）
 ③ 按需检索 = 关键词（模糊匹配）+ 可选向量索引
@@ -250,7 +250,7 @@ Runner
 所以对话一长或换新对话，旧决策必然丢 —— 丢掉「已否决的做法」的直接后果就是**循环修改**。
 
 `src/core/projectDoc.ts` 是这一层：五节（约定 / 决策 / 已否决 / 已完成 / 未完成），
-文件头带 `<!-- hwchat:project-doc v1 -->`，**靠标记认而不靠文件名**（改名、移动不会长出第二份）。
+文件头带 `<!-- plaitcode:project-doc v1 -->`，**靠标记认而不靠文件名**（改名、移动不会长出第二份）。
 三条不变量：
 
 1. **只追加**：模型只给条目（`update_project_doc`），读改写由宿主做 —— 整篇交给模型「总结」
@@ -280,7 +280,7 @@ Runner
 | SSE 流式 + `tool_calls` 增量拼装 + `reasoning_content` | `deepseekClient.ts` |
 | 空闲超时与「卡住」区分（`StreamStalledError`） | `deepseekClient.ts:129-145`、`abortReason.ts:73` |
 | 瞬时故障重试（`TRANSIENT_STATUS_ATTEMPTS = 4`，尊重 `Retry-After`） | `deepseekClient.ts:1032` |
-| 代理 + 按主机直连名单 | `proxyFetch.ts`、`hwchat.proxyBypassHosts` |
+| 代理 + 按主机直连名单 | `proxyFetch.ts`、`plaitcode.proxyBypassHosts` |
 | 分段连通性诊断 | `netProbe.ts` / `netDiagnostics.ts` |
 | 出站 JSON 清洗（孤立代理项 → 服务端 400） | `deepseekClient.ts` 的 `encodeBody` |
 | 图片生成 / 远程图片 / 纯文本模型降级 | `imageRequest.ts` / `remoteImages.ts` / `visionFallback.ts` |
@@ -528,7 +528,7 @@ Runner
 
 | 常量 | 值 | 位置 |
 |---|---|---|
-| `agentMaxSteps` | 24 | `hwchat.agentMaxSteps` |
+| `agentMaxSteps` | 24 | `plaitcode.agentMaxSteps` |
 | `MAX_TOOL_CALLS_PER_ROUND` | 12 | `agentRunner.ts:63` |
 | `MAX_IDENTICAL_TOOL_CALLS` | 3 | `agentRunner.ts:70` |
 | `MAX_FAILED_ROUNDS_WITHOUT_PROGRESS` | 3 | `agentRunner.ts:72` |

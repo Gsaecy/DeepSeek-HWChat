@@ -6,7 +6,7 @@ import { spawnCommand, shouldReportStall, COMMAND_STALL_REFRESH_SECONDS } from '
  * 这组用例守的是一个真实故障，不是假想场景。
  *
  * 现场：Agent 执行 `cargo test --offline 2>&1 | tail -30`，其中一条测试卡在
- * `qlmanage -t`（30 分钟只用了 0.03 秒 CPU）。超时触发后 HWChat 只杀掉了
+ * `qlmanage -t`（30 分钟只用了 0.03 秒 CPU）。超时触发后 PlaitCode 只杀掉了
  * shell，`cargo`、`tail`、`qlmanage` 全部存活并被 init 收养（PPID 变成 1）。
  * 因为它们仍然攥着 stdout 管道，Node 的 `'close'` 事件永不触发，
  * 那次工具调用就永久挂起——界面上一直显示「准备运行命令」。

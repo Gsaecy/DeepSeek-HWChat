@@ -8,7 +8,7 @@ import vm from 'node:vm';
  *
  * 回归的故障：模型把待办写成 `1. [ ] **动作**`，界面就把方括号原样显示出来。
  * 用户改过用户级 skill、也提醒过几轮，方括号照旧 —— 因为这条规则
- * 从来没有进过 HWChat 自己的系统提示词。
+ * 从来没有进过 PlaitCode 自己的系统提示词。
  *
  * 所以这里同时钉住两件事：
  * 1. 提示词里有硬规则（管「别写」）。
@@ -25,8 +25,8 @@ function loadFollowUpFormat(): FollowUpFormat {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(readFileSync('media/follow-up-format.js', 'utf8'), sandbox);
-  const loaded = sandbox.HWChatFollowUpFormat as FollowUpFormat | undefined;
-  assert.ok(loaded, 'media/follow-up-format.js 应挂载 HWChatFollowUpFormat');
+  const loaded = sandbox.PlaitCodeFollowUpFormat as FollowUpFormat | undefined;
+  assert.ok(loaded, 'media/follow-up-format.js 应挂载 PlaitCodeFollowUpFormat');
   return loaded;
 }
 

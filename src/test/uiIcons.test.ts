@@ -23,8 +23,8 @@ function loadIcons(): UiIcons {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(readFileSync('media/ui-icons.js', 'utf8'), sandbox);
-  const icons = sandbox.HWChatIcons as UiIcons | undefined;
-  assert.ok(icons, 'media/ui-icons.js 必须挂载 HWChatIcons');
+  const icons = sandbox.PlaitCodeIcons as UiIcons | undefined;
+  assert.ok(icons, 'media/ui-icons.js 必须挂载 PlaitCodeIcons');
   return icons;
 }
 
@@ -162,7 +162,7 @@ test('chat.js：状态符号函数已换成图标，且保留脚本缺失时的�
   assert.ok(!script.includes('function taskStatusSymbol'), 'taskStatusSymbol 应已替换为图标');
   assert.ok(script.includes('function statusIconName'), '缺少 statusIconName');
   assert.ok(script.includes('function taskStatusIconName'), '缺少 taskStatusIconName');
-  assert.ok(script.includes('HWChatIcons'), 'chat.js 必须读取 HWChatIcons');
+  assert.ok(script.includes('PlaitCodeIcons'), 'chat.js 必须读取 PlaitCodeIcons');
   assert.ok(script.includes('GLYPH_FALLBACK'), '必须有文字退路，图标脚本加载失败时不能空白');
 });
 
@@ -170,7 +170,7 @@ test('chatPanel.ts：ui-icons.js 必须在 chat.js 之前注入', () => {
   const html = readFileSync('src/views/chatPanel.ts', 'utf8');
   assert.ok(html.includes("mediaUri(webview, this.extensionUri, 'ui-icons.js')"), 'chatPanel.ts 必须注入 ui-icons.js');
   // 源码里的声明顺序说明不了什么（chat.js 的变量先声明），真正决定加载顺序的是 <script> 标签，
-  // 而 chat.js 启动时就要读 HWChatIcons，所以标签必须排在它前面。
+  // 而 chat.js 启动时就要读 PlaitCodeIcons，所以标签必须排在它前面。
   const iconTag = html.indexOf('src="${iconScript}"');
   const chatTag = html.indexOf('src="${script}"');
   assert.ok(iconTag > -1, 'HTML 里必须有 iconScript 的 script 标签');

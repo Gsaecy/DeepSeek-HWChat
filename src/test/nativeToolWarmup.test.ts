@@ -1,11 +1,11 @@
 /**
  * 语言模型工具扩展的预热行为。
  *
- * 现场（真实故障链）：HWChat 在 `onStartupFinished` 就会激活，旧代码在构造
+ * 现场（真实故障链）：PlaitCode 在 `onStartupFinished` 就会激活，旧代码在构造
  * ChatPanel 一秒钟后无条件调用 `warmToolContributors()`，对**所有**声明了
  * `languageModelTools` 的扩展执行 `extension.activate()`。本机日志里可以直接
- * 看到这条链（`root cause: honor-world.hwchat`）。在装了 Copilot Chat、
- * Claude Code、Codex 这类重扩展的机器上，等于「装了 HWChat，开机就被别人吃 CPU」。
+ * 看到这条链（`root cause: plaitcode.plaitcode`）。在装了 Copilot Chat、
+ * Claude Code、Codex 这类重扩展的机器上，等于「装了 PlaitCode，开机就被别人吃 CPU」。
  *
  * 现在只在打开聊天面板 / 发送消息时预热，并且只预热声明了语言模型工具的扩展；
  * 所有调用方共享同一次预热（否则 `send()` 会在激活完成前就去读工具列表）。
@@ -41,7 +41,7 @@ test('native tools: only language-model-tool contributors are activated', async 
   await new VscodeToolBridge({} as unknown as ToolExecutor).warmToolContributors();
 
   assert.equal(contribActivations, 2, '只激活尚未运行、且贡献了语言模型工具的扩展');
-  assert.equal(unrelatedActivations, 0, '无关扩展不得因为 HWChat 而被拉起');
+  assert.equal(unrelatedActivations, 0, '无关扩展不得因为 PlaitCode 而被拉起');
   resetExtensions();
 });
 

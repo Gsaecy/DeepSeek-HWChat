@@ -8,7 +8,7 @@
  *
  * 两个真问题：
  *  1. `run_in_terminal` 的实现要求 `toolSpecificData` + `context`，而 `lm.invokeTool`
- *     的公开参数里没有这两项 —— 在 HWChat 里**永远**调不通，不该继续下发；
+ *     的公开参数里没有这两项 —— 在 PlaitCode 里**永远**调不通，不该继续下发；
  *  2. 原生 `run_command` 没有「常驻」概念，静态服务器只能跑满超时。
  */
 import assert from 'node:assert/strict';
@@ -35,7 +35,7 @@ const settings: ChatSettings = {
 };
 
 function makeExecutor(): ToolExecutor {
-  return new ToolExecutor(new AuditLog(join(tmpdir(), `hwchat-bg-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`)), () => true);
+  return new ToolExecutor(new AuditLog(join(tmpdir(), `plaitcode-bg-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`)), () => true);
 }
 
 function commandCall(command: string, extra: Record<string, unknown> = {}) {

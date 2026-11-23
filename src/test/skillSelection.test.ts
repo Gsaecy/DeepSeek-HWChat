@@ -1,7 +1,7 @@
 /**
  * Skill 勾选的归属：**扩展给默认值，对话自己说了算**。
  *
- * 需求原文：「安装后 HWChat 会识别它的勾选状态……如果用户在 HWChat 里取消 skill 勾选，
+ * 需求原文：「安装后 PlaitCode 会识别它的勾选状态……如果用户在 PlaitCode 里取消 skill 勾选，
  * 取消效果只应用在当前的对话框。新对话框默认读取本地skill快捷调用扩展里的勾选状态并
  * 应用到新对话框。」
  *
@@ -35,7 +35,7 @@ import { messageEntry } from '../core/i18n';
 function repositoryFile(...segments: string[]): string {
   const candidates = [
     path.join(process.cwd(), ...segments),
-    path.join(process.cwd(), 'DeepSeek-HWChat', ...segments),
+    path.join(process.cwd(), 'PlaitCode', ...segments),
   ];
   const found = candidates.find((candidate) => existsSync(candidate));
   assert.ok(found, `找不到 ${segments.join('/')}`);

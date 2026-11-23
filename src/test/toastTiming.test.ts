@@ -22,13 +22,13 @@ function loadToastTiming(): ToastTiming {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(readFileSync('media/toast-timing.js', 'utf8'), sandbox);
-  const api = sandbox.HWChatToastTiming as ToastTiming | undefined;
-  assert.ok(api, 'media/toast-timing.js 必须挂载 HWChatToastTiming');
+  const api = sandbox.PlaitCodeToastTiming as ToastTiming | undefined;
+  assert.ok(api, 'media/toast-timing.js 必须挂载 PlaitCodeToastTiming');
   return api;
 }
 
 /** 真实的中文停滞提醒文案（对应 i18n 的 agent.commandStalled，seconds=30、timeout=55）。 */
-const STALL_ZH = '有命令已 30 秒没有输出，可能卡在等待密码或确认。HWChat 无法替你输入，可在该步骤上点停止；到达 55 秒上限会自动终止。';
+const STALL_ZH = '有命令已 30 秒没有输出，可能卡在等待密码或确认。PlaitCode 无法替你输入，可在该步骤上点停止；到达 55 秒上限会自动终止。';
 
 test('长警告必须读得完：中文停滞提醒远长于原来的 4.2 秒', () => {
   const api = loadToastTiming();
@@ -87,7 +87,7 @@ test('阅读单位：中文一字算一，拉丁按 0.4 折算', () => {
 
 test('英文长警告不会因为字符数多而失控', () => {
   const api = loadToastTiming();
-  const en = 'A command has produced no output for 30s and may be waiting for a password or confirmation. HWChat cannot type it for you; stop it from that step if needed. It will be terminated automatically at the 55s limit.';
+  const en = 'A command has produced no output for 30s and may be waiting for a password or confirmation. PlaitCode cannot type it for you; stop it from that step if needed. It will be terminated automatically at the 55s limit.';
   const ms = api.toastDurationMs(en, 'warning');
   // 按字符折算后应落在 10–20 秒，而不是按「210 个字符 / 6」算出的 35 秒。
   assert.ok(ms >= 10000 && ms <= 20000, `英文长警告应落在 10–20 秒，实际 ${ms}ms`);

@@ -22,8 +22,8 @@ function load(): Repair {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(readFileSync('media/stream-repair.js', 'utf8'), sandbox);
-  const api = sandbox.HWChatStreamRepair as Repair | undefined;
-  assert.ok(api, 'media/stream-repair.js 必须挂载 HWChatStreamRepair');
+  const api = sandbox.PlaitCodeStreamRepair as Repair | undefined;
+  assert.ok(api, 'media/stream-repair.js 必须挂载 PlaitCodeStreamRepair');
   return api;
 }
 

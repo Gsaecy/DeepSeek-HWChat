@@ -28,7 +28,7 @@ let auditPath: string;
 let executor: ToolExecutor;
 
 before(async () => {
-  workspaceRoot = await mkdtemp(join(tmpdir(), 'hwchat-search-'));
+  workspaceRoot = await mkdtemp(join(tmpdir(), 'plaitcode-search-'));
   root = join(workspaceRoot, 'project');
   const files: Array<[string, string]> = [
     ['src/a.ts', 'export const NEEDLE = 1;\n'],
@@ -124,8 +124,8 @@ test('the minimal exclude profile still sees build output (bare filename lookup)
   assert.equal(defaultProfile.outcome.files.length, 0, '默认档不扫构建目录');
 });
 
-test('a folder-level hwchat.searchExclude entry is honoured (resource scope)', async () => {
-  setFolderConfiguration(root, { 'hwchat.searchExclude': ['custom-skip'] });
+test('a folder-level plaitcode.searchExclude entry is honoured (resource scope)', async () => {
+  setFolderConfiguration(root, { 'plaitcode.searchExclude': ['custom-skip'] });
   invalidateWorkspaceSearch();
   try {
     const result = await runTool('search_files', { query: 'NEEDLE' });
@@ -136,8 +136,8 @@ test('a folder-level hwchat.searchExclude entry is honoured (resource scope)', a
   }
 });
 
-test('a per-project hwchat.searchExclude entry is honoured', async () => {
-  setConfiguration({ 'hwchat.searchExclude': ['custom-skip'] });
+test('a per-project plaitcode.searchExclude entry is honoured', async () => {
+  setConfiguration({ 'plaitcode.searchExclude': ['custom-skip'] });
   invalidateWorkspaceSearch();
   try {
     const result = await runTool('search_files', { query: 'NEEDLE' });

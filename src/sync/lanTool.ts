@@ -59,7 +59,7 @@ export async function runTeamSync(
     return {
       status: 'denied',
       summary: '局域网同步未启用',
-      content: '局域网同步没有启用，无法联系队友。需要用户在 HWChat 里启动「局域网同步」后再试。',
+      content: '局域网同步没有启用，无法联系队友。需要用户在 PlaitCode 里启动「局域网同步」后再试。',
     };
   }
   const action = typeof args.action === 'string' ? args.action : 'status';

@@ -287,7 +287,7 @@
     return findings;
   }
 
-  globalThis.HWChatSecretScan = {
+  globalThis.PlaitCodeSecretScan = {
     kinds: () => PREFIX_RULES.map((rule) => rule.kind).concat(ASSIGNMENT_RULE.kind),
     isPlaceholder,
     scanSecrets,

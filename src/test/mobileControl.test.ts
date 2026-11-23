@@ -87,7 +87,7 @@ test('会话 Cookie 带 HttpOnly 与 SameSite=Strict，且能被解析回来', (
   assert.match(header, /SameSite=Strict/);
   assert.match(header, /Path=\//);
   const parsed = parseCookies(`other=1; ${header.split(';')[0]}`);
-  assert.equal(parsed.hwchat_m, 'abc123');
+  assert.equal(parsed.plaitcode_m, 'abc123');
 });
 
 test('手机页面：未登录只给验证码表单，登录后给输入框，设备名被转义', () => {

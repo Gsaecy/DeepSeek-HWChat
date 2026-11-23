@@ -33,7 +33,7 @@ interface SkillRecord extends SkillSummary {
    * 共享清单里用来指代这条 Skill 的名字。
    *
    * 「本地skill快捷调用」的命名规则是 `frontmatter.name` → 目录名，**没有「标题」这一级**；
-   * 而 HWChat 显示用的 `name` 在缺 frontmatter 时会退回正文标题。两者可能不同，
+   * 而 PlaitCode 显示用的 `name` 在缺 frontmatter 时会退回正文标题。两者可能不同，
    * 若按显示名往共享文件里写，那个扩展的面板就会认为「没勾选」——勾选框看着同步，
    * 实际各说各话。所以写回一律用这个字段。
    */
@@ -70,7 +70,7 @@ export type SkillInjectionMode = 'inline' | 'on-demand';
 const MAX_INDEX_BYTES = 8 * 1024;
 
 const WORKSPACE_PATTERNS = [
-  '.hwchat/skills/*.md',
+  '.plaitcode/skills/*.md',
   '.agents/skills/**/SKILL.md',
   '.claude/skills/**/SKILL.md',
 ];
@@ -81,7 +81,7 @@ const WORKSPACE_PATTERNS = [
  * 3.35s，三条独立各 3.2s ≈ 9.6s），而 `findFiles` 的成本几乎全在一次全工作区遍历上。
  * 用途见 `scanWorkspaceSkills()`；watcher 仍然按三条分别注册（事件要能分辨哪条变了）。
  */
-const WORKSPACE_SKILL_GLOB = '{**/.hwchat/skills/*.md,**/.agents/skills/**/SKILL.md,**/.claude/skills/**/SKILL.md}';
+const WORKSPACE_SKILL_GLOB = '{**/.plaitcode/skills/*.md,**/.agents/skills/**/SKILL.md,**/.claude/skills/**/SKILL.md}';
 
 /** 上次扫描到的 workspace 技能路径缓存，放在扩展自己的 globalStorage 里。 */
 const WORKSPACE_CACHE_NAME = '.workspace-skills.json';

@@ -46,5 +46,5 @@
     return Math.min(MAX_MS, Math.max(min, reading));
   }
 
-  globalThis.HWChatToastTiming = { toastDurationMs, readingUnits, MIN_MS, MAX_MS };
+  globalThis.PlaitCodeToastTiming = { toastDurationMs, readingUnits, MIN_MS, MAX_MS };
 })();

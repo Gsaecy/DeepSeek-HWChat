@@ -242,14 +242,14 @@ test('权限矩阵只有一份来源：设置页直接渲染预设表，不再�
   // 生成，镜像表已删除；这条断言防止有人再抄一份回来。
   const settingsJs = [
     path.join(process.cwd(), 'media', 'settings.js'),
-    path.join(process.cwd(), 'DeepSeek-HWChat', 'media', 'settings.js'),
+    path.join(process.cwd(), 'PlaitCode', 'media', 'settings.js'),
   ].find((candidate) => existsSync(candidate));
   assert.ok(settingsJs, '找不到 media/settings.js');
   assert.doesNotMatch(readFileSync(settingsJs, 'utf8'), /permissionPresetProfiles/, '设置页不该再维护预设镜像表');
 
   const panel = [
     path.join(process.cwd(), 'src', 'views', 'settingsPanel.ts'),
-    path.join(process.cwd(), 'DeepSeek-HWChat', 'src', 'views', 'settingsPanel.ts'),
+    path.join(process.cwd(), 'PlaitCode', 'src', 'views', 'settingsPanel.ts'),
   ].find((candidate) => existsSync(candidate));
   assert.ok(panel, '找不到 src/views/settingsPanel.ts');
   const source = readFileSync(panel, 'utf8');

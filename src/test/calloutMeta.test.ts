@@ -30,8 +30,8 @@ function loadCalloutMeta(): CalloutMeta {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(readFileSync('media/callout-meta.js', 'utf8'), sandbox);
-  const api = sandbox.HWChatCalloutMeta as CalloutMeta | undefined;
-  assert.ok(api, 'media/callout-meta.js 必须挂载 HWChatCalloutMeta');
+  const api = sandbox.PlaitCodeCalloutMeta as CalloutMeta | undefined;
+  assert.ok(api, 'media/callout-meta.js 必须挂载 PlaitCodeCalloutMeta');
   return api;
 }
 

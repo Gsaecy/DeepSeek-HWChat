@@ -153,7 +153,7 @@
     return Object.prototype.hasOwnProperty.call(EMOJI, key) ? EMOJI[key] : '';
   }
 
-  globalThis.HWChatIcons = {
+  globalThis.PlaitCodeIcons = {
     VIEW_BOX,
     PADDING,
     DEFAULT_STROKE,

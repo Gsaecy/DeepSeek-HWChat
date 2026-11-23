@@ -183,7 +183,7 @@ test('轻副本：只为摘要保留一行正文，工具输出全部丢掉', ()
 /* ── 真实存储：存档里的图片搬到磁盘，读取不再受 2 MB 影响 ───────────── */
 
 async function withStorage(run: (storage: ConversationStorage, root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-context-'));
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-context-'));
   try {
     const storage = new ConversationStorage(root);
     await storage.initialize();

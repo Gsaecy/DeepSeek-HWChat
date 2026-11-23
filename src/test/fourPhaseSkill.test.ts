@@ -8,13 +8,13 @@ import * as vscode from 'vscode';
 import { SkillRegistry } from '../agent/skillRegistry';
 
 /**
- * 「四阶段交付」技能文件能不能被 HWChat 真正认出来。
+ * 「四阶段交付」技能文件能不能被 PlaitCode 真正认出来。
  *
  * 为什么要这条测试：SKILL.md 的 frontmatter 出问题**不会报错** ——
  * 名字里带冒号、`name` 与目录名不一致、摘要忘了写触发词，结果都是「技能在，
  * 但模型看不到 / 永远不被匹配」，只有靠人工翻面板才能发现。
  *
- * 这里直接用 **HWChat 自己的 SkillRegistry** 去扫一份真实的技能文件副本
+ * 这里直接用 **PlaitCode 自己的 SkillRegistry** 去扫一份真实的技能文件副本
  * （来源是本机 `~/.copilot/skills/four-phase-delivery/SKILL.md`）：
  *  * 名字必须是 `four-phase-delivery` 且与目录名一致；
  *  * 摘要必须带触发词（否则路由永远匹配不上）；
@@ -27,13 +27,13 @@ import { SkillRegistry } from '../agent/skillRegistry';
 const SKILL_NAME = 'four-phase-delivery';
 const SOURCE = join(homedir(), '.copilot', 'skills', SKILL_NAME, 'SKILL.md');
 
-test('本机装了「四阶段交付」技能时，HWChat 能正确解析它', async (t) => {
+test('本机装了「四阶段交付」技能时，PlaitCode 能正确解析它', async (t) => {
   if (!existsSync(SOURCE)) {
     t.skip(`本机没有 ${SOURCE}`);
     return;
   }
-  const root = await mkdtemp(join(tmpdir(), 'hwchat-four-phase-'));
-  // 按 HWChat 的真实目录约定摆一份：`<copilotSkillRoot>/<name>/SKILL.md`
+  const root = await mkdtemp(join(tmpdir(), 'plaitcode-four-phase-'));
+  // 按 PlaitCode 的真实目录约定摆一份：`<copilotSkillRoot>/<name>/SKILL.md`
   await mkdir(join(root, 'copilot-skills', SKILL_NAME), { recursive: true });
   await copyFile(SOURCE, join(root, 'copilot-skills', SKILL_NAME, 'SKILL.md'));
 

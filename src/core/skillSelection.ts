@@ -2,8 +2,8 @@
  * Skill 勾选：与「本地skill快捷调用」扩展的分工。
  *
  * 那个扩展维护一份**全局**清单（`~/.copilot/.skill-quick-launch.json` 的 `active`），
- * 表示「默认勾选哪些 Skill」。HWChat 只读它，而且只在**开新对话**时读一次，作为那条
- * 对话的初始勾选；此后在 HWChat 面板里的勾选 / 取消都只属于当前这条对话，不会改到
+ * 表示「默认勾选哪些 Skill」。PlaitCode 只读它，而且只在**开新对话**时读一次，作为那条
+ * 对话的初始勾选；此后在 PlaitCode 面板里的勾选 / 取消都只属于当前这条对话，不会改到
  * 那份全局清单。
  *
  * 为什么不是双向同步：两边想表达的东西不一样。全局清单是「以后新对话默认用哪些」，
@@ -65,7 +65,7 @@ export function isSharedActive(active: readonly string[], names: readonly string
 /**
  * 一条对话该用哪份勾选。
  *
- * - 这条对话**已经记过**自己的选择（用户在 HWChat 里勾过/取消过，或者发送过消息）→
+ * - 这条对话**已经记过**自己的选择（用户在 PlaitCode 里勾过/取消过，或者发送过消息）→
  *   用它自己的，哪怕全局清单后来变了：对话内的改动只属于这条对话。
  * - 还没记过（新对话、旧存档没这个字段）→ 取「本地skill快捷调用」当前的全局勾选，
  *   这就是「新对话框默认读取扩展里的勾选状态」。
@@ -127,7 +127,7 @@ export function withSharedLastUsed(
 /**
  * 「本地skill快捷调用」用来指代一条 Skill 的名字：`frontmatter.name` → 目录名，**只这两级**。
  *
- * 那个扩展的 `parseSkillMd` 就是这么取名的，它不认得正文标题。而 HWChat 的显示名
+ * 那个扩展的 `parseSkillMd` 就是这么取名的，它不认得正文标题。而 PlaitCode 的显示名
  * 在缺 frontmatter 时会退回正文第一个标题——两者可能不同。写 `lastUsed` 时必须用
  * 它认得的名字，否则它算不出「已调用」角标。
  */

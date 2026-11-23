@@ -165,7 +165,7 @@ export class DeepSeekClient {
   constructor(
     private readonly getApiKey: (profileId: string) => Thenable<string | undefined> | Promise<string | undefined>,
     /**
-     * 网络事件日志口（写 HWChat 输出面板）。
+     * 网络事件日志口（写 PlaitCode 输出面板）。
      *
      * 以前连接失败在日志里没有留下任何痕迹 —— 用户报「fetch failed」时，面板里只有
      * 权限预设与清理记录，完全看不出是 DNS、代理还是证书。现在每次重试与最终失败
@@ -194,7 +194,7 @@ export class DeepSeekClient {
      * 空闲判定掐掉（日志里表现为 `ABORT_ERR`）。DeepSeek 在国内可直连，所以默认放行它；
      * 网页检索、图片下载等仍走代理。
      *
-     * 只影响 **HWChat 自己发出的请求**：`git push/pull` 等子进程走自己的代理配置
+     * 只影响 **PlaitCode 自己发出的请求**：`git push/pull` 等子进程走自己的代理配置
      * （环境变量 / git config），完全不受这一项影响。
      */
     const bypass = (settings.proxyBypassHosts ?? ['api.deepseek.com']).map((item) => item.toLowerCase());

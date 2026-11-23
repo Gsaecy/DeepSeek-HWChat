@@ -24,7 +24,7 @@ import type { LanguageSetting } from './i18n';
 export type { Language, LanguageSetting } from './i18n';
 
 /**
- * 旧版本写在 `hwchat.*` 全局设置里的运行时设置。
+ * 旧版本写在 `plaitcode.*` 全局设置里的运行时设置。
  *
  * 0.2.5 之前这三项只有全局一份、不随对话存档。升级后那些**老对话**里没有对应
  * 字段，需要靠这份旧值补一次，否则它们会统一掉回「每次询问 / 24 步」。
@@ -297,7 +297,7 @@ export interface ConversationSummary {
   /**
    * 本对话自己的运行时设置。
    *
-   * 以前这三项直接写 `hwchat.*` 全局设置，多线程对话时互相污染：在 A 调成
+   * 以前这三项直接写 `plaitcode.*` 全局设置，多线程对话时互相污染：在 A 调成
    * 「完全访问」，B 立刻也跟着放宽；B 把步骤数改成 8，正在跑的 A 下一轮就被截断。
    * 现在它们属于对话，全局设置只作为新对话的默认值。
    */
@@ -407,7 +407,7 @@ export interface CleanupResult extends StorageStats {
   /** 本轮被另一个窗口的「清理主」跳过（跨进程锁没拿到）。 */
   skippedByPeer?: boolean;
   /**
-   * 缓存体积是否已超出 `hwchat.cacheBudgetMB`。
+   * 缓存体积是否已超出 `plaitcode.cacheBudgetMB`。
    *
    * 超预算**不会**触发删除：清理只做瘦身与统计，空间由用户在设置里自己清。
    */
@@ -445,7 +445,7 @@ export interface ChatSettings {
   cleanupIntervalMinutes: number;
   maxMessagesInContext: number;
   /**
-   * 追加的搜索排除目录名（`hwchat.searchExclude`）。
+   * 追加的搜索排除目录名（`plaitcode.searchExclude`）。
    *
    * 声明为可选：这是 resource 作用域的配置（多根工作区里用户可能只写在某个根的
    * `.vscode/settings.json` 里），读取侧由 `workspaceSearch` 逐根取并集；设置页只
@@ -480,7 +480,7 @@ export interface ChatSettings {
    * 而 api.deepseek.com 在国内通常可以直连。默认只放行它，其它域名（网页检索、图片下载）
    * 仍按 `proxy` 走。
    *
-   * 注意：这里只管 **HWChat 自己发出的请求**。`git push/pull`、`npm` 等由 `run_command`
+   * 注意：这里只管 **PlaitCode 自己发出的请求**。`git push/pull`、`npm` 等由 `run_command`
    * 起的子进程走它们自己的代理配置（环境变量 / git config），完全不受本项影响。
    */
   proxyBypassHosts?: string[];
@@ -508,7 +508,7 @@ export interface ChatSettings {
    */
   internetReference: boolean;
   /**
-   * 项目技术文档（`docs/HWCHAT-PROJECT-NOTES.md`）：自动维护 / 询问 / 关闭。
+   * 项目技术文档（`docs/PLAITCODE-PROJECT-NOTES.md`）：自动维护 / 询问 / 关闭。
    *
    * 这是权限预设之外**唯一**会改变「要不要问」的开关，所以它在设置页单独列一行，
    * 且是 machine 作用域（克隆下来的仓库不能靠 `.vscode/settings.json` 打开自动写）。

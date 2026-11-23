@@ -24,7 +24,7 @@ export interface ResolveWorkspacePathOptions<T extends WorkspaceRootLike = Works
    * 本次对话绑定的项目根（必须来自 `roots`）。
    *
    * 多根工作区里相对路径的归属只能靠推断，而「推断」以前固定收敛到第一个根目录：
-   * 在 DeepSeek-HWChat 里说「提交一下」，`cwd` 默认是 `'.'`，结果命令落到排在第一
+   * 在 PlaitCode 里说「提交一下」，`cwd` 默认是 `'.'`，结果命令落到排在第一
    * 位的另一个项目里执行。传入这次对话所属的项目根后：
    * 1. `.` 直接解析成该项目根，而不是 `roots[0]`；
    * 2. 多根同时存在同名文件时，优先取该项目根下的那一份；
@@ -290,7 +290,7 @@ export function involvedProjectRoots(input: {
  * 不必等下一次写入才开始记录。单根工作区的前缀是纯文件名，不会误判。
  *
  * 只看第一段是否**精确等于**某个文件夹名：这一条挡掉两边的误报——
- * 文件名恰好与项目同名（`DeepSeek-HWChat` 这种无扩展名文件），以及名字相近的项目。
+ * 文件名恰好与项目同名（`PlaitCode` 这种无扩展名文件），以及名字相近的项目。
  */
 export function rootsFromChangedFiles(input: {
   roots: readonly WorkspaceRootLike[];
@@ -322,8 +322,8 @@ export function projectNameOf(projectRoot?: string): string | null {
 /**
  * 把「根目录名前缀」从 glob 里剥掉，并返回该前缀命中的根目录。
  *
- * glob 与 path 参数使用同一套约定：`DeepSeek-HWChat/src/**\/*.ts` 等价于在
- * DeepSeek-HWChat 根下匹配 `src/**\/*.ts`。此前带前缀的 glob 被原样交给
+ * glob 与 path 参数使用同一套约定：`PlaitCode/src/**\/*.ts` 等价于在
+ * PlaitCode 根下匹配 `src/**\/*.ts`。此前带前缀的 glob 被原样交给
  * findFiles，一个文件都匹配不到，却对外回答“找到 0 个文件”——调用方无法区分
  * 是自己写错了还是确实没有文件，只能反复试错。
  */
@@ -345,7 +345,7 @@ export function normalizeWorkspaceGlob<T extends WorkspaceRootLike>(
 
 /**
  * findFiles 的 include 里裸 `**` 匹配不到任何文件，必须写成展开形式。
- * 根名前缀被剥掉后恰好剩下 `**`（例如 `DeepSeek-HWChat/**`），若不归一就会
+ * 根名前缀被剥掉后恰好剩下 `**`（例如 `PlaitCode/**`），若不归一就会
  * 静默返回 0 个文件，调用方只能误判为“该目录下没有文件”。
  */
 function matchEverything(glob: string): string {
@@ -376,9 +376,9 @@ const PATH_ARGUMENT_KEYS = new Set([
 /**
  * 桥接（VS Code 语言模型）工具的路径隔离校验。
  *
- * 真实缺陷：`hwchat_vscode_copilot_readFile` 传 `/etc/hosts` 会直接返回工作区外的
+ * 真实缺陷：`plaitcode_vscode_copilot_readFile` 传 `/etc/hosts` 会直接返回工作区外的
  * 文件内容，`copilot_listDirectory` 传 `/etc` 会列出整个系统目录——桥接通道此前
- * 完全绕过 HWChat 自己的路径隔离，而原生 `read_file` / `run_command` 被严格限制在
+ * 完全绕过 PlaitCode 自己的路径隔离，而原生 `read_file` / `run_command` 被严格限制在
  * 工作区内。两条通道安全等级不一致，等于留了一个后门。
  *
  * 返回值是拒绝理由，`undefined` 表示通过。

@@ -13,7 +13,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { SyncGroupMessage, SyncPeer } from './lanProtocol';
 
 export const MOBILE_PATH = '/m';
-export const MOBILE_COOKIE = 'hwchat_m';
+export const MOBILE_COOKIE = 'plaitcode_m';
 /** 6 位码的有效期：够你从电脑走到手机输完，又不至于长期贴在屏幕上。 */
 export const MOBILE_CODE_TTL_MS = 10 * 60_000;
 /** 会话有效期：一天一换，不用每次进页面都输码。 */
@@ -175,7 +175,7 @@ export function renderMobilePage(options: { device: string; authed: boolean; can
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f1115">
-<title>HWChat · ${device}</title>
+<title>PlaitCode · ${device}</title>
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
@@ -236,12 +236,12 @@ export function renderMobilePage(options: { device: string; authed: boolean; can
 <body>
 <header>
   <span class="dot" id="dot"></span>
-  <span class="name">HWChat · ${device}</span>
+  <span class="name">PlaitCode · ${device}</span>
   <span class="role" id="role"></span>
 </header>
 ${options.authed ? '<main id="main"><div class="empty">正在连接…</div></main><footer><textarea id="input" rows="1" placeholder="以甲方身份说一句话（Enter 发送）"></textarea><button class="primary" id="send">发送</button></footer>' : `<main><form class="login" id="login">
   <h1>连接到这台电脑</h1>
-  <p>在电脑上打开「HWChat：手机遥控」，把那里的 6 位数字填进来。也可以直接扫那张二维码。</p>
+  <p>在电脑上打开「PlaitCode：手机遥控」，把那里的 6 位数字填进来。也可以直接扫那张二维码。</p>
   <input class="code" id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" placeholder="000000">
   <button class="primary" type="submit">进入团队群</button>
   <div class="err" id="err"></div>
@@ -277,7 +277,7 @@ ${options.authed ? '<main id="main"><div class="empty">正在连接…</div></ma
   function post(url, body) {
     return fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-hwchat-mobile': '1' },
+      headers: { 'content-type': 'application/json', 'x-plaitcode-mobile': '1' },
       credentials: 'same-origin',
       body: JSON.stringify(body || {})
     }).then(function (response) { return response.json().catch(function () { return {}; }); });
@@ -298,7 +298,7 @@ ${options.authed ? '<main id="main"><div class="empty">正在连接…</div></ma
   function render(state) {
     document.getElementById('dot').className = 'dot' + (state.role === 'off' ? '' : ' on');
     document.getElementById('role').textContent = state.role === 'hub' ? '主机' : state.role === 'peer' ? '已连接' : '单机';
-    document.title = 'HWChat · ' + state.device;
+    document.title = 'PlaitCode · ' + state.device;
 
     var scroll = main.scrollHeight - main.scrollTop - main.clientHeight < 80;
     var next = JSON.stringify([state.messages, state.approvals, state.openQuestion]);

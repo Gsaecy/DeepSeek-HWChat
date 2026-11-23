@@ -1,14 +1,14 @@
 {
-  "name": "hwchat",
-  "displayName": "HWChat",
+  "name": "plaitcode",
+  "displayName": "PlaitCode",
   "description": "A secure coding agent for VS Code with DeepSeek: approval-controlled workspace tools, plan-tracking task lists, copyable local/server commands and durable local history.",
-  "version": "0.4.29",
-  "publisher": "honor-world",
+  "version": "0.5.0",
+  "publisher": "plaitcode",
   "license": "MIT",
   "icon": "resources/logo.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Gsaecy/DeepSeek-HWChat"
+    "url": "https://github.com/Gsaecy/PlaitCode"
   },
   "engines": {
     "vscode": "^1.106.0"
@@ -18,32 +18,32 @@
       "supported": "limited",
       "description": "%capability.untrustedWorkspaces%",
       "restrictedConfigurations": [
-        "hwchat.permissionPreset",
-        "hwchat.fileReadPolicy",
-        "hwchat.fileWritePolicy",
-        "hwchat.commandPolicy",
-        "hwchat.dangerousCommandPolicy",
-        "hwchat.sensitiveFilePolicy",
-        "hwchat.apiProfiles",
-        "hwchat.activeApiProfileId",
-        "hwchat.baseUrl",
-        "hwchat.requestHeaders",
-        "hwchat.proxy",
-        "hwchat.proxyBypassHosts",
-        "hwchat.systemPrompt",
-        "hwchat.allowSensitiveFiles",
-        "hwchat.allowDangerousCommands",
-        "hwchat.maxReadBytes",
-        "hwchat.maxToolOutputBytes",
-        "hwchat.maxCommandSeconds",
-        "hwchat.historyRetentionDays",
-        "hwchat.taskCacheRetentionHours",
-        "hwchat.cacheBudgetMB",
-        "hwchat.cleanupIntervalMinutes",
-        "hwchat.auditRetentionDays",
-        "hwchat.embeddingProfileId",
-        "hwchat.embeddingModel",
-        "hwchat.embeddingBaseUrl"
+        "plaitcode.permissionPreset",
+        "plaitcode.fileReadPolicy",
+        "plaitcode.fileWritePolicy",
+        "plaitcode.commandPolicy",
+        "plaitcode.dangerousCommandPolicy",
+        "plaitcode.sensitiveFilePolicy",
+        "plaitcode.apiProfiles",
+        "plaitcode.activeApiProfileId",
+        "plaitcode.baseUrl",
+        "plaitcode.requestHeaders",
+        "plaitcode.proxy",
+        "plaitcode.proxyBypassHosts",
+        "plaitcode.systemPrompt",
+        "plaitcode.allowSensitiveFiles",
+        "plaitcode.allowDangerousCommands",
+        "plaitcode.maxReadBytes",
+        "plaitcode.maxToolOutputBytes",
+        "plaitcode.maxCommandSeconds",
+        "plaitcode.historyRetentionDays",
+        "plaitcode.taskCacheRetentionHours",
+        "plaitcode.cacheBudgetMB",
+        "plaitcode.cleanupIntervalMinutes",
+        "plaitcode.auditRetentionDays",
+        "plaitcode.embeddingProfileId",
+        "plaitcode.embeddingModel",
+        "plaitcode.embeddingBaseUrl"
       ]
     }
   },
@@ -64,184 +64,184 @@
   "contributes": {
     "commands": [
       {
-        "command": "hwchat.openChat",
-        "title": "HWChat: %command.openChat%",
-        "category": "HWChat",
+        "command": "plaitcode.openChat",
+        "title": "PlaitCode: %command.openChat%",
+        "category": "PlaitCode",
         "icon": "$(comment-discussion)"
       },
       {
-        "command": "hwchat.newChat",
-        "title": "HWChat: %command.newChat%",
-        "category": "HWChat",
+        "command": "plaitcode.newChat",
+        "title": "PlaitCode: %command.newChat%",
+        "category": "PlaitCode",
         "icon": "$(add)"
       },
       {
-        "command": "hwchat.openSettings",
-        "title": "HWChat: %command.openSettings%",
-        "category": "HWChat",
+        "command": "plaitcode.openSettings",
+        "title": "PlaitCode: %command.openSettings%",
+        "category": "PlaitCode",
         "icon": "$(settings-gear)"
       },
       {
-        "command": "hwchat.askSelection",
-        "title": "HWChat: %command.askSelection%",
-        "category": "HWChat"
+        "command": "plaitcode.askSelection",
+        "title": "PlaitCode: %command.askSelection%",
+        "category": "PlaitCode"
       },
       {
-        "command": "hwchat.explainSelection",
-        "title": "HWChat: %command.explainSelection%",
-        "category": "HWChat"
+        "command": "plaitcode.explainSelection",
+        "title": "PlaitCode: %command.explainSelection%",
+        "category": "PlaitCode"
       },
       {
-        "command": "hwchat.cleanupNow",
-        "title": "HWChat: %command.cleanupNow%",
-        "category": "HWChat",
+        "command": "plaitcode.cleanupNow",
+        "title": "PlaitCode: %command.cleanupNow%",
+        "category": "PlaitCode",
         "icon": "$(trash)"
       },
       {
-        "command": "hwchat.restoreDeletedConversations",
-        "title": "HWChat: %command.restoreDeletedConversations%",
-        "category": "HWChat"
+        "command": "plaitcode.restoreDeletedConversations",
+        "title": "PlaitCode: %command.restoreDeletedConversations%",
+        "category": "PlaitCode"
       },
       {
-        "command": "hwchat.emptyTrash",
-        "title": "HWChat: %command.emptyTrash%",
-        "category": "HWChat"
+        "command": "plaitcode.emptyTrash",
+        "title": "PlaitCode: %command.emptyTrash%",
+        "category": "PlaitCode"
       },
       {
-        "command": "hwchat.setApiKey",
-        "title": "HWChat: %command.setApiKey%",
-        "category": "HWChat"
+        "command": "plaitcode.setApiKey",
+        "title": "PlaitCode: %command.setApiKey%",
+        "category": "PlaitCode"
       },
       {
-        "command": "hwchat.exportHistory",
-        "title": "HWChat: %command.exportHistory%",
-        "category": "HWChat",
+        "command": "plaitcode.exportHistory",
+        "title": "PlaitCode: %command.exportHistory%",
+        "category": "PlaitCode",
         "icon": "$(export)"
       },
       {
-        "command": "hwchat.attachFiles",
-        "title": "HWChat: %command.attachFiles%",
-        "category": "HWChat",
+        "command": "plaitcode.attachFiles",
+        "title": "PlaitCode: %command.attachFiles%",
+        "category": "PlaitCode",
         "icon": "$(attach)"
       },
       {
-        "command": "hwchat.archiveConversation",
-        "title": "HWChat: %command.archiveConversation%",
-        "category": "HWChat",
+        "command": "plaitcode.archiveConversation",
+        "title": "PlaitCode: %command.archiveConversation%",
+        "category": "PlaitCode",
         "icon": "$(archive)"
       },
       {
-        "command": "hwchat.continueConversation",
-        "title": "HWChat: %command.continueConversation%",
-        "category": "HWChat",
+        "command": "plaitcode.continueConversation",
+        "title": "PlaitCode: %command.continueConversation%",
+        "category": "PlaitCode",
         "icon": "$(debug-step-over)"
       },
       {
-        "command": "hwchat.rescanSkills",
-        "title": "HWChat: %command.rescanSkills%",
-        "category": "HWChat",
+        "command": "plaitcode.rescanSkills",
+        "title": "PlaitCode: %command.rescanSkills%",
+        "category": "PlaitCode",
         "icon": "$(refresh)"
       },
       {
-        "command": "hwchat.syncVsCodeApprovals",
-        "title": "HWChat: %command.syncVsCodeApprovals%",
-        "category": "HWChat",
+        "command": "plaitcode.syncVsCodeApprovals",
+        "title": "PlaitCode: %command.syncVsCodeApprovals%",
+        "category": "PlaitCode",
         "icon": "$(shield)"
       },
       {
-        "command": "hwchat.revertVsCodeApprovals",
-        "title": "HWChat: %command.revertVsCodeApprovals%",
-        "category": "HWChat",
+        "command": "plaitcode.revertVsCodeApprovals",
+        "title": "PlaitCode: %command.revertVsCodeApprovals%",
+        "category": "PlaitCode",
         "icon": "$(discard)"
       },
       {
-        "command": "hwchat.showPermissionScope",
-        "title": "HWChat: %command.showPermissionScope%",
-        "category": "HWChat",
+        "command": "plaitcode.showPermissionScope",
+        "title": "PlaitCode: %command.showPermissionScope%",
+        "category": "PlaitCode",
         "icon": "$(eye)"
       },
       {
-        "command": "hwchat.showResourceStats",
-        "title": "HWChat: %command.showResourceStats%",
-        "category": "HWChat",
+        "command": "plaitcode.showResourceStats",
+        "title": "PlaitCode: %command.showResourceStats%",
+        "category": "PlaitCode",
         "icon": "$(pulse)"
       },
       {
-        "command": "hwchat.diagnoseNetwork",
-        "title": "HWChat: %command.diagnoseNetwork%",
-        "category": "HWChat"
+        "command": "plaitcode.diagnoseNetwork",
+        "title": "PlaitCode: %command.diagnoseNetwork%",
+        "category": "PlaitCode"
       },
       {
-        "command": "hwchat.lanSync.status",
-        "title": "HWChat: 查看局域网同步状态"
+        "command": "plaitcode.lanSync.status",
+        "title": "PlaitCode: 查看局域网同步状态"
       },
       {
-        "command": "hwchat.lanSync.openLedger",
-        "title": "HWChat: 打开跨平台对齐账本"
+        "command": "plaitcode.lanSync.openLedger",
+        "title": "PlaitCode: 打开跨平台对齐账本"
       },
       {
-        "command": "hwchat.lanSync.connect",
-        "title": "HWChat: 连接另一台设备（同一 WiFi，一键）",
+        "command": "plaitcode.lanSync.connect",
+        "title": "PlaitCode: 连接另一台设备（同一 WiFi，一键）",
         "icon": "$(broadcast)"
       },
       {
-        "command": "hwchat.lanSync.disconnect",
-        "title": "HWChat: 断开局域网同步"
+        "command": "plaitcode.lanSync.disconnect",
+        "title": "PlaitCode: 断开局域网同步"
       },
       {
-        "command": "hwchat.lanSync.advanced",
-        "title": "HWChat: 局域网同步 · 高级设置"
+        "command": "plaitcode.lanSync.advanced",
+        "title": "PlaitCode: 局域网同步 · 高级设置"
       },
       {
-        "command": "hwchat.lanSync.openGroup",
-        "title": "HWChat: 打开团队群（甲方与两个乙方）",
+        "command": "plaitcode.lanSync.openGroup",
+        "title": "PlaitCode: 打开团队群（甲方与两个乙方）",
         "icon": "$(comment-discussion)"
       },
       {
-        "command": "hwchat.mobile.open",
-        "title": "HWChat: 手机遥控（扫码）",
+        "command": "plaitcode.mobile.open",
+        "title": "PlaitCode: 手机遥控（扫码）",
         "icon": "$(device-mobile)"
       },
       {
-        "command": "hwchat.mobile.toggle",
-        "title": "HWChat: 开 / 关手机遥控"
+        "command": "plaitcode.mobile.toggle",
+        "title": "PlaitCode: 开 / 关手机遥控"
       }
     ],
     "viewsContainers": {
       "secondarySidebar": [
         {
-          "id": "hwchat",
-          "title": "HWChat",
+          "id": "plaitcode",
+          "title": "PlaitCode",
           "icon": "resources/activity.svg"
         }
       ]
     },
     "views": {
-      "hwchat": [
+      "plaitcode": [
         {
           "type": "webview",
-          "id": "hwchat.chatView",
-          "name": "HWChat",
+          "id": "plaitcode.chatView",
+          "name": "PlaitCode",
           "initialSize": 420
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "hwchat.chatView",
+        "view": "plaitcode.chatView",
         "contents": "%viewsWelcome.chat%"
       }
     ],
     "keybindings": [
       {
-        "command": "hwchat.openChat",
+        "command": "plaitcode.openChat",
         "key": "cmd+shift+l",
         "mac": "cmd+shift+l",
         "win": "ctrl+shift+l",
         "linux": "ctrl+shift+l"
       },
       {
-        "command": "hwchat.askSelection",
+        "command": "plaitcode.askSelection",
         "key": "cmd+alt+.",
         "mac": "cmd+alt+.",
         "win": "ctrl+alt+.",
@@ -251,50 +251,50 @@
     "menus": {
       "editor/context": [
         {
-          "command": "hwchat.askSelection",
+          "command": "plaitcode.askSelection",
           "when": "editorHasSelection",
-          "group": "hwchat@1"
+          "group": "plaitcode@1"
         },
         {
-          "command": "hwchat.explainSelection",
+          "command": "plaitcode.explainSelection",
           "when": "editorHasSelection",
-          "group": "hwchat@2"
+          "group": "plaitcode@2"
         }
       ],
       "explorer/context": [
         {
-          "command": "hwchat.attachFiles",
+          "command": "plaitcode.attachFiles",
           "when": "resourceScheme == file",
-          "group": "hwchat@1"
+          "group": "plaitcode@1"
         }
       ],
       "view/title": [
         {
-          "command": "hwchat.lanSync.connect",
-          "when": "view == hwchat.chatView",
+          "command": "plaitcode.lanSync.connect",
+          "when": "view == plaitcode.chatView",
           "group": "navigation@0"
         },
         {
-          "command": "hwchat.lanSync.openGroup",
-          "when": "view == hwchat.chatView",
+          "command": "plaitcode.lanSync.openGroup",
+          "when": "view == plaitcode.chatView",
           "group": "navigation@0"
         },
         {
-          "command": "hwchat.newChat",
-          "when": "view == hwchat.chatView",
+          "command": "plaitcode.newChat",
+          "when": "view == plaitcode.chatView",
           "group": "navigation@1"
         },
         {
-          "command": "hwchat.openSettings",
-          "when": "view == hwchat.chatView",
+          "command": "plaitcode.openSettings",
+          "when": "view == plaitcode.chatView",
           "group": "navigation@2"
         }
       ]
     },
     "configuration": {
-      "title": "HWChat",
+      "title": "PlaitCode",
       "properties": {
-        "hwchat.apiProfiles": {
+        "plaitcode.apiProfiles": {
           "type": "array",
           "default": [],
           "description": "%config.apiProfiles%",
@@ -342,24 +342,24 @@
           },
           "scope": "machine"
         },
-        "hwchat.activeApiProfileId": {
+        "plaitcode.activeApiProfileId": {
           "type": "string",
           "default": "default",
           "description": "%config.activeApiProfileId%",
           "scope": "machine"
         },
-        "hwchat.baseUrl": {
+        "plaitcode.baseUrl": {
           "type": "string",
           "default": "https://api.deepseek.com",
           "markdownDescription": "%config.baseUrl%",
           "scope": "machine"
         },
-        "hwchat.model": {
+        "plaitcode.model": {
           "type": "string",
           "default": "deepseek-flash",
           "description": "%config.model%"
         },
-        "hwchat.requestHeaders": {
+        "plaitcode.requestHeaders": {
           "type": "object",
           "default": {},
           "additionalProperties": {
@@ -368,21 +368,21 @@
           "description": "%config.requestHeaders%",
           "scope": "machine"
         },
-        "hwchat.requestTimeoutSeconds": {
+        "plaitcode.requestTimeoutSeconds": {
           "type": "number",
           "default": 120,
           "minimum": 10,
           "maximum": 900,
           "description": "%config.requestTimeoutSeconds%"
         },
-        "hwchat.proxy": {
+        "plaitcode.proxy": {
           "type": "string",
           "default": "",
           "description": "%config.proxy%",
           "markdownDescription": "%config.proxy%",
           "scope": "machine"
         },
-        "hwchat.proxyBypassHosts": {
+        "plaitcode.proxyBypassHosts": {
           "type": "array",
           "items": {
             "type": "string"
@@ -394,87 +394,87 @@
           "markdownDescription": "%config.proxyBypassHosts%",
           "scope": "machine"
         },
-        "hwchat.embeddingProfileId": {
+        "plaitcode.embeddingProfileId": {
           "type": "string",
           "default": "",
           "description": "%config.embeddingProfileId%",
           "markdownDescription": "%config.embeddingProfileId%",
           "scope": "machine"
         },
-        "hwchat.embeddingModel": {
+        "plaitcode.embeddingModel": {
           "type": "string",
           "default": "",
           "description": "%config.embeddingModel%",
           "markdownDescription": "%config.embeddingModel%",
           "scope": "machine"
         },
-        "hwchat.embeddingBaseUrl": {
+        "plaitcode.embeddingBaseUrl": {
           "type": "string",
           "default": "",
           "description": "%config.embeddingBaseUrl%",
           "markdownDescription": "%config.embeddingBaseUrl%",
           "scope": "machine"
         },
-        "hwchat.temperature": {
+        "plaitcode.temperature": {
           "type": "number",
           "default": 1,
           "minimum": 0,
           "maximum": 2,
           "description": "%config.temperature%"
         },
-        "hwchat.maxTokens": {
+        "plaitcode.maxTokens": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "description": "%config.maxTokens%"
         },
-        "hwchat.systemPrompt": {
+        "plaitcode.systemPrompt": {
           "type": "string",
           "editPresentation": "multilineText",
           "default": "",
           "description": "%config.systemPrompt%",
           "scope": "machine"
         },
-        "hwchat.sendOnEnter": {
+        "plaitcode.sendOnEnter": {
           "type": "boolean",
           "default": true,
           "description": "%config.sendOnEnter%"
         },
-        "hwchat.historyRetentionDays": {
+        "plaitcode.historyRetentionDays": {
           "type": "number",
           "default": 30,
           "minimum": 0,
           "description": "%config.historyRetentionDays%",
           "scope": "machine"
         },
-        "hwchat.taskCacheRetentionHours": {
+        "plaitcode.taskCacheRetentionHours": {
           "type": "number",
           "default": 24,
           "minimum": 0,
           "description": "%config.taskCacheRetentionHours%",
           "scope": "machine"
         },
-        "hwchat.cacheBudgetMB": {
+        "plaitcode.cacheBudgetMB": {
           "type": "number",
           "default": 100,
           "minimum": 5,
           "description": "%config.cacheBudgetMB%",
           "scope": "machine"
         },
-        "hwchat.cleanupIntervalMinutes": {
+        "plaitcode.cleanupIntervalMinutes": {
           "type": "number",
           "default": 10,
           "minimum": 1,
           "description": "%config.cleanupIntervalMinutes%",
           "scope": "machine"
         },
-        "hwchat.maxMessagesInContext": {
+        "plaitcode.maxMessagesInContext": {
           "type": "number",
           "default": 20,
           "minimum": 0,
           "description": "%config.maxMessagesInContext%"
         },
-        "hwchat.defaultMode": {
+        "plaitcode.defaultMode": {
           "type": "string",
           "enum": [
             "chat",
@@ -489,7 +489,7 @@
           "default": "agent",
           "description": "%config.defaultMode%"
         },
-        "hwchat.agentMaxSteps": {
+        "plaitcode.agentMaxSteps": {
           "type": "number",
           "default": 24,
           "minimum": 0,
@@ -497,7 +497,7 @@
           "description": "%config.agentMaxSteps%",
           "deprecationMessage": "%config.agentMaxSteps.deprecated%"
         },
-        "hwchat.searchExclude": {
+        "plaitcode.searchExclude": {
           "type": "array",
           "items": {
             "type": "string"
@@ -506,7 +506,7 @@
           "scope": "resource",
           "description": "%config.searchExclude%"
         },
-        "hwchat.reasoningEffort": {
+        "plaitcode.reasoningEffort": {
           "type": "string",
           "enum": [
             "default",
@@ -526,7 +526,7 @@
           "description": "%config.reasoningEffort%",
           "deprecationMessage": "%config.reasoningEffort.deprecated%"
         },
-        "hwchat.projectDoc": {
+        "plaitcode.projectDoc": {
           "type": "string",
           "enum": [
             "auto",
@@ -534,15 +534,15 @@
             "off"
           ],
           "enumDescriptions": [
-            "自动维护：真的改过项目文件之后，由 HWChat 建立并追加项目技术文档（推荐）",
+            "自动维护：真的改过项目文件之后，由 PlaitCode 建立并追加项目技术文档（推荐）",
             "每次写入前确认",
             "关闭：不建立、不追加、不注入项目技术文档"
           ],
           "default": "auto",
           "scope": "machine",
-          "markdownDescription": "项目技术文档（`docs/HWCHAT-PROJECT-NOTES.md`，没有 `docs/` 时放项目根）。**唯一一份、只追加不重写**，随项目一起提交，用来让早期决策在长对话或新对话里不丢。只在 HWChat 真的改过该项目文件之后才会建立。\n\n这是权限预设之外**唯一一个**会改变「要不要问」的开关，所以它在设置页单独列一行，且是 machine 作用域（克隆下来的仓库不能靠 `.vscode/settings.json` 替你打开它）。"
+          "markdownDescription": "项目技术文档（`docs/PLAITCODE-PROJECT-NOTES.md`，没有 `docs/` 时放项目根）。**唯一一份、只追加不重写**，随项目一起提交，用来让早期决策在长对话或新对话里不丢。只在 PlaitCode 真的改过该项目文件之后才会建立。\n\n这是权限预设之外**唯一一个**会改变「要不要问」的开关，所以它在设置页单独列一行，且是 machine 作用域（克隆下来的仓库不能靠 `.vscode/settings.json` 替你打开它）。"
         },
-        "hwchat.permissionPreset": {
+        "plaitcode.permissionPreset": {
           "type": "string",
           "scope": "machine",
           "enum": [
@@ -561,7 +561,7 @@
           "description": "%config.permissionPreset%",
           "deprecationMessage": "%config.permissionPreset.deprecated%"
         },
-        "hwchat.fileReadPolicy": {
+        "plaitcode.fileReadPolicy": {
           "type": "string",
           "scope": "machine",
           "enum": [
@@ -573,7 +573,7 @@
           "deprecationMessage": "%config.fileReadPolicy.deprecated%",
           "description": "%config.fileReadPolicy%"
         },
-        "hwchat.fileWritePolicy": {
+        "plaitcode.fileWritePolicy": {
           "type": "string",
           "scope": "machine",
           "enum": [
@@ -585,7 +585,7 @@
           "deprecationMessage": "%config.fileWritePolicy.deprecated%",
           "description": "%config.fileWritePolicy%"
         },
-        "hwchat.commandPolicy": {
+        "plaitcode.commandPolicy": {
           "type": "string",
           "scope": "machine",
           "enum": [
@@ -597,7 +597,7 @@
           "deprecationMessage": "%config.commandPolicy.deprecated%",
           "description": "%config.commandPolicy%"
         },
-        "hwchat.dangerousCommandPolicy": {
+        "plaitcode.dangerousCommandPolicy": {
           "type": "string",
           "scope": "machine",
           "enum": [
@@ -614,7 +614,7 @@
           "deprecationMessage": "%config.dangerousCommandPolicy.deprecated%",
           "description": "%config.dangerousCommandPolicy%"
         },
-        "hwchat.sensitiveFilePolicy": {
+        "plaitcode.sensitiveFilePolicy": {
           "type": "string",
           "scope": "machine",
           "enum": [
@@ -631,21 +631,21 @@
           "deprecationMessage": "%config.sensitiveFilePolicy.deprecated%",
           "description": "%config.sensitiveFilePolicy%"
         },
-        "hwchat.allowSensitiveFiles": {
+        "plaitcode.allowSensitiveFiles": {
           "type": "boolean",
           "default": false,
           "deprecationMessage": "%config.allowSensitiveFiles.deprecated%",
           "description": "%config.allowSensitiveFiles%",
           "scope": "machine"
         },
-        "hwchat.allowDangerousCommands": {
+        "plaitcode.allowDangerousCommands": {
           "type": "boolean",
           "default": false,
           "deprecationMessage": "%config.allowDangerousCommands.deprecated%",
           "description": "%config.allowDangerousCommands%",
           "scope": "machine"
         },
-        "hwchat.maxReadBytes": {
+        "plaitcode.maxReadBytes": {
           "type": "number",
           "default": 512000,
           "minimum": 16384,
@@ -653,7 +653,7 @@
           "description": "%config.maxReadBytes%",
           "scope": "machine"
         },
-        "hwchat.maxToolOutputBytes": {
+        "plaitcode.maxToolOutputBytes": {
           "type": "number",
           "default": 200000,
           "minimum": 16384,
@@ -661,7 +661,7 @@
           "description": "%config.maxToolOutputBytes%",
           "scope": "machine"
         },
-        "hwchat.maxCommandSeconds": {
+        "plaitcode.maxCommandSeconds": {
           "type": "number",
           "default": 120,
           "minimum": 5,
@@ -669,7 +669,7 @@
           "description": "%config.maxCommandSeconds%",
           "scope": "machine"
         },
-        "hwchat.auditRetentionDays": {
+        "plaitcode.auditRetentionDays": {
           "type": "number",
           "default": 30,
           "minimum": 0,
@@ -677,7 +677,7 @@
           "description": "%config.auditRetentionDays%",
           "scope": "machine"
         },
-        "hwchat.language": {
+        "plaitcode.language": {
           "type": "string",
           "enum": [
             "auto",
@@ -692,32 +692,32 @@
           "default": "auto",
           "description": "%config.language%"
         },
-        "hwchat.lanSync.enabled": {
+        "plaitcode.lanSync.enabled": {
           "type": "boolean",
           "default": false,
           "markdownDescription": "记住连接状态：开启后每次启动自动恢复到上次的连接（**不需要手工操作**，正常流程是点状态栏的「连接另一台设备」）。"
         },
-        "hwchat.lanSync.port": {
+        "plaitcode.lanSync.port": {
           "type": "number",
           "default": 47821,
           "markdownDescription": "局域网同步使用的端口（TCP + UDP 发现）。两台设备必须一致。"
         },
-        "hwchat.lanSync.pairingCode": {
+        "plaitcode.lanSync.pairingCode": {
           "type": "string",
           "default": "",
           "markdownDescription": "（高级，可留空）固定配对码。留空时用「对方点允许」的方式确认，正常流程不需要填。"
         },
-        "hwchat.lanSync.deviceName": {
+        "plaitcode.lanSync.deviceName": {
           "type": "string",
           "default": "",
           "markdownDescription": "这台设备在队友眼里的名字。留空自动使用「主机名 · 系统」。"
         },
-        "hwchat.mobile.enabled": {
+        "plaitcode.mobile.enabled": {
           "type": "boolean",
           "default": false,
           "markdownDescription": "允许同一 WiFi 下的手机用浏览器指挥这台电脑（发需求、回答追问、看进度）。打开后从「手机遥控」窗口扫码进入。"
         },
-        "hwchat.mobile.allowApproval": {
+        "plaitcode.mobile.allowApproval": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "允许在手机上批准工具授权（命令、写文件）。关掉后手机只能看和说话，授权仍需在电脑上点。"
